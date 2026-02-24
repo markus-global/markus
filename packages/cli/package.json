@@ -1,0 +1,21 @@
+{
+  "name": "@markus/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "markus": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@markus/shared": "workspace:*",
+    "@markus/core": "workspace:*",
+    "@markus/compute": "workspace:*",
+    "@markus/comms": "workspace:*",
+    "@markus/org-manager": "workspace:*"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../core" },
+    { "path": "../compute" },
+    { "path": "../comms" },
+    { "path": "../org-manager" }
+  ]
+}

@@ -1,0 +1,64 @@
+version: "3.8"
+
+services:
+  markus:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: markus-server
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-3001}:3001"
+      - "${COMM_PORT:-3002}:3002"
+      - "${FEISHU_WEBHOOK_PORT:-9000}:9000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - DATABASE_URL=postgresql://markus:markus@postgres:5432/markus
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - markus-data:/app/.markus
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - markus-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: markus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: markus
+      POSTGRES_PASSWORD: markus
+      POSTGRES_DB: markus
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    networks:
+      - markus-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: markus-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - markus-net
+
+volumes:
+  markus-data:
+  pg-data:
+  redis-data:
+
+networks:
+  markus-net:
+    driver: bridge

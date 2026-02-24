@@ -1,0 +1,70 @@
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+export interface MarkusConfig {
+  org: {
+    id: string;
+    name: string;
+  };
+  llm: {
+    defaultProvider: string;
+    defaultModel: string;
+    providers: Record<string, { apiKey?: string; baseUrl?: string }>;
+  };
+  compute: {
+    defaultType: 'docker' | 'vm';
+    docker?: {
+      socketPath?: string;
+      defaultImage?: string;
+    };
+  };
+  server: {
+    apiPort: number;
+    webPort: number;
+  };
+  redis?: {
+    url: string;
+  };
+  database?: {
+    url: string;
+  };
+}
+
+const DEFAULT_CONFIG: MarkusConfig = {
+  org: { id: 'default', name: 'My Organization' },
+  llm: {
+    defaultProvider: 'anthropic',
+    defaultModel: 'claude-sonnet-4-20250514',
+    providers: {},
+  },
+  compute: {
+    defaultType: 'docker',
+    docker: { defaultImage: 'node:20-slim' },
+  },
+  server: { apiPort: 3001, webPort: 3000 },
+};
+
+export function loadConfig(configPath?: string): MarkusConfig {
+  const p = configPath ?? resolve(process.cwd(), 'markus.json');
+  if (!existsSync(p)) return DEFAULT_CONFIG;
+
+  const raw = readFileSync(p, 'utf-8');
+  const parsed = JSON.parse(raw) as Partial<MarkusConfig>;
+  return deepMerge(DEFAULT_CONFIG as unknown as Obj, parsed as unknown as Obj) as unknown as MarkusConfig;
+}
+
+type Obj = Record<string, unknown>;
+
+function deepMerge(target: Obj, source: Obj): Obj {
+  const result: Obj = { ...target };
+  for (const key of Object.keys(source)) {
+    const sv = source[key];
+    const tv = target[key];
+    if (sv && typeof sv === 'object' && !Array.isArray(sv) && tv && typeof tv === 'object' && !Array.isArray(tv)) {
+      result[key] = deepMerge(tv as Obj, sv as Obj);
+    } else {
+      result[key] = sv;
+    }
+  }
+  return result;
+}

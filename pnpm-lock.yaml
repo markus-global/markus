@@ -1,0 +1,88 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@types/node':
+        specifier: ^25.3.0
+        version: 25.3.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/cli:
+    dependencies:
+      '@markus/comms':
+        specifier: workspace:*
+        version: link:../comms
+      '@markus/compute':
+        specifier: workspace:*
+        version: link:../compute
+      '@markus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@markus/org-manager':
+        specifier: workspace:*
+        version: link:../org-manager
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/comms:
+    dependencies:
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/compute:
+    dependencies:
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/core:
+    dependencies:
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/org-manager:
+    dependencies:
+      '@markus/core':
+        specifier: workspace:*
+        version: link:../core
+      '@markus/shared':
+        specifier: workspace:*
+        version: link:../shared
+
+  packages/shared: {}
+
+  packages/web-ui: {}
+
+packages:
+
+  '@types/node@25.3.0':
+    resolution: {integrity: sha512-4K3bqJpXpqfg2XKGK9bpDTc6xO/xoUP/RBWS7AtRMug6zZFaRekiLzjVtAoZMquxoAbzBvy5nxQ7veS5eYzf8A==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+snapshots:
+
+  '@types/node@25.3.0':
+    dependencies:
+      undici-types: 7.18.2
+
+  typescript@5.9.3: {}
+
+  undici-types@7.18.2: {}

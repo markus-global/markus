@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: markus-server
+  namespace: markus
+  labels:
+    app: markus
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: markus
+      component: server
+  template:
+    metadata:
+      labels:
+        app: markus
+        component: server
+    spec:
+      containers:
+        - name: markus
+          image: markus:latest
+          ports:
+            - containerPort: 3001
+              name: api
+            - containerPort: 3002
+              name: comm
+            - containerPort: 9000
+              name: feishu-webhook
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: markus-secrets
+                  key: anthropic-api-key
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: markus-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: FEISHU_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: markus-secrets
+                  key: feishu-app-id
+                  optional: true
+            - name: FEISHU_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: markus-secrets
+                  key: feishu-app-secret
+                  optional: true
+            - name: DATABASE_URL
+              value: postgresql://markus:markus@markus-postgres:5432/markus
+            - name: REDIS_URL
+              value: redis://markus-redis:6379
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /app/.markus
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: markus-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: markus-data
+  namespace: markus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
