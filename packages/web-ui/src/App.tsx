@@ -1,14 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Dashboard } from './pages/Dashboard.tsx';
 import { Agents } from './pages/Agents.tsx';
 import { TaskBoard } from './pages/TaskBoard.tsx';
 import { Chat } from './pages/Chat.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
+import { wsClient } from './api.ts';
 
 type Page = 'dashboard' | 'agents' | 'tasks' | 'chat';
 
 export function App() {
   const [page, setPage] = useState<Page>('dashboard');
+
+  useEffect(() => {
+    wsClient.connect();
+    return () => wsClient.disconnect();
+  }, []);
 
   const pages: Record<Page, React.JSX.Element> = {
     dashboard: <Dashboard />,

@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createBuiltinTools } from '@markus/core';
-import { OrganizationService, TaskService, APIServer } from '@markus/org-manager';
+import { OrganizationService, TaskService, APIServer, initStorage } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
 // Load .env file from project root
@@ -37,7 +37,9 @@ Commands:
   agent:list      List all agents
   agent:create    Create a new agent
   agent:chat      Chat with an agent interactively
+  agent:status    Show detailed agent status
   role:list       List available role templates
+  db:init         Initialize database (run migrations)
   version         Show version
   help            Show this help message
 
@@ -94,8 +96,14 @@ async function main() {
     case 'agent:chat':
       await chatWithAgent(config, values);
       break;
+    case 'agent:status':
+      await agentStatus(config, values);
+      break;
     case 'role:list':
       await listRoles(config);
+      break;
+    case 'db:init':
+      await dbInit(config);
       break;
     default:
       console.error(`Unknown command: ${command}\nRun 'markus help' for usage.`);
@@ -149,10 +157,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     dataDir: resolve(process.cwd(), '.markus', 'agents'),
   });
 
-  const orgService = new OrganizationService(agentManager, roleLoader);
+  const storage = await initStorage(config.database?.url);
+  const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
   const taskService = new TaskService();
 
-  orgService.createOrganization(config.org.name, 'default', 'default');
+  await orgService.createOrganization(config.org.name, 'default', 'default');
 
   return { agentManager, orgService, taskService, roleLoader, llmRouter };
 }
@@ -326,6 +335,51 @@ async function listRoles(config: ReturnType<typeof loadConfig>) {
   console.log('─'.repeat(40));
   for (const r of roles) {
     console.log(`  ${r}`);
+  }
+}
+
+async function agentStatus(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const agentId = values['id'] as string;
+  if (!agentId) {
+    console.error('Usage: markus agent:status --id <agent_id>');
+    process.exit(1);
+  }
+
+  const { agentManager } = await createServices(config);
+  const agent = agentManager.getAgent(agentId);
+  const state = agent.getState();
+
+  console.log(`\nAgent Status: ${agent.config.name}`);
+  console.log('─'.repeat(50));
+  console.log(`  ID:            ${agentId}`);
+  console.log(`  Role:          ${agent.role.name}`);
+  console.log(`  Status:        ${state.status}`);
+  console.log(`  Tokens Today:  ${state.tokensUsedToday}`);
+  console.log(`  Current Task:  ${state.currentTaskId ?? 'none'}`);
+  console.log(`  Container ID:  ${state.containerId ?? 'none'}`);
+  console.log(`  Heartbeat:     ${state.lastHeartbeat ?? 'none'}`);
+  console.log(`  Skills:        ${agent.config.skills?.join(', ') ?? 'none'}`);
+}
+
+async function dbInit(config: ReturnType<typeof loadConfig>) {
+  const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
+  if (!dbUrl) {
+    console.error('No DATABASE_URL configured. Set it in .env or markus.json');
+    process.exit(1);
+  }
+
+  console.log('Initializing database...');
+  console.log(`  URL: ${dbUrl.replace(/:[^@]*@/, ':***@')}`);
+
+  try {
+    const { execSync } = await import('node:child_process');
+    const cwd = resolve(process.cwd(), 'packages', 'storage');
+    execSync('npx drizzle-kit push', { cwd, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dbUrl } });
+    console.log('\nDatabase initialized successfully!');
+  } catch (error) {
+    console.error(`\nDatabase initialization failed: ${String(error)}`);
+    console.error('\nMake sure PostgreSQL is running and the DATABASE_URL is correct.');
+    process.exit(1);
   }
 }
 

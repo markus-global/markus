@@ -2,27 +2,36 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createLogger } from '@markus/shared';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
+import { WSBroadcaster } from './ws-server.js';
 
 const log = createLogger('api-server');
 
 export class APIServer {
   private server?: ReturnType<typeof createServer>;
+  private ws: WSBroadcaster;
 
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
     private port: number = 3001,
-  ) {}
+  ) {
+    this.ws = new WSBroadcaster();
+  }
 
   start(): void {
     this.server = createServer((req, res) => this.handleRequest(req, res));
+    this.ws.attach(this.server);
     this.server.listen(this.port, () => {
-      log.info(`API server listening on port ${this.port}`);
+      log.info(`API server listening on port ${this.port} (HTTP + WebSocket)`);
     });
   }
 
   stop(): void {
     this.server?.close();
+  }
+
+  getWSBroadcaster(): WSBroadcaster {
+    return this.ws;
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -73,18 +82,23 @@ export class APIServer {
 
       if (action === 'start') {
         await this.orgService.getAgentManager().startAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'idle');
         this.json(res, 200, { status: 'started' });
         return;
       }
       if (action === 'stop') {
         await this.orgService.getAgentManager().stopAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'offline');
         this.json(res, 200, { status: 'stopped' });
         return;
       }
       if (action === 'message') {
         const body = await this.readBody(req);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
+        this.ws.broadcastAgentUpdate(agentId!, 'working');
         const reply = await agent.handleMessage(body['text'] as string, body['senderId'] as string | undefined);
+        this.ws.broadcastChat(agentId!, reply, 'agent');
+        this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
         this.json(res, 200, { reply });
         return;
       }

@@ -10,4 +10,4 @@ export { OpenAIProvider } from './llm/openai.js';
 export { MemoryStore } from './memory/store.js';
 export { EventBus } from './events.js';
 export type { LLMProviderInterface } from './llm/provider.js';
-export { ShellTool, FileReadTool, FileWriteTool, WebFetchTool, MCPClientManager, createBuiltinTools } from './tools/index.js';
+export { ShellTool, FileReadTool, FileWriteTool, WebFetchTool, WebSearchTool, MCPClientManager, createBuiltinTools } from './tools/index.js';

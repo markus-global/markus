@@ -11,7 +11,12 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@markus/core": "workspace:*",
     "@markus/shared": "workspace:*",
-    "@markus/core": "workspace:*"
+    "@markus/storage": "workspace:*",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

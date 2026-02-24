@@ -1,6 +1,7 @@
 import type { Organization, Team, RoleTemplate } from '@markus/shared';
 import { createLogger, orgId, generateId } from '@markus/shared';
 import { AgentManager, RoleLoader, type CreateAgentRequest } from '@markus/core';
+import type { StorageBridge } from './storage-bridge.js';
 
 const log = createLogger('org-service');
 
@@ -9,22 +10,35 @@ export class OrganizationService {
   private teams = new Map<string, Team>();
   private agentManager: AgentManager;
   private roleLoader: RoleLoader;
+  private storage?: StorageBridge;
 
-  constructor(agentManager: AgentManager, roleLoader?: RoleLoader) {
+  constructor(agentManager: AgentManager, roleLoader?: RoleLoader, storage?: StorageBridge) {
     this.agentManager = agentManager;
     this.roleLoader = roleLoader ?? new RoleLoader();
+    this.storage = storage;
   }
 
-  createOrganization(name: string, ownerId: string, explicitId?: string): Organization {
+  async createOrganization(name: string, ownerId: string, explicitId?: string): Promise<Organization> {
+    const id = explicitId ?? orgId();
     const org: Organization = {
-      id: explicitId ?? orgId(),
+      id,
       name,
       ownerId,
       plan: 'free',
       maxAgents: 5,
       createdAt: new Date().toISOString(),
     };
+
     this.orgs.set(org.id, org);
+
+    if (this.storage) {
+      try {
+        await this.storage.orgRepo.createOrg({ id, name, ownerId });
+      } catch (error) {
+        log.warn('Failed to persist org to DB (may already exist)', { error: String(error) });
+      }
+    }
+
     log.info(`Organization created: ${name}`, { id: org.id });
     return org;
   }
@@ -73,13 +87,33 @@ export class OrganizationService {
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
 
     const currentAgents = this.agentManager.listAgents().filter(
-      (a) => true, // in a full impl, filter by orgId
+      (a) => true,
     );
     if (currentAgents.length >= org.maxAgents) {
       throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
     }
 
     const agent = await this.agentManager.createAgent(request);
+
+    // Persist agent to DB
+    if (this.storage) {
+      try {
+        await this.storage.agentRepo.create({
+          id: agent.id,
+          name: agent.config.name,
+          orgId: org.id,
+          teamId: request.teamId,
+          roleId: agent.config.roleId,
+          roleName: agent.role.name,
+          skills: agent.config.skills,
+          llmConfig: agent.config.llmConfig,
+          computeConfig: agent.config.computeConfig,
+          heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+        });
+      } catch (error) {
+        log.warn('Failed to persist agent to DB', { error: String(error) });
+      }
+    }
 
     if (request.teamId) {
       const team = this.teams.get(request.teamId);
@@ -94,6 +128,14 @@ export class OrganizationService {
 
   async fireAgent(agentId: string): Promise<void> {
     await this.agentManager.removeAgent(agentId);
+
+    if (this.storage) {
+      try {
+        await this.storage.agentRepo.delete(agentId);
+      } catch (error) {
+        log.warn('Failed to remove agent from DB', { error: String(error) });
+      }
+    }
 
     for (const team of this.teams.values()) {
       team.memberAgentIds = team.memberAgentIds.filter((id) => id !== agentId);
@@ -112,5 +154,9 @@ export class OrganizationService {
 
   getAgentManager(): AgentManager {
     return this.agentManager;
+  }
+
+  getStorage(): StorageBridge | undefined {
+    return this.storage;
   }
 }

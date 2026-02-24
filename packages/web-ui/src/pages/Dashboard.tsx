@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type AgentInfo, type TaskInfo } from '../api.ts';
+import { api, wsClient, type AgentInfo, type TaskInfo } from '../api.ts';
 
 export function Dashboard() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -15,7 +15,12 @@ export function Dashboard() {
     api.tasks.board().then((d) => setBoard(d.board)).catch(() => {});
   };
 
-  useEffect(() => { refresh(); const i = setInterval(refresh, 5000); return () => clearInterval(i); }, []);
+  useEffect(() => {
+    refresh();
+    const i = setInterval(refresh, 15000);
+    const unsub = wsClient.on('*', () => refresh());
+    return () => { clearInterval(i); unsub(); };
+  }, []);
 
   const hire = async () => {
     if (!hireName || !hireRole) return;

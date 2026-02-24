@@ -48,3 +48,62 @@ export const api = {
   },
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
 };
+
+export interface WSEvent {
+  type: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+
+type WSEventHandler = (event: WSEvent) => void;
+
+class WSClient {
+  private ws: WebSocket | null = null;
+  private handlers = new Map<string, Set<WSEventHandler>>();
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  connect(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.hostname}:3001/ws`;
+
+    this.ws = new WebSocket(wsUrl);
+
+    this.ws.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data as string) as WSEvent;
+        const typeHandlers = this.handlers.get(event.type);
+        if (typeHandlers) {
+          for (const handler of typeHandlers) handler(event);
+        }
+        const allHandlers = this.handlers.get('*');
+        if (allHandlers) {
+          for (const handler of allHandlers) handler(event);
+        }
+      } catch { /* ignore parse errors */ }
+    };
+
+    this.ws.onclose = () => {
+      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+    };
+
+    this.ws.onerror = () => {
+      this.ws?.close();
+    };
+  }
+
+  disconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  on(type: string, handler: WSEventHandler): () => void {
+    if (!this.handlers.has(type)) this.handlers.set(type, new Set());
+    this.handlers.get(type)!.add(handler);
+    return () => this.handlers.get(type)?.delete(handler);
+  }
+}
+
+export const wsClient = new WSClient();
