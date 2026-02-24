@@ -19,14 +19,26 @@ export class LLMRouter {
     log.info(`Registered LLM provider: ${name}`, { model: provider.model });
   }
 
-  static createDefault(configs?: Record<string, LLMProviderConfig>): LLMRouter {
-    const router = new LLMRouter();
+  static createDefault(configs?: Record<string, LLMProviderConfig>, defaultProvider?: string): LLMRouter {
+    const router = new LLMRouter(defaultProvider);
 
     const anthropicConfig = configs?.['anthropic'];
-    router.registerProvider('anthropic', new AnthropicProvider(anthropicConfig));
+    if (anthropicConfig?.apiKey) {
+      router.registerProvider('anthropic', new AnthropicProvider(anthropicConfig));
+    }
 
     const openaiConfig = configs?.['openai'];
-    router.registerProvider('openai', new OpenAIProvider(openaiConfig));
+    if (openaiConfig?.apiKey) {
+      router.registerProvider('openai', new OpenAIProvider(openaiConfig));
+    }
+
+    // Support any OpenAI-compatible provider (DeepSeek, Groq, Together, etc.)
+    for (const [name, cfg] of Object.entries(configs ?? {})) {
+      if (name === 'anthropic' || name === 'openai') continue;
+      if (cfg?.apiKey) {
+        router.registerProvider(name, new OpenAIProvider(cfg));
+      }
+    }
 
     return router;
   }

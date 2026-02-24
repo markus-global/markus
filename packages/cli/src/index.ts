@@ -2,10 +2,27 @@
 
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createBuiltinTools } from '@markus/core';
 import { OrganizationService, TaskService, APIServer } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
+
+// Load .env file from project root
+const envPath = resolve(process.cwd(), '.env');
+if (existsSync(envPath)) {
+  for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const val = trimmed.slice(eqIdx + 1).trim();
+    if (key && !process.env[key]) {
+      process.env[key] = val;
+    }
+  }
+}
 
 const log = createLogger('cli');
 
@@ -90,18 +107,41 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const templateDirs = [resolve(process.cwd(), 'templates', 'roles')];
   const roleLoader = new RoleLoader(templateDirs);
 
-  const llmRouter = LLMRouter.createDefault({
-    anthropic: {
+  const providerConfigs: Record<string, import('@markus/shared').LLMProviderConfig> = {};
+  let defaultProvider = config.llm.defaultProvider;
+
+  const anthropicKey = config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'];
+  if (anthropicKey) {
+    providerConfigs['anthropic'] = {
       provider: 'anthropic',
       model: config.llm.defaultModel,
-      apiKey: config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'],
-    },
-    openai: {
+      apiKey: anthropicKey,
+    };
+  }
+
+  const openaiKey = config.llm.providers['openai']?.apiKey ?? process.env['OPENAI_API_KEY'];
+  if (openaiKey) {
+    providerConfigs['openai'] = {
       provider: 'openai',
       model: 'gpt-4o',
-      apiKey: config.llm.providers['openai']?.apiKey ?? process.env['OPENAI_API_KEY'],
-    },
-  });
+      apiKey: openaiKey,
+    };
+  }
+
+  const deepseekKey = config.llm.providers['deepseek']?.apiKey ?? process.env['DEEPSEEK_API_KEY'];
+  if (deepseekKey) {
+    providerConfigs['deepseek'] = {
+      provider: 'openai',
+      model: process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat',
+      apiKey: deepseekKey,
+      baseUrl: process.env['DEEPSEEK_BASE_URL'] ?? config.llm.providers['deepseek']?.baseUrl ?? 'https://api.deepseek.com',
+    };
+    if (!anthropicKey || config.llm.defaultProvider === 'deepseek') {
+      defaultProvider = 'deepseek';
+    }
+  }
+
+  const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
   const agentManager = new AgentManager({
     llmRouter,

@@ -61,7 +61,9 @@ export class OpenAIProvider implements LLMProviderInterface {
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const base = this.baseUrl.replace(/\/+$/, '');
+    const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
