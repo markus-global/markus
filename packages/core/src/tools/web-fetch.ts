@@ -44,13 +44,14 @@ export const WebFetchTool: AgentToolHandler = {
       const text = await res.text();
 
       return JSON.stringify({
-        status: res.status,
+        status: 'success',
+        httpStatus: res.status,
         contentType,
         body: text.slice(0, 50_000),
         truncated: text.length > 50_000,
       });
     } catch (error) {
-      return JSON.stringify({ error: `Fetch failed: ${String(error)}` });
+      return JSON.stringify({ status: 'error', error: `Fetch failed: ${String(error)}` });
     }
   },
 };

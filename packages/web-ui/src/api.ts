@@ -36,6 +36,44 @@ export const api = {
     remove: (id: string) => request(`/agents/${id}`, { method: 'DELETE' }),
     message: (id: string, text: string) =>
       request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void): Promise<string> => {
+      return new Promise(async (resolve, reject) => {
+        try {
+          const res = await fetch(`${BASE}/agents/${id}/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, stream: true }),
+          });
+          if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
+          const reader = res.body?.getReader();
+          if (!reader) { reject(new Error('No reader')); return; }
+          const decoder = new TextDecoder();
+          let fullContent = '';
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string };
+                if (event.type === 'text_delta' && event.text) {
+                  fullContent += event.text;
+                  onChunk(event.text);
+                } else if (event.type === 'done') {
+                  fullContent = event.content ?? fullContent;
+                }
+              } catch { /* skip */ }
+            }
+          }
+          resolve(fullContent);
+        } catch (err) { reject(err); }
+      });
+    },
   },
   roles: {
     list: () => request<{ roles: string[] }>('/roles'),

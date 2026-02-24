@@ -1,4 +1,4 @@
-import type { LLMRequest, LLMResponse, LLMProviderConfig } from '@markus/shared';
+import type { LLMRequest, LLMResponse, LLMStreamEvent, LLMProviderConfig } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
@@ -61,6 +61,29 @@ export class LLMRouter {
       return response;
     } catch (error) {
       log.error(`LLM request failed for ${name}`, { error: String(error) });
+      throw error;
+    }
+  }
+
+  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string): Promise<LLMResponse> {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
+    if (!provider) {
+      throw new Error(`LLM provider not found: ${name}. Available: ${[...this.providers.keys()].join(', ')}`);
+    }
+
+    if (!provider.chatStream) {
+      log.debug(`Provider ${name} does not support streaming, falling back to non-stream`);
+      const response = await provider.chat(request);
+      if (response.content) onEvent({ type: 'text_delta', text: response.content });
+      onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
+      return response;
+    }
+
+    try {
+      return await provider.chatStream(request, onEvent);
+    } catch (error) {
+      log.error(`LLM stream request failed for ${name}`, { error: String(error) });
       throw error;
     }
   }

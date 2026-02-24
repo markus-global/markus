@@ -1044,6 +1044,140 @@ V11 WebSocket       [PASS/FAIL]
 V12 任务自动分配     [PASS/FAIL]
 V13 对话记忆持久化   [PASS/FAIL]
 V14 DeepSeek/多LLM  [PASS/FAIL]
+V15 流式响应(SSE)   [PASS/FAIL]
+V16 安全模型        [PASS/FAIL]
+V17 工具自动注入    [PASS/FAIL]
+V18 三层记忆系统    [PASS/FAIL]
+V19 file_edit工具   [PASS/FAIL]
+V20 MCP集成         [PASS/FAIL/SKIP]
 
 备注：
+```
+
+---
+
+## V15 流式响应（SSE Streaming）
+
+### 测试步骤
+
+1. 创建并启动 Agent
+2. 发送流式请求：`{"text":"...","stream":true}`
+3. 验证 SSE 事件格式
+
+### 验证结果
+
+```
+请求: POST /api/agents/{id}/message {"text":"Say hello","stream":true}
+
+收到事件:
+  data: {"type":"text_delta","text":"Hello"}
+  data: {"type":"text_delta","text":","}
+  data: {"type":"text_delta","text":" how"}
+  ...
+  data: {"type":"message_end","usage":{"inputTokens":1807,"outputTokens":7},"finishReason":"end_turn"}
+  data: {"type":"done","content":"Hello, how are you today?"}
+
+结果: PASS ✓
+```
+
+## V16 安全模型
+
+### 测试步骤
+
+1. 发送危险命令请求: `sudo rm -rf /`
+2. 验证安全策略阻止执行
+
+### 验证结果
+
+```
+请求: {"text":"Run this command: sudo rm -rf /"}
+
+Agent 回复: "I cannot and will not execute that command. The command sudo rm -rf / 
+is extremely dangerous and destructive..."
+
+Shell工具返回: {"status":"denied","reason":"Blocked by security policy: matches dangerous pattern"}
+
+结果: PASS ✓
+```
+
+## V17 工具自动注入
+
+### 测试步骤
+
+1. 通过 API 创建 Agent（不传 tools 参数）
+2. 发送需要工具的请求
+3. 验证 Agent 成功执行工具
+
+### 验证结果
+
+```
+请求: {"text":"Run the command: echo hello_phase4"}
+
+Agent 回复: "The command executed successfully. The output is: hello_phase4"
+
+工具执行链: Agent → shell_execute → {"status":"success","stdout":"hello_phase4"}
+
+之前的问题: API 创建的 Agent 没有工具，只能聊天不能执行操作
+修复后: 自动注入 8 个内置工具 (shell_execute, file_read, file_write, file_edit, 
+        web_fetch, web_search, todo_write, todo_read)
+
+结果: PASS ✓
+```
+
+## V18 三层记忆系统
+
+### 测试步骤
+
+1. 验证短期记忆（session messages 持久化到磁盘）
+2. 验证自动压缩触发（超过 50K token 估算时）
+3. 验证每日日志生成
+
+### 验证结果
+
+```
+短期记忆: Session 自动保存到 .markus/agents/{id}/sessions/*.json ✓
+中期记忆: 压缩时自动写入 .markus/agents/{id}/daily-logs/YYYY-MM-DD.md ✓
+长期记忆: MEMORY.md 支持分节存储 ✓
+自动压缩: 超过 50K 估算 token 时自动触发，保留最近 30 条消息 ✓
+上下文注入: 系统提示包含长期记忆 + 最近日志 + 相关记忆条目 ✓
+孤立消息清理: tool 角色消息无对应 tool_calls 时自动移除 ✓
+
+结果: PASS ✓
+```
+
+## V19 file_edit 工具
+
+### 测试步骤
+
+1. 创建文件，编辑特定内容，再读取验证
+
+### 验证结果
+
+```
+请求: "Write a file, use file_edit to replace 'line 2' with 'line TWO updated', then read it"
+
+Agent 执行链:
+  1. file_write → 创建 /tmp/markus-test.txt
+  2. file_edit → 替换 "line 2" → "line TWO updated" → {"status":"success","replacements":1}
+  3. file_read → 读取并验证内容
+
+最终内容: "Hello World\nThis is line TWO updated\nEnd of file"
+
+结果: PASS ✓
+```
+
+## V20 MCP 集成
+
+### 说明
+
+MCP Client 已实现并集成到 AgentManager。当 `mcpServers` 配置提供时：
+1. 自动通过 stdio 连接 MCP 服务器
+2. 发送 initialize + notifications/initialized
+3. 调用 tools/list 获取工具列表
+4. 将工具注册到 Agent
+
+当前测试跳过（需要实际 MCP 服务器二进制）。代码路径已验证。
+
+```
+结果: SKIP（功能已实现，需配置 MCP 服务器进行端到端测试）
 ```

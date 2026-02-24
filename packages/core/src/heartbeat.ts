@@ -38,8 +38,6 @@ export class HeartbeatScheduler {
         this.trigger(task);
       }, interval);
 
-      // Trigger immediately on start
-      this.trigger(task);
       this.timers.set(key, timer);
     }
   }

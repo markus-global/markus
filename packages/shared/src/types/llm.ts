@@ -45,3 +45,11 @@ export interface LLMResponse {
   };
   finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
 }
+
+export interface LLMStreamEvent {
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end';
+  text?: string;
+  toolCall?: Partial<LLMToolCall>;
+  usage?: { inputTokens: number; outputTokens: number };
+  finishReason?: LLMResponse['finishReason'];
+}

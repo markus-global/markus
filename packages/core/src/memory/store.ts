@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LLMMessage } from '@markus/shared';
 import { createLogger } from '@markus/shared';
@@ -26,16 +26,23 @@ export class MemoryStore {
   private entries: MemoryEntry[] = [];
   private sessions = new Map<string, ConversationSession>();
   private sessionsDir: string;
+  private logsDir: string;
   private saveDebounce: ReturnType<typeof setTimeout> | null = null;
+  private longTermFile: string;
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
     this.sessionsDir = join(dataDir, 'sessions');
+    this.logsDir = join(dataDir, 'daily-logs');
+    this.longTermFile = join(dataDir, 'MEMORY.md');
     mkdirSync(this.dataDir, { recursive: true });
     mkdirSync(this.sessionsDir, { recursive: true });
+    mkdirSync(this.logsDir, { recursive: true });
     this.loadFromDisk();
     this.loadSessionsFromDisk();
   }
+
+  // --- Short-term: session messages ---
 
   addEntry(entry: MemoryEntry): void {
     this.entries.push(entry);
@@ -91,6 +98,9 @@ export class MemoryStore {
     session.messages.push(message);
     session.lastActivityAt = new Date().toISOString();
     this.debouncedSaveSession(session);
+
+    // Auto-compact when context gets large
+    this.checkAndCompact(session);
   }
 
   getRecentMessages(sessionId: string, limit: number): LLMMessage[] {
@@ -99,29 +109,129 @@ export class MemoryStore {
     return session.messages.slice(-limit);
   }
 
-  summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {
+  // --- Medium-term: daily conversation logs ---
+
+  writeDailyLog(agentId: string, summary: string): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const logFile = join(this.logsDir, `${today}.md`);
+    const timestamp = new Date().toISOString().slice(11, 19);
+    const entry = `\n## [${timestamp}] Agent: ${agentId}\n\n${summary}\n`;
+
+    appendFileSync(logFile, entry);
+    log.debug('Daily log entry written', { agentId, date: today });
+  }
+
+  getDailyLog(date?: string): string {
+    const d = date ?? new Date().toISOString().slice(0, 10);
+    const logFile = join(this.logsDir, `${d}.md`);
+    if (!existsSync(logFile)) return '';
+    return readFileSync(logFile, 'utf-8');
+  }
+
+  getRecentDailyLogs(days: number = 3): string {
+    const logs: string[] = [];
+    const now = new Date();
+    for (let i = 0; i < days; i++) {
+      const d = new Date(now.getTime() - i * 86_400_000).toISOString().slice(0, 10);
+      const content = this.getDailyLog(d);
+      if (content) logs.push(`# ${d}\n${content}`);
+    }
+    return logs.join('\n\n');
+  }
+
+  // --- Long-term: MEMORY.md ---
+
+  addLongTermMemory(key: string, content: string): void {
+    let existing = '';
+    if (existsSync(this.longTermFile)) {
+      existing = readFileSync(this.longTermFile, 'utf-8');
+    }
+
+    const sectionHeader = `## ${key}`;
+    if (existing.includes(sectionHeader)) {
+      const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
+      existing = existing.replace(regex, `${sectionHeader}\n${content}\n`);
+      writeFileSync(this.longTermFile, existing);
+    } else {
+      appendFileSync(this.longTermFile, `\n${sectionHeader}\n${content}\n`);
+    }
+
+    log.debug('Long-term memory updated', { key });
+  }
+
+  getLongTermMemory(): string {
+    if (!existsSync(this.longTermFile)) return '';
+    return readFileSync(this.longTermFile, 'utf-8');
+  }
+
+  // --- Context compaction (OpenClawd pattern) ---
+
+  compactSession(sessionId: string, keepLast: number = 20): { summary: string; flushedCount: number } {
     const session = this.sessions.get(sessionId);
-    if (!session) return [];
-    if (session.messages.length <= keepLast) return session.messages;
+    if (!session || session.messages.length <= keepLast) {
+      return { summary: '', flushedCount: 0 };
+    }
 
     const older = session.messages.slice(0, -keepLast);
-    const summary = older
-      .filter((m) => m.role !== 'system')
-      .map((m) => m.content)
-      .join('\n')
-      .slice(0, 500);
+    const flushedCount = older.length;
 
-    this.addEntry({
-      id: `mem_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      type: 'conversation',
-      content: summary,
-      metadata: { sessionId },
-    });
+    // Build summary from older messages
+    const summaryParts: string[] = [];
+    for (const msg of older) {
+      if (msg.role === 'system') continue;
+      if (msg.role === 'user') {
+        summaryParts.push(`User: ${msg.content.slice(0, 200)}`);
+      } else if (msg.role === 'assistant' && msg.content) {
+        summaryParts.push(`Assistant: ${msg.content.slice(0, 200)}`);
+      } else if (msg.role === 'tool') {
+        summaryParts.push(`Tool result: ${msg.content.slice(0, 100)}`);
+      }
+    }
 
+    const summary = summaryParts.join('\n').slice(0, 2000);
+
+    // Flush to medium-term memory (daily log)
+    this.writeDailyLog(session.agentId, summary);
+
+    // Extract any important facts for long-term memory
+    const facts = older
+      .filter((m) => m.role === 'assistant' && m.content.length > 50)
+      .map((m) => m.content.slice(0, 150))
+      .slice(0, 3);
+
+    if (facts.length > 0) {
+      this.addEntry({
+        id: `compact_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        type: 'conversation',
+        content: facts.join('\n'),
+        metadata: { sessionId, compactedMessages: flushedCount },
+      });
+    }
+
+    // Truncate session to keep only recent messages
     session.messages = session.messages.slice(-keepLast);
     this.saveSessionToDisk(session);
-    return session.messages;
+
+    log.info('Session compacted', { sessionId, flushedCount, remaining: session.messages.length });
+    return { summary, flushedCount };
+  }
+
+  summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {
+    this.compactSession(sessionId, keepLast);
+    const session = this.sessions.get(sessionId);
+    return session?.messages ?? [];
+  }
+
+  // --- Disk persistence ---
+
+  private checkAndCompact(session: ConversationSession): void {
+    const estimatedTokens = session.messages.reduce((acc, m) => acc + Math.ceil(m.content.length / 3), 0);
+    // Compact at ~80% of typical context window (keep things manageable)
+    if (estimatedTokens > 50_000) {
+      log.info('Auto-compacting session due to size', { sessionId: session.id, estimatedTokens });
+      this.compactSession(session.id, 30);
+    }
   }
 
   private loadFromDisk(): void {

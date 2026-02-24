@@ -35,15 +35,15 @@ export const WebSearchTool: AgentToolHandler = {
       });
 
       if (!res.ok) {
-        return JSON.stringify({ error: `Search failed: HTTP ${res.status}` });
+        return JSON.stringify({ status: 'error', error: `Search failed: HTTP ${res.status}` });
       }
 
       const html = await res.text();
       const results = parseResults(html, maxResults);
 
-      return JSON.stringify({ query, results, count: results.length });
+      return JSON.stringify({ status: 'success', query, results, count: results.length });
     } catch (error) {
-      return JSON.stringify({ error: `Search failed: ${String(error)}` });
+      return JSON.stringify({ status: 'error', error: `Search failed: ${String(error)}` });
     }
   },
 };

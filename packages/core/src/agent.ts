@@ -5,6 +5,7 @@ import type {
   LLMMessage,
   LLMTool,
   LLMToolCall,
+  LLMStreamEvent,
 } from '@markus/shared';
 import { createLogger, agentId as genAgentId } from '@markus/shared';
 import { EventBus } from './events.js';
@@ -235,6 +236,103 @@ export class Agent {
     }
   }
 
+  async handleMessageStream(
+    userMessage: string,
+    onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
+    senderId?: string,
+  ): Promise<string> {
+    this.state.status = 'working';
+
+    if (!this.currentSessionId) {
+      const session = this.memory.createSession(this.id);
+      this.currentSessionId = session.id;
+    }
+
+    this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userMessage });
+
+    const systemPrompt = this.contextEngine.buildSystemPrompt({
+      agentId: this.id,
+      agentName: this.config.name,
+      role: this.role,
+      orgContext: this.orgContext,
+      contextMdPath: this.contextMdPath,
+      memory: this.memory,
+      currentQuery: userMessage,
+    });
+
+    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+    const messages = this.contextEngine.prepareMessages({
+      systemPrompt,
+      sessionMessages,
+      memory: this.memory,
+      sessionId: this.currentSessionId,
+    });
+
+    const llmTools = this.buildToolDefinitions();
+
+    try {
+      let response = await this.llmRouter.chatStream(
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined },
+        onEvent,
+      );
+      this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+
+      let iterations = 0;
+      const maxIterations = 20;
+
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
+        iterations++;
+
+        this.memory.appendMessage(this.currentSessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+        });
+
+        for (const tc of response.toolCalls) {
+          const result = await this.executeTool(tc);
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'tool',
+            content: result,
+            toolCallId: tc.id,
+          });
+        }
+
+        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+        const updatedMessages = this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: updatedSessionMessages,
+          memory: this.memory,
+          sessionId: this.currentSessionId,
+        });
+
+        response = await this.llmRouter.chatStream(
+          { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
+          onEvent,
+        );
+        this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      }
+
+      const reply = response.content;
+      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
+      this.state.status = 'idle';
+
+      this.eventBus.emit('agent:message', {
+        agentId: this.id,
+        senderId,
+        userMessage,
+        reply,
+        tokensUsed: this.state.tokensUsedToday,
+      });
+
+      return reply;
+    } catch (error) {
+      this.state.status = 'error';
+      log.error('Failed to handle stream message', { error: String(error) });
+      throw error;
+    }
+  }
+
   addMemory(content: string, type: 'fact' | 'note' = 'fact'): void {
     this.memory.addEntry({
       id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -364,7 +462,7 @@ export class Agent {
     }
 
     log.info(`Processing heartbeat task: ${ctx.task.name}`);
-    const prompt = `[HEARTBEAT TASK] ${ctx.task.name}\n\n${ctx.task.description}\n\nCheck if there is anything that needs your attention and take appropriate action.`;
+    const prompt = `[HEARTBEAT TASK] ${ctx.task.name}\n\n${ctx.task.description}\n\nBriefly check status. If no actionable items found, just report "No action needed." Do NOT run excessive commands — at most 2-3 tool calls.`;
 
     try {
       await this.handleMessage(prompt);

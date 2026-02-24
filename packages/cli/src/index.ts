@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
-import { AgentManager, LLMRouter, RoleLoader, createBuiltinTools } from '@markus/core';
+import { AgentManager, LLMRouter, RoleLoader } from '@markus/core';
 import { OrganizationService, TaskService, APIServer, initStorage } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
@@ -261,8 +261,7 @@ async function createAgent(config: ReturnType<typeof loadConfig>, values: Record
   }
 
   const { agentManager } = await createServices(config);
-  const tools = createBuiltinTools();
-  const agent = await agentManager.createAgent({ name, roleName, tools });
+  const agent = await agentManager.createAgent({ name, roleName });
 
   console.log(`\nAgent created successfully!`);
   console.log(`  ID:   ${agent.id}`);

@@ -5,6 +5,9 @@ import type { OrgContext } from './context-engine.js';
 import { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
+import { createBuiltinTools } from './tools/builtin.js';
+import { MCPClientManager } from './tools/mcp-client.js';
+import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
@@ -13,6 +16,12 @@ const log = createLogger('agent-manager');
 export interface SandboxFactory {
   create(agentId: string, image?: string): Promise<SandboxHandle>;
   destroy(agentId: string): Promise<void>;
+}
+
+export interface MCPServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 export interface CreateAgentRequest {
@@ -25,6 +34,8 @@ export interface CreateAgentRequest {
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
+  mcpServers?: Record<string, MCPServerConfig>;
+  securityPolicy?: SecurityPolicy;
 }
 
 export class AgentManager {
@@ -34,6 +45,9 @@ export class AgentManager {
   private roleLoader: RoleLoader;
   private dataDir: string;
   private sandboxFactory?: SandboxFactory;
+  private mcpManager: MCPClientManager;
+  private globalSecurityPolicy?: SecurityPolicy;
+  private globalMcpServers?: Record<string, MCPServerConfig>;
 
   constructor(options: {
     llmRouter: LLMRouter;
@@ -41,12 +55,17 @@ export class AgentManager {
     dataDir?: string;
     eventBus?: EventBus;
     sandboxFactory?: SandboxFactory;
+    securityPolicy?: SecurityPolicy;
+    mcpServers?: Record<string, MCPServerConfig>;
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
     this.dataDir = options.dataDir ?? join(process.cwd(), '.markus', 'agents');
     this.eventBus = options.eventBus ?? new EventBus();
     this.sandboxFactory = options.sandboxFactory;
+    this.mcpManager = new MCPClientManager();
+    this.globalSecurityPolicy = options.securityPolicy;
+    this.globalMcpServers = options.mcpServers;
     mkdirSync(this.dataDir, { recursive: true });
   }
 
@@ -71,16 +90,39 @@ export class AgentManager {
       updatedAt: new Date().toISOString(),
     };
 
+    const security = new SecurityGuard(request.securityPolicy ?? this.globalSecurityPolicy);
+
+    // Always inject builtin tools — this is the #1 requirement for agents to actually work
+    const tools = request.tools ?? createBuiltinTools({ agentId: id, security });
+
     const agentOpts: AgentOptions = {
       config,
       role,
       llmRouter: this.llmRouter,
       dataDir: agentDataDir,
-      tools: request.tools,
+      tools,
       orgContext: request.orgContext,
     };
 
     const agent = new Agent(agentOpts);
+
+    // Connect MCP servers and register their tools
+    const mcpConfigs = request.mcpServers ?? this.globalMcpServers;
+    if (mcpConfigs) {
+      for (const [serverName, serverConfig] of Object.entries(mcpConfigs)) {
+        try {
+          await this.mcpManager.connectServer(serverName, serverConfig);
+          const mcpTools = this.mcpManager.getToolHandlers(serverName);
+          for (const tool of mcpTools) {
+            agent.registerTool(tool);
+          }
+          log.info(`MCP server ${serverName} tools registered for agent ${id}`, { toolCount: mcpTools.length });
+        } catch (error) {
+          log.warn(`Failed to connect MCP server ${serverName} for agent ${id}`, { error: String(error) });
+        }
+      }
+    }
+
     this.agents.set(id, agent);
     this.eventBus.emit('agent:created', { agentId: id, name: request.name });
     log.info(`Agent created: ${request.name} (${id})`);

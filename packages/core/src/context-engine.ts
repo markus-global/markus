@@ -64,17 +64,31 @@ export class ContextEngine {
       }
     }
 
-    // 4. Relevant long-term memories (fact-based retrieval)
+    // 4. Long-term memory (MEMORY.md)
+    const longTermMem = opts.memory.getLongTermMemory();
+    if (longTermMem) {
+      parts.push('\n## Long-term Knowledge');
+      parts.push(longTermMem.slice(0, 3000));
+    }
+
+    // 5. Relevant memories (fact-based retrieval)
     const relevantMemories = this.retrieveRelevantMemories(opts.memory, opts.currentQuery);
     if (relevantMemories.length > 0) {
-      parts.push('\n## Relevant Knowledge & Memories');
+      parts.push('\n## Relevant Memories');
       for (const mem of relevantMemories) {
         const ts = new Date(mem.timestamp).toLocaleDateString();
         parts.push(`- [${ts}] ${mem.content}`);
       }
     }
 
-    // 5. Agent identity
+    // 6. Recent daily log summary (medium-term memory)
+    const dailyLog = opts.memory.getRecentDailyLogs(1);
+    if (dailyLog) {
+      parts.push('\n## Recent Activity Summary');
+      parts.push(dailyLog.slice(0, 1500));
+    }
+
+    // 7. Agent identity
     parts.push('\n## Agent Identity');
     parts.push(`- Name: ${opts.agentName}`);
     parts.push(`- Role: ${opts.role.name}`);
@@ -121,10 +135,42 @@ export class ContextEngine {
       });
     }
 
+    // Sanitize: ensure no orphaned tool messages appear without their preceding tool_calls
+    recentMessages = this.sanitizeMessageSequence(recentMessages);
+
     return [
       { role: 'system', content: opts.systemPrompt },
       ...recentMessages,
     ];
+  }
+
+  /**
+   * Ensures tool role messages always follow an assistant message with toolCalls.
+   * Orphaned tool messages (from trimming) are dropped to prevent LLM API errors.
+   */
+  private sanitizeMessageSequence(messages: LLMMessage[]): LLMMessage[] {
+    const result: LLMMessage[] = [];
+    const pendingToolCallIds = new Set<string>();
+
+    for (const msg of messages) {
+      if (msg.role === 'assistant' && msg.toolCalls?.length) {
+        for (const tc of msg.toolCalls) {
+          pendingToolCallIds.add(tc.id);
+        }
+        result.push(msg);
+      } else if (msg.role === 'tool') {
+        if (msg.toolCallId && pendingToolCallIds.has(msg.toolCallId)) {
+          pendingToolCallIds.delete(msg.toolCallId);
+          result.push(msg);
+        } else {
+          log.debug('Dropping orphaned tool message', { toolCallId: msg.toolCallId });
+        }
+      } else {
+        result.push(msg);
+      }
+    }
+
+    return result;
   }
 
   private buildOrgContextSection(orgContext?: OrgContext, contextMdPath?: string): string | null {

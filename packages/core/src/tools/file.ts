@@ -1,58 +1,150 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { AgentToolHandler } from '../agent.js';
+import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
-export const FileReadTool: AgentToolHandler = {
-  name: 'file_read',
-  description: 'Read the contents of a file at the given path.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      path: {
-        type: 'string',
-        description: 'Absolute or relative path to the file',
+export function createFileReadTool(security?: SecurityGuard): AgentToolHandler {
+  const guard = security ?? defaultSecurityGuard;
+
+  return {
+    name: 'file_read',
+    description: 'Read the contents of a file. Supports offset and limit for reading large files in chunks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file' },
+        offset: { type: 'number', description: 'Line number to start reading from (1-based, optional)' },
+        limit: { type: 'number', description: 'Max number of lines to read (optional, default: all)' },
       },
+      required: ['path'],
     },
-    required: ['path'],
-  },
 
-  async execute(args: Record<string, unknown>): Promise<string> {
-    const path = args['path'] as string;
-    try {
-      return readFileSync(path, 'utf-8');
-    } catch (error) {
-      return JSON.stringify({ error: `Failed to read file: ${String(error)}` });
-    }
-  },
-};
+    async execute(args: Record<string, unknown>): Promise<string> {
+      const path = resolve(args['path'] as string);
+      const offset = (args['offset'] as number | undefined) ?? 1;
+      const limit = args['limit'] as number | undefined;
 
-export const FileWriteTool: AgentToolHandler = {
-  name: 'file_write',
-  description: 'Write content to a file at the given path. Creates parent directories if needed.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      path: {
-        type: 'string',
-        description: 'Absolute or relative path to the file',
-      },
-      content: {
-        type: 'string',
-        description: 'Content to write to the file',
-      },
+      const check = guard.validateFilePath(path);
+      if (!check.allowed) {
+        return JSON.stringify({ status: 'denied', error: check.reason });
+      }
+
+      try {
+        if (!existsSync(path)) {
+          return JSON.stringify({ status: 'error', error: `File not found: ${path}` });
+        }
+        const stat = statSync(path);
+        const content = readFileSync(path, 'utf-8');
+        const lines = content.split('\n');
+        const totalLines = lines.length;
+
+        const startIdx = Math.max(0, offset - 1);
+        const endIdx = limit ? Math.min(startIdx + limit, totalLines) : totalLines;
+        const selectedLines = lines.slice(startIdx, endIdx);
+
+        const numbered = selectedLines.map((line, i) => `${startIdx + i + 1}|${line}`).join('\n');
+        return JSON.stringify({
+          status: 'success',
+          path,
+          totalLines,
+          shownLines: `${startIdx + 1}-${endIdx}`,
+          size: stat.size,
+          content: numbered,
+        });
+      } catch (error) {
+        return JSON.stringify({ status: 'error', error: `Failed to read: ${String(error)}` });
+      }
     },
-    required: ['path', 'content'],
-  },
+  };
+}
 
-  async execute(args: Record<string, unknown>): Promise<string> {
-    const path = args['path'] as string;
-    const content = args['content'] as string;
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, content);
-      return JSON.stringify({ success: true, path, bytesWritten: Buffer.byteLength(content) });
-    } catch (error) {
-      return JSON.stringify({ error: `Failed to write file: ${String(error)}` });
-    }
-  },
-};
+export function createFileWriteTool(security?: SecurityGuard): AgentToolHandler {
+  const guard = security ?? defaultSecurityGuard;
+
+  return {
+    name: 'file_write',
+    description: 'Write content to a file. Creates parent directories if needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file' },
+        content: { type: 'string', description: 'Content to write' },
+      },
+      required: ['path', 'content'],
+    },
+
+    async execute(args: Record<string, unknown>): Promise<string> {
+      const path = resolve(args['path'] as string);
+      const content = args['content'] as string;
+
+      const check = guard.validateFilePath(path);
+      if (!check.allowed) {
+        return JSON.stringify({ status: 'denied', error: check.reason });
+      }
+
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+        return JSON.stringify({ status: 'success', path, bytesWritten: Buffer.byteLength(content) });
+      } catch (error) {
+        return JSON.stringify({ status: 'error', error: `Failed to write: ${String(error)}` });
+      }
+    },
+  };
+}
+
+export function createFileEditTool(security?: SecurityGuard): AgentToolHandler {
+  const guard = security ?? defaultSecurityGuard;
+
+  return {
+    name: 'file_edit',
+    description: 'Edit a file by replacing a specific string with a new string. Safer than full file rewrite — only changes the targeted section.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the file' },
+        old_string: { type: 'string', description: 'The exact text to find and replace (must be unique in the file)' },
+        new_string: { type: 'string', description: 'The replacement text' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+
+    async execute(args: Record<string, unknown>): Promise<string> {
+      const path = resolve(args['path'] as string);
+      const oldStr = args['old_string'] as string;
+      const newStr = args['new_string'] as string;
+
+      const check = guard.validateFilePath(path);
+      if (!check.allowed) {
+        return JSON.stringify({ status: 'denied', error: check.reason });
+      }
+
+      try {
+        if (!existsSync(path)) {
+          return JSON.stringify({ status: 'error', error: `File not found: ${path}` });
+        }
+        const content = readFileSync(path, 'utf-8');
+        const count = content.split(oldStr).length - 1;
+
+        if (count === 0) {
+          return JSON.stringify({ status: 'error', error: 'old_string not found in file' });
+        }
+        if (count > 1) {
+          return JSON.stringify({ status: 'error', error: `old_string found ${count} times — must be unique. Add more context.` });
+        }
+
+        const updated = content.replace(oldStr, newStr);
+        writeFileSync(path, updated);
+
+        return JSON.stringify({ status: 'success', path, replacements: 1 });
+      } catch (error) {
+        return JSON.stringify({ status: 'error', error: `Failed to edit: ${String(error)}` });
+      }
+    },
+  };
+}
+
+// Backward-compatible exports
+export const FileReadTool = createFileReadTool();
+export const FileWriteTool = createFileWriteTool();
+export const FileEditTool = createFileEditTool();

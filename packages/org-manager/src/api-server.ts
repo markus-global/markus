@@ -94,12 +94,39 @@ export class APIServer {
       }
       if (action === 'message') {
         const body = await this.readBody(req);
+        const stream = body['stream'] as boolean | undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
-        const reply = await agent.handleMessage(body['text'] as string, body['senderId'] as string | undefined);
-        this.ws.broadcastChat(agentId!, reply, 'agent');
+
+        if (stream) {
+          // SSE streaming response
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          });
+
+          const reply = await agent.handleMessageStream(
+            body['text'] as string,
+            (event) => {
+              res.write(`data: ${JSON.stringify(event)}\n\n`);
+              if (event.type === 'text_delta' && event.text) {
+                this.ws.broadcastChat(agentId!, event.text, 'agent');
+              }
+            },
+            body['senderId'] as string | undefined,
+          );
+
+          res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
+          res.end();
+        } else {
+          const reply = await agent.handleMessage(body['text'] as string, body['senderId'] as string | undefined);
+          this.ws.broadcastChat(agentId!, reply, 'agent');
+          this.json(res, 200, { reply });
+        }
+
         this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
-        this.json(res, 200, { reply });
         return;
       }
     }
@@ -187,6 +214,25 @@ export class APIServer {
       const body = await this.readBody(req);
       const org = await this.orgService.createOrganization(body['name'] as string, (body['ownerId'] as string) ?? 'default');
       this.json(res, 201, { org });
+      return;
+    }
+
+    // Agent status
+    if (path.startsWith('/api/agents/') && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const state = agent.getState();
+        this.json(res, 200, {
+          id: agent.id,
+          name: agent.config.name,
+          role: agent.role.name,
+          state,
+          skills: agent.config.skills,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
       return;
     }
 

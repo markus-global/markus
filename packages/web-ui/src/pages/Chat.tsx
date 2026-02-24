@@ -30,11 +30,30 @@ export function Chat() {
     setMessages((prev) => [...prev, { sender: 'user', text, time: new Date().toLocaleTimeString() }]);
     setSending(true);
 
+    // Add a placeholder for the streaming response
+    const streamIdx = messages.length + 1;
+    setMessages((prev) => [...prev, { sender: 'agent', text: '', time: new Date().toLocaleTimeString() }]);
+
     try {
-      const data = await api.agents.message(selectedAgent, text);
-      setMessages((prev) => [...prev, { sender: 'agent', text: data.reply, time: new Date().toLocaleTimeString() }]);
+      await api.agents.messageStream(selectedAgent, text, (chunk) => {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.sender === 'agent') {
+            updated[updated.length - 1] = { ...last, text: last.text + chunk };
+          }
+          return updated;
+        });
+      });
     } catch (e) {
-      setMessages((prev) => [...prev, { sender: 'agent', text: `Error: ${String(e)}`, time: new Date().toLocaleTimeString() }]);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last && last.sender === 'agent') {
+          updated[updated.length - 1] = { ...last, text: `Error: ${String(e)}` };
+        }
+        return updated;
+      });
     } finally {
       setSending(false);
     }
@@ -71,7 +90,7 @@ export function Chat() {
             </div>
           </div>
         ))}
-        {sending && (
+        {sending && messages[messages.length - 1]?.text === '' && (
           <div className="flex justify-start">
             <div className="bg-gray-800 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm text-gray-400">
               <span className="animate-pulse">Thinking...</span>
