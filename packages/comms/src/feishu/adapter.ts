@@ -78,9 +78,17 @@ export class FeishuAdapter implements CommAdapter {
     log.info('Feishu adapter disconnected');
   }
 
-  async sendMessage(channelId: string, content: string, _options?: SendOptions): Promise<string> {
+  async sendMessage(channelId: string, content: string, options?: SendOptions): Promise<string> {
     if (!this.client) throw new Error('Feishu adapter not connected');
+    if (options?.richText) {
+      return this.client.sendInteractiveMessage(channelId, JSON.parse(content));
+    }
     return this.client.sendTextMessage(channelId, content);
+  }
+
+  async sendCard(channelId: string, card: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error('Feishu adapter not connected');
+    return this.client.sendInteractiveMessage(channelId, card);
   }
 
   async sendReply(channelId: string, replyToId: string, content: string): Promise<string> {
@@ -142,6 +150,13 @@ export class FeishuAdapter implements CommAdapter {
             log.error('Failed to process Feishu message event', { error: String(err) });
           });
         }
+
+        // Card action callback
+        if ((event as Record<string, unknown>)['action']) {
+          this.processCardAction(event as Record<string, unknown>).catch((err) => {
+            log.error('Failed to process card action', { error: String(err) });
+          });
+        }
       } catch (error) {
         log.error('Failed to parse webhook body', { error: String(error) });
         res.writeHead(400);
@@ -194,6 +209,44 @@ export class FeishuAdapter implements CommAdapter {
         await handler(message);
       } catch (error) {
         log.error('Message handler failed', { error: String(error) });
+      }
+    }
+  }
+
+  private async processCardAction(event: Record<string, unknown>): Promise<void> {
+    const action = event['action'] as Record<string, unknown> | undefined;
+    if (!action) return;
+
+    const value = action['value'] as Record<string, string> | undefined;
+    if (!value) return;
+
+    const operatorId = ((event['operator'] as Record<string, unknown>)?.['open_id'] as string) ?? 'unknown';
+
+    const message: Message = {
+      id: msgId(),
+      platform: 'feishu',
+      direction: 'inbound',
+      channelId: value['agent'] ?? '',
+      senderId: operatorId,
+      senderName: 'User',
+      agentId: value['agent'] ?? '',
+      content: {
+        type: 'action_card',
+        text: `[Card Action] ${value['action'] ?? 'unknown'}`,
+        actionCard: {
+          title: 'Card Action',
+          text: JSON.stringify(value),
+          actions: [],
+        },
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    for (const handler of this.handlers) {
+      try {
+        await handler(message);
+      } catch (error) {
+        log.error('Card action handler failed', { error: String(error) });
       }
     }
   }

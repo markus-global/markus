@@ -1,6 +1,7 @@
-import type { AgentConfig, RoleTemplate } from '@markus/shared';
+import type { AgentConfig } from '@markus/shared';
 import { createLogger, agentId as genAgentId } from '@markus/shared';
-import { Agent, type AgentToolHandler } from './agent.js';
+import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
+import type { OrgContext } from './context-engine.js';
 import { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
@@ -8,6 +9,11 @@ import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
 const log = createLogger('agent-manager');
+
+export interface SandboxFactory {
+  create(agentId: string, image?: string): Promise<SandboxHandle>;
+  destroy(agentId: string): Promise<void>;
+}
 
 export interface CreateAgentRequest {
   name: string;
@@ -17,6 +23,8 @@ export interface CreateAgentRequest {
   skills?: string[];
   heartbeatIntervalMs?: number;
   tools?: AgentToolHandler[];
+  orgContext?: OrgContext;
+  enableSandbox?: boolean;
 }
 
 export class AgentManager {
@@ -25,17 +33,20 @@ export class AgentManager {
   private llmRouter: LLMRouter;
   private roleLoader: RoleLoader;
   private dataDir: string;
+  private sandboxFactory?: SandboxFactory;
 
   constructor(options: {
     llmRouter: LLMRouter;
     roleLoader?: RoleLoader;
     dataDir?: string;
     eventBus?: EventBus;
+    sandboxFactory?: SandboxFactory;
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
     this.dataDir = options.dataDir ?? join(process.cwd(), '.markus', 'agents');
     this.eventBus = options.eventBus ?? new EventBus();
+    this.sandboxFactory = options.sandboxFactory;
     mkdirSync(this.dataDir, { recursive: true });
   }
 
@@ -60,14 +71,16 @@ export class AgentManager {
       updatedAt: new Date().toISOString(),
     };
 
-    const agent = new Agent({
+    const agentOpts: AgentOptions = {
       config,
       role,
       llmRouter: this.llmRouter,
       dataDir: agentDataDir,
       tools: request.tools,
-    });
+      orgContext: request.orgContext,
+    };
 
+    const agent = new Agent(agentOpts);
     this.agents.set(id, agent);
     this.eventBus.emit('agent:created', { agentId: id, name: request.name });
     log.info(`Agent created: ${request.name} (${id})`);
@@ -77,18 +90,43 @@ export class AgentManager {
 
   async startAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
+
+    // Auto-create sandbox if factory is available
+    if (this.sandboxFactory && !agent.getState().containerId) {
+      try {
+        const sandbox = await this.sandboxFactory.create(agentId);
+        agent.setSandbox(sandbox);
+        log.info(`Sandbox created for agent ${agentId}`);
+      } catch (error) {
+        log.warn(`Failed to create sandbox for agent ${agentId}, running without isolation`, {
+          error: String(error),
+        });
+      }
+    }
+
     await agent.start();
   }
 
   async stopAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
     await agent.stop();
+
+    if (this.sandboxFactory) {
+      try {
+        await this.sandboxFactory.destroy(agentId);
+      } catch {
+        // sandbox may already be gone
+      }
+    }
   }
 
   async removeAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
       await agent.stop();
+      if (this.sandboxFactory) {
+        try { await this.sandboxFactory.destroy(agentId); } catch { /* ignore */ }
+      }
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
       log.info(`Agent removed: ${agentId}`);
@@ -116,5 +154,9 @@ export class AgentManager {
 
   getEventBus(): EventBus {
     return this.eventBus;
+  }
+
+  setSandboxFactory(factory: SandboxFactory): void {
+    this.sandboxFactory = factory;
   }
 }

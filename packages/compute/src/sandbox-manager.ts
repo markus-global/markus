@@ -92,4 +92,31 @@ export class SandboxManager {
       status: sandbox.env.status,
     }));
   }
+
+  /**
+   * Returns an object conforming to the SandboxFactory interface from @markus/core,
+   * so it can be passed to AgentManager for automatic sandbox lifecycle management.
+   */
+  asSandboxFactory(defaultImage?: string): SandboxFactory {
+    return {
+      create: async (agentId: string, image?: string) => {
+        const sandbox = await this.createSandbox({
+          agentId,
+          image: image ?? defaultImage ?? 'node:20-slim',
+        });
+        return sandbox;
+      },
+      destroy: async (agentId: string) => {
+        const sandbox = this.sandboxes.get(agentId);
+        if (sandbox) {
+          await sandbox.destroy();
+        }
+      },
+    };
+  }
+}
+
+export interface SandboxFactory {
+  create(agentId: string, image?: string): Promise<Sandbox>;
+  destroy(agentId: string): Promise<void>;
 }

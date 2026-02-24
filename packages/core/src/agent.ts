@@ -11,6 +11,7 @@ import { EventBus } from './events.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
+import { ContextEngine, type OrgContext } from './context-engine.js';
 
 const log = createLogger('agent');
 
@@ -21,12 +22,23 @@ export interface AgentToolHandler {
   execute(args: Record<string, unknown>): Promise<string>;
 }
 
+export interface SandboxHandle {
+  exec(command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<{ exitCode?: number; stdout: string; stderr: string }>;
+  writeFile(path: string, content: string): Promise<void>;
+  readFile(path: string): Promise<string>;
+  stop(): Promise<void>;
+  destroy(): Promise<void>;
+}
+
 export interface AgentOptions {
   config: AgentConfig;
   role: RoleTemplate;
   llmRouter: LLMRouter;
   dataDir: string;
   tools?: AgentToolHandler[];
+  sandbox?: SandboxHandle;
+  orgContext?: OrgContext;
+  contextMdPath?: string;
 }
 
 export class Agent {
@@ -39,14 +51,21 @@ export class Agent {
   private heartbeat: HeartbeatScheduler;
   private llmRouter: LLMRouter;
   private memory: MemoryStore;
+  private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private currentSessionId?: string;
+  private sandbox?: SandboxHandle;
+  private orgContext?: OrgContext;
+  private contextMdPath?: string;
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
     this.config = { ...options.config, id: this.id };
     this.role = options.role;
     this.llmRouter = options.llmRouter;
+    this.sandbox = options.sandbox;
+    this.orgContext = options.orgContext;
+    this.contextMdPath = options.contextMdPath;
 
     this.state = {
       agentId: this.id,
@@ -56,6 +75,7 @@ export class Agent {
 
     this.eventBus = new EventBus();
     this.memory = new MemoryStore(options.dataDir);
+    this.contextEngine = new ContextEngine();
     this.heartbeat = new HeartbeatScheduler(
       this.id,
       this.eventBus,
@@ -67,6 +87,11 @@ export class Agent {
       for (const tool of options.tools) {
         this.tools.set(tool.name, tool);
       }
+    }
+
+    // If sandbox is provided, replace shell/file tools with sandboxed versions
+    if (this.sandbox) {
+      this.registerSandboxedTools(this.sandbox);
     }
 
     this.eventBus.on('heartbeat:trigger', (ctx) => {
@@ -92,6 +117,16 @@ export class Agent {
     log.info(`Agent stopped: ${this.config.name}`);
   }
 
+  setSandbox(sandbox: SandboxHandle): void {
+    this.sandbox = sandbox;
+    this.registerSandboxedTools(sandbox);
+    log.info(`Sandbox attached to agent ${this.id}`);
+  }
+
+  setOrgContext(ctx: OrgContext): void {
+    this.orgContext = ctx;
+  }
+
   async handleMessage(userMessage: string, senderId?: string): Promise<string> {
     this.state.status = 'working';
 
@@ -100,13 +135,25 @@ export class Agent {
       this.currentSessionId = session.id;
     }
 
-    const systemPrompt = this.buildSystemPrompt();
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userMessage });
 
-    const messages: LLMMessage[] = [
-      { role: 'system', content: systemPrompt },
-      ...this.memory.getRecentMessages(this.currentSessionId, 50),
-    ];
+    const systemPrompt = this.contextEngine.buildSystemPrompt({
+      agentId: this.id,
+      agentName: this.config.name,
+      role: this.role,
+      orgContext: this.orgContext,
+      contextMdPath: this.contextMdPath,
+      memory: this.memory,
+      currentQuery: userMessage,
+    });
+
+    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+    const messages = this.contextEngine.prepareMessages({
+      systemPrompt,
+      sessionMessages,
+      memory: this.memory,
+      sessionId: this.currentSessionId,
+    });
 
     const llmTools = this.buildToolDefinitions();
 
@@ -118,8 +165,13 @@ export class Agent {
 
       this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
 
-      // Tool use loop
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+      // Tool use loop with max iterations to prevent runaway
+      let iterations = 0;
+      const maxIterations = 20;
+
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
+        iterations++;
+
         this.memory.appendMessage(this.currentSessionId, {
           role: 'assistant',
           content: response.content,
@@ -135,10 +187,13 @@ export class Agent {
           });
         }
 
-        const updatedMessages: LLMMessage[] = [
-          { role: 'system', content: systemPrompt },
-          ...this.memory.getRecentMessages(this.currentSessionId, 50),
-        ];
+        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+        const updatedMessages = this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: updatedSessionMessages,
+          memory: this.memory,
+          sessionId: this.currentSessionId,
+        });
 
         response = await this.llmRouter.chat({
           messages: updatedMessages,
@@ -146,6 +201,10 @@ export class Agent {
         });
 
         this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      }
+
+      if (iterations >= maxIterations) {
+        log.warn('Tool loop hit max iterations', { agentId: this.id, iterations });
       }
 
       const reply = response.content;
@@ -157,6 +216,7 @@ export class Agent {
         senderId,
         userMessage,
         reply,
+        tokensUsed: this.state.tokensUsedToday,
       });
 
       return reply;
@@ -165,6 +225,15 @@ export class Agent {
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     }
+  }
+
+  addMemory(content: string, type: 'fact' | 'note' = 'fact'): void {
+    this.memory.addEntry({
+      id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      type,
+      content,
+    });
   }
 
   registerTool(handler: AgentToolHandler): void {
@@ -179,36 +248,77 @@ export class Agent {
     return this.eventBus;
   }
 
-  private buildSystemPrompt(): string {
-    const parts: string[] = [];
+  getMemory(): MemoryStore {
+    return this.memory;
+  }
 
-    parts.push(this.role.systemPrompt);
-
-    if (this.role.defaultPolicies.length > 0) {
-      parts.push('\n## Policies');
-      for (const policy of this.role.defaultPolicies) {
-        parts.push(`### ${policy.name}`);
-        for (const rule of policy.rules) {
-          parts.push(`- ${rule}`);
+  private registerSandboxedTools(sandbox: SandboxHandle): void {
+    this.tools.set('shell_execute', {
+      name: 'shell_execute',
+      description: 'Execute a shell command inside the agent\'s isolated sandbox container.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'The shell command to execute' },
+          cwd: { type: 'string', description: 'Working directory (optional)' },
+          timeout_ms: { type: 'number', description: 'Timeout in ms (default: 60000)' },
+        },
+        required: ['command'],
+      },
+      execute: async (args) => {
+        const result = await sandbox.exec(
+          args['command'] as string,
+          { cwd: args['cwd'] as string | undefined, timeoutMs: (args['timeout_ms'] as number) ?? 60_000 },
+        );
+        const parts: string[] = [];
+        if (result.stdout?.trim()) parts.push(result.stdout.trim());
+        if (result.stderr?.trim()) parts.push(`[stderr] ${result.stderr.trim()}`);
+        if (result.exitCode !== undefined && result.exitCode !== 0) {
+          parts.push(`[exit code: ${result.exitCode}]`);
         }
-      }
-    }
+        return parts.join('\n') || '(no output)';
+      },
+    });
 
-    const recentMemories = this.memory.getEntries('fact', 10);
-    if (recentMemories.length > 0) {
-      parts.push('\n## Relevant Memories');
-      for (const mem of recentMemories) {
-        parts.push(`- [${mem.timestamp}] ${mem.content}`);
-      }
-    }
+    this.tools.set('file_read', {
+      name: 'file_read',
+      description: 'Read a file from the agent\'s sandbox container.',
+      inputSchema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'File path to read' } },
+        required: ['path'],
+      },
+      execute: async (args) => {
+        try {
+          return await sandbox.readFile(args['path'] as string);
+        } catch (e) {
+          return JSON.stringify({ error: String(e) });
+        }
+      },
+    });
 
-    parts.push(`\n## Agent Identity`);
-    parts.push(`- Name: ${this.config.name}`);
-    parts.push(`- Role: ${this.role.name}`);
-    parts.push(`- Agent ID: ${this.id}`);
-    parts.push(`- Current time: ${new Date().toISOString()}`);
+    this.tools.set('file_write', {
+      name: 'file_write',
+      description: 'Write content to a file in the agent\'s sandbox container.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path to write' },
+          content: { type: 'string', description: 'Content to write' },
+        },
+        required: ['path', 'content'],
+      },
+      execute: async (args) => {
+        try {
+          await sandbox.writeFile(args['path'] as string, args['content'] as string);
+          return JSON.stringify({ success: true, path: args['path'] });
+        } catch (e) {
+          return JSON.stringify({ error: String(e) });
+        }
+      },
+    });
 
-    return parts.join('\n');
+    log.info(`Sandboxed tools registered for agent ${this.id}`);
   }
 
   private buildToolDefinitions(): LLMTool[] {

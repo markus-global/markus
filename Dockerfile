@@ -10,7 +10,11 @@ COPY packages/core/package.json packages/core/
 COPY packages/compute/package.json packages/compute/
 COPY packages/comms/package.json packages/comms/
 COPY packages/org-manager/package.json packages/org-manager/
+COPY packages/storage/package.json packages/storage/
+COPY packages/gui/package.json packages/gui/
+COPY packages/a2a/package.json packages/a2a/
 COPY packages/cli/package.json packages/cli/
+COPY packages/web-ui/package.json packages/web-ui/
 RUN pnpm install --frozen-lockfile || pnpm install
 
 FROM deps AS build
@@ -28,6 +32,9 @@ COPY --from=build /app/packages/core/package.json /app/packages/core/dist ./pack
 COPY --from=build /app/packages/compute/package.json /app/packages/compute/dist ./packages/compute/
 COPY --from=build /app/packages/comms/package.json /app/packages/comms/dist ./packages/comms/
 COPY --from=build /app/packages/org-manager/package.json /app/packages/org-manager/dist ./packages/org-manager/
+COPY --from=build /app/packages/storage/package.json /app/packages/storage/dist ./packages/storage/
+COPY --from=build /app/packages/gui/package.json /app/packages/gui/dist ./packages/gui/
+COPY --from=build /app/packages/a2a/package.json /app/packages/a2a/dist ./packages/a2a/
 COPY --from=build /app/packages/cli/package.json /app/packages/cli/dist ./packages/cli/
 COPY --from=build /app/packages/web-ui ./packages/web-ui
 COPY --from=build /app/templates ./templates

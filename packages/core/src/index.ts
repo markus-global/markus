@@ -1,8 +1,9 @@
 export { Agent } from './agent.js';
-export type { AgentToolHandler } from './agent.js';
-export { AgentManager, type CreateAgentRequest } from './agent-manager.js';
+export type { AgentToolHandler, SandboxHandle } from './agent.js';
+export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
+export { ContextEngine, type OrgContext, type ContextConfig } from './context-engine.js';
 export { LLMRouter } from './llm/router.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
