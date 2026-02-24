@@ -1,4 +1,4 @@
-import type { Organization, Team, RoleTemplate } from '@markus/shared';
+import type { Organization, Team, RoleTemplate, HumanUser, HumanRole } from '@markus/shared';
 import { createLogger, orgId, generateId } from '@markus/shared';
 import { AgentManager, RoleLoader, type CreateAgentRequest } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
@@ -8,6 +8,7 @@ const log = createLogger('org-service');
 export class OrganizationService {
   private orgs = new Map<string, Organization>();
   private teams = new Map<string, Team>();
+  private humans = new Map<string, HumanUser>();
   private agentManager: AgentManager;
   private roleLoader: RoleLoader;
   private storage?: StorageBridge;
@@ -16,6 +17,73 @@ export class OrganizationService {
     this.agentManager = agentManager;
     this.roleLoader = roleLoader ?? new RoleLoader();
     this.storage = storage;
+  }
+
+  // ─── Human User Management ───
+
+  addHumanUser(orgId: string, name: string, role: HumanRole, opts?: { id?: string; email?: string }): HumanUser {
+    const org = this.orgs.get(orgId);
+    if (!org) throw new Error(`Organization not found: ${orgId}`);
+
+    const user: HumanUser = {
+      id: opts?.id ?? generateId('user'),
+      name,
+      email: opts?.email,
+      role,
+      orgId,
+      createdAt: new Date().toISOString(),
+    };
+    this.humans.set(user.id, user);
+    this.refreshIdentityContextsForOrg(orgId);
+    log.info(`Human user added: ${name} (${role})`, { orgId, userId: user.id });
+    return user;
+  }
+
+  getHumanUser(userId: string): HumanUser | undefined {
+    return this.humans.get(userId);
+  }
+
+  listHumanUsers(orgId: string): HumanUser[] {
+    return [...this.humans.values()].filter(h => h.orgId === orgId);
+  }
+
+  removeHumanUser(userId: string): void {
+    const user = this.humans.get(userId);
+    if (user) {
+      this.humans.delete(userId);
+      this.refreshIdentityContextsForOrg(user.orgId);
+      log.info(`Human user removed: ${user.name}`);
+    }
+  }
+
+  resolveHumanIdentity(senderId?: string): { id: string; name: string; role: string } | undefined {
+    if (!senderId) return undefined;
+    const user = this.humans.get(senderId);
+    if (user) return { id: user.id, name: user.name, role: user.role };
+    return undefined;
+  }
+
+  // ─── Message Routing ───
+
+  /**
+   * Given a message, determine which agent should handle it.
+   * Priority: explicit @mention > channel binding > manager fallback
+   */
+  routeMessage(orgId: string, opts: { targetAgentId?: string; channelId?: string; text?: string }): string | undefined {
+    if (opts.targetAgentId) return opts.targetAgentId;
+
+    const org = this.orgs.get(orgId);
+    if (!org) return undefined;
+
+    if (org.managerAgentId) return org.managerAgentId;
+
+    const agents = this.agentManager.listAgents().filter(a => {
+      try {
+        const agent = this.agentManager.getAgent(a.id);
+        return agent.config.orgId === orgId;
+      } catch { return false; }
+    });
+    return agents[0]?.id;
   }
 
   async createOrganization(name: string, ownerId: string, explicitId?: string): Promise<Organization> {
@@ -120,12 +188,24 @@ export class OrganizationService {
       }
     }
 
-    log.info(`Agent hired: ${request.name}`, { orgId: request.orgId, agentId: agent.id });
+    if (request.agentRole === 'manager' && org) {
+      org.managerAgentId = agent.id;
+    }
+
+    this.refreshIdentityContextsForOrg(request.orgId);
+    log.info(`Agent hired: ${request.name}`, { orgId: request.orgId, agentId: agent.id, agentRole: request.agentRole ?? 'worker' });
     return agent;
   }
 
   async fireAgent(agentId: string): Promise<void> {
+    const agentInfo = this.agentManager.listAgents().find(a => a.id === agentId);
     await this.agentManager.removeAgent(agentId);
+
+    for (const org of this.orgs.values()) {
+      if (org.managerAgentId === agentId) {
+        org.managerAgentId = undefined;
+      }
+    }
 
     if (this.storage) {
       try {
@@ -139,7 +219,29 @@ export class OrganizationService {
       team.memberAgentIds = team.memberAgentIds.filter((id) => id !== agentId);
     }
 
+    const orgIdToRefresh = agentInfo ? this.findAgentOrgId(agentId) : undefined;
+    if (orgIdToRefresh) this.refreshIdentityContextsForOrg(orgIdToRefresh);
     log.info(`Agent fired: ${agentId}`);
+  }
+
+  getManagerAgent(orgId: string): string | undefined {
+    return this.orgs.get(orgId)?.managerAgentId;
+  }
+
+  private findAgentOrgId(agentId: string): string | undefined {
+    try {
+      const agent = this.agentManager.getAgent(agentId);
+      return agent.config.orgId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private refreshIdentityContextsForOrg(targetOrgId: string): void {
+    const org = this.orgs.get(targetOrgId);
+    if (!org) return;
+    const humans = this.listHumanUsers(targetOrgId);
+    this.agentManager.refreshIdentityContexts(targetOrgId, org.name, humans);
   }
 
   listAvailableRoles(): string[] {

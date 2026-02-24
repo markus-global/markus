@@ -6,6 +6,7 @@ import type {
   LLMTool,
   LLMToolCall,
   LLMStreamEvent,
+  IdentityContext,
 } from '@markus/shared';
 import { createLogger, agentId as genAgentId } from '@markus/shared';
 import { EventBus } from './events.js';
@@ -58,6 +59,7 @@ export class Agent {
   private sandbox?: SandboxHandle;
   private orgContext?: OrgContext;
   private contextMdPath?: string;
+  private identityContext?: IdentityContext;
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
@@ -136,7 +138,41 @@ export class Agent {
     this.orgContext = ctx;
   }
 
-  async handleMessage(userMessage: string, senderId?: string): Promise<string> {
+  setIdentityContext(ctx: IdentityContext): void {
+    this.identityContext = ctx;
+  }
+
+  async generateDailyReport(): Promise<string> {
+    const dailyLog = this.memory.getRecentDailyLogs(1);
+    const state = this.getState();
+    const prompt = [
+      `[DAILY REPORT REQUEST]`,
+      `Generate a brief daily status report. Include:`,
+      `1. What you worked on today (if anything)`,
+      `2. Current status and any blockers`,
+      `3. What you plan to work on next`,
+      ``,
+      `Your status: ${state.status}, tokens used today: ${state.tokensUsedToday}`,
+      dailyLog ? `\nRecent activity log:\n${dailyLog}` : `\nNo recent activity recorded.`,
+      ``,
+      `Keep the report concise (3-5 sentences). Do NOT use any tools — just summarize from your memory.`,
+    ].join('\n');
+
+    try {
+      const report = await this.handleMessage(prompt, undefined, undefined);
+      this.memory.addLongTermMemory(`daily-report-${new Date().toISOString().split('T')[0]}`, report);
+      return report;
+    } catch (error) {
+      log.error('Failed to generate daily report', { error: String(error) });
+      return `Unable to generate report: ${String(error)}`;
+    }
+  }
+
+  getUptime(): number {
+    return this.state.status !== 'offline' ? Date.now() - new Date(this.config.createdAt).getTime() : 0;
+  }
+
+  async handleMessage(userMessage: string, senderId?: string, senderInfo?: { name: string; role: string }): Promise<string> {
     this.state.status = 'working';
 
     if (!this.currentSessionId) {
@@ -154,6 +190,8 @@ export class Agent {
       contextMdPath: this.contextMdPath,
       memory: this.memory,
       currentQuery: userMessage,
+      identity: this.identityContext,
+      senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -240,6 +278,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
+    senderInfo?: { name: string; role: string },
   ): Promise<string> {
     this.state.status = 'working';
 
@@ -258,6 +297,8 @@ export class Agent {
       contextMdPath: this.contextMdPath,
       memory: this.memory,
       currentQuery: userMessage,
+      identity: this.identityContext,
+      senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);

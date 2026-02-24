@@ -17,4 +17,10 @@ export {
   createShellTool, createFileReadTool, createFileWriteTool, createFileEditTool,
   createTodoWriteTool, createTodoReadTool,
   MCPClientManager, createBuiltinTools,
+  createManagerTools, type ManagerToolsContext,
 } from './tools/index.js';
+export {
+  type SkillManifest, type SkillInstance, type SkillRegistry, type SkillCategory,
+  InMemorySkillRegistry, createDefaultSkillRegistry,
+  createGitSkill, createCodeAnalysisSkill,
+} from './skills/index.js';

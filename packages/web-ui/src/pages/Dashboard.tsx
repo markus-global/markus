@@ -70,8 +70,8 @@ export function Dashboard() {
               <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-indigo-500/50 transition-colors">
                 <div className="flex justify-between items-start">
                   <div>
-                    <div className="font-semibold">{a.name}</div>
-                    <div className="text-sm text-gray-500">{a.role}</div>
+                    <div className="font-semibold">{a.name}{a.agentRole === 'manager' ? ' ★' : ''}</div>
+                    <div className="text-sm text-gray-500">{a.role}{a.agentRole === 'manager' ? ' · Manager' : ''}</div>
                   </div>
                   <StatusBadge status={a.status} />
                 </div>

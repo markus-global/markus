@@ -42,7 +42,7 @@ export function Agents() {
                   className={`hover:bg-gray-900/50 cursor-pointer ${selected === a.id ? 'bg-gray-800/60' : ''}`}
                   onClick={() => setSelected(selected === a.id ? null : a.id)}
                 >
-                  <td className="px-5 py-3 font-medium">{a.name}</td>
+                  <td className="px-5 py-3 font-medium">{a.name}{a.agentRole === 'manager' ? <span className="ml-1.5 text-xs text-amber-400">★ Manager</span> : ''}</td>
                   <td className="px-5 py-3 text-gray-400">{a.role}</td>
                   <td className="px-5 py-3">
                     <span className={`inline-block w-2 h-2 rounded-full mr-2 ${

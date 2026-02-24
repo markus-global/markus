@@ -102,7 +102,7 @@ export class RoleLoader {
     const lower = name.toLowerCase();
     if (lower.includes('develop') || lower.includes('engineer')) return 'engineering';
     if (lower.includes('product')) return 'product';
-    if (lower.includes('operation') || lower.includes('ops')) return 'operations';
+    if (lower.includes('operation') || lower.includes('ops') || lower.includes('manager')) return 'operations';
     if (lower.includes('market')) return 'marketing';
     if (lower.includes('customer') || lower.includes('support')) return 'customer_service';
     if (lower.includes('financ') || lower.includes('account')) return 'finance';

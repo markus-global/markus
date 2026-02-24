@@ -1,13 +1,14 @@
 interface Props {
   currentPage: string;
-  onNavigate: (page: 'dashboard' | 'agents' | 'tasks' | 'chat') => void;
+  onNavigate: (page: 'dashboard' | 'agents' | 'tasks' | 'chat' | 'team') => void;
 }
 
 const navItems = [
   { id: 'dashboard' as const, label: 'Dashboard', icon: '▦' },
+  { id: 'chat' as const, label: 'Workspace', icon: '◈' },
   { id: 'agents' as const, label: 'Agents', icon: '⊕' },
+  { id: 'team' as const, label: 'Team', icon: '◎' },
   { id: 'tasks' as const, label: 'Task Board', icon: '☑' },
-  { id: 'chat' as const, label: 'Chat', icon: '◈' },
 ];
 
 export function Sidebar({ currentPage, onNavigate }: Props) {
@@ -36,7 +37,7 @@ export function Sidebar({ currentPage, onNavigate }: Props) {
         ))}
       </nav>
       <div className="p-4 border-t border-gray-800 text-xs text-gray-600">
-        v0.4.0 Phase 4
+        v0.5.0 Phase 5
       </div>
     </aside>
   );

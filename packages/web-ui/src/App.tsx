@@ -3,10 +3,11 @@ import { Dashboard } from './pages/Dashboard.tsx';
 import { Agents } from './pages/Agents.tsx';
 import { TaskBoard } from './pages/TaskBoard.tsx';
 import { Chat } from './pages/Chat.tsx';
+import { TeamPage } from './pages/Team.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { wsClient } from './api.ts';
 
-type Page = 'dashboard' | 'agents' | 'tasks' | 'chat';
+type Page = 'dashboard' | 'agents' | 'tasks' | 'chat' | 'team';
 
 export function App() {
   const [page, setPage] = useState<Page>('dashboard');
@@ -21,6 +22,7 @@ export function App() {
     agents: <Agents />,
     tasks: <TaskBoard />,
     chat: <Chat />,
+    team: <TeamPage />,
   };
 
   return (

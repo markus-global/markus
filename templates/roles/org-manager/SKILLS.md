@@ -1,0 +1,8 @@
+- team-management
+- task-routing
+- task-delegation
+- progress-reporting
+- resource-planning
+- onboarding
+- conflict-resolution
+- communication

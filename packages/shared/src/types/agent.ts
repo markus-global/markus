@@ -6,6 +6,7 @@ export interface AgentConfig {
   roleId: string;
   orgId: string;
   teamId?: string;
+  agentRole: 'manager' | 'worker';
   skills: string[];
   llmConfig: LLMAssignment;
   computeConfig: ComputeAssignment;

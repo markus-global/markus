@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
-import { AgentManager, LLMRouter, RoleLoader } from '@markus/core';
+import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
 import { OrganizationService, TaskService, APIServer, initStorage } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
@@ -64,7 +64,7 @@ async function main() {
   }
 
   if (command === 'version' || command === '--version') {
-    console.log('markus v0.1.0');
+    console.log('markus v0.5.0');
     return;
   }
 
@@ -151,10 +151,13 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
+  const skillRegistry = createDefaultSkillRegistry();
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
     dataDir: resolve(process.cwd(), '.markus', 'agents'),
+    skillRegistry,
   });
 
   const storage = await initStorage(config.database?.url);
@@ -164,7 +167,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   await orgService.createOrganization(config.org.name, 'default', 'default');
 
-  return { agentManager, orgService, taskService, roleLoader, llmRouter };
+  orgService.addHumanUser('default', 'Owner', 'owner', { id: 'default' });
+
+  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry };
 }
 
 async function startServer(
@@ -173,10 +178,11 @@ async function startServer(
 ) {
   console.log('Starting Markus server...');
 
-  const { orgService, taskService, agentManager } = await createServices(config);
+  const { orgService, taskService, agentManager, skillRegistry } = await createServices(config);
 
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
+  apiServer.setSkillRegistry(skillRegistry);
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
 

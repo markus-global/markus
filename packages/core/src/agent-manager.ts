@@ -1,4 +1,4 @@
-import type { AgentConfig } from '@markus/shared';
+import type { AgentConfig, IdentityContext, HumanUser } from '@markus/shared';
 import { createLogger, agentId as genAgentId } from '@markus/shared';
 import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -7,6 +7,8 @@ import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
+import { createManagerTools } from './tools/manager.js';
+import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
@@ -29,6 +31,7 @@ export interface CreateAgentRequest {
   roleName: string;
   orgId?: string;
   teamId?: string;
+  agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
   tools?: AgentToolHandler[];
@@ -48,6 +51,7 @@ export class AgentManager {
   private mcpManager: MCPClientManager;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
+  private skillRegistry?: SkillRegistry;
 
   constructor(options: {
     llmRouter: LLMRouter;
@@ -57,6 +61,7 @@ export class AgentManager {
     sandboxFactory?: SandboxFactory;
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
+    skillRegistry?: SkillRegistry;
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
@@ -66,6 +71,7 @@ export class AgentManager {
     this.mcpManager = new MCPClientManager();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
+    this.skillRegistry = options.skillRegistry;
     mkdirSync(this.dataDir, { recursive: true });
   }
 
@@ -81,6 +87,7 @@ export class AgentManager {
       roleId: role.id,
       orgId: request.orgId ?? 'default',
       teamId: request.teamId,
+      agentRole: request.agentRole ?? 'worker',
       skills: request.skills ?? role.defaultSkills,
       llmConfig: { primary: 'anthropic' },
       computeConfig: { type: 'docker' },
@@ -105,6 +112,46 @@ export class AgentManager {
     };
 
     const agent = new Agent(agentOpts);
+
+    // Inject skill tools based on agent's configured skills
+    if (this.skillRegistry && config.skills.length > 0) {
+      const skillTools = this.skillRegistry.getToolsForSkills(config.skills);
+      for (const tool of skillTools) {
+        agent.registerTool(tool);
+      }
+      if (skillTools.length > 0) {
+        log.info(`Skill tools injected for agent ${id}`, { skillCount: skillTools.length });
+      }
+    }
+
+    // If this is a manager agent, inject manager-specific tools
+    if (request.agentRole === 'manager') {
+      const managerTools = createManagerTools({
+        listAgents: () => this.listAgents().map(a => {
+          try {
+            const ag = this.getAgent(a.id);
+            return { ...a, skills: ag.config.skills };
+          } catch { return { ...a, skills: [] }; }
+        }),
+        delegateMessage: async (targetId, message, from) => {
+          const target = this.getAgent(targetId);
+          return target.handleMessage(message, id, { name: config.name, role: 'manager' });
+        },
+        createTask: (title, description, assignedAgentId, priority) => {
+          return `task_${Date.now()}`;
+        },
+        getTeamStatus: () => this.listAgents().map(a => {
+          try {
+            const ag = this.getAgent(a.id);
+            const state = ag.getState();
+            return { ...a, currentTask: state.currentTaskId, tokensUsedToday: state.tokensUsedToday };
+          } catch { return { ...a, tokensUsedToday: 0 }; }
+        }),
+      });
+      for (const tool of managerTools) {
+        agent.registerTool(tool);
+      }
+    }
 
     // Connect MCP servers and register their tools
     const mcpConfigs = request.mcpServers ?? this.globalMcpServers;
@@ -181,12 +228,14 @@ export class AgentManager {
     return agent;
   }
 
-  listAgents(): Array<{ id: string; name: string; role: string; status: string }> {
+  listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[] }> {
     return [...this.agents.values()].map((a) => ({
       id: a.id,
       name: a.config.name,
       role: a.role.name,
       status: a.getState().status,
+      agentRole: a.config.agentRole,
+      skills: a.config.skills,
     }));
   }
 
@@ -200,5 +249,48 @@ export class AgentManager {
 
   setSandboxFactory(factory: SandboxFactory): void {
     this.sandboxFactory = factory;
+  }
+
+  /**
+   * Rebuild and inject identity context for all agents in an organization.
+   * Should be called after agents are added/removed or humans join/leave.
+   */
+  refreshIdentityContexts(orgId: string, orgName: string, humans: HumanUser[]): void {
+    const orgAgents = [...this.agents.values()].filter(a => a.config.orgId === orgId);
+
+    const managerAgent = orgAgents.find(a => a.config.agentRole === 'manager');
+
+    for (const agent of orgAgents) {
+      const colleagues = orgAgents
+        .filter(a => a.id !== agent.id)
+        .map(a => ({
+          id: a.id,
+          name: a.config.name,
+          role: a.role.name,
+          type: 'agent' as const,
+          skills: a.config.skills,
+          status: a.getState().status,
+        }));
+
+      const identity: IdentityContext = {
+        self: {
+          id: agent.id,
+          name: agent.config.name,
+          role: agent.role.name,
+          agentRole: agent.config.agentRole,
+          skills: agent.config.skills,
+        },
+        organization: { id: orgId, name: orgName },
+        colleagues,
+        humans: humans.map(h => ({ id: h.id, name: h.name, role: h.role })),
+        manager: managerAgent && managerAgent.id !== agent.id
+          ? { id: managerAgent.id, name: managerAgent.config.name }
+          : undefined,
+      };
+
+      agent.setIdentityContext(identity);
+    }
+
+    log.info(`Refreshed identity contexts for ${orgAgents.length} agents in org ${orgId}`);
   }
 }

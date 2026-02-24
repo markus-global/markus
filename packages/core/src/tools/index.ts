@@ -5,3 +5,4 @@ export { WebSearchTool } from './web-search.js';
 export { createTodoWriteTool, createTodoReadTool } from './todo.js';
 export { MCPClientManager } from './mcp-client.js';
 export { createBuiltinTools } from './builtin.js';
+export { createManagerTools, type ManagerToolsContext } from './manager.js';

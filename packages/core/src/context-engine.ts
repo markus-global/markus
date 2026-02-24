@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LLMMessage, RoleTemplate } from '@markus/shared';
+import type { LLMMessage, RoleTemplate, IdentityContext } from '@markus/shared';
 import { createLogger } from '@markus/shared';
 import type { MemoryStore, MemoryEntry } from './memory/store.js';
 
@@ -43,17 +43,22 @@ export class ContextEngine {
     contextMdPath?: string;
     memory: MemoryStore;
     currentQuery?: string;
+    identity?: IdentityContext;
+    senderIdentity?: { id: string; name: string; role: string };
   }): string {
     const parts: string[] = [];
 
     // 1. Role definition (highest priority)
     parts.push(opts.role.systemPrompt);
 
-    // 2. Organization context from CONTEXT.md or OrgContext
+    // 2. Identity & organizational awareness
+    parts.push(this.buildIdentitySection(opts));
+
+    // 3. Organization context from CONTEXT.md or OrgContext
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
     if (orgCtx) parts.push(orgCtx);
 
-    // 3. Policies
+    // 4. Policies
     if (opts.role.defaultPolicies.length > 0) {
       parts.push('\n## Policies');
       for (const policy of opts.role.defaultPolicies) {
@@ -64,14 +69,14 @@ export class ContextEngine {
       }
     }
 
-    // 4. Long-term memory (MEMORY.md)
+    // 5. Long-term memory (MEMORY.md)
     const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
       parts.push(longTermMem.slice(0, 3000));
     }
 
-    // 5. Relevant memories (fact-based retrieval)
+    // 6. Relevant memories (fact-based retrieval)
     const relevantMemories = this.retrieveRelevantMemories(opts.memory, opts.currentQuery);
     if (relevantMemories.length > 0) {
       parts.push('\n## Relevant Memories');
@@ -81,21 +86,87 @@ export class ContextEngine {
       }
     }
 
-    // 6. Recent daily log summary (medium-term memory)
+    // 7. Recent daily log summary (medium-term memory)
     const dailyLog = opts.memory.getRecentDailyLogs(1);
     if (dailyLog) {
       parts.push('\n## Recent Activity Summary');
       parts.push(dailyLog.slice(0, 1500));
     }
 
-    // 7. Agent identity
-    parts.push('\n## Agent Identity');
-    parts.push(`- Name: ${opts.agentName}`);
-    parts.push(`- Role: ${opts.role.name}`);
-    parts.push(`- Agent ID: ${opts.agentId}`);
-    parts.push(`- Current time: ${new Date().toISOString()}`);
+    // 8. Current conversation context
+    if (opts.senderIdentity) {
+      parts.push(`\n## Current Conversation`);
+      parts.push(`You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`);
+      if (opts.senderIdentity.role === 'owner') {
+        parts.push('This person is the organization owner. Their instructions have the highest priority. Be proactive in reporting and responsive to their needs.');
+      } else if (opts.senderIdentity.role === 'admin') {
+        parts.push('This person is an administrator. Cooperate actively and share progress proactively.');
+      } else if (opts.senderIdentity.role === 'guest') {
+        parts.push('This person is an external guest. Be polite but cautious — do not expose internal sensitive information.');
+      }
+    }
 
     return parts.join('\n');
+  }
+
+  private buildIdentitySection(opts: {
+    agentId: string;
+    agentName: string;
+    role: RoleTemplate;
+    identity?: IdentityContext;
+  }): string {
+    const lines: string[] = ['\n## Your Identity'];
+
+    if (opts.identity) {
+      const self = opts.identity.self;
+      lines.push(`- Name: ${self.name}`);
+      lines.push(`- Role: ${opts.role.name} (${opts.role.description})`);
+      lines.push(`- Position: ${self.agentRole === 'manager' ? 'Organization Manager — you lead the AI team' : 'Team Member'}`);
+      if (self.skills.length > 0) {
+        lines.push(`- Skills: ${self.skills.join(', ')}`);
+      }
+      lines.push(`- Organization: ${opts.identity.organization.name}`);
+      lines.push(`- Agent ID: ${opts.agentId}`);
+      lines.push(`- Current time: ${new Date().toISOString()}`);
+
+      if (opts.identity.manager && opts.identity.self.agentRole !== 'manager') {
+        lines.push(`\n### Your Manager`);
+        lines.push(`- ${opts.identity.manager.name} (AI Organization Manager) — report progress and escalate issues to them`);
+      }
+
+      if (opts.identity.colleagues.length > 0) {
+        lines.push(`\n### Your Colleagues`);
+        for (const c of opts.identity.colleagues) {
+          const statusTag = c.status ? ` [${c.status}]` : '';
+          lines.push(`- ${c.name} (${c.role}, ${c.type})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`);
+        }
+      }
+
+      if (opts.identity.humans.length > 0) {
+        lines.push(`\n### Human Team Members`);
+        for (const h of opts.identity.humans) {
+          const tag = h.role === 'owner' ? ' ★ Owner' : h.role === 'admin' ? ' Admin' : '';
+          lines.push(`- ${h.name}${tag}`);
+        }
+      }
+
+      if (opts.identity.self.agentRole === 'manager') {
+        lines.push(`\n### Manager Responsibilities`);
+        lines.push('As Organization Manager, you are responsible for:');
+        lines.push('1. **Routing** — When receiving vague messages, determine which team member should handle it');
+        lines.push('2. **Coordination** — Assign tasks to the right agents based on their skills');
+        lines.push('3. **Reporting** — Proactively report team progress to human stakeholders');
+        lines.push('4. **Training** — Help new agents understand their roles and the organization context');
+        lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
+      }
+    } else {
+      lines.push(`- Name: ${opts.agentName}`);
+      lines.push(`- Role: ${opts.role.name}`);
+      lines.push(`- Agent ID: ${opts.agentId}`);
+      lines.push(`- Current time: ${new Date().toISOString()}`);
+    }
+
+    return lines.join('\n');
   }
 
   prepareMessages(opts: {

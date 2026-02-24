@@ -560,7 +560,135 @@ curl http://localhost:3001/api/agents/{id}
   "id": "agt_xxx",
   "name": "Alice",
   "role": "Software Developer",
+  "agentRole": "worker",
   "state": { "status": "idle", "tokensUsedToday": 1234 },
   "skills": ["shell_execute", "file_read_write", ...]
 }
 ```
+
+---
+
+## Phase 5 新增功能
+
+### 1. 身份认知系统
+
+#### 人类用户管理
+
+```bash
+# 列出人类成员
+GET /api/users?orgId=default
+
+# 添加人类用户
+POST /api/users
+{
+  "name": "John",
+  "role": "admin",    # owner | admin | member | guest
+  "orgId": "default",
+  "email": "john@example.com"
+}
+
+# 删除人类用户
+DELETE /api/users/{id}
+```
+
+#### Agent 角色 (agentRole)
+
+创建 Agent 时可以指定 `agentRole`：
+- `manager` — 组织负责人，负责消息路由、团队管理、进度汇报
+- `worker` — 普通员工（默认）
+
+```bash
+POST /api/agents
+{
+  "name": "Markus",
+  "roleName": "org-manager",
+  "agentRole": "manager"
+}
+```
+
+Manager Agent 额外拥有的工具：
+- `team_list` — 列出所有团队成员
+- `team_status` — 获取团队详细状态
+- `delegate_message` — 委派消息给指定 Agent
+- `create_task` — 创建并分配任务
+
+#### 身份感知对话
+
+发送消息时附带 `senderId`，Agent 会根据人类身份自动调整行为：
+- **Owner** — 最高优先级，主动汇报
+- **Admin** — 积极配合
+- **Member** — 正常协作
+- **Guest** — 礼貌但不暴露内部信息
+
+### 2. 智能消息路由
+
+```bash
+# 智能路由 — 系统自动选择合适的 Agent 处理
+POST /api/message
+{
+  "text": "这个 bug 怎么修？",
+  "senderId": "user_xxx",       # 可选：人类身份
+  "targetAgentId": "agt_xxx",   # 可选：指定 Agent
+  "stream": true,               # 可选：流式响应
+  "orgId": "default"
+}
+
+# 返回
+{
+  "reply": "...",
+  "agentId": "agt_xxx"   # 实际处理消息的 Agent
+}
+```
+
+路由优先级：
+1. 明确指定 `targetAgentId` → 直接发送
+2. 有 Manager Agent → 由 Manager 判断路由
+3. 回退到第一个可用 Agent
+
+### 3. Skills 系统
+
+Skills 是可安装的能力包，为 Agent 提供特定工具。
+
+```bash
+# 列出已注册的 Skills
+GET /api/skills
+```
+
+**官方内置 Skills：**
+
+| Skill | 版本 | 工具 | 说明 |
+|-------|------|------|------|
+| `git` | 1.0.0 | git_status, git_diff, git_log, git_branch | Git 版本控制 |
+| `code-analysis` | 1.0.0 | code_search, project_structure, code_stats | 代码分析 |
+
+Agent 创建时，系统会根据其配置的 `skills` 列表自动注入对应的 Skill 工具。
+
+### 4. 日报生成
+
+```bash
+# 让 Agent 生成每日工作报告
+POST /api/agents/{id}/daily-report
+
+# 返回
+{
+  "agentId": "agt_xxx",
+  "report": "## Daily Status Report\n..."
+}
+```
+
+### 5. Web UI 更新
+
+- **Team 页面** — 管理组织成员（人类 + AI），显示 Manager 和 Worker 的层级关系
+- **Workspace 页面** — 支持两种聊天模式：
+  - **Smart Route** — 自动路由到合适的 Agent
+  - **Direct** — 直接与指定 Agent 对话
+- **Speaking as** — 选择以哪个人类身份发送消息
+- **Agent 角色标识** — Dashboard 和 Agent 列表显示 Manager 标识
+
+### 6. Organization Manager 角色模板
+
+新增 `org-manager` 角色模板，预置：
+- 消息路由和分诊能力
+- 团队管理和协调能力
+- 汇报和沟通策略
+- 信息安全和权限升级策略
