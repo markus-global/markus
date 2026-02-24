@@ -1,0 +1,25 @@
+{
+  "name": "Marketing Team",
+  "description": "A digital marketing team with strategist, content creator, and analytics",
+  "category": "marketing",
+  "agents": [
+    {
+      "name": "Marketing Lead",
+      "role": "org-manager",
+      "agentRole": "manager",
+      "skills": ["browser"]
+    },
+    {
+      "name": "Content Writer",
+      "role": "content-writer",
+      "agentRole": "worker",
+      "skills": ["browser"]
+    },
+    {
+      "name": "SEO Specialist",
+      "role": "marketing",
+      "agentRole": "worker",
+      "skills": ["browser"]
+    }
+  ]
+}

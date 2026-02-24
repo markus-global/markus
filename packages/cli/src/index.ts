@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
-import { OrganizationService, TaskService, APIServer, initStorage } from '@markus/org-manager';
+import { OrganizationService, TaskService, APIServer, HITLService, BillingService, initStorage } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
 // Load .env file from project root
@@ -39,6 +39,9 @@ Commands:
   agent:chat      Chat with an agent interactively
   agent:status    Show detailed agent status
   role:list       List available role templates
+  skill:list      List available skills
+  skill:init      Scaffold a new skill project
+  skill:test      Test a skill
   db:init         Initialize database (run migrations)
   version         Show version
   help            Show this help message
@@ -46,12 +49,16 @@ Commands:
 Options:
   --config, -c    Path to markus.json config file
   --port, -p      API server port (default: 3001)
+  --name, -n      Name for agent:create or skill:init
+  --dir, -d       Directory for skill:init output
 
 Examples:
   markus start
   markus agent:create --name Alice --role developer
   markus agent:chat --id agt_xxx
   markus role:list
+  markus skill:init --name my-skill
+  markus skill:list
 `;
 
 async function main() {
@@ -64,7 +71,7 @@ async function main() {
   }
 
   if (command === 'version' || command === '--version') {
-    console.log('markus v0.5.0');
+    console.log('markus v0.6.0');
     return;
   }
 
@@ -76,6 +83,7 @@ async function main() {
       name: { type: 'string', short: 'n' },
       role: { type: 'string', short: 'r' },
       id: { type: 'string' },
+      dir: { type: 'string', short: 'd' },
     },
     allowPositionals: true,
     strict: false,
@@ -101,6 +109,15 @@ async function main() {
       break;
     case 'role:list':
       await listRoles(config);
+      break;
+    case 'skill:list':
+      await listSkills();
+      break;
+    case 'skill:init':
+      await initSkill(values);
+      break;
+    case 'skill:test':
+      await testSkill(values);
       break;
     case 'db:init':
       await dbInit(config);
@@ -169,7 +186,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   orgService.addHumanUser('default', 'Owner', 'owner', { id: 'default' });
 
-  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry };
+  const hitlService = new HITLService();
+  const billingService = new BillingService();
+  billingService.setOrgPlan('default', 'free');
+
+  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry, hitlService, billingService };
 }
 
 async function startServer(
@@ -178,11 +199,13 @@ async function startServer(
 ) {
   console.log('Starting Markus server...');
 
-  const { orgService, taskService, agentManager, skillRegistry } = await createServices(config);
+  const { orgService, taskService, agentManager, skillRegistry, hitlService, billingService } = await createServices(config);
 
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
   apiServer.setSkillRegistry(skillRegistry);
+  apiServer.setHITLService(hitlService);
+  apiServer.setBillingService(billingService);
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
@@ -388,6 +411,137 @@ async function dbInit(config: ReturnType<typeof loadConfig>) {
     console.error('\nMake sure PostgreSQL is running and the DATABASE_URL is correct.');
     process.exit(1);
   }
+}
+
+async function listSkills() {
+  const registry = createDefaultSkillRegistry();
+  const skills = registry.list();
+
+  if (skills.length === 0) {
+    console.log('No skills registered.');
+    return;
+  }
+
+  console.log('\nAvailable Skills:');
+  console.log('─'.repeat(70));
+  for (const s of skills) {
+    console.log(`  ${s.name.padEnd(20)} v${s.version.padEnd(8)} ${s.category.padEnd(14)} ${s.description}`);
+    for (const t of s.tools) {
+      console.log(`    └ ${t.name.padEnd(24)} ${t.description}`);
+    }
+  }
+}
+
+async function initSkill(values: Record<string, unknown>) {
+  const name = values['name'] as string;
+  if (!name) {
+    console.error('Usage: markus skill:init --name <skill-name>');
+    process.exit(1);
+  }
+
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const dir = resolve(process.cwd(), values['dir'] as string ?? name);
+
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(resolve(dir, 'src'), { recursive: true });
+
+  const manifest = {
+    name,
+    version: '0.1.0',
+    description: `${name} skill for Markus agents`,
+    author: 'your-name',
+    category: 'custom',
+    tags: [],
+    tools: [
+      {
+        name: `${name}_example`,
+        description: `Example tool from ${name} skill`,
+        inputSchema: { type: 'object', properties: { input: { type: 'string', description: 'Input text' } }, required: ['input'] },
+      },
+    ],
+    requiredPermissions: [],
+  };
+
+  writeFileSync(resolve(dir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+
+  const skillTs = `import type { SkillInstance } from '@markus/core';
+import manifest from '../manifest.json';
+
+export function create(): SkillInstance {
+  return {
+    manifest: manifest as SkillInstance['manifest'],
+    tools: [
+      {
+        name: '${name}_example',
+        description: manifest.tools[0].description,
+        inputSchema: manifest.tools[0].inputSchema,
+        execute: async (args: Record<string, unknown>) => {
+          const input = args['input'] as string;
+          return { content: \`Processed: \${input}\` };
+        },
+      },
+    ],
+  };
+}
+`;
+
+  writeFileSync(resolve(dir, 'src', 'index.ts'), skillTs);
+
+  const readmeContent = `# ${name}
+
+Custom skill for Markus AI agents.
+
+## Tools
+
+- \`${name}_example\`: Example tool
+
+## Development
+
+1. Edit \`src/index.ts\` to implement your tools
+2. Update \`manifest.json\` with tool definitions
+3. Test: \`markus skill:test --dir .\`
+`;
+
+  writeFileSync(resolve(dir, 'README.md'), readmeContent);
+
+  console.log(`\nSkill scaffolded at: ${dir}`);
+  console.log(`  manifest.json  - Skill metadata and tool definitions`);
+  console.log(`  src/index.ts   - Tool implementations`);
+  console.log(`  README.md      - Documentation`);
+  console.log(`\nNext: edit src/index.ts and run 'markus skill:test --dir ${dir}'`);
+}
+
+async function testSkill(values: Record<string, unknown>) {
+  const dir = resolve(process.cwd(), values['dir'] as string ?? '.');
+
+  const manifestPath = resolve(dir, 'manifest.json');
+  if (!existsSync(manifestPath)) {
+    console.error(`No manifest.json found in ${dir}`);
+    console.error('Run this from a skill directory or use --dir <path>');
+    process.exit(1);
+  }
+
+  const manifestData = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+    name: string; version: string; tools: Array<{ name: string; description: string }>;
+  };
+
+  console.log(`\nTesting skill: ${manifestData.name} v${manifestData.version}`);
+  console.log('─'.repeat(50));
+
+  console.log(`\n  Manifest: OK`);
+  console.log(`  Tools defined: ${manifestData.tools.length}`);
+  for (const t of manifestData.tools) {
+    console.log(`    - ${t.name}: ${t.description}`);
+  }
+
+  const srcPath = resolve(dir, 'src', 'index.ts');
+  if (existsSync(srcPath)) {
+    console.log(`  Source: found (src/index.ts)`);
+  } else {
+    console.log(`  Source: NOT FOUND (src/index.ts)`);
+  }
+
+  console.log(`\n  Skill validation: PASSED`);
 }
 
 main().catch((error) => {

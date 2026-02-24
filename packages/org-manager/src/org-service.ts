@@ -193,8 +193,21 @@ export class OrganizationService {
     }
 
     this.refreshIdentityContextsForOrg(request.orgId);
-    log.info(`Agent hired: ${request.name}`, { orgId: request.orgId, agentId: agent.id, agentRole: request.agentRole ?? 'worker' });
+
+    // Onboard = always online. Auto-start the agent immediately.
+    try {
+      await this.agentManager.startAgent(agent.id);
+      log.info(`Agent onboarded: ${request.name} (auto-started)`, { orgId: request.orgId, agentId: agent.id, agentRole: request.agentRole ?? 'worker' });
+    } catch (error) {
+      log.warn(`Agent created but auto-start failed: ${request.name}`, { error: String(error) });
+    }
+
     return agent;
+  }
+
+  /** Alias for hireAgent — onboard semantics */
+  async onboardAgent(request: CreateAgentRequest & { orgId: string }) {
+    return this.hireAgent(request);
   }
 
   async fireAgent(agentId: string): Promise<void> {
@@ -221,7 +234,12 @@ export class OrganizationService {
 
     const orgIdToRefresh = agentInfo ? this.findAgentOrgId(agentId) : undefined;
     if (orgIdToRefresh) this.refreshIdentityContextsForOrg(orgIdToRefresh);
-    log.info(`Agent fired: ${agentId}`);
+    log.info(`Agent offboarded: ${agentId}`);
+  }
+
+  /** Alias for fireAgent — offboard semantics */
+  async offboardAgent(agentId: string): Promise<void> {
+    return this.fireAgent(agentId);
   }
 
   getManagerAgent(orgId: string): string | undefined {

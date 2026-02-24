@@ -1,0 +1,37 @@
+{
+  "name": "Development Team",
+  "description": "A full-stack software development team with a tech lead, developers, QA, and DevOps",
+  "category": "engineering",
+  "agents": [
+    {
+      "name": "Tech Lead",
+      "role": "org-manager",
+      "agentRole": "manager",
+      "skills": ["git", "code-analysis"]
+    },
+    {
+      "name": "Backend Dev",
+      "role": "developer",
+      "agentRole": "worker",
+      "skills": ["git", "code-analysis"]
+    },
+    {
+      "name": "Frontend Dev",
+      "role": "developer",
+      "agentRole": "worker",
+      "skills": ["git", "code-analysis", "browser"]
+    },
+    {
+      "name": "QA Engineer",
+      "role": "qa-engineer",
+      "agentRole": "worker",
+      "skills": ["git", "browser"]
+    },
+    {
+      "name": "DevOps",
+      "role": "devops",
+      "agentRole": "worker",
+      "skills": ["git"]
+    }
+  ]
+}

@@ -124,6 +124,73 @@ export class FeishuClient {
     return data.data?.items ?? [];
   }
 
+  async getDocContent(docToken: string, docType: 'docx' | 'sheet' = 'docx'): Promise<string> {
+    const token = await this.getTenantToken();
+    const endpoint = docType === 'sheet'
+      ? `${this.domain}/open-apis/sheets/v3/spreadsheets/${docToken}/sheets/query`
+      : `${this.domain}/open-apis/docx/v1/documents/${docToken}/raw_content`;
+
+    const res = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = (await res.json()) as { code: number; msg: string; data?: { content?: string } };
+    if (data.code !== 0) throw new Error(`Feishu doc fetch failed: ${data.msg}`);
+    return data.data?.content ?? '';
+  }
+
+  async createApproval(approvalCode: string, formContent: string, targetUserId: string): Promise<string> {
+    const token = await this.getTenantToken();
+
+    const res = await fetch(`${this.domain}/open-apis/approval/v4/instances`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        approval_code: approvalCode,
+        form: formContent,
+        node_approver_user_id_list: [{ key: 'approver', value: [targetUserId] }],
+      }),
+    });
+
+    const data = (await res.json()) as { code: number; msg: string; data?: { instance_code?: string } };
+    if (data.code !== 0) throw new Error(`Feishu approval create failed: ${data.msg}`);
+    return data.data?.instance_code ?? '';
+  }
+
+  async getApprovalStatus(instanceCode: string): Promise<Record<string, unknown>> {
+    const token = await this.getTenantToken();
+
+    const res = await fetch(`${this.domain}/open-apis/approval/v4/instances/${instanceCode}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const data = (await res.json()) as { code: number; msg: string; data?: Record<string, unknown> };
+    if (data.code !== 0) throw new Error(`Feishu approval status failed: ${data.msg}`);
+    return data.data ?? {};
+  }
+
+  async searchDocs(query: string, count = 10): Promise<Array<{ title: string; url: string; docToken: string }>> {
+    const token = await this.getTenantToken();
+
+    const res = await fetch(`${this.domain}/open-apis/suite/docs-api/search/object`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ search_key: query, count, offset: 0 }),
+    });
+
+    const data = (await res.json()) as { code: number; data?: { docs_entities?: Array<{ title: string; url: string; docs_token: string }> } };
+    return (data.data?.docs_entities ?? []).map(d => ({
+      title: d.title,
+      url: d.url,
+      docToken: d.docs_token,
+    }));
+  }
+
   private async sendMessage(receiveIdType: string, msgType: string, content: string): Promise<string> {
     const token = await this.getTenantToken();
 

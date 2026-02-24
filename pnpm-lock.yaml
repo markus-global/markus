@@ -63,6 +63,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@markus/comms':
+        specifier: workspace:*
+        version: link:../comms
       '@markus/shared':
         specifier: workspace:*
         version: link:../shared

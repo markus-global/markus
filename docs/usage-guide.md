@@ -692,3 +692,177 @@ POST /api/agents/{id}/daily-report
 - 团队管理和协调能力
 - 汇报和沟通策略
 - 信息安全和权限升级策略
+
+---
+
+## Phase 6 新增功能
+
+### 1. Web UI 增强
+
+#### 全局命令栏
+底部全局命令栏，输入文字自动路由到 Manager Agent，快速获取回答。
+
+#### Skill Store 页面
+展示所有已注册 Skill，按分类筛选，查看 Skill 详情和包含的工具列表。
+
+#### Settings 页面
+系统状态、LLM 提供商配置、集成配置、安全策略等设置项。
+
+#### 导航优化
+侧边栏按 WORKSPACE / ORGANIZATION / TOOLS & SETTINGS 三个区域分组。
+
+### 2. Skills CLI
+
+```bash
+# 列出所有已注册 Skill
+markus skill:list
+
+# 创建新 Skill 项目脚手架
+markus skill:init --name my-skill
+
+# 测试 Skill
+markus skill:test --dir ./my-skill
+```
+
+### 3. 飞书深度集成
+
+新增 `feishu` Skill（当配置了 FEISHU_APP_ID 和 FEISHU_APP_SECRET 时自动注册），提供：
+
+| 工具 | 功能 |
+|------|------|
+| `feishu_send_message` | 发送文本消息 |
+| `feishu_send_card` | 发送交互式卡片消息 |
+| `feishu_search_docs` | 搜索飞书文档 |
+| `feishu_read_doc` | 读取文档内容 |
+| `feishu_create_approval` | 创建审批实例 |
+| `feishu_approval_status` | 查询审批状态 |
+
+### 4. 浏览器能力
+
+新增 `browser` Skill，提供网页自动化能力：
+
+| 工具 | 功能 |
+|------|------|
+| `browser_navigate` | 导航到 URL 并提取页面内容 |
+| `browser_screenshot` | 截图（需 Puppeteer） |
+| `browser_click` | 点击元素 |
+| `browser_type` | 输入文本 |
+| `browser_extract` | 提取页面元素 |
+| `browser_evaluate` | 执行 JavaScript |
+
+### 5. 人机协作 (HITL)
+
+#### 审批系统
+
+```bash
+# 查看待审批列表
+GET /api/approvals?status=pending
+
+# 创建审批请求
+POST /api/approvals
+{
+  "agentId": "agt_xxx",
+  "agentName": "Dev Agent",
+  "type": "action",
+  "title": "Deploy to production",
+  "description": "Need approval to deploy v2.0"
+}
+
+# 审批/拒绝
+POST /api/approvals/{id}
+{ "approved": true, "respondedBy": "user_xxx" }
+```
+
+#### 悬赏任务
+
+```bash
+# 查看悬赏列表
+GET /api/bounties?status=open
+
+# AI 发布悬赏
+POST /api/bounties
+{
+  "agentId": "agt_xxx",
+  "agentName": "Dev Agent",
+  "title": "Review database schema",
+  "description": "Need human expertise on schema design"
+}
+
+# 认领悬赏
+POST /api/bounties/{id}
+{ "action": "claim", "userId": "user_xxx" }
+
+# 完成悬赏
+POST /api/bounties/{id}
+{ "action": "complete", "result": "Schema looks good..." }
+```
+
+#### 通知系统
+
+```bash
+# 获取通知列表
+GET /api/notifications?userId=default&unread=true
+
+# 标记已读
+POST /api/notifications/{id}
+```
+
+### 6. 行业角色模板
+
+新增角色模板：
+
+| 角色 | 说明 |
+|------|------|
+| `marketing` | 营销专员 — SEO、内容策略、竞品分析 |
+| `support` | 客户支持 — 工单处理、知识库、SLA |
+| `finance` | 财务分析 — 预算、费用、报表 |
+| `hr` | 人事专员 — 招聘、入职、制度 |
+
+团队模板（`GET /api/templates/teams`）：
+- **Development Team** — 技术主管 + 前后端 + QA + DevOps
+- **Marketing Team** — 营销主管 + 内容 + SEO
+- **Support Team** — 支持主管 + 客服
+- **Startup All-in-One** — COO + 产品 + 开发 + 营销 + 运营
+
+### 7. 商业化基础
+
+#### 用量计量
+
+```bash
+# 查看当前月份用量
+GET /api/usage?orgId=default
+
+# 返回
+{
+  "usage": { "llmTokens": 0, "toolCalls": 0, "messages": 0, "storageBytes": 0 },
+  "plan": { "tier": "free", "limits": { "maxAgents": 3, ... } }
+}
+```
+
+#### 套餐管理
+
+| 套餐 | Agent 数 | 月 Token | 日消息 |
+|------|---------|---------|--------|
+| free | 3 | 100K | 50 |
+| pro | 20 | 5M | 2000 |
+| enterprise | 无限 | 无限 | 无限 |
+
+```bash
+# 设置套餐
+POST /api/plan
+{ "orgId": "default", "tier": "pro" }
+```
+
+#### API Key 管理
+
+```bash
+# 创建 API Key
+POST /api/keys
+{ "name": "Production Key", "scopes": ["*"], "expiresInDays": 90 }
+
+# 列出 Key（隐藏完整密钥）
+GET /api/keys?orgId=default
+
+# 吊销 Key
+DELETE /api/keys/{id}
+```

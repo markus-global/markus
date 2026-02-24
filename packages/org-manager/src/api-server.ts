@@ -3,6 +3,8 @@ import { createLogger } from '@markus/shared';
 import type { SkillRegistry } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
+import type { HITLService } from './hitl-service.js';
+import type { BillingService } from './billing-service.js';
 import { WSBroadcaster } from './ws-server.js';
 
 const log = createLogger('api-server');
@@ -11,6 +13,8 @@ export class APIServer {
   private server?: ReturnType<typeof createServer>;
   private ws: WSBroadcaster;
   private skillRegistry?: SkillRegistry;
+  private hitlService?: HITLService;
+  private billingService?: BillingService;
 
   constructor(
     private orgService: OrganizationService,
@@ -22,6 +26,17 @@ export class APIServer {
 
   setSkillRegistry(registry: SkillRegistry): void {
     this.skillRegistry = registry;
+  }
+
+  setBillingService(service: BillingService): void {
+    this.billingService = service;
+  }
+
+  setHITLService(service: HITLService): void {
+    this.hitlService = service;
+    service.onNotification((n) => {
+      this.ws.broadcast({ type: 'notification', payload: { notification: n }, timestamp: new Date().toISOString() });
+    });
   }
 
   start(): void {
@@ -78,7 +93,7 @@ export class APIServer {
         skills: body['skills'] as string[] | undefined,
         agentRole: body['agentRole'] as 'manager' | 'worker' | undefined,
       });
-      this.json(res, 201, { agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole } });
+      this.json(res, 201, { agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status } });
       return;
     }
 
@@ -332,11 +347,170 @@ export class APIServer {
       return;
     }
 
+    // HITL: Approvals
+    if (path === '/api/approvals' && req.method === 'GET') {
+      const status = url.searchParams.get('status') as 'pending' | 'approved' | 'rejected' | undefined;
+      this.json(res, 200, { approvals: this.hitlService?.listApprovals(status ?? undefined) ?? [] });
+      return;
+    }
+
+    if (path === '/api/approvals' && req.method === 'POST') {
+      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      const body = await this.readBody(req);
+      const approval = this.hitlService.requestApproval({
+        agentId: body['agentId'] as string,
+        agentName: body['agentName'] as string ?? 'Agent',
+        type: (body['type'] as 'action' | 'custom') ?? 'custom',
+        title: body['title'] as string,
+        description: body['description'] as string,
+        details: body['details'] as Record<string, unknown>,
+        targetUserId: body['targetUserId'] as string,
+      });
+      this.json(res, 201, { approval });
+      return;
+    }
+
+    if (path.startsWith('/api/approvals/') && req.method === 'POST') {
+      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      const approvalId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const result = this.hitlService.respondToApproval(approvalId, body['approved'] as boolean, (body['respondedBy'] as string) ?? 'default');
+      if (!result) { this.json(res, 404, { error: 'Approval not found or not pending' }); return; }
+      this.json(res, 200, { approval: result });
+      return;
+    }
+
+    // HITL: Bounties
+    if (path === '/api/bounties' && req.method === 'GET') {
+      const status = url.searchParams.get('status') as 'open' | 'claimed' | undefined;
+      this.json(res, 200, { bounties: this.hitlService?.listBounties(status ?? undefined) ?? [] });
+      return;
+    }
+
+    if (path === '/api/bounties' && req.method === 'POST') {
+      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      const body = await this.readBody(req);
+      const bounty = this.hitlService.postBounty({
+        agentId: body['agentId'] as string,
+        agentName: body['agentName'] as string ?? 'Agent',
+        title: body['title'] as string,
+        description: body['description'] as string,
+        skills: body['skills'] as string[],
+        reward: body['reward'] as string,
+      });
+      this.json(res, 201, { bounty });
+      return;
+    }
+
+    if (path.startsWith('/api/bounties/') && req.method === 'POST') {
+      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      const bountyId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const action = body['action'] as string;
+      if (action === 'claim') {
+        const result = this.hitlService.claimBounty(bountyId, body['userId'] as string);
+        if (!result) { this.json(res, 404, { error: 'Bounty not found or not open' }); return; }
+        this.json(res, 200, { bounty: result });
+      } else if (action === 'complete') {
+        const result = this.hitlService.completeBounty(bountyId, body['result'] as string);
+        if (!result) { this.json(res, 404, { error: 'Bounty not found or not claimed' }); return; }
+        this.json(res, 200, { bounty: result });
+      } else {
+        this.json(res, 400, { error: 'Unknown action. Use claim or complete' });
+      }
+      return;
+    }
+
+    // Notifications
+    if (path === '/api/notifications' && req.method === 'GET') {
+      const userId = url.searchParams.get('userId') ?? undefined;
+      const unread = url.searchParams.get('unread') === 'true';
+      this.json(res, 200, { notifications: this.hitlService?.listNotifications(userId, unread) ?? [] });
+      return;
+    }
+
+    if (path.startsWith('/api/notifications/') && req.method === 'POST') {
+      const notifId = path.split('/')[3]!;
+      const read = this.hitlService?.markNotificationRead(notifId);
+      this.json(res, 200, { success: read ?? false });
+      return;
+    }
+
+    // Billing: Usage
+    if (path === '/api/usage' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const period = url.searchParams.get('period') ?? undefined;
+      const summary = this.billingService?.getUsageSummary(orgId, period);
+      const plan = this.billingService?.getOrgPlan(orgId);
+      this.json(res, 200, { usage: summary, plan });
+      return;
+    }
+
+    // Billing: API Keys
+    if (path === '/api/keys' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      this.json(res, 200, { keys: this.billingService?.listAPIKeys(orgId) ?? [] });
+      return;
+    }
+
+    if (path === '/api/keys' && req.method === 'POST') {
+      if (!this.billingService) { this.json(res, 503, { error: 'Billing service not available' }); return; }
+      const body = await this.readBody(req);
+      const key = this.billingService.createAPIKey(
+        (body['orgId'] as string) ?? 'default',
+        body['name'] as string ?? 'Default Key',
+        body['scopes'] as string[],
+        body['expiresInDays'] as number | undefined,
+      );
+      this.json(res, 201, { key });
+      return;
+    }
+
+    if (path.startsWith('/api/keys/') && req.method === 'DELETE') {
+      const keyId = path.split('/')[3]!;
+      const revoked = this.billingService?.revokeAPIKey(keyId);
+      this.json(res, 200, { revoked: revoked ?? false });
+      return;
+    }
+
+    // Billing: Plan
+    if (path === '/api/plan' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      this.json(res, 200, { plan: this.billingService?.getOrgPlan(orgId) });
+      return;
+    }
+
+    if (path === '/api/plan' && req.method === 'POST') {
+      if (!this.billingService) { this.json(res, 503, { error: 'Billing service not available' }); return; }
+      const body = await this.readBody(req);
+      const plan = this.billingService.setOrgPlan(
+        (body['orgId'] as string) ?? 'default',
+        (body['tier'] as 'free' | 'pro' | 'enterprise') ?? 'free',
+      );
+      this.json(res, 200, { plan });
+      return;
+    }
+
+    // Team Templates
+    if (path === '/api/templates/teams' && req.method === 'GET') {
+      try {
+        const { readdirSync, readFileSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        const teamsDir = resolve(process.cwd(), 'templates', 'teams');
+        const files = readdirSync(teamsDir).filter(f => f.endsWith('.json'));
+        const teams = files.map(f => JSON.parse(readFileSync(resolve(teamsDir, f), 'utf-8')));
+        this.json(res, 200, { templates: teams });
+      } catch {
+        this.json(res, 200, { templates: [] });
+      }
+      return;
+    }
+
     // Health
     if (path === '/api/health') {
       this.json(res, 200, {
         status: 'ok',
-        version: '0.5.0',
+        version: '0.6.0',
         agents: this.orgService.getAgentManager().listAgents().length,
       });
       return;
