@@ -52,10 +52,17 @@ cp .env.example .env
 编辑 `.env`，至少填写一个 LLM API Key：
 
 ```bash
-# 二选一即可
+# 三选一即可（也可同时配多个）
 ANTHROPIC_API_KEY=sk-ant-xxx
 OPENAI_API_KEY=sk-xxx
+
+# DeepSeek（OpenAI 兼容）
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
 ```
+
+当没有 Anthropic Key 时，DeepSeek 会自动成为默认 LLM 提供商。
 
 ### 4. 启动服务
 
@@ -164,11 +171,13 @@ markus <command> [options]
 
 | 命令 | 说明 | 参数 |
 |------|------|------|
-| `start` | 启动 API 服务器 + 通信层 | `--port, -p` API 端口 |
+| `start` | 启动 API 服务器 + 通信层 + WebSocket | `--port, -p` API 端口 |
 | `agent:list` | 列出所有数字员工 | |
 | `agent:create` | 创建数字员工 | `--name, -n` 名称; `--role, -r` 角色名 |
 | `agent:chat` | 与数字员工交互式对话 | `--id` 员工 ID |
+| `agent:status` | 查看数字员工详细状态 | `--id` 员工 ID |
 | `role:list` | 列出可用角色模板 | |
+| `db:init` | 初始化数据库（推送 Schema） | |
 | `version` | 显示版本 | |
 | `help` | 显示帮助 | |
 
@@ -210,9 +219,24 @@ GET    /api/roles/:name                  获取角色详情
 
 ```
 GET    /api/tasks                        列出任务（可选 ?orgId=&status=）
-POST   /api/tasks                        创建任务 { title, description, priority?, assignedAgentId? }
+POST   /api/tasks                        创建任务 { title, description, priority?,
+                                           assignedAgentId?, autoAssign?, requiredSkills? }
+PUT    /api/tasks/:id                    更新任务 { status } 或 { assignedAgentId }
 GET    /api/taskboard                    看板视图（按状态分组）
 ```
+
+**自动分配**：创建任务时传 `"autoAssign": true`，系统会根据 Agent 技能匹配自动分配给最佳空闲 Agent。
+
+### WebSocket 实时通信
+
+连接 `ws://localhost:3001/ws` 接收实时事件：
+
+| 事件类型 | 说明 | Payload |
+|---------|------|---------|
+| `connected` | 连接成功 | `{ message }` |
+| `agent:update` | Agent 状态变更 | `{ agentId, status }` |
+| `task:update` | 任务状态变更 | `{ taskId, status, title, assignedAgentId? }` |
+| `chat:message` | 聊天消息 | `{ agentId, message, sender }` |
 
 ### 组织管理
 
@@ -247,10 +271,10 @@ pnpm build
 
 | 页面 | 功能 |
 |------|------|
-| **Dashboard** | 数据概览（员工数、角色数、任务数）、雇佣新员工、管理现有员工 |
-| **Agents** | 员工表格视图，查看状态、启动/停止/删除 |
-| **Task Board** | 看板视图，创建任务，按 Pending/Assigned/In Progress/Completed 分列 |
-| **Chat** | 选择一个数字员工进行实时对话 |
+| **Dashboard** | 数据概览（员工数、角色数、任务数）、雇佣新员工、管理现有员工。支持 WebSocket 实时刷新 |
+| **Agents** | 员工表格视图，点击查看详情面板，启动/停止/删除。状态实时更新（working 时有脉冲动画） |
+| **Task Board** | 看板视图，支持创建任务（含自动分配选项），点击任务查看详情并更改状态 |
+| **Chat** | 选择一个数字员工进行实时对话，基于 DeepSeek/OpenAI/Anthropic 进行 AI 对话 |
 
 ---
 
@@ -319,6 +343,38 @@ http://<your-server>:9000/webhook/feishu
 
 ---
 
+## LLM 提供商配置
+
+Markus 支持多种 LLM 提供商，通过环境变量或 `markus.json` 配置：
+
+| 提供商 | 环境变量 | 模型示例 | 备注 |
+|--------|---------|----------|------|
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-20250514 | 默认首选 |
+| OpenAI | `OPENAI_API_KEY` | gpt-4o | |
+| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` | deepseek-chat | OpenAI 兼容 |
+
+优先级：有 Anthropic Key 时默认用 Anthropic；无 Anthropic 但有 DeepSeek 时默认用 DeepSeek。
+
+也可通过 `markus.json` 指定默认提供商：
+
+```json
+{
+  "llm": {
+    "defaultProvider": "deepseek",
+    "providers": {
+      "deepseek": {
+        "apiKey": "sk-xxx",
+        "baseUrl": "https://api.deepseek.com"
+      }
+    }
+  }
+}
+```
+
+任何 OpenAI 兼容的 API（如 Groq、Together AI 等）都可以作为自定义提供商注册。
+
+---
+
 ## 持久化存储配置
 
 ### 数据库迁移
@@ -377,9 +433,29 @@ markus/
                                                     ↓
                                               ContextEngine（构建上下文）
                                                     ↓
-                                              LLMRouter → Anthropic/OpenAI
+                                              LLMRouter → Anthropic/OpenAI/DeepSeek
                                                     ↓
-                                              Tool 执行（Shell/File/MCP/GUI）
+                                              Tool 执行（Shell/File/WebFetch/WebSearch/MCP/GUI）
                                                     ↓
-                                              回复 → 通信层 → 用户
+                                              回复 → WebSocket 广播 → 通信层 → 用户
+```
+
+### 对话持久化
+
+Agent 的对话 session 自动保存到 `.markus/agents/<id>/sessions/` 目录。Agent 重启后会自动恢复最近的对话上下文，保证对话连续性。
+
+### 任务自动分配流程
+
+```
+创建任务(autoAssign=true)
+        ↓
+  TaskService.autoAssignAgent()
+        ↓
+  查找所有 idle 状态 Agent
+        ↓
+  按 requiredSkills 技能匹配打分
+        ↓
+  分配给得分最高的 Agent
+        ↓
+  WebSocket 广播 task:update
 ```

@@ -105,6 +105,14 @@ export class Agent {
 
   async start(): Promise<void> {
     this.state.status = 'idle';
+
+    // Resume latest conversation session if available
+    const latestSession = this.memory.getLatestSession(this.id);
+    if (latestSession && latestSession.messages.length > 0) {
+      this.currentSessionId = latestSession.id;
+      log.info(`Resumed session ${latestSession.id} with ${latestSession.messages.length} messages`);
+    }
+
     this.heartbeat.start(this.role.defaultHeartbeatTasks);
     this.eventBus.emit('agent:started', { agentId: this.id });
     log.info(`Agent started: ${this.config.name}`);

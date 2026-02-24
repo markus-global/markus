@@ -86,9 +86,7 @@ export class OrganizationService {
     }
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
 
-    const currentAgents = this.agentManager.listAgents().filter(
-      (a) => true,
-    );
+    const currentAgents = this.agentManager.listAgents();
     if (currentAgents.length >= org.maxAgents) {
       throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
     }

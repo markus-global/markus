@@ -1,5 +1,7 @@
 import type { Task, TaskStatus, TaskPriority } from '@markus/shared';
 import { createLogger, taskId } from '@markus/shared';
+import type { AgentManager } from '@markus/core';
+import type { WSBroadcaster } from './ws-server.js';
 
 const log = createLogger('task-service');
 
@@ -11,20 +13,38 @@ export interface CreateTaskRequest {
   assignedAgentId?: string;
   parentTaskId?: string;
   dueAt?: string;
+  requiredSkills?: string[];
+  autoAssign?: boolean;
 }
 
 export class TaskService {
   private tasks = new Map<string, Task>();
+  private agentManager?: AgentManager;
+  private ws?: WSBroadcaster;
+
+  setAgentManager(am: AgentManager): void {
+    this.agentManager = am;
+  }
+
+  setWSBroadcaster(ws: WSBroadcaster): void {
+    this.ws = ws;
+  }
 
   createTask(request: CreateTaskRequest): Task {
+    let assignedAgentId = request.assignedAgentId;
+
+    if (!assignedAgentId && request.autoAssign && this.agentManager) {
+      assignedAgentId = this.autoAssignAgent(request.requiredSkills);
+    }
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: request.assignedAgentId ? 'assigned' : 'pending',
+      status: assignedAgentId ? 'assigned' : 'pending',
       priority: request.priority ?? 'medium',
-      assignedAgentId: request.assignedAgentId,
+      assignedAgentId,
       parentTaskId: request.parentTaskId,
       subtaskIds: [],
       createdAt: new Date().toISOString(),
@@ -40,7 +60,8 @@ export class TaskService {
     }
 
     this.tasks.set(task.id, task);
-    log.info(`Task created: ${task.title}`, { id: task.id, status: task.status });
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
+    log.info(`Task created: ${task.title}`, { id: task.id, status: task.status, assignedTo: assignedAgentId });
     return task;
   }
 
@@ -53,17 +74,24 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${id}`);
     task.status = status;
     task.updatedAt = new Date().toISOString();
+    this.ws?.broadcastTaskUpdate(id, status, { title: task.title });
+
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      this.checkParentCompletion(task);
+    }
+
     log.info(`Task status updated: ${task.title}`, { id, status });
     return task;
   }
 
-  assignTask(taskId: string, agentId: string): Task {
-    const task = this.tasks.get(taskId);
-    if (!task) throw new Error(`Task not found: ${taskId}`);
+  assignTask(id: string, agentId: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
     task.assignedAgentId = agentId;
     task.status = 'assigned';
     task.updatedAt = new Date().toISOString();
-    log.info(`Task assigned`, { taskId, agentId });
+    this.ws?.broadcastTaskUpdate(id, 'assigned', { title: task.title, assignedAgentId: agentId });
+    log.info(`Task assigned`, { taskId: id, agentId });
     return task;
   }
 
@@ -103,5 +131,51 @@ export class TaskService {
     }
 
     return board;
+  }
+
+  private autoAssignAgent(requiredSkills?: string[]): string | undefined {
+    if (!this.agentManager) return undefined;
+
+    const agents = this.agentManager.listAgents();
+    const idleAgents = agents.filter((a) => a.status === 'idle');
+
+    if (idleAgents.length === 0) return undefined;
+
+    if (!requiredSkills?.length) {
+      return idleAgents[0]?.id;
+    }
+
+    // Score agents by skill match
+    let bestId: string | undefined;
+    let bestScore = 0;
+
+    for (const a of idleAgents) {
+      const agent = this.agentManager.getAgent(a.id);
+      const agentSkills = agent.config.skills ?? [];
+      const score = requiredSkills.reduce((acc, skill) =>
+        acc + (agentSkills.includes(skill) ? 1 : 0), 0);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestId = a.id;
+      }
+    }
+
+    return bestId ?? idleAgents[0]?.id;
+  }
+
+  private checkParentCompletion(task: Task): void {
+    if (!task.parentTaskId) return;
+    const parent = this.tasks.get(task.parentTaskId);
+    if (!parent) return;
+
+    const allSubDone = parent.subtaskIds.every((subId) => {
+      const sub = this.tasks.get(subId);
+      return sub && (sub.status === 'completed' || sub.status === 'cancelled');
+    });
+
+    if (allSubDone && parent.subtaskIds.length > 0) {
+      this.updateTaskStatus(parent.id, 'completed');
+    }
   }
 }

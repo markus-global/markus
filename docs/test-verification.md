@@ -881,6 +881,142 @@ docker compose down
 
 ---
 
+## V11 — WebSocket 实时通信验证 (Phase 3)
+
+### 步骤 1：WebSocket 连接
+
+```bash
+# 使用 wscat 或 Node.js 测试
+node -e "
+const WebSocket = require('ws');
+const ws = new WebSocket('ws://localhost:3001/ws');
+ws.on('message', d => console.log(JSON.parse(d.toString())));
+ws.on('open', () => console.log('Connected'));
+setTimeout(() => process.exit(0), 3000);
+"
+```
+
+**预期输出**：收到 `{ type: 'connected', payload: { message: 'Connected to Markus WebSocket' } }`
+
+### 步骤 2：事件广播
+
+在 WebSocket 连接的同时，通过 API 触发 Agent 操作，验证事件推送。
+
+**检查清单**：
+- [ ] WebSocket 连接成功
+- [ ] Agent start/stop 时收到 `agent:update` 事件
+- [ ] 创建任务时收到 `task:update` 事件
+- [ ] 发送消息时收到 `chat:message` 事件
+
+---
+
+## V12 — 任务自动分配验证 (Phase 3)
+
+### 步骤 1：准备 Agent
+
+```bash
+# 创建并启动 Agent
+curl -s -X POST http://localhost:3001/api/agents -H 'Content-Type: application/json' \
+  -d '{"name":"Alice","roleName":"developer"}'
+# 记下 agent id 并启动
+curl -s -X POST http://localhost:3001/api/agents/<id>/start
+```
+
+### 步骤 2：自动分配任务
+
+```bash
+curl -s -X POST http://localhost:3001/api/tasks -H 'Content-Type: application/json' \
+  -d '{"title":"Build API","description":"Implement endpoints","autoAssign":true}'
+```
+
+**预期输出**：`status: "assigned"`, `assignedAgentId` 为 Agent ID。
+
+### 步骤 3：任务状态流转
+
+```bash
+# 更新为 in_progress
+curl -s -X PUT http://localhost:3001/api/tasks/<id> -H 'Content-Type: application/json' \
+  -d '{"status":"in_progress"}'
+
+# 完成任务
+curl -s -X PUT http://localhost:3001/api/tasks/<id> -H 'Content-Type: application/json' \
+  -d '{"status":"completed"}'
+```
+
+**检查清单**：
+- [ ] `autoAssign: true` 自动分配给空闲 Agent
+- [ ] 手动指定 `assignedAgentId` 正确分配
+- [ ] 状态流转 pending → assigned → in_progress → completed
+- [ ] WebSocket 推送对应的 `task:update` 事件
+- [ ] TaskBoard API 返回正确分组
+
+---
+
+## V13 — 对话记忆持久化验证 (Phase 3)
+
+### 步骤 1：发送多轮对话
+
+```bash
+# 消息 1
+curl -s -X POST http://localhost:3001/api/agents/<id>/message \
+  -H 'Content-Type: application/json' -d '{"text":"Hi, my name is John"}'
+
+# 消息 2（测试上下文记忆）
+curl -s -X POST http://localhost:3001/api/agents/<id>/message \
+  -H 'Content-Type: application/json' -d '{"text":"What is my name?"}'
+```
+
+**预期输出**：第二条回复应包含 "John"。
+
+### 步骤 2：验证 Session 持久化
+
+```bash
+ls .markus/agents/<agent-id>/sessions/
+```
+
+**预期输出**：存在 `sess_*.json` 文件。
+
+### 步骤 3：Agent 重启后恢复
+
+重启服务后再次发消息，Agent 应恢复之前的会话上下文。
+
+**检查清单**：
+- [ ] 多轮对话保持上下文
+- [ ] Session 文件自动保存到磁盘
+- [ ] Agent 重启后恢复最近 Session
+
+---
+
+## V14 — DeepSeek / 多 LLM 提供商验证 (Phase 3)
+
+### 步骤 1：配置 DeepSeek
+
+```bash
+# .env
+DEEPSEEK_API_KEY=sk-xxx
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+### 步骤 2：验证注册
+
+启动服务，检查日志中出现：
+
+```
+[INFO] [llm-router] Registered LLM provider: deepseek {"model":"deepseek-chat"}
+```
+
+### 步骤 3：Agent 对话验证
+
+创建 Agent 并发消息，验证 DeepSeek 返回有效回复。
+
+**检查清单**：
+- [ ] DeepSeek 提供商正确注册
+- [ ] Agent 通过 DeepSeek 正常对话
+- [ ] 多提供商可共存（日志显示所有注册的提供商）
+
+---
+
 ## 验证总结模板
 
 完成验证后，按照以下模板记录结果：
@@ -894,16 +1030,20 @@ Node.js 版本：
 pnpm 版本：
 Docker 版本：
 
-V1  构建验证       [PASS/FAIL]
-V2  CLI 基础功能    [PASS/FAIL]
-V3  API Server    [PASS/FAIL]
-V4  Agent 生命周期  [PASS/FAIL]
-V5  Web UI        [PASS/FAIL]
-V6  持久化存储      [PASS/FAIL/SKIP]
-V7  Docker 沙箱    [PASS/FAIL/SKIP]
-V8  飞书集成       [PASS/FAIL/SKIP]
-V9  A2A 多Agent   [PASS/FAIL]
-V10 全栈部署       [PASS/FAIL/SKIP]
+V1  构建验证         [PASS/FAIL]
+V2  CLI 基础功能     [PASS/FAIL]
+V3  API Server      [PASS/FAIL]
+V4  Agent 生命周期   [PASS/FAIL]
+V5  Web UI          [PASS/FAIL]
+V6  持久化存储       [PASS/FAIL/SKIP]
+V7  Docker 沙箱     [PASS/FAIL/SKIP]
+V8  飞书集成         [PASS/FAIL/SKIP]
+V9  A2A 多Agent     [PASS/FAIL]
+V10 全栈部署         [PASS/FAIL/SKIP]
+V11 WebSocket       [PASS/FAIL]
+V12 任务自动分配     [PASS/FAIL]
+V13 对话记忆持久化   [PASS/FAIL]
+V14 DeepSeek/多LLM  [PASS/FAIL]
 
 备注：
 ```

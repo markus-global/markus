@@ -36,7 +36,7 @@ export function Sidebar({ currentPage, onNavigate }: Props) {
         ))}
       </nav>
       <div className="p-4 border-t border-gray-800 text-xs text-gray-600">
-        v0.2.0 Phase 2
+        v0.3.0 Phase 3
       </div>
     </aside>
   );

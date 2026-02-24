@@ -42,8 +42,12 @@ export const api = {
   },
   tasks: {
     list: () => request<{ tasks: TaskInfo[] }>('/tasks'),
-    create: (title: string, description: string, priority?: string) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority }) }),
+    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign }) }),
+    updateStatus: (id: string, status: string) =>
+      request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
+    assign: (id: string, agentId: string) =>
+      request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     board: () => request<{ board: Record<string, TaskInfo[]> }>('/taskboard'),
   },
   health: () => request<{ status: string; version: string; agents: number }>('/health'),

@@ -160,6 +160,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const storage = await initStorage(config.database?.url);
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
   const taskService = new TaskService();
+  taskService.setAgentManager(agentManager);
 
   await orgService.createOrganization(config.org.name, 'default', 'default');
 
@@ -177,6 +178,7 @@ async function startServer(
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
   apiServer.start();
+  taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
   const messageRouter = new MessageRouter();
   const webUIAdapter = new WebUIAdapter();

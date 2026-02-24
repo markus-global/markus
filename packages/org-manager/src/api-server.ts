@@ -142,8 +142,30 @@ export class APIServer {
         description: body['description'] as string,
         priority: body['priority'] as import('@markus/shared').TaskPriority | undefined,
         assignedAgentId: body['assignedAgentId'] as string | undefined,
+        requiredSkills: body['requiredSkills'] as string[] | undefined,
+        autoAssign: body['autoAssign'] as boolean | undefined,
       });
       this.json(res, 201, { task });
+      return;
+    }
+
+    if (path.startsWith('/api/tasks/') && req.method === 'PUT') {
+      const taskId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+
+      if (body['status']) {
+        const task = this.taskService.updateTaskStatus(taskId, body['status'] as import('@markus/shared').TaskStatus);
+        this.json(res, 200, { task });
+        return;
+      }
+
+      if (body['assignedAgentId']) {
+        const task = this.taskService.assignTask(taskId, body['assignedAgentId'] as string);
+        this.json(res, 200, { task });
+        return;
+      }
+
+      this.json(res, 400, { error: 'Provide status or assignedAgentId' });
       return;
     }
 
@@ -163,7 +185,7 @@ export class APIServer {
 
     if (path === '/api/orgs' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const org = this.orgService.createOrganization(body['name'] as string, (body['ownerId'] as string) ?? 'default');
+      const org = await this.orgService.createOrganization(body['name'] as string, (body['ownerId'] as string) ?? 'default');
       this.json(res, 201, { org });
       return;
     }
