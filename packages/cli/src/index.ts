@@ -112,7 +112,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const orgService = new OrganizationService(agentManager, roleLoader);
   const taskService = new TaskService();
 
-  orgService.createOrganization(config.org.name, 'default');
+  orgService.createOrganization(config.org.name, 'default', 'default');
 
   return { agentManager, orgService, taskService, roleLoader, llmRouter };
 }

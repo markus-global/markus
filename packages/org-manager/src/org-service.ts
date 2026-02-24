@@ -15,9 +15,9 @@ export class OrganizationService {
     this.roleLoader = roleLoader ?? new RoleLoader();
   }
 
-  createOrganization(name: string, ownerId: string): Organization {
+  createOrganization(name: string, ownerId: string, explicitId?: string): Organization {
     const org: Organization = {
-      id: orgId(),
+      id: explicitId ?? orgId(),
       name,
       ownerId,
       plan: 'free',
@@ -31,6 +31,10 @@ export class OrganizationService {
 
   getOrganization(id: string): Organization | undefined {
     return this.orgs.get(id);
+  }
+
+  getDefaultOrganization(): Organization | undefined {
+    return this.orgs.get('default') ?? [...this.orgs.values()][0];
   }
 
   listOrganizations(): Organization[] {
@@ -62,7 +66,10 @@ export class OrganizationService {
   }
 
   async hireAgent(request: CreateAgentRequest & { orgId: string }) {
-    const org = this.orgs.get(request.orgId);
+    let org = this.orgs.get(request.orgId);
+    if (!org && request.orgId === 'default') {
+      org = this.getDefaultOrganization();
+    }
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
 
     const currentAgents = this.agentManager.listAgents().filter(
