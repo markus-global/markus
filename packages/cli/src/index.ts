@@ -42,6 +42,16 @@ Commands:
   skill:list      List available skills
   skill:init      Scaffold a new skill project
   skill:test      Test a skill
+  team:list       List available team templates
+  team:deploy     Deploy a team template (hire all agents)
+  user:list       List human users
+  user:add        Add a human user
+  approval:list   List pending approvals
+  approval:respond Approve or reject an approval
+  bounty:list     List bounties
+  key:list        List API keys
+  key:create      Create an API key
+  usage           Show usage summary
   db:init         Initialize database (run migrations)
   version         Show version
   help            Show this help message
@@ -51,6 +61,9 @@ Options:
   --port, -p      API server port (default: 3001)
   --name, -n      Name for agent:create or skill:init
   --dir, -d       Directory for skill:init output
+  --template, -t  Team template name for team:deploy
+  --email         Email for user:add
+  --approved      Approve (true) or reject (false) an approval
 
 Examples:
   markus start
@@ -84,6 +97,9 @@ async function main() {
       role: { type: 'string', short: 'r' },
       id: { type: 'string' },
       dir: { type: 'string', short: 'd' },
+      template: { type: 'string', short: 't' },
+      email: { type: 'string' },
+      approved: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -118,6 +134,36 @@ async function main() {
       break;
     case 'skill:test':
       await testSkill(values);
+      break;
+    case 'team:list':
+      await listTeamTemplates();
+      break;
+    case 'team:deploy':
+      await deployTeam(config, values);
+      break;
+    case 'user:list':
+      await listUsers(config);
+      break;
+    case 'user:add':
+      await addUser(config, values);
+      break;
+    case 'approval:list':
+      await listApprovals(config);
+      break;
+    case 'approval:respond':
+      await respondApproval(config, values);
+      break;
+    case 'bounty:list':
+      await listBounties(config);
+      break;
+    case 'key:list':
+      await listKeys(config);
+      break;
+    case 'key:create':
+      await createKey(config, values);
+      break;
+    case 'usage':
+      await showUsage(config);
       break;
     case 'db:init':
       await dbInit(config);
@@ -542,6 +588,199 @@ async function testSkill(values: Record<string, unknown>) {
   }
 
   console.log(`\n  Skill validation: PASSED`);
+}
+
+async function listTeamTemplates() {
+  const teamsDir = resolve(process.cwd(), 'templates', 'teams');
+  if (!existsSync(teamsDir)) {
+    console.log('No team templates found in templates/teams/');
+    return;
+  }
+
+  const { readdirSync } = await import('node:fs');
+  const files = readdirSync(teamsDir).filter(f => f.endsWith('.json'));
+
+  console.log('\nAvailable Team Templates:');
+  console.log('─'.repeat(70));
+  for (const f of files) {
+    const data = JSON.parse(readFileSync(resolve(teamsDir, f), 'utf-8')) as {
+      name: string; description: string; category: string;
+      agents: Array<{ name: string; role: string; agentRole: string }>;
+    };
+    console.log(`\n  ${data.name} [${f.replace('.json', '')}]`);
+    console.log(`  ${data.description}`);
+    console.log(`  Category: ${data.category} · ${data.agents.length} agents`);
+    for (const a of data.agents) {
+      const badge = a.agentRole === 'manager' ? ' ★' : '';
+      console.log(`    - ${a.name} (${a.role})${badge}`);
+    }
+  }
+}
+
+async function deployTeam(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const templateName = values['template'] as string;
+  if (!templateName) {
+    console.error('Usage: markus team:deploy --template <template-name>');
+    console.error('Run "markus team:list" to see available templates.');
+    process.exit(1);
+  }
+
+  const teamsDir = resolve(process.cwd(), 'templates', 'teams');
+  const filePath = resolve(teamsDir, `${templateName}.json`);
+  if (!existsSync(filePath)) {
+    console.error(`Template not found: ${templateName}`);
+    console.error(`Looked at: ${filePath}`);
+    process.exit(1);
+  }
+
+  const template = JSON.parse(readFileSync(filePath, 'utf-8')) as {
+    name: string; agents: Array<{ name: string; role: string; agentRole: string; skills?: string[] }>;
+  };
+
+  console.log(`\nDeploying team: ${template.name}`);
+  console.log('─'.repeat(50));
+
+  const { orgService } = await createServices(config);
+
+  for (const agentDef of template.agents) {
+    try {
+      const agent = await orgService.hireAgent({
+        name: agentDef.name,
+        roleName: agentDef.role,
+        orgId: 'default',
+        agentRole: agentDef.agentRole as 'manager' | 'worker',
+        skills: agentDef.skills,
+      });
+      const badge = agentDef.agentRole === 'manager' ? ' ★ Manager' : '';
+      console.log(`  ✓ ${agent.config.name} (${agent.role.name})${badge} — ${agent.id}`);
+    } catch (err) {
+      console.error(`  ✗ Failed to hire ${agentDef.name}: ${String(err)}`);
+    }
+  }
+
+  console.log(`\nTeam deployed! ${template.agents.length} agents hired.`);
+}
+
+async function listUsers(config: ReturnType<typeof loadConfig>) {
+  const { orgService } = await createServices(config);
+  const users = orgService.listHumanUsers('default');
+
+  console.log('\nHuman Users:');
+  console.log('─'.repeat(60));
+  if (users.length === 0) {
+    console.log('  No users found.');
+    return;
+  }
+  for (const u of users) {
+    console.log(`  ${u.name.padEnd(20)} ${u.role.padEnd(10)} ${u.id}`);
+  }
+}
+
+async function addUser(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const name = values['name'] as string;
+  const role = (values['role'] as string) ?? 'member';
+  if (!name) {
+    console.error('Usage: markus user:add --name <name> [--role owner|admin|member|guest] [--email <email>]');
+    process.exit(1);
+  }
+
+  const { orgService } = await createServices(config);
+  const user = orgService.addHumanUser('default', name, role as 'owner' | 'admin' | 'member' | 'guest', {
+    email: values['email'] as string | undefined,
+  });
+  console.log(`User added: ${user.name} (${user.role}) — ${user.id}`);
+}
+
+async function listApprovals(config: ReturnType<typeof loadConfig>) {
+  const { hitlService } = await createServices(config);
+  const approvals = hitlService.listApprovals();
+
+  console.log('\nApprovals:');
+  console.log('─'.repeat(70));
+  if (approvals.length === 0) {
+    console.log('  No approvals found.');
+    return;
+  }
+  for (const a of approvals) {
+    const statusBadge = a.status === 'pending' ? '⏳' : a.status === 'approved' ? '✓' : '✗';
+    console.log(`  ${statusBadge} ${a.title.padEnd(35)} ${a.status.padEnd(10)} ${a.id}`);
+    console.log(`    From: ${a.agentName} · ${a.requestedAt}`);
+  }
+}
+
+async function respondApproval(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const id = values['id'] as string;
+  const approved = values['approved'] as string;
+  if (!id || approved === undefined) {
+    console.error('Usage: markus approval:respond --id <approval-id> --approved true|false');
+    process.exit(1);
+  }
+
+  const { hitlService } = await createServices(config);
+  const result = hitlService.respondToApproval(id, approved === 'true', 'cli-user');
+  if (!result) {
+    console.error('Approval not found or not pending.');
+    process.exit(1);
+  }
+  console.log(`Approval ${id}: ${result.status}`);
+}
+
+async function listBounties(config: ReturnType<typeof loadConfig>) {
+  const { hitlService } = await createServices(config);
+  const bounties = hitlService.listBounties();
+
+  console.log('\nBounties:');
+  console.log('─'.repeat(70));
+  if (bounties.length === 0) {
+    console.log('  No bounties found.');
+    return;
+  }
+  for (const b of bounties) {
+    console.log(`  [${b.status}] ${b.title.padEnd(35)} ${b.id}`);
+    console.log(`    From: ${b.agentName} · ${b.createdAt}`);
+  }
+}
+
+async function listKeys(config: ReturnType<typeof loadConfig>) {
+  const { billingService } = await createServices(config);
+  const keys = billingService.listAPIKeys('default');
+
+  console.log('\nAPI Keys:');
+  console.log('─'.repeat(60));
+  if (keys.length === 0) {
+    console.log('  No API keys found.');
+    return;
+  }
+  for (const k of keys) {
+    const status = k.active ? 'active' : 'revoked';
+    console.log(`  ${k.name.padEnd(20)} ${k.keyPreview.padEnd(20)} ${status.padEnd(8)} ${k.id}`);
+  }
+}
+
+async function createKey(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const name = (values['name'] as string) ?? 'CLI Key';
+  const { billingService } = await createServices(config);
+  const key = billingService.createAPIKey('default', name);
+  console.log(`\nAPI Key created:`);
+  console.log(`  ID:   ${key.id}`);
+  console.log(`  Key:  ${key.key}`);
+  console.log(`  Name: ${key.name}`);
+  console.log(`\n  Save this key — it won't be shown again.`);
+}
+
+async function showUsage(config: ReturnType<typeof loadConfig>) {
+  const { billingService } = await createServices(config);
+  const summary = billingService.getUsageSummary('default');
+  const plan = billingService.getOrgPlan('default');
+
+  console.log('\nUsage Summary:');
+  console.log('─'.repeat(50));
+  console.log(`  Plan:          ${plan.tier}`);
+  console.log(`  Period:        ${summary.period}`);
+  console.log(`  LLM Tokens:    ${summary.llmTokens.toLocaleString()} / ${plan.limits.maxTokensPerMonth < 0 ? 'unlimited' : plan.limits.maxTokensPerMonth.toLocaleString()}`);
+  console.log(`  Tool Calls:    ${summary.toolCalls.toLocaleString()} / ${plan.limits.maxToolCallsPerDay < 0 ? 'unlimited' : plan.limits.maxToolCallsPerDay.toLocaleString()} per day`);
+  console.log(`  Messages:      ${summary.messages.toLocaleString()} / ${plan.limits.maxMessagesPerDay < 0 ? 'unlimited' : plan.limits.maxMessagesPerDay.toLocaleString()} per day`);
+  console.log(`  Storage:       ${(summary.storageBytes / 1024 / 1024).toFixed(1)}MB / ${plan.limits.maxStorageBytes < 0 ? 'unlimited' : (plan.limits.maxStorageBytes / 1024 / 1024).toFixed(0) + 'MB'}`);
 }
 
 main().catch((error) => {

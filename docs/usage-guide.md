@@ -177,6 +177,19 @@ markus <command> [options]
 | `agent:chat` | 与数字员工交互式对话 | `--id` 员工 ID |
 | `agent:status` | 查看数字员工详细状态 | `--id` 员工 ID |
 | `role:list` | 列出可用角色模板 | |
+| `skill:list` | 列出所有已注册 Skill | |
+| `skill:init` | 创建新 Skill 脚手架项目 | `--name, -n` Skill 名; `--dir, -d` 输出目录 |
+| `skill:test` | 验证 Skill manifest 和源码 | `--dir, -d` Skill 目录 |
+| `team:list` | 列出可用团队模板 | |
+| `team:deploy` | 一键部署团队模板（批量入职 Agent） | `--template, -t` 模板名 |
+| `user:list` | 列出人类成员 | |
+| `user:add` | 添加人类成员 | `--name, -n`; `--role, -r` (owner/admin/member/guest); `--email` |
+| `approval:list` | 列出审批请求 | |
+| `approval:respond` | 审批/拒绝 | `--id`; `--approved` (true/false) |
+| `bounty:list` | 列出悬赏任务 | |
+| `key:list` | 列出 API Key | |
+| `key:create` | 创建 API Key | `--name, -n` Key 名称 |
+| `usage` | 查看用量统计 | |
 | `db:init` | 初始化数据库（推送 Schema） | |
 | `version` | 显示版本 | |
 | `help` | 显示帮助 | |

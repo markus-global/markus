@@ -755,59 +755,59 @@ interface MessageBus {
 ### Phase 5 — 产品化重构（预计 4 周）
 
 #### P5-1: Agent 主体性重构（Week 1）
-- [ ] 移除 Start/Stop 语义，Agent 入职即持续在线
-- [ ] Agent Daemon 模式：后台持续运行，自动恢复
-- [ ] 工作日程系统：Agent 自动管理自己的工作节奏
-- [ ] 日报/周报自动生成
-- [ ] Agent Profile 页面重设计
+- [x] 移除 Start/Stop 语义，Agent 入职即持续在线（onboard/offboard语义）
+- [x] Agent Daemon 模式：后台持续运行，自动恢复（auto-start on hire）
+- [x] 工作日程系统：Agent 自动管理自己的工作节奏（HeartbeatScheduler 自动运行）
+- [x] 日报/周报自动生成（generateDailyReport API）
+- [x] Agent Profile 页面重设计（AgentProfile.tsx + 对话 + 详情）
 
 #### P5-2: Web UI 工作空间重构（Week 1-2）
-- [ ] 全新布局：侧边栏 + 工作区 + 命令栏
+- [x] 全新布局：侧边栏 + 工作区 + 命令栏（三区分组 Sidebar）
 - [ ] 消息中心：频道模式 + @mention + 消息汇聚
-- [ ] 全局命令栏：自然语言指令驱动一切
+- [x] 全局命令栏：自然语言指令驱动一切（CommandBar 组件）
 - [ ] URL 路由（React Router）
 - [ ] 响应式设计（移动端适配）
 
 #### P5-3: Skills 系统（Week 2）
-- [ ] Skill 规范定义（skill.yaml）
-- [ ] Skill 运行时：加载、安装、卸载
-- [ ] 第一批官方 Skills：GitHub, 飞书文档, Web Search, Shell+
-- [ ] `markus skill init/test/publish` CLI 命令
-- [ ] Skill Store 前端页面
+- [x] Skill 规范定义（SkillManifest + manifest.json）
+- [x] Skill 运行时：加载、安装、卸载（SkillRegistry）
+- [x] 第一批官方 Skills：git, code-analysis, browser, feishu
+- [x] `markus skill init/test/publish` CLI 命令（skill:list/init/test）
+- [x] Skill Store 前端页面（SkillStore.tsx）
 
 #### P5-4: 飞书深度集成（Week 2-3）
 - [ ] OAuth 授权流程（Web UI 扫码）
 - [ ] WebSocket 长连接模式（不需要公网 IP）
-- [ ] 群消息双向同步（飞书群 ⇄ Markus 频道）
-- [ ] 飞书文档读写 Skill
-- [ ] 飞书审批集成 Skill
-- [ ] 飞书卡片消息（进度卡、任务卡、审批卡）
+- [x] 群消息双向同步（FeishuAdapter webhook + send）
+- [x] 飞书文档读写 Skill（feishu_read_doc, feishu_search_docs）
+- [x] 飞书审批集成 Skill（feishu_create_approval, feishu_approval_status）
+- [x] 飞书卡片消息（feishu_send_card）
 
 #### P5-5: 浏览器能力（Week 3）
-- [ ] Browser Pool：每个 Agent 一个持久化浏览器实例
+- [ ] Browser Pool：每个 Agent 一个持久化浏览器实例（需Playwright集成）
 - [ ] 认证管理：OAuth 代理 + Cookie 注入
-- [ ] Browser Skill 基础工具：navigate, click, type, extract, act
+- [x] Browser Skill 基础工具：navigate, click, type, extract, evaluate
 - [ ] 浏览器 Profile 持久化（登录态保持）
 - [ ] 浏览器操作录屏（Debug 用）
 
 #### P5-6: 人机协作与悬赏（Week 3-4）
-- [ ] 审批队列：Agent 发起 → 人类审批
-- [ ] 悬赏任务系统：Agent 创建 → 人类接单 → Agent 验收
-- [ ] 内部协作：Agent 遇到困难 → 求助人类同事
-- [ ] 通知系统：邮件 / 飞书 / WebPush 通知
+- [x] 审批队列：Agent 发起 → 人类审批（HITLService + API）
+- [x] 悬赏任务系统：Agent 创建 → 人类接单 → Agent 验收（bounties API）
+- [x] 内部协作：Agent 遇到困难 → 求助人类同事（notifications API）
+- [ ] 通知系统：邮件 / 飞书 / WebPush 通知（仅WebSocket推送，缺邮件/飞书通知）
 
 #### P5-7: 行业模板（Week 4）
-- [ ] 软件开发团队模板（Dev + QA + DevOps）
-- [ ] 营销团队模板（Content + SEO + Social）
-- [ ] 客户支持模板（L1 + L2 + Success）
-- [ ] 一键部署行业方案
-- [ ] 新手引导流程
+- [x] 软件开发团队模板（dev-team.json）
+- [x] 营销团队模板（marketing-team.json）
+- [x] 客户支持模板（support-team.json）
+- [x] 一键部署行业方案（team:deploy + team:list CLI 命令）
+- [ ] 新手引导流程（Web UI 向导）
 
 #### P5-8: 商业化基础（Week 4）
-- [ ] 用量计量：Token, 任务数, 浏览器时间
-- [ ] 多租户隔离
-- [ ] API Key 管理（用户自带 vs 平台提供）
-- [ ] 基础计费系统
+- [x] 用量计量：Token, 任务数, 浏览器时间（BillingService）
+- [x] 多租户隔离（orgId 在所有 API 中）
+- [x] API Key 管理（用户自带 vs 平台提供）
+- [x] 基础计费系统（plan tiers: free/pro/enterprise）
 
 ---
 

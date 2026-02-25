@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react';
 import { api, wsClient, type AgentInfo } from '../api.ts';
+import { AgentProfile } from './AgentProfile.tsx';
 
 export function Agents() {
+  const [profileAgentId, setProfileAgentId] = useState<string | null>(null);
+
+  if (profileAgentId) {
+    return <AgentProfile agentId={profileAgentId} onBack={() => setProfileAgentId(null)} />;
+  }
+
+  return <AgentList onViewProfile={setProfileAgentId} />;
+}
+
+function AgentList({ onViewProfile }: { onViewProfile: (id: string) => void }) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -55,7 +66,8 @@ export function Agents() {
                   <td className="px-5 py-3 text-gray-500 font-mono text-xs">{a.id}</td>
                   <td className="px-5 py-3">
                     <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => api.agents.start(a.id).then(refresh)} className="text-xs text-indigo-400 hover:text-indigo-300">Start</button>
+                      <button onClick={() => onViewProfile(a.id)} className="text-xs text-indigo-400 hover:text-indigo-300">Profile</button>
+                      <button onClick={() => api.agents.start(a.id).then(refresh)} className="text-xs text-green-400 hover:text-green-300">Start</button>
                       <button onClick={() => api.agents.stop(a.id).then(refresh)} className="text-xs text-gray-400 hover:text-gray-300">Stop</button>
                       <button onClick={() => { if (confirm('Remove this agent?')) api.agents.remove(a.id).then(refresh); }} className="text-xs text-red-400 hover:text-red-300">Remove</button>
                     </div>

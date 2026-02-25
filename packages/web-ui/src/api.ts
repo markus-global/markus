@@ -35,9 +35,25 @@ export interface TaskInfo {
   assignedAgentId?: string;
 }
 
+export interface AgentDetail {
+  id: string;
+  name: string;
+  role: string;
+  agentRole: string;
+  skills: string[];
+  state: {
+    status: string;
+    tokensUsedToday: number;
+    currentTaskId?: string;
+    containerId?: string;
+    lastHeartbeat?: string;
+  };
+}
+
 export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents'),
+    get: (id: string) => request<AgentDetail>(`/agents/${id}`),
     create: (name: string, roleName: string, agentRole?: 'manager' | 'worker') =>
       request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
