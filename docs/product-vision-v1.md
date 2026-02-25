@@ -763,10 +763,10 @@ interface MessageBus {
 
 #### P5-2: Web UI 工作空间重构（Week 1-2）
 - [x] 全新布局：侧边栏 + 工作区 + 命令栏（三区分组 Sidebar）
-- [ ] 消息中心：频道模式 + @mention + 消息汇聚
+- [x] 消息中心：频道模式 + @mention + 消息汇聚（Messages 页面 + 频道 + @mention 下拉）
 - [x] 全局命令栏：自然语言指令驱动一切（CommandBar 组件）
-- [ ] URL 路由（React Router）
-- [ ] 响应式设计（移动端适配）
+- [x] URL 路由（hash-based 路由，无需额外依赖）
+- [x] 响应式设计（移动端侧边栏折叠 + 汉堡菜单）
 
 #### P5-3: Skills 系统（Week 2）
 - [x] Skill 规范定义（SkillManifest + manifest.json）
@@ -801,7 +801,7 @@ interface MessageBus {
 - [x] 营销团队模板（marketing-team.json）
 - [x] 客户支持模板（support-team.json）
 - [x] 一键部署行业方案（team:deploy + team:list CLI 命令）
-- [ ] 新手引导流程（Web UI 向导）
+- [x] 新手引导流程（Onboarding 3步向导 + 首次创建 Agent）
 
 #### P5-8: 商业化基础（Week 4）
 - [x] 用量计量：Token, 任务数, 浏览器时间（BillingService）
@@ -841,6 +841,60 @@ interface MessageBus {
 4. **飞书/钉钉深度集成** — 中国市场刚需，竞品做不深
 5. **人机协作闭环** — AI 做不到的，无缝转给人类完成
 6. **一揽子 AI 订阅** — 用户不需要自己管各种 API Key
+
+---
+
+## 第九部分：能力增强路线图（v2）
+
+### 9.1 观测性和审计系统
+
+**目标**：完整记录每个 Agent 的每一次操作、token消耗、工具调用，支持 CLI/API/UI 查看。
+
+**任务**：
+- [x] AuditLog 服务：记录 agent_message / tool_call / llm_request / task_update 事件
+- [x] Token 消耗实时追踪：每次 LLM 调用后累加，按 agent / org 聚合
+- [x] CLI `audit:log` 命令查看审计日志
+- [x] API `GET /api/audit` 查询审计记录
+- [x] Web UI Dashboard 展示 token 消耗趋势
+
+### 9.2 Agent 间协作 (A2A 消息总线)
+
+**目标**：Agent 可以直接给其他 Agent 发消息，实现真正的团队协作。
+
+**任务**：
+- [x] AgentBus：agent_send_message 工具，Agent 可以给同事发消息
+- [x] 消息路由：Agent A 发消息 → 系统转给 Agent B → B 处理后回复 A
+- [x] CLI `agent:message` 命令发送 A2A 消息
+- [x] API `POST /api/agents/:id/a2a` 端点
+
+### 9.3 自适应 LLM 选型
+
+**目标**：根据任务复杂度自动选择最合适的模型，优化 token 成本。
+
+**任务**：
+- [x] 任务复杂度评估：根据 prompt 长度、工具数量、上下文大小判断
+- [x] 模型路由策略：简单对话用经济模型，复杂推理用强模型
+- [x] LLMRouter 增加 autoSelect 模式
+- [x] 运行时 fallback：如果首选模型失败，自动切换备选
+
+### 9.4 Agent 成长系统
+
+**目标**：追踪 Agent 在各 Skill 领域的使用频率和效果，量化"经验值"。
+
+**任务**：
+- [x] SkillProficiency 数据模型：skill名 + 使用次数 + 成功率
+- [x] 每次工具调用后自动更新 proficiency
+- [x] CLI `agent:profile` 查看成长数据
+- [x] API 返回 proficiency 信息
+
+### 9.5 错误恢复和韧性
+
+**目标**：工具执行失败时自动重试，LLM 调用失败时降级到备选模型。
+
+**任务**：
+- [x] 工具执行重试：失败后最多重试 2 次，指数退避
+- [x] LLM 调用 fallback：主模型超时/失败时自动切换
+- [x] 人工兜底：连续失败 3 次后发通知请求人类介入
 
 ---
 

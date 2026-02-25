@@ -60,6 +60,12 @@ export class Agent {
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private identityContext?: IdentityContext;
+  private auditCallback?: (event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
+  private escalationCallback?: (agentId: string, reason: string) => void;
+  private consecutiveFailures = 0;
+  private static readonly MAX_CONSECUTIVE_FAILURES = 3;
+  private static readonly TOOL_RETRY_MAX = 2;
+  private static readonly TOOL_RETRY_BASE_MS = 500;
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
@@ -142,6 +148,14 @@ export class Agent {
     this.identityContext = ctx;
   }
 
+  setAuditCallback(cb: (event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void): void {
+    this.auditCallback = cb;
+  }
+
+  setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
+    this.escalationCallback = cb;
+  }
+
   async generateDailyReport(): Promise<string> {
     const dailyLog = this.memory.getRecentDailyLogs(1);
     const state = this.getState();
@@ -205,14 +219,16 @@ export class Agent {
     const llmTools = this.buildToolDefinitions();
 
     try {
+      const llmStart = Date.now();
       let response = await this.llmRouter.chat({
         messages,
         tools: llmTools.length > 0 ? llmTools : undefined,
       });
 
-      this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
+      this.state.tokensUsedToday += tokensThisCall;
+      this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
-      // Tool use loop with max iterations to prevent runaway
       let iterations = 0;
       const maxIterations = 20;
 
@@ -226,12 +242,23 @@ export class Agent {
         });
 
         for (const tc of response.toolCalls) {
-          const result = await this.executeTool(tc);
-          this.memory.appendMessage(this.currentSessionId, {
-            role: 'tool',
-            content: result,
-            toolCallId: tc.id,
-          });
+          const toolStart = Date.now();
+          try {
+            const result = await this.executeTool(tc);
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: true, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'tool',
+              content: result,
+              toolCallId: tc.id,
+            });
+          } catch (toolErr) {
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'tool',
+              content: `Error: ${String(toolErr)}`,
+              toolCallId: tc.id,
+            });
+          }
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -242,12 +269,15 @@ export class Agent {
           sessionId: this.currentSessionId,
         });
 
+        const llmStart2 = Date.now();
         response = await this.llmRouter.chat({
           messages: updatedMessages,
           tools: llmTools.length > 0 ? llmTools : undefined,
         });
 
-        this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+        const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
+        this.state.tokensUsedToday += tokens2;
+        this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       if (iterations >= maxIterations) {
@@ -269,6 +299,7 @@ export class Agent {
       return reply;
     } catch (error) {
       this.state.status = 'error';
+      this.auditCallback?.({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     }
@@ -312,11 +343,14 @@ export class Agent {
     const llmTools = this.buildToolDefinitions();
 
     try {
+      const llmStart = Date.now();
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined },
         onEvent,
       );
-      this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
+      this.state.tokensUsedToday += tokensThisCall;
+      this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       let iterations = 0;
       const maxIterations = 20;
@@ -331,12 +365,23 @@ export class Agent {
         });
 
         for (const tc of response.toolCalls) {
-          const result = await this.executeTool(tc);
-          this.memory.appendMessage(this.currentSessionId, {
-            role: 'tool',
-            content: result,
-            toolCallId: tc.id,
-          });
+          const toolStart = Date.now();
+          try {
+            const result = await this.executeTool(tc);
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: true, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'tool',
+              content: result,
+              toolCallId: tc.id,
+            });
+          } catch (toolErr) {
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'tool',
+              content: `Error: ${String(toolErr)}`,
+              toolCallId: tc.id,
+            });
+          }
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -347,11 +392,14 @@ export class Agent {
           sessionId: this.currentSessionId,
         });
 
+        const llmStart2 = Date.now();
         response = await this.llmRouter.chatStream(
           { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
           onEvent,
         );
-        this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+        const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
+        this.state.tokensUsedToday += tokens2;
+        this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       const reply = response.content;
@@ -369,9 +417,24 @@ export class Agent {
       return reply;
     } catch (error) {
       this.state.status = 'error';
+      this.auditCallback?.({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
     }
+  }
+
+  private skillProficiency = new Map<string, { uses: number; successes: number; lastUsed: string }>();
+
+  getSkillProficiency(): Record<string, { uses: number; successes: number; lastUsed: string }> {
+    return Object.fromEntries(this.skillProficiency);
+  }
+
+  recordToolUsage(toolName: string, success: boolean): void {
+    const existing = this.skillProficiency.get(toolName) ?? { uses: 0, successes: 0, lastUsed: '' };
+    existing.uses += 1;
+    if (success) existing.successes += 1;
+    existing.lastUsed = new Date().toISOString();
+    this.skillProficiency.set(toolName, existing);
   }
 
   addMemory(content: string, type: 'fact' | 'note' = 'fact'): void {
@@ -479,16 +542,41 @@ export class Agent {
   private async executeTool(toolCall: LLMToolCall): Promise<string> {
     const handler = this.tools.get(toolCall.name);
     if (!handler) {
+      this.recordToolUsage(toolCall.name, false);
+      this.handleFailure(`Unknown tool: ${toolCall.name}`);
       return JSON.stringify({ error: `Unknown tool: ${toolCall.name}` });
     }
 
-    try {
-      log.debug(`Executing tool: ${toolCall.name}`, { args: toolCall.arguments });
-      const result = await handler.execute(toolCall.arguments);
-      return result;
-    } catch (error) {
-      log.error(`Tool execution failed: ${toolCall.name}`, { error: String(error) });
-      return JSON.stringify({ error: String(error) });
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= Agent.TOOL_RETRY_MAX; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = Agent.TOOL_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+          log.info(`Retrying tool ${toolCall.name} (attempt ${attempt + 1})`, { delay });
+          await new Promise(r => setTimeout(r, delay));
+        }
+        log.debug(`Executing tool: ${toolCall.name}`, { args: toolCall.arguments, attempt });
+        const result = await handler.execute(toolCall.arguments);
+        this.recordToolUsage(toolCall.name, true);
+        this.consecutiveFailures = 0;
+        return result;
+      } catch (error) {
+        lastError = error;
+        log.error(`Tool execution failed: ${toolCall.name} (attempt ${attempt + 1})`, { error: String(error) });
+      }
+    }
+
+    this.recordToolUsage(toolCall.name, false);
+    this.handleFailure(`Tool ${toolCall.name} failed after ${Agent.TOOL_RETRY_MAX + 1} attempts: ${String(lastError)}`);
+    return JSON.stringify({ error: String(lastError) });
+  }
+
+  private handleFailure(reason: string): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures >= Agent.MAX_CONSECUTIVE_FAILURES) {
+      log.warn('Consecutive failure threshold reached, escalating to human', { agentId: this.id, failures: this.consecutiveFailures });
+      this.escalationCallback?.(this.id, `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`);
+      this.consecutiveFailures = 0;
     }
   }
 

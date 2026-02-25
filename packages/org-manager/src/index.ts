@@ -5,5 +5,7 @@ export { WSBroadcaster } from './ws-server.js';
 export { HITLService } from './hitl-service.js';
 export type { ApprovalRequest, BountyTask, Notification } from './hitl-service.js';
 export { BillingService } from './billing-service.js';
+export { AuditService } from './audit-service.js';
+export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';
 export type { APIKey, UsageSummary, OrgPlan } from './billing-service.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';

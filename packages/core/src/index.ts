@@ -18,6 +18,7 @@ export {
   createTodoWriteTool, createTodoReadTool,
   MCPClientManager, createBuiltinTools,
   createManagerTools, type ManagerToolsContext,
+  createA2ATools, type A2AContext,
 } from './tools/index.js';
 export {
   type SkillManifest, type SkillInstance, type SkillRegistry, type SkillCategory,

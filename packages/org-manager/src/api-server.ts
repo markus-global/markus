@@ -5,6 +5,7 @@ import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
+import type { AuditService } from './audit-service.js';
 import { WSBroadcaster } from './ws-server.js';
 
 const log = createLogger('api-server');
@@ -15,6 +16,7 @@ export class APIServer {
   private skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
   private billingService?: BillingService;
+  private auditService?: AuditService;
 
   constructor(
     private orgService: OrganizationService,
@@ -30,6 +32,10 @@ export class APIServer {
 
   setBillingService(service: BillingService): void {
     this.billingService = service;
+  }
+
+  setAuditService(service: AuditService): void {
+    this.auditService = service;
   }
 
   setHITLService(service: HITLService): void {
@@ -118,6 +124,16 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         const report = await agent.generateDailyReport();
         this.json(res, 200, { agentId: agentId!, report });
+        return;
+      }
+      if (action === 'a2a') {
+        const body = await this.readBody(req);
+        const fromAgentId = body['fromAgentId'] as string;
+        const messageText = body['message'] as string;
+        const targetAgent = this.orgService.getAgentManager().getAgent(agentId!);
+        const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
+        const reply = await targetAgent.handleMessage(messageText, fromAgentId, { name: fromAgent.config.name, role: fromAgent.config.agentRole ?? 'worker' });
+        this.json(res, 200, { from: fromAgentId, to: agentId, reply });
         return;
       }
       if (action === 'message') {
@@ -260,6 +276,7 @@ export class APIServer {
           agentRole: agent.config.agentRole,
           state,
           skills: agent.config.skills,
+          proficiency: agent.getSkillProficiency(),
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -506,11 +523,43 @@ export class APIServer {
       return;
     }
 
+    // Audit log
+    if (path === '/api/audit' && req.method === 'GET') {
+      if (!this.auditService) { this.json(res, 200, { entries: [] }); return; }
+      const entries = this.auditService.query({
+        orgId: url.searchParams.get('orgId') ?? 'default',
+        agentId: url.searchParams.get('agentId') ?? undefined,
+        type: (url.searchParams.get('type') as import('./audit-service.js').AuditEventType) ?? undefined,
+        limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 50,
+        since: url.searchParams.get('since') ?? undefined,
+      });
+      this.json(res, 200, { entries });
+      return;
+    }
+
+    if (path === '/api/audit/summary' && req.method === 'GET') {
+      if (!this.auditService) { this.json(res, 200, { summary: null }); return; }
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const summary = this.auditService.summary(orgId);
+      this.json(res, 200, { summary });
+      return;
+    }
+
+    if (path === '/api/audit/tokens' && req.method === 'GET') {
+      if (!this.auditService) { this.json(res, 200, { usage: [] }); return; }
+      const usage = this.auditService.getTokenUsage(
+        url.searchParams.get('orgId') ?? undefined,
+        url.searchParams.get('agentId') ?? undefined,
+      );
+      this.json(res, 200, { usage });
+      return;
+    }
+
     // Health
     if (path === '/api/health') {
       this.json(res, 200, {
         status: 'ok',
-        version: '0.6.0',
+        version: '0.7.0',
         agents: this.orgService.getAgentManager().listAgents().length,
       });
       return;

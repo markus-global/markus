@@ -8,6 +8,7 @@ interface Props {
 const navItems: Array<{ id: PageId; label: string; icon: string; section?: string }> = [
   { id: 'dashboard', label: 'Overview', icon: '▦', section: 'team' },
   { id: 'chat', label: 'Workspace', icon: '◈', section: 'team' },
+  { id: 'messages', label: 'Messages', icon: '✉', section: 'team' },
   { id: 'tasks', label: 'Tasks', icon: '☑', section: 'team' },
   { id: 'team', label: 'Team', icon: '◎', section: 'members' },
   { id: 'agents', label: 'Agents', icon: '⊕', section: 'members' },
@@ -23,7 +24,7 @@ export function Sidebar({ currentPage, onNavigate }: Props) {
   ];
 
   return (
-    <aside className="w-60 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
+    <aside className="w-60 h-screen bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
       <div className="p-5 border-b border-gray-800">
         <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
           Markus
@@ -54,7 +55,7 @@ export function Sidebar({ currentPage, onNavigate }: Props) {
         ))}
       </nav>
       <div className="p-4 border-t border-gray-800 text-xs text-gray-600">
-        v0.6.0
+        v0.7.0
       </div>
     </aside>
   );

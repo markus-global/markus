@@ -879,3 +879,69 @@ GET /api/keys?orgId=default
 # 吊销 Key
 DELETE /api/keys/{id}
 ```
+
+---
+
+### Phase 7 能力增强 (v0.7.0)
+
+#### 9.1 观测性和审计系统
+
+每次 LLM 调用和工具执行都自动记录到审计日志，支持 token 消耗追踪。
+
+```bash
+# 查看审计日志
+GET /api/audit?limit=20&agentId=xxx&type=llm_request
+
+# 审计摘要（事件统计 + token 汇总）
+GET /api/audit/summary?orgId=default
+
+# Token 使用详情（按 agent 分组）
+GET /api/audit/tokens?orgId=default
+
+# CLI
+markus audit:log --id <agent_id> --type llm_request
+markus audit:summary
+```
+
+#### 9.2 Agent 间协作 (A2A 消息总线)
+
+所有 Agent 默认拥有 `agent_send_message` 和 `agent_list_colleagues` 工具，可以直接给同事发消息。
+
+```bash
+# API: Agent A 给 Agent B 发消息
+POST /api/agents/{targetId}/a2a
+{ "fromAgentId": "agt_xxx", "message": "帮我检查一下代码" }
+
+# CLI: 发送 A2A 消息
+markus agent:message --id <from_agent> --target <to_agent> --text "message"
+```
+
+Agent 也可以在对话中自主决定使用 `agent_send_message` 工具向同事求助。
+
+#### 9.3 自适应 LLM 选型
+
+系统根据请求复杂度自动选择最经济的模型：
+- **simple**（短对话，无工具）→ 经济模型（如 DeepSeek）
+- **moderate**（中等上下文，少量工具）→ 经济模型
+- **complex**（长上下文，多工具）→ 强模型（如 Claude/GPT-4o）
+
+如果首选模型失败，自动 fallback 到备选模型。
+
+#### 9.4 Agent 成长系统
+
+每次工具调用自动记录到 Agent 的 proficiency 数据中：
+
+```bash
+# API: 查看 agent 详情（包含 proficiency）
+GET /api/agents/{id}
+# 返回 proficiency: { "git_status": { uses: 5, successes: 5, lastUsed: "..." } }
+
+# CLI: 查看 agent 成长数据
+markus agent:profile --id <agent_id>
+```
+
+#### 9.5 错误恢复和韧性
+
+- **工具重试**：失败后自动重试最多 2 次，指数退避（500ms, 1s）
+- **LLM Fallback**：主模型超时/失败时自动切换备选模型
+- **人工兜底**：连续 3 次失败后自动发送通知给人类管理员

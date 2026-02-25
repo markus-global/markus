@@ -8,6 +8,7 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { createManagerTools } from './tools/manager.js';
+import { createA2ATools } from './tools/a2a.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { join } from 'node:path';
@@ -52,6 +53,8 @@ export class AgentManager {
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
+  private agentAuditCallback?: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
+  private escalationHandler?: (agentId: string, reason: string) => void;
 
   constructor(options: {
     llmRouter: LLMRouter;
@@ -124,6 +127,25 @@ export class AgentManager {
       }
     }
 
+    // A2A tools — every agent can message colleagues
+    const a2aTools = createA2ATools({
+      selfId: id,
+      selfName: config.name,
+      listColleagues: () => this.listAgents().map(a => {
+        try {
+          const ag = this.getAgent(a.id);
+          return { ...a, skills: ag.config.skills };
+        } catch { return { ...a, skills: [] }; }
+      }),
+      sendMessage: async (targetId, message, fromId, fromName) => {
+        const target = this.getAgent(targetId);
+        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
+      },
+    });
+    for (const tool of a2aTools) {
+      agent.registerTool(tool);
+    }
+
     // If this is a manager agent, inject manager-specific tools
     if (request.agentRole === 'manager') {
       const managerTools = createManagerTools({
@@ -168,6 +190,14 @@ export class AgentManager {
           log.warn(`Failed to connect MCP server ${serverName} for agent ${id}`, { error: String(error) });
         }
       }
+    }
+
+    if (this.agentAuditCallback) {
+      const cb = this.agentAuditCallback;
+      agent.setAuditCallback((event) => cb(id, event));
+    }
+    if (this.escalationHandler) {
+      agent.setEscalationCallback(this.escalationHandler);
     }
 
     this.agents.set(id, agent);
@@ -226,6 +256,20 @@ export class AgentManager {
     const agent = this.agents.get(agentId);
     if (!agent) throw new Error(`Agent not found: ${agentId}`);
     return agent;
+  }
+
+  setAuditCallback(cb: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void): void {
+    this.agentAuditCallback = cb;
+    for (const [id, agent] of this.agents) {
+      agent.setAuditCallback((event) => cb(id, event));
+    }
+  }
+
+  setEscalationHandler(handler: (agentId: string, reason: string) => void): void {
+    this.escalationHandler = handler;
+    for (const [, agent] of this.agents) {
+      agent.setEscalationCallback(handler);
+    }
   }
 
   listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[] }> {

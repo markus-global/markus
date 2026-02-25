@@ -6,3 +6,4 @@ export { createTodoWriteTool, createTodoReadTool } from './todo.js';
 export { MCPClientManager } from './mcp-client.js';
 export { createBuiltinTools } from './builtin.js';
 export { createManagerTools, type ManagerToolsContext } from './manager.js';
+export { createA2ATools, type A2AContext } from './a2a.js';

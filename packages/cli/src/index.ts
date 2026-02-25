@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
-import { OrganizationService, TaskService, APIServer, HITLService, BillingService, initStorage } from '@markus/org-manager';
+import { OrganizationService, TaskService, APIServer, HITLService, BillingService, AuditService, initStorage } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
 // Load .env file from project root
@@ -38,6 +38,8 @@ Commands:
   agent:create    Create a new agent
   agent:chat      Chat with an agent interactively
   agent:status    Show detailed agent status
+  agent:message   Send A2A message between agents (--id, --target, --text)
+  agent:profile   Show agent growth profile (--id)
   role:list       List available role templates
   skill:list      List available skills
   skill:init      Scaffold a new skill project
@@ -52,6 +54,8 @@ Commands:
   key:list        List API keys
   key:create      Create an API key
   usage           Show usage summary
+  audit:log       View audit log (--type, --id for agent)
+  audit:summary   View audit summary
   db:init         Initialize database (run migrations)
   version         Show version
   help            Show this help message
@@ -84,7 +88,7 @@ async function main() {
   }
 
   if (command === 'version' || command === '--version') {
-    console.log('markus v0.6.0');
+    console.log('markus v0.7.0');
     return;
   }
 
@@ -100,6 +104,8 @@ async function main() {
       template: { type: 'string', short: 't' },
       email: { type: 'string' },
       approved: { type: 'string' },
+      target: { type: 'string' },
+      text: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -122,6 +128,12 @@ async function main() {
       break;
     case 'agent:status':
       await agentStatus(config, values);
+      break;
+    case 'agent:message':
+      await agentA2AMessage(config, values);
+      break;
+    case 'agent:profile':
+      await agentProfile(config, values);
       break;
     case 'role:list':
       await listRoles(config);
@@ -164,6 +176,12 @@ async function main() {
       break;
     case 'usage':
       await showUsage(config);
+      break;
+    case 'audit:log':
+      await showAuditLog(config, values);
+      break;
+    case 'audit:summary':
+      await showAuditSummary(config);
       break;
     case 'db:init':
       await dbInit(config);
@@ -235,8 +253,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const hitlService = new HITLService();
   const billingService = new BillingService();
   billingService.setOrgPlan('default', 'free');
+  const auditService = new AuditService();
 
-  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry, hitlService, billingService };
+  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry, hitlService, billingService, auditService };
 }
 
 async function startServer(
@@ -245,25 +264,69 @@ async function startServer(
 ) {
   console.log('Starting Markus server...');
 
-  const { orgService, taskService, agentManager, skillRegistry, hitlService, billingService } = await createServices(config);
+  const { orgService, taskService, agentManager, skillRegistry, hitlService, billingService, auditService } = await createServices(config);
 
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
   apiServer.setSkillRegistry(skillRegistry);
   apiServer.setHITLService(hitlService);
   apiServer.setBillingService(billingService);
+  apiServer.setAuditService(auditService);
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
+
+  agentManager.setEscalationHandler((agentId, reason) => {
+    log.warn('Agent escalation', { agentId, reason });
+    hitlService.notify({
+      targetUserId: 'default',
+      type: 'system',
+      title: 'Agent needs help',
+      body: reason,
+      priority: 'high',
+    });
+    auditService.record({
+      orgId: 'default', agentId, type: 'error',
+      action: 'escalation', detail: reason, success: false,
+    });
+  });
+
+  agentManager.setAuditCallback((agentId, event) => {
+    auditService.record({
+      orgId: 'default',
+      agentId,
+      type: event.type as import('@markus/org-manager').AuditEventType,
+      action: event.action,
+      tokensUsed: event.tokensUsed,
+      durationMs: event.durationMs,
+      success: event.success,
+      detail: event.detail,
+    });
+    if (event.tokensUsed && event.type === 'llm_request') {
+      auditService.recordLLMUsage('default', agentId, Math.floor(event.tokensUsed * 0.7), Math.ceil(event.tokensUsed * 0.3));
+    }
+  });
 
   const messageRouter = new MessageRouter();
   const webUIAdapter = new WebUIAdapter();
   messageRouter.registerAdapter(webUIAdapter);
 
   messageRouter.setAgentHandler(async (agentId, message) => {
+    const startTs = Date.now();
     try {
       const agent = agentManager.getAgent(agentId);
-      return await agent.handleMessage(message.content.text ?? '', message.senderId);
+      const reply = await agent.handleMessage(message.content.text ?? '', message.senderId);
+      auditService.record({
+        orgId: 'default', agentId, type: 'agent_message',
+        action: 'handle_message', detail: (message.content.text ?? '').slice(0, 200),
+        durationMs: Date.now() - startTs, success: true,
+      });
+      return reply;
     } catch (error) {
+      auditService.record({
+        orgId: 'default', agentId, type: 'agent_message',
+        action: 'handle_message', detail: String(error).slice(0, 200),
+        durationMs: Date.now() - startTs, success: false,
+      });
       log.error('Agent message handler error', { error: String(error) });
       return undefined;
     }
@@ -435,6 +498,58 @@ async function agentStatus(config: ReturnType<typeof loadConfig>, values: Record
   console.log(`  Container ID:  ${state.containerId ?? 'none'}`);
   console.log(`  Heartbeat:     ${state.lastHeartbeat ?? 'none'}`);
   console.log(`  Skills:        ${agent.config.skills?.join(', ') ?? 'none'}`);
+}
+
+async function agentA2AMessage(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const fromId = values['id'] as string;
+  const targetId = values['target'] as string;
+  const text = values['text'] as string;
+  if (!fromId || !targetId || !text) {
+    console.error('Usage: markus agent:message --id <from_agent> --target <to_agent> --text "message"');
+    process.exit(1);
+  }
+
+  const { agentManager } = await createServices(config);
+  const fromAgent = agentManager.getAgent(fromId);
+  const targetAgent = agentManager.getAgent(targetId);
+
+  console.log(`\nSending A2A message: ${fromAgent.config.name} → ${targetAgent.config.name}`);
+  console.log(`Message: ${text}\n`);
+
+  const reply = await targetAgent.handleMessage(text, fromId, { name: fromAgent.config.name, role: fromAgent.config.agentRole ?? 'worker' });
+  console.log(`Reply from ${targetAgent.config.name}:`);
+  console.log('─'.repeat(50));
+  console.log(reply);
+}
+
+async function agentProfile(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const agentId = values['id'] as string;
+  if (!agentId) {
+    console.error('Usage: markus agent:profile --id <agent_id>');
+    process.exit(1);
+  }
+
+  const { agentManager } = await createServices(config);
+  const agent = agentManager.getAgent(agentId);
+  const state = agent.getState();
+  const proficiency = agent.getSkillProficiency?.() ?? {};
+
+  console.log(`\nAgent Profile: ${agent.config.name}`);
+  console.log('═'.repeat(50));
+  console.log(`  ID:            ${agentId}`);
+  console.log(`  Role:          ${agent.role.name} (${agent.config.agentRole})`);
+  console.log(`  Status:        ${state.status}`);
+  console.log(`  Tokens Today:  ${state.tokensUsedToday}`);
+  console.log(`  Skills:        ${agent.config.skills?.join(', ') ?? 'none'}`);
+
+  if (Object.keys(proficiency).length > 0) {
+    console.log(`\n  Skill Proficiency:`);
+    for (const [skill, data] of Object.entries(proficiency)) {
+      const d = data as { uses: number; successes: number };
+      const rate = d.uses > 0 ? ((d.successes / d.uses) * 100).toFixed(0) : '0';
+      console.log(`    ${skill.padEnd(25)} uses=${d.uses}  success=${rate}%`);
+    }
+  }
 }
 
 async function dbInit(config: ReturnType<typeof loadConfig>) {
@@ -781,6 +896,50 @@ async function showUsage(config: ReturnType<typeof loadConfig>) {
   console.log(`  Tool Calls:    ${summary.toolCalls.toLocaleString()} / ${plan.limits.maxToolCallsPerDay < 0 ? 'unlimited' : plan.limits.maxToolCallsPerDay.toLocaleString()} per day`);
   console.log(`  Messages:      ${summary.messages.toLocaleString()} / ${plan.limits.maxMessagesPerDay < 0 ? 'unlimited' : plan.limits.maxMessagesPerDay.toLocaleString()} per day`);
   console.log(`  Storage:       ${(summary.storageBytes / 1024 / 1024).toFixed(1)}MB / ${plan.limits.maxStorageBytes < 0 ? 'unlimited' : (plan.limits.maxStorageBytes / 1024 / 1024).toFixed(0) + 'MB'}`);
+}
+
+async function showAuditLog(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+  const { auditService } = await createServices(config);
+  const entries = auditService.query({
+    orgId: 'default',
+    agentId: values['id'] as string | undefined,
+    type: values['type'] as import('@markus/org-manager').AuditEventType | undefined,
+    limit: 30,
+  });
+
+  if (entries.length === 0) {
+    console.log('\nNo audit entries found.');
+    return;
+  }
+
+  console.log('\nAudit Log:');
+  console.log('─'.repeat(90));
+  console.log(`  ${'Time'.padEnd(22)} ${'Type'.padEnd(18)} ${'Agent'.padEnd(14)} ${'Action'.padEnd(20)} OK`);
+  console.log('─'.repeat(90));
+  for (const e of entries) {
+    console.log(`  ${e.timestamp.slice(0, 19).padEnd(22)} ${e.type.padEnd(18)} ${(e.agentId ?? '-').padEnd(14)} ${e.action.slice(0, 20).padEnd(20)} ${e.success ? '✓' : '✗'}`);
+  }
+}
+
+async function showAuditSummary(config: ReturnType<typeof loadConfig>) {
+  const { auditService } = await createServices(config);
+  const summary = auditService.summary('default');
+
+  console.log('\nAudit Summary (org: default):');
+  console.log('─'.repeat(50));
+  console.log(`  Total Events:  ${summary.totalEvents}`);
+  console.log(`  Total Tokens:  ${summary.totalTokens.toLocaleString()}`);
+  console.log(`  Errors:        ${summary.errorCount}`);
+  console.log(`\n  Events by Type:`);
+  for (const [type, count] of Object.entries(summary.eventsByType)) {
+    console.log(`    ${type.padEnd(20)} ${count}`);
+  }
+  if (summary.agentActivity.length > 0) {
+    console.log(`\n  Agent Activity:`);
+    for (const a of summary.agentActivity) {
+      console.log(`    ${a.agentId.padEnd(20)} events=${a.events}  tokens=${a.tokens}`);
+    }
+  }
 }
 
 main().catch((error) => {
