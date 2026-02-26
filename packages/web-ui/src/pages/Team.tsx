@@ -1,24 +1,54 @@
-import { useEffect, useState } from 'react';
-import { api, wsClient, type AgentInfo, type HumanUserInfo } from '../api.ts';
+import { useEffect, useState, useRef } from 'react';
+import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser } from '../api.ts';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
-export function TeamPage() {
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [humans, setHumans] = useState<HumanUserInfo[]>([]);
-  const [showAddHuman, setShowAddHuman] = useState(false);
-  const [showHire, setShowHire] = useState(false);
-  const [roles, setRoles] = useState<string[]>([]);
+// ─── Role display config ───────────────────────────────────────────────────────
 
-  const [humanName, setHumanName] = useState('');
-  const [humanRole, setHumanRole] = useState<string>('member');
-  const [humanEmail, setHumanEmail] = useState('');
+const ROLE_ICONS: Record<string, string> = {
+  'developer': '💻', 'software-engineer': '💻',
+  'product-manager': '📋',
+  'data-analyst': '📊',
+  'devops': '⚙️', 'devops-engineer': '⚙️',
+  'support': '🎧', 'customer-support': '🎧',
+  'content-writer': '✍️',
+  'hr': '👥', 'hr-manager': '👥',
+  'marketing': '📣', 'marketing-manager': '📣',
+  'qa-engineer': '🔍',
+  'finance': '💰',
+  'operations': '🔧',
+  'org-manager': '⭐',
+};
 
-  const [hireName, setHireName] = useState('');
-  const [hireRole, setHireRole] = useState('');
-  const [hireAgentRole, setHireAgentRole] = useState<'worker' | 'manager'>('worker');
+function roleIcon(roleName: string): string {
+  return ROLE_ICONS[roleName.toLowerCase().replace(/\s+/g, '-')] ?? '🤖';
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
+  const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
+
+  const [teams, setTeams] = useState<TeamInfo[]>([]);
+  const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);
+  const [roles, setRoles] = useState<RoleInfo[]>([]);
+
+  // Modal state
+  const [showNewTeam, setShowNewTeam] = useState(false);
+  const [showHire, setShowHire] = useState<{ teamId?: string } | null>(null);
+  const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
+  const [showAddExisting, setShowAddExisting] = useState<string | null>(null); // teamId
+  const [addMemberMenuTeam, setAddMemberMenuTeam] = useState<string | null>(null);
+
+  // Confirm dialog state
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string; message: string; confirmLabel?: string; onConfirm: () => void;
+  } | null>(null);
+  const askConfirm = (title: string, message: string, onConfirm: () => void, confirmLabel?: string) => {
+    setPendingConfirm({ title, message, onConfirm, confirmLabel });
+  };
 
   const refresh = () => {
-    api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
-    api.users.list().then(d => setHumans(d.users)).catch(() => {});
+    api.teams.list().then(d => { setTeams(d.teams); setUngrouped(d.ungrouped); }).catch(() => {});
     api.roles.list().then(d => setRoles(d.roles)).catch(() => {});
   };
 
@@ -29,209 +59,801 @@ export function TeamPage() {
     return () => { clearInterval(i); unsub(); };
   }, []);
 
-  const addHuman = async () => {
-    if (!humanName) return;
-    await api.users.create(humanName, humanRole, undefined, humanEmail || undefined);
-    setShowAddHuman(false);
-    setHumanName('');
-    setHumanEmail('');
+  // Close add-member menu on outside click
+  useEffect(() => {
+    if (!addMemberMenuTeam) return;
+    const handler = () => setAddMemberMenuTeam(null);
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [addMemberMenuTeam]);
+
+  const handleSetManager = async (teamId: string, memberId: string, memberType: 'human' | 'agent') => {
+    await api.teams.update(teamId, { managerId: memberId, managerType: memberType });
     refresh();
   };
 
-  const hire = async () => {
-    if (!hireName || !hireRole) return;
-    await api.agents.create(hireName, hireRole, hireAgentRole);
-    setShowHire(false);
-    setHireName('');
+  const handleRemoveFromTeam = (teamId: string, memberId: string) => {
+    askConfirm(
+      'Remove from team?',
+      'This member will be moved to Ungrouped. They will remain in the organization.',
+      async () => { await api.teams.removeMember(teamId, memberId); refresh(); },
+      'Remove from Team',
+    );
+  };
+
+  const handleDeleteTeam = (teamId: string, teamName: string) => {
+    askConfirm(
+      `Delete "${teamName}"?`,
+      'All members will become ungrouped but remain in the organization. This cannot be undone.',
+      async () => { await api.teams.delete(teamId); refresh(); },
+      'Delete Team',
+    );
+  };
+
+  const handleStartStop = async (agentId: string, status: string) => {
+    if (status === 'offline') await api.agents.start(agentId);
+    else await api.agents.stop(agentId);
     refresh();
   };
 
-  const manager = agents.find(a => a.agentRole === 'manager');
+  const handleRemoveAgent = (agentId: string, agentName: string) => {
+    askConfirm(
+      `Remove "${agentName}"?`,
+      'This agent will be permanently removed from the organization.',
+      async () => { await api.agents.remove(agentId); refresh(); },
+      'Remove Agent',
+    );
+  };
+
+  const handleRemoveHuman = (userId: string, userName: string) => {
+    askConfirm(
+      `Remove "${userName}"?`,
+      'This user will be removed from the organization and lose access.',
+      async () => { await api.users.remove(userId); refresh(); },
+      'Remove User',
+    );
+  };
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="flex items-center justify-between px-7 h-15 border-b border-gray-800 bg-gray-900">
-        <h2 className="text-lg font-semibold">Organization Team</h2>
-        <div className="flex gap-2">
-          <button onClick={() => setShowAddHuman(true)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors">
-            + Add Human
-          </button>
-          <button onClick={() => setShowHire(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">
-            + Hire Agent
-          </button>
-        </div>
-      </div>
-
-      <div className="p-7 space-y-8">
-        {/* Manager Section */}
-        <section>
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Organization Manager</h3>
-          {manager ? (
-            <div className="bg-gradient-to-r from-indigo-900/30 to-purple-900/30 border border-indigo-500/30 rounded-xl p-5 flex items-center gap-4">
-              <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-xl font-bold shrink-0">
-                {manager.name.charAt(0)}
-              </div>
-              <div className="flex-1">
-                <div className="font-semibold text-lg">{manager.name}</div>
-                <div className="text-sm text-gray-400">{manager.role} &middot; AI Manager</div>
-              </div>
-              <StatusDot status={manager.status} />
-            </div>
-          ) : (
-            <div className="border border-dashed border-gray-700 rounded-xl p-8 text-center text-gray-500 text-sm">
-              No Organization Manager assigned yet. Hire an agent with the "manager" role to enable smart message routing and team coordination.
-            </div>
+    <div className="flex-1 overflow-y-auto" onClick={() => setAddMemberMenuTeam(null)}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-7 h-14 border-b border-gray-800 bg-gray-900 sticky top-0 z-20">
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-semibold">Teams</h2>
+          {authUser && (
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-700/40 text-indigo-300 capitalize">
+              {authUser.role}
+            </span>
           )}
-        </section>
-
-        {/* AI Agents Section */}
-        <section>
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            AI Employees ({agents.filter(a => a.agentRole !== 'manager').length})
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {agents.filter(a => a.agentRole !== 'manager').map(a => (
-              <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gray-800 rounded-lg flex items-center justify-center text-sm font-bold text-indigo-400 shrink-0">
-                    {a.name.charAt(0)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{a.name}</div>
-                    <div className="text-xs text-gray-500 truncate">{a.role}</div>
-                  </div>
-                  <StatusDot status={a.status} />
-                </div>
-                <div className="flex gap-2 mt-3 pt-3 border-t border-gray-800">
-                  <button onClick={() => api.agents.start(a.id).then(refresh)} className="text-xs text-indigo-400 hover:text-indigo-300">Start</button>
-                  <button onClick={() => api.agents.stop(a.id).then(refresh)} className="text-xs text-gray-400 hover:text-gray-300">Stop</button>
-                  <button onClick={() => { if (confirm('Remove this agent?')) api.agents.remove(a.id).then(refresh); }} className="text-xs text-red-400 hover:text-red-300 ml-auto">Remove</button>
-                </div>
-              </div>
-            ))}
-            {agents.filter(a => a.agentRole !== 'manager').length === 0 && (
-              <div className="col-span-full bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">
-                No AI employees yet.
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Human Members Section */}
-        <section>
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            Human Members ({humans.length})
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {humans.map(h => (
-              <div key={h.id} className="bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gray-800 rounded-lg flex items-center justify-center text-sm font-bold text-emerald-400 shrink-0">
-                    {h.name.charAt(0)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{h.name}</div>
-                    <div className="text-xs text-gray-500 truncate">{h.email || 'No email'}</div>
-                  </div>
-                  <RoleBadge role={h.role} />
-                </div>
-                <div className="flex gap-2 mt-3 pt-3 border-t border-gray-800 justify-end">
-                  <button onClick={() => { if (confirm('Remove this user?')) api.users.remove(h.id).then(refresh); }} className="text-xs text-red-400 hover:text-red-300">Remove</button>
-                </div>
-              </div>
-            ))}
-            {humans.length === 0 && (
-              <div className="col-span-full bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">
-                No human members registered. Add a human member to enable identity-aware conversations.
-              </div>
-            )}
-          </div>
-        </section>
+          <span className="text-xs text-gray-500">{teams.length} team{teams.length !== 1 ? 's' : ''}</span>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => setShowNewTeam(true)}
+            className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+          >
+            + New Team
+          </button>
+        )}
       </div>
 
-      {/* Add Human Modal */}
-      {showAddHuman && (
-        <Modal onClose={() => setShowAddHuman(false)} title="Add Human Team Member">
-          <label className="block text-sm text-gray-400 mb-1.5">Name</label>
-          <input value={humanName} onChange={e => setHumanName(e.target.value)} placeholder="e.g. John"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none" />
-          <label className="block text-sm text-gray-400 mb-1.5">Email (optional)</label>
-          <input value={humanEmail} onChange={e => setHumanEmail(e.target.value)} placeholder="john@example.com"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none" />
-          <label className="block text-sm text-gray-400 mb-1.5">Role</label>
-          <select value={humanRole} onChange={e => setHumanRole(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-6 focus:border-indigo-500 outline-none">
-            <option value="owner">Owner</option>
-            <option value="admin">Admin</option>
-            <option value="member">Member</option>
-            <option value="guest">Guest</option>
-          </select>
-          <div className="flex justify-end gap-3">
-            <button onClick={() => setShowAddHuman(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
-            <button onClick={addHuman} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Add</button>
+      <div className="p-6 space-y-4">
+        {/* Teams */}
+        {teams.map(team => (
+          <TeamCard
+            key={team.id}
+            team={team}
+            isAdmin={isAdmin}
+            authUserId={authUser?.id}
+            addMemberMenuOpen={addMemberMenuTeam === team.id}
+            onSetManager={handleSetManager}
+            onRemoveFromTeam={handleRemoveFromTeam}
+            onDeleteTeam={handleDeleteTeam}
+            onStartStop={handleStartStop}
+            onRemoveAgent={handleRemoveAgent}
+            onRemoveHuman={handleRemoveHuman}
+            onOpenAddMenu={(e) => { e.stopPropagation(); setAddMemberMenuTeam(prev => prev === team.id ? null : team.id); }}
+            onHireAgent={() => { setAddMemberMenuTeam(null); setShowHire({ teamId: team.id }); }}
+            onAddHuman={() => { setAddMemberMenuTeam(null); setShowAddHuman({ teamId: team.id }); }}
+            onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
+            ungrouped={ungrouped}
+          />
+        ))}
+
+        {/* Ungrouped */}
+        {ungrouped.length > 0 && (
+          <UngroupedSection
+            members={ungrouped}
+            isAdmin={isAdmin}
+            authUserId={authUser?.id}
+            teams={teams}
+            onStartStop={handleStartStop}
+            onRemoveAgent={handleRemoveAgent}
+            onRemoveHuman={handleRemoveHuman}
+            onMoveToTeam={async (memberId, memberType, teamId) => {
+              await api.teams.addMember(teamId, memberId, memberType);
+              refresh();
+            }}
+          />
+        )}
+
+        {/* Empty state */}
+        {teams.length === 0 && ungrouped.length === 0 && (
+          <div className="text-center py-20 text-gray-500">
+            <div className="text-4xl mb-3">👥</div>
+            <div className="text-sm font-medium mb-1">No teams yet</div>
+            <div className="text-xs text-gray-600">
+              {isAdmin ? 'Create a team to organize your human and AI employees.' : 'No teams have been created yet.'}
+            </div>
           </div>
-        </Modal>
+        )}
+
+        {teams.length === 0 && ungrouped.length > 0 && isAdmin && (
+          <div className="text-center py-4 text-xs text-gray-600">
+            Create a team above to organize these members.
+          </div>
+        )}
+      </div>
+
+      {/* New Team Modal */}
+      {showNewTeam && (
+        <NewTeamModal
+          onClose={() => setShowNewTeam(false)}
+          onCreate={async (name) => {
+            await api.teams.create(name);
+            setShowNewTeam(false);
+            refresh();
+          }}
+        />
       )}
 
       {/* Hire Agent Modal */}
-      {showHire && (
-        <Modal onClose={() => setShowHire(false)} title="Hire a Digital Employee">
-          <label className="block text-sm text-gray-400 mb-1.5">Name</label>
-          <input value={hireName} onChange={e => setHireName(e.target.value)} placeholder="e.g. Alice"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none" />
-          <label className="block text-sm text-gray-400 mb-1.5">Role Template</label>
-          <select value={hireRole} onChange={e => setHireRole(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none">
-            <option value="">Select a role...</option>
-            {roles.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <label className="block text-sm text-gray-400 mb-1.5">Position</label>
-          <select value={hireAgentRole} onChange={e => setHireAgentRole(e.target.value as 'worker' | 'manager')}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-6 focus:border-indigo-500 outline-none">
-            <option value="worker">Worker — Regular team member</option>
-            <option value="manager">Manager — Organization leader (routes messages, coordinates team)</option>
-          </select>
-          <div className="flex justify-end gap-3">
-            <button onClick={() => setShowHire(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
-            <button onClick={hire} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Hire</button>
-          </div>
-        </Modal>
+      {showHire !== null && (
+        <HireAgentModal
+          roles={roles}
+          teamId={showHire.teamId}
+          teams={teams}
+          onClose={() => setShowHire(null)}
+          onHire={async (name, roleName, agentRole, teamId) => {
+            await api.agents.create(name, roleName, agentRole, teamId);
+            setShowHire(null);
+            refresh();
+          }}
+        />
+      )}
+
+      {/* Add Human Modal */}
+      {showAddHuman !== null && (
+        <AddHumanModal
+          teamId={showAddHuman.teamId}
+          teams={teams}
+          onClose={() => setShowAddHuman(null)}
+          onAdd={async (name, role, email, password, teamId) => {
+            await api.users.create(name, role, undefined, email, password, teamId);
+            setShowAddHuman(null);
+            refresh();
+          }}
+        />
+      )}
+
+      {/* Add Existing Member Modal */}
+      {showAddExisting !== null && (
+        <AddExistingModal
+          teamId={showAddExisting}
+          ungrouped={ungrouped}
+          onClose={() => setShowAddExisting(null)}
+          onAdd={async (memberId, memberType) => {
+            await api.teams.addMember(showAddExisting, memberId, memberType);
+            setShowAddExisting(null);
+            refresh();
+          }}
+        />
+      )}
+
+      {pendingConfirm && (
+        <ConfirmModal
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          onConfirm={() => { pendingConfirm.onConfirm(); setPendingConfirm(null); }}
+          onCancel={() => setPendingConfirm(null)}
+        />
       )}
     </div>
   );
 }
 
-function Modal({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
+// ─── Team Card ────────────────────────────────────────────────────────────────
+
+function TeamCard({
+  team, isAdmin, authUserId, addMemberMenuOpen,
+  onSetManager, onRemoveFromTeam, onDeleteTeam,
+  onStartStop, onRemoveAgent, onRemoveHuman,
+  onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped,
+}: {
+  team: TeamInfo;
+  isAdmin: boolean;
+  authUserId?: string;
+  addMemberMenuOpen: boolean;
+  ungrouped: TeamMemberInfo[];
+  onSetManager: (teamId: string, memberId: string, memberType: 'human' | 'agent') => void;
+  onRemoveFromTeam: (teamId: string, memberId: string) => void;
+  onDeleteTeam: (teamId: string, teamName: string) => void;
+  onStartStop: (agentId: string, status: string) => void;
+  onRemoveAgent: (agentId: string, agentName: string) => void;
+  onRemoveHuman: (userId: string, userName: string) => void;
+  onOpenAddMenu: (e: React.MouseEvent) => void;
+  onHireAgent: () => void;
+  onAddHuman: () => void;
+  onAddExisting: () => void;
+}) {
+  return (
+    <div className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden hover:border-gray-700 transition-colors">
+      {/* Team header */}
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800/60">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold">{team.name}</span>
+          <span className="text-xs text-gray-500">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</span>
+          {team.managerId && team.managerName && (
+            <div className="flex items-center gap-1 text-xs text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+              <span>★</span>
+              <span>{team.managerName}</span>
+            </div>
+          )}
+          {!team.managerId && (
+            <span className="text-xs text-gray-600 italic">No manager</span>
+          )}
+        </div>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <div className="relative" onClick={e => e.stopPropagation()}>
+              <button
+                onClick={onOpenAddMenu}
+                className="px-3 py-1 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 hover:text-indigo-300 transition-colors"
+              >
+                + Add Member
+              </button>
+              {addMemberMenuOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-30 w-44">
+                  <button onClick={onHireAgent} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300">
+                    🤖 Hire AI Agent
+                  </button>
+                  <button onClick={onAddHuman} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-emerald-300">
+                    👤 Add Human
+                  </button>
+                  {ungrouped.length > 0 && (
+                    <button onClick={onAddExisting} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-gray-300">
+                      ↗ Add Existing
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => onDeleteTeam(team.id, team.name)}
+              className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded"
+              title="Delete team"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Members grid */}
+      <div className="p-4">
+        {team.members.length === 0 ? (
+          <div className="text-center py-6 text-xs text-gray-600">
+            No members yet — add someone above.
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-3">
+            {team.members.map(member => (
+              <MemberCard
+                key={member.id}
+                member={member}
+                teamId={team.id}
+                isManager={team.managerId === member.id}
+                isAdmin={isAdmin}
+                isSelf={member.id === authUserId}
+                onSetManager={() => onSetManager(team.id, member.id, member.type)}
+                onRemoveFromTeam={() => onRemoveFromTeam(team.id, member.id)}
+                onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
+                onRemoveFromOrg={() => member.type === 'agent' ? onRemoveAgent(member.id, member.name) : onRemoveHuman(member.id, member.name)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Member Card ──────────────────────────────────────────────────────────────
+
+function MemberCard({
+  member, teamId, isManager, isAdmin, isSelf,
+  onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
+}: {
+  member: TeamMemberInfo;
+  teamId: string;
+  isManager: boolean;
+  isAdmin: boolean;
+  isSelf: boolean;
+  onSetManager: () => void;
+  onRemoveFromTeam: () => void;
+  onStartStop: () => void;
+  onRemoveFromOrg: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
+  const isAI = member.type === 'agent';
+  const avatarColor = isAI ? 'bg-indigo-700' : 'bg-emerald-800';
+  const statusColor = member.status === 'idle' ? 'bg-green-400' : member.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600';
+
+  return (
+    <div className={`relative group w-44 bg-gray-800/50 border rounded-xl p-3.5 transition-all ${isManager ? 'border-amber-500/40 bg-amber-500/5' : 'border-gray-700/60 hover:border-gray-600'}`}>
+      {/* Manager star */}
+      {isManager && (
+        <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center text-[10px] text-gray-900 font-bold shadow">★</div>
+      )}
+
+      {/* Avatar + status */}
+      <div className="flex items-center gap-2.5 mb-2.5">
+        <div className={`w-9 h-9 ${avatarColor} rounded-lg flex items-center justify-center text-sm font-bold shrink-0 text-white`}>
+          {member.name.charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-sm truncate leading-tight">{member.name}</div>
+          <div className="text-[11px] text-gray-500 truncate">{member.role}</div>
+        </div>
+      </div>
+
+      {/* Type + status row */}
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isAI ? 'bg-indigo-900/60 text-indigo-400' : 'bg-emerald-900/40 text-emerald-400'}`}>
+          {isAI ? 'AI' : 'Human'}
+        </span>
+        {isAI && member.status && (
+          <div className="flex items-center gap-1 ml-auto">
+            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+            <span className="text-gray-500">{member.status}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Actions menu (admin only, on hover) */}
+      {isAdmin && (
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity" ref={menuRef}>
+          <button
+            onClick={e => { e.stopPropagation(); setMenuOpen(v => !v); }}
+            className="w-6 h-6 rounded-md hover:bg-gray-700 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs"
+          >
+            ···
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-7 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-40 w-40" onClick={e => e.stopPropagation()}>
+              {!isManager && (
+                <button onClick={() => { setMenuOpen(false); onSetManager(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-amber-300">
+                  ★ Set as Manager
+                </button>
+              )}
+              {isAI && (
+                <button onClick={() => { setMenuOpen(false); onStartStop(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-indigo-300">
+                  {member.status === 'offline' ? '▶ Start' : '⏹ Stop'}
+                </button>
+              )}
+              <button onClick={() => { setMenuOpen(false); onRemoveFromTeam(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-400">
+                ↩ Remove from team
+              </button>
+              {!isSelf && (
+                <button onClick={() => { setMenuOpen(false); onRemoveFromOrg(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-400">
+                  🗑 Remove from org
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Ungrouped Section ────────────────────────────────────────────────────────
+
+function UngroupedSection({
+  members, isAdmin, authUserId, teams,
+  onStartStop, onRemoveAgent, onRemoveHuman, onMoveToTeam,
+}: {
+  members: TeamMemberInfo[];
+  isAdmin: boolean;
+  authUserId?: string;
+  teams: TeamInfo[];
+  onStartStop: (agentId: string, status: string) => void;
+  onRemoveAgent: (agentId: string, agentName: string) => void;
+  onRemoveHuman: (userId: string, userName: string) => void;
+  onMoveToTeam: (memberId: string, memberType: 'human' | 'agent', teamId: string) => void;
+}) {
+  return (
+    <div className="border border-dashed border-gray-700/50 rounded-xl overflow-hidden">
+      <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-800/40">
+        <span className="text-sm font-medium text-gray-400">Ungrouped</span>
+        <span className="text-xs text-gray-600">{members.length} member{members.length !== 1 ? 's' : ''}</span>
+      </div>
+      <div className="p-4 flex flex-wrap gap-3">
+        {members.map(member => (
+          <UngroupedMemberCard
+            key={member.id}
+            member={member}
+            isAdmin={isAdmin}
+            isSelf={member.id === authUserId}
+            teams={teams}
+            onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
+            onRemove={() => member.type === 'agent' ? onRemoveAgent(member.id, member.name) : onRemoveHuman(member.id, member.name)}
+            onMoveToTeam={(teamId) => onMoveToTeam(member.id, member.type, teamId)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UngroupedMemberCard({
+  member, isAdmin, isSelf, teams, onStartStop, onRemove, onMoveToTeam,
+}: {
+  member: TeamMemberInfo;
+  isAdmin: boolean;
+  isSelf: boolean;
+  teams: TeamInfo[];
+  onStartStop: () => void;
+  onRemove: () => void;
+  onMoveToTeam: (teamId: string) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
+  const isAI = member.type === 'agent';
+  const statusColor = member.status === 'idle' ? 'bg-green-400' : member.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600';
+
+  return (
+    <div className="relative group w-44 bg-gray-800/30 border border-gray-700/40 rounded-xl p-3.5 hover:border-gray-600 transition-all">
+      <div className="flex items-center gap-2.5 mb-2">
+        <div className={`w-9 h-9 ${isAI ? 'bg-indigo-800/60' : 'bg-emerald-900/60'} rounded-lg flex items-center justify-center text-sm font-bold shrink-0`}>
+          {member.name.charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-sm truncate">{member.name}</div>
+          <div className="text-[11px] text-gray-500 truncate">{member.role}</div>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isAI ? 'bg-indigo-900/40 text-indigo-500' : 'bg-emerald-900/30 text-emerald-500'}`}>
+          {isAI ? 'AI' : 'Human'}
+        </span>
+        {isAI && member.status && (
+          <div className="flex items-center gap-1 ml-auto">
+            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+            <span className="text-gray-600">{member.status}</span>
+          </div>
+        )}
+      </div>
+
+      {isAdmin && (
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity" ref={menuRef}>
+          <button
+            onClick={e => { e.stopPropagation(); setMenuOpen(v => !v); }}
+            className="w-6 h-6 rounded-md hover:bg-gray-700 flex items-center justify-center text-gray-500 hover:text-gray-300 text-xs"
+          >
+            ···
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-7 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-40 w-44" onClick={e => e.stopPropagation()}>
+              {teams.length > 0 && (
+                <div>
+                  <div className="px-3 py-1.5 text-[10px] text-gray-500 uppercase tracking-wider">Move to team</div>
+                  {teams.map(t => (
+                    <button key={t.id} onClick={() => { setMenuOpen(false); onMoveToTeam(t.id); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-300">
+                      → {t.name}
+                    </button>
+                  ))}
+                  <div className="border-t border-gray-700/50 my-1" />
+                </div>
+              )}
+              {isAI && (
+                <button onClick={() => { setMenuOpen(false); onStartStop(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-indigo-300">
+                  {member.status === 'offline' ? '▶ Start' : '⏹ Stop'}
+                </button>
+              )}
+              {!isSelf && (
+                <button onClick={() => { setMenuOpen(false); onRemove(); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-400">
+                  🗑 Remove
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Modals ───────────────────────────────────────────────────────────────────
+
+function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string) => void }) {
+  const [name, setName] = useState('');
+  return (
+    <Modal onClose={onClose} title="Create a New Team">
+      <div className="space-y-4">
+        <Field label="Team Name">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Engineering, Marketing, Support" className="input" autoFocus
+            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim()); }}
+          />
+        </Field>
+        <div className="text-xs text-gray-500">
+          You can add human and AI members to this team after creating it.
+        </div>
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+          <button onClick={() => name.trim() && onCreate(name.trim())} disabled={!name.trim()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg text-white">
+            Create Team
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function HireAgentModal({
+  roles, teamId, teams, onClose, onHire,
+}: {
+  roles: RoleInfo[];
+  teamId?: string;
+  teams: TeamInfo[];
+  onClose: () => void;
+  onHire: (name: string, roleName: string, agentRole: 'worker' | 'manager', teamId?: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const [selectedRole, setSelectedRole] = useState('');
+  const [agentRole, setAgentRole] = useState<'worker' | 'manager'>('worker');
+  const [selectedTeam, setSelectedTeam] = useState(teamId ?? '');
+  const [showMore, setShowMore] = useState(false);
+
+  const visibleRoles = showMore ? roles : roles.slice(0, 8);
+
+  return (
+    <Modal onClose={onClose} title="Hire a Digital Employee" width="w-[560px]">
+      <div className="space-y-5">
+        <Field label="Name">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Alice, Bob" className="input" autoFocus />
+        </Field>
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm text-gray-400">Role</label>
+            {roles.length > 8 && (
+              <button onClick={() => setShowMore(v => !v)} className="text-xs text-indigo-400 hover:text-indigo-300">
+                {showMore ? '▲ Less' : `▼ All ${roles.length} roles`}
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+            {visibleRoles.map(r => (
+              <button
+                key={r.id}
+                onClick={() => setSelectedRole(r.id)}
+                className={`text-left p-3 rounded-xl border text-xs transition-all ${
+                  selectedRole === r.id
+                    ? 'border-indigo-500 bg-indigo-600/15 text-white'
+                    : 'border-gray-700 hover:border-gray-600 text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span>{roleIcon(r.id)}</span>
+                  <span className="font-medium capitalize">{r.name.replace(/-/g, ' ')}</span>
+                  {selectedRole === r.id && <span className="ml-auto text-indigo-400 text-xs">✓</span>}
+                </div>
+                {r.description && <div className="text-gray-500 text-[11px] leading-snug truncate">{r.description}</div>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Position">
+            <div className="flex gap-2">
+              {(['worker', 'manager'] as const).map(pos => (
+                <button
+                  key={pos}
+                  onClick={() => setAgentRole(pos)}
+                  className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${
+                    agentRole === pos ? 'border-indigo-500 bg-indigo-600/15 text-indigo-300' : 'border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {pos === 'worker' ? '👷 Worker' : '⭐ Manager'}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Assign to Team">
+            <select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)} className="input text-sm">
+              <option value="">No team (ungrouped)</option>
+              {teams.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+          <button
+            onClick={() => onHire(name, selectedRole, agentRole, selectedTeam || undefined)}
+            disabled={!name.trim() || !selectedRole}
+            className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg text-white"
+          >
+            Hire
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddHumanModal({
+  teamId, teams, onClose, onAdd,
+}: {
+  teamId?: string;
+  teams: TeamInfo[];
+  onClose: () => void;
+  onAdd: (name: string, role: string, email: string | undefined, password: string | undefined, teamId: string | undefined) => void;
+}) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('member');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [selectedTeam, setSelectedTeam] = useState(teamId ?? '');
+  const [error, setError] = useState('');
+
+  const submit = () => {
+    setError('');
+    if (!name.trim()) { setError('Name is required'); return; }
+    if (password && password !== confirmPassword) { setError('Passwords do not match'); return; }
+    onAdd(name.trim(), role, email || undefined, password || undefined, selectedTeam || undefined);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Add Human Team Member" width="w-[460px]">
+      <div className="space-y-4">
+        <Field label="Name *">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" className="input" autoFocus />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Role">
+            <select value={role} onChange={e => setRole(e.target.value)} className="input">
+              <option value="owner">Owner</option>
+              <option value="admin">Admin</option>
+              <option value="member">Member</option>
+              <option value="guest">Guest</option>
+            </select>
+          </Field>
+          <Field label="Assign to Team">
+            <select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)} className="input">
+              <option value="">No team</option>
+              {teams.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <Field label="Email">
+          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Optional (required for login)" className="input" />
+        </Field>
+        <div className="border-t border-gray-800 pt-3">
+          <div className="text-xs text-gray-500 mb-3">Set a password to allow this person to log in.</div>
+          <Field label="Password">
+            <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Leave blank for no login access" className="input" />
+          </Field>
+          {password && (
+            <div className="mt-3">
+              <Field label="Confirm Password">
+                <input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" placeholder="Repeat password" className="input" />
+              </Field>
+            </div>
+          )}
+        </div>
+        {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">{error}</div>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+          <button onClick={submit} className="px-4 py-2 text-sm bg-emerald-700 hover:bg-emerald-600 rounded-lg text-white">Add Member</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddExistingModal({
+  teamId, ungrouped, onClose, onAdd,
+}: {
+  teamId: string;
+  ungrouped: TeamMemberInfo[];
+  onClose: () => void;
+  onAdd: (memberId: string, memberType: 'human' | 'agent') => void;
+}) {
+  return (
+    <Modal onClose={onClose} title="Add Existing Member to Team">
+      <div className="space-y-3">
+        <div className="text-xs text-gray-500">Select an ungrouped member to add to this team.</div>
+        {ungrouped.length === 0 ? (
+          <div className="text-center py-8 text-sm text-gray-500">All members are already in a team.</div>
+        ) : (
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {ungrouped.map(m => (
+              <button
+                key={m.id}
+                onClick={() => onAdd(m.id, m.type)}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-gray-700 hover:border-indigo-500 hover:bg-indigo-900/10 text-left transition-all"
+              >
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${m.type === 'agent' ? 'bg-indigo-800' : 'bg-emerald-800'}`}>
+                  {m.name.charAt(0)}
+                </div>
+                <div className="flex-1">
+                  <div className="font-medium text-sm">{m.name}</div>
+                  <div className="text-xs text-gray-500">{m.role} · {m.type === 'agent' ? 'AI' : 'Human'}</div>
+                </div>
+                {m.status && (
+                  <span className={`w-2 h-2 rounded-full ${m.status === 'idle' ? 'bg-green-400' : m.status === 'working' ? 'bg-indigo-400' : 'bg-gray-600'}`} />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex justify-end pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Close</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── UI Primitives ────────────────────────────────────────────────────────────
+
+function Modal({ children, onClose, title, width = 'w-[440px]' }: { children: React.ReactNode; onClose: () => void; title: string; width?: string }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-7 w-[440px] shadow-2xl" onClick={e => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold mb-5">{title}</h3>
+      <div className={`bg-gray-900 border border-gray-800 rounded-xl p-6 ${width} shadow-2xl max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold mb-5">{title}</h3>
         {children}
       </div>
     </div>
   );
 }
 
-function StatusDot({ status }: { status: string }) {
-  const color = status === 'idle' ? 'bg-green-400' : status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-500';
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-1.5 text-xs text-gray-400">
-      <span className={`w-2 h-2 rounded-full ${color}`} />
-      {status}
+    <div>
+      <label className="block text-xs text-gray-400 mb-1.5 font-medium">{label}</label>
+      {children}
     </div>
-  );
-}
-
-function RoleBadge({ role }: { role: string }) {
-  const styles: Record<string, string> = {
-    owner: 'bg-amber-500/15 text-amber-400',
-    admin: 'bg-blue-500/15 text-blue-400',
-    member: 'bg-gray-500/15 text-gray-400',
-    guest: 'bg-gray-500/15 text-gray-500',
-  };
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${styles[role] ?? styles['member']}`}>
-      {role}
-    </span>
   );
 }

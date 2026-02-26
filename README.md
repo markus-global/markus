@@ -35,13 +35,22 @@ pnpm install
 pnpm build
 
 # Set your API key
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...   # or DEEPSEEK_API_KEY / ANTHROPIC_API_KEY
+```
 
-# Start the server
+**Terminal 1 — start the backend:**
+
+```bash
 node packages/cli/dist/index.js start
 ```
 
-The API server starts on `http://localhost:3001`. Open `packages/web-ui/index.html` in a browser for the management dashboard.
+**Terminal 2 — start the frontend:**
+
+```bash
+pnpm --filter @markus/web-ui dev
+```
+
+Open **`http://localhost:3000`** in your browser. The API runs on `http://localhost:3001`.
 
 ### Create Your First Agent
 
@@ -217,15 +226,29 @@ Built-in tools:
 - `file_read` / `file_write` — File operations
 - `web_fetch` — HTTP requests
 
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture, packages, schemas, data flow |
+| [PRODUCT.md](docs/PRODUCT.md) | Product vision, design principles, roadmap |
+| [GUIDE.md](docs/GUIDE.md) | Setup guide, API reference, role templates |
+
 ## Roadmap
 
-- [ ] GUI automation via VNC + OmniParser
-- [ ] A2A protocol for inter-agent communication
-- [ ] External agent marketplace
-- [ ] WhatsApp / Slack / Telegram adapters
-- [ ] PostgreSQL persistent storage
-- [ ] Agent performance metrics and reviews
-- [ ] Managed cloud offering
+**Done ✅**
+- PostgreSQL persistent storage + JWT authentication
+- Streaming LLM responses (SSE) with multi-provider fallback
+- Task board (Kanban) with agent auto-assignment
+- Agent heartbeat with task retrospective
+- Multi-agent team management + A2A messaging
+- Human DM + personal notes channels
+
+**Next 🔄**
+- GUI automation via VNC + OmniParser
+- WhatsApp / Slack / Telegram adapters
+- Agent performance metrics and skill scoring
+- Managed cloud offering (Markus Cloud)
 
 ## License
 

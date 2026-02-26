@@ -47,9 +47,13 @@ export interface LLMResponse {
 }
 
 export interface LLMStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end';
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool';
   text?: string;
   toolCall?: Partial<LLMToolCall>;
   usage?: { inputTokens: number; outputTokens: number };
   finishReason?: LLMResponse['finishReason'];
+  // agent_tool event fields
+  tool?: string;
+  phase?: 'start' | 'end';
+  success?: boolean;
 }

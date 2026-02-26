@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.ts';
+import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 interface Props {
   onNavigate: (page: string) => void;
@@ -37,7 +38,7 @@ export function CommandBar({ onNavigate }: Props) {
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">Response</span>
             <button onClick={() => { setExpanded(false); setResult(''); }} className="text-xs text-gray-600 hover:text-gray-400">&times;</button>
           </div>
-          <div className="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">{result}</div>
+          <MarkdownMessage content={result} className="text-xs text-gray-300" />
         </div>
       )}
       <div className="flex items-center gap-2 px-4 py-2.5">

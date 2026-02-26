@@ -1,4 +1,4 @@
-import type { Organization, Team, RoleTemplate, HumanUser, HumanRole } from '@markus/shared';
+import type { Organization, Team, TeamInfo, TeamMemberInfo, RoleTemplate, HumanUser, HumanRole } from '@markus/shared';
 import { createLogger, orgId, generateId } from '@markus/shared';
 import { AgentManager, RoleLoader, type CreateAgentRequest } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
@@ -133,10 +133,166 @@ export class OrganizationService {
       name,
       description,
       memberAgentIds: [],
+      humanMemberIds: [],
     };
     this.teams.set(team.id, team);
     log.info(`Team created: ${name}`, { orgId, teamId: team.id });
     return team;
+  }
+
+  updateTeam(teamId: string, data: { name?: string; description?: string; managerId?: string; managerType?: 'human' | 'agent' }): Team {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    if (data.name !== undefined) team.name = data.name;
+    if (data.description !== undefined) team.description = data.description;
+    if (data.managerId !== undefined) team.managerId = data.managerId;
+    if (data.managerType !== undefined) team.managerType = data.managerType;
+    return team;
+  }
+
+  deleteTeam(teamId: string): void {
+    const team = this.teams.get(teamId);
+    if (!team) return;
+    // Unassign all agents from this team
+    for (const agentId of team.memberAgentIds) {
+      try {
+        const agent = this.agentManager.getAgent(agentId);
+        if (agent.config.teamId === teamId) agent.config.teamId = undefined;
+      } catch { /* agent may not exist */ }
+    }
+    // Unassign all humans
+    for (const userId of (team.humanMemberIds ?? [])) {
+      const user = this.humans.get(userId);
+      if (user && user.teamId === teamId) user.teamId = undefined;
+    }
+    this.teams.delete(teamId);
+    log.info(`Team deleted: ${teamId}`);
+  }
+
+  addMemberToTeam(teamId: string, memberId: string, memberType: 'human' | 'agent'): void {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    if (memberType === 'agent') {
+      if (!team.memberAgentIds.includes(memberId)) team.memberAgentIds.push(memberId);
+      try {
+        const agent = this.agentManager.getAgent(memberId);
+        agent.config.teamId = teamId;
+      } catch { /* agent may not exist */ }
+    } else {
+      if (!team.humanMemberIds) team.humanMemberIds = [];
+      if (!team.humanMemberIds.includes(memberId)) team.humanMemberIds.push(memberId);
+      const user = this.humans.get(memberId);
+      if (user) user.teamId = teamId;
+    }
+  }
+
+  removeMemberFromTeam(teamId: string, memberId: string): void {
+    const team = this.teams.get(teamId);
+    if (!team) return;
+    team.memberAgentIds = team.memberAgentIds.filter(id => id !== memberId);
+    team.humanMemberIds = (team.humanMemberIds ?? []).filter(id => id !== memberId);
+    // If this member was the manager, clear it
+    if (team.managerId === memberId) {
+      team.managerId = undefined;
+      team.managerType = undefined;
+    }
+    try {
+      const agent = this.agentManager.getAgent(memberId);
+      if (agent.config.teamId === teamId) agent.config.teamId = undefined;
+    } catch { /* ok */ }
+    const user = this.humans.get(memberId);
+    if (user && user.teamId === teamId) user.teamId = undefined;
+  }
+
+  listTeamsWithMembers(orgId: string): TeamInfo[] {
+    const teamsForOrg = [...this.teams.values()].filter(t => t.orgId === orgId);
+    return teamsForOrg.map(team => {
+      const members: TeamMemberInfo[] = [];
+
+      for (const agentId of team.memberAgentIds) {
+        try {
+          const agent = this.agentManager.getAgent(agentId);
+          const state = agent.getState();
+          members.push({
+            id: agentId,
+            name: agent.config.name,
+            type: 'agent',
+            role: agent.role.name,
+            agentRole: agent.config.agentRole ?? 'worker',
+            status: state.status,
+            teamId: team.id,
+          });
+        } catch { /* skip removed agents */ }
+      }
+
+      for (const userId of (team.humanMemberIds ?? [])) {
+        const user = this.humans.get(userId);
+        if (user) {
+          members.push({
+            id: userId,
+            name: user.name,
+            type: 'human',
+            role: user.role,
+            teamId: team.id,
+          });
+        }
+      }
+
+      let managerName: string | undefined;
+      if (team.managerId) {
+        if (team.managerType === 'agent') {
+          try { managerName = this.agentManager.getAgent(team.managerId).config.name; } catch { /* ok */ }
+        } else {
+          managerName = this.humans.get(team.managerId)?.name;
+        }
+      }
+
+      return {
+        id: team.id,
+        orgId: team.orgId,
+        name: team.name,
+        description: team.description,
+        managerId: team.managerId,
+        managerType: team.managerType,
+        managerName,
+        members,
+      };
+    });
+  }
+
+  /** Returns ungrouped agents and humans (not in any team) */
+  listUngroupedMembers(orgId: string): TeamMemberInfo[] {
+    const allTeams = [...this.teams.values()].filter(t => t.orgId === orgId);
+    const agentIdsInTeams = new Set(allTeams.flatMap(t => t.memberAgentIds));
+    const humanIdsInTeams = new Set(allTeams.flatMap(t => t.humanMemberIds ?? []));
+
+    const ungrouped: TeamMemberInfo[] = [];
+
+    for (const a of this.agentManager.listAgents()) {
+      try {
+        const agent = this.agentManager.getAgent(a.id);
+        if (agent.config.orgId !== orgId && orgId !== 'default') continue;
+        if (!agentIdsInTeams.has(a.id)) {
+          const state = agent.getState();
+          ungrouped.push({
+            id: a.id, name: a.name, type: 'agent',
+            role: agent.role.name, agentRole: agent.config.agentRole ?? 'worker',
+            status: state.status,
+          });
+        }
+      } catch { /* ok */ }
+    }
+
+    for (const user of this.humans.values()) {
+      if (user.orgId !== orgId) continue;
+      if (!humanIdsInTeams.has(user.id)) {
+        ungrouped.push({
+          id: user.id, name: user.name, type: 'human', role: user.role,
+        });
+      }
+    }
+
+    return ungrouped;
   }
 
   getTeam(teamId: string): Team | undefined {
@@ -183,7 +339,7 @@ export class OrganizationService {
 
     if (request.teamId) {
       const team = this.teams.get(request.teamId);
-      if (team) {
+      if (team && !team.memberAgentIds.includes(agent.id)) {
         team.memberAgentIds.push(agent.id);
       }
     }

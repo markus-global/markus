@@ -1,0 +1,241 @@
+import type { AgentToolHandler } from '../agent.js';
+import { createLogger } from '@markus/shared';
+
+const log = createLogger('task-tools');
+
+export interface AgentTaskContext {
+  agentId: string;
+  agentName: string;
+  /** Create a new task; returns the created task id */
+  createTask: (params: {
+    title: string;
+    description: string;
+    assignedAgentId?: string;
+    priority?: string;
+    parentTaskId?: string;
+  }) => Promise<{ id: string; title: string; status: string }>;
+  /** List tasks — defaults to tasks assigned to this agent */
+  listTasks: (filter?: { assignedToMe?: boolean; status?: string }) => Promise<Array<{
+    id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string;
+  }>>;
+  /** Update a task's status (e.g. in_progress, blocked, completed, failed) */
+  updateTaskStatus: (taskId: string, status: string) => Promise<{ id: string; title: string; status: string }>;
+  /** Get details of a specific task */
+  getTask: (taskId: string) => Promise<{ id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string } | null>;
+  /** Assign a task to an agent */
+  assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
+  /** Add a progress note to a task */
+  addTaskNote?: (taskId: string, note: string) => Promise<void>;
+}
+
+export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
+  return [
+    {
+      name: 'task_create',
+      description: [
+        'Create a new task in the team task board.',
+        'Use this when you identify work that needs to be tracked, assigned, or handed off.',
+        'Returns the task ID you can reference later to update status.',
+      ].join(' '),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short, clear task title' },
+          description: { type: 'string', description: 'Detailed description of what needs to be done and why' },
+          priority: {
+            type: 'string',
+            enum: ['low', 'medium', 'high', 'urgent'],
+            description: 'Task priority (default: medium)',
+          },
+          assigned_agent_id: {
+            type: 'string',
+            description: 'Optional: agent ID to assign this task to. Omit to leave unassigned.',
+          },
+          parent_task_id: {
+            type: 'string',
+            description: 'Optional: parent task ID if this is a subtask',
+          },
+        },
+        required: ['title', 'description'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const task = await ctx.createTask({
+            title: args['title'] as string,
+            description: args['description'] as string,
+            priority: args['priority'] as string | undefined,
+            assignedAgentId: args['assigned_agent_id'] as string | undefined,
+            parentTaskId: args['parent_task_id'] as string | undefined,
+          });
+          log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title });
+          return JSON.stringify({
+            status: 'success',
+            task,
+            message: `Task created: "${task.title}" (ID: ${task.id})`,
+          });
+        } catch (error) {
+          log.error('task_create failed', { error: String(error) });
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+
+    {
+      name: 'task_list',
+      description: [
+        'List tasks from the team task board.',
+        'By default shows tasks assigned to you. Use filters to see all tasks or by status.',
+        'Check this regularly to know what you should be working on.',
+      ].join(' '),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          assigned_to_me: {
+            type: 'boolean',
+            description: 'If true (default), only show tasks assigned to you. If false, show all tasks.',
+          },
+          status: {
+            type: 'string',
+            enum: ['pending', 'assigned', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'],
+            description: 'Filter by status (optional)',
+          },
+        },
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const assignedToMe = (args['assigned_to_me'] as boolean) ?? true;
+          const tasks = await ctx.listTasks({
+            assignedToMe,
+            status: args['status'] as string | undefined,
+          });
+          return JSON.stringify({
+            status: 'success',
+            tasks,
+            count: tasks.length,
+            summary: tasks.map(t => `[${t.status}] ${t.id}: ${t.title} (${t.priority})`).join('\n'),
+          });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+
+    {
+      name: 'task_update',
+      description: [
+        'Update the status of a task, optionally adding a progress note.',
+        'Use this to advance your assigned task through its lifecycle:',
+        'assigned → in_progress → completed (or blocked/failed).',
+        'Always update task status when you start, finish, or get blocked on a task.',
+        'Include a progress note to explain what was done or why the status changed.',
+      ].join(' '),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'The task ID to update' },
+          status: {
+            type: 'string',
+            enum: ['in_progress', 'blocked', 'completed', 'failed', 'cancelled'],
+            description: 'New status for the task',
+          },
+          note: {
+            type: 'string',
+            description: 'Optional progress note — brief summary of what was done, what is blocked, or next steps',
+          },
+        },
+        required: ['task_id', 'status'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const task = await ctx.updateTaskStatus(
+            args['task_id'] as string,
+            args['status'] as string,
+          );
+          const note = args['note'] as string | undefined;
+          if (note && ctx.addTaskNote) {
+            await ctx.addTaskNote(task.id, `[${ctx.agentName}] ${note}`).catch(() => {});
+          }
+          log.info(`Task updated by agent ${ctx.agentId}`, { taskId: task.id, status: task.status });
+          return JSON.stringify({
+            status: 'success',
+            task,
+            message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}`,
+          });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+
+    {
+      name: 'task_get',
+      description: 'Get detailed information about a specific task by its ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'The task ID to look up' },
+        },
+        required: ['task_id'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const task = await ctx.getTask(args['task_id'] as string);
+          if (!task) {
+            return JSON.stringify({ status: 'error', error: `Task not found: ${args['task_id']}` });
+          }
+          return JSON.stringify({ status: 'success', task });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    },
+
+    ...(ctx.addTaskNote ? [{
+      name: 'task_note',
+      description: 'Add a progress note or comment to a task without changing its status. Use this to log intermediate findings, decisions, or observations while working on a task.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'The task ID to add a note to' },
+          note: { type: 'string', description: 'The note or progress update to add' },
+        },
+        required: ['task_id', 'note'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          await ctx.addTaskNote!(
+            args['task_id'] as string,
+            `[${ctx.agentName}] ${args['note'] as string}`,
+          );
+          return JSON.stringify({ status: 'success', message: 'Note added to task' });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    } as AgentToolHandler] : []),
+
+    ...(ctx.assignTask ? [{
+      name: 'task_assign',
+      description: 'Assign a task to a specific agent. Use this when delegating work to team members.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'The task ID to assign' },
+          agent_id: { type: 'string', description: 'The agent ID to assign the task to' },
+        },
+        required: ['task_id', 'agent_id'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        try {
+          const result = await ctx.assignTask!(
+            args['task_id'] as string,
+            args['agent_id'] as string,
+          );
+          return JSON.stringify({ status: 'success', taskId: result.id, taskStatus: result.status });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    } as AgentToolHandler] : []),
+  ];
+}

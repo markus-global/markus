@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { PageId } from './types.ts';
 import { Dashboard } from './pages/Dashboard.tsx';
 import { Agents } from './pages/Agents.tsx';
@@ -7,13 +7,14 @@ import { Chat } from './pages/Chat.tsx';
 import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
-import { Messages } from './pages/Messages.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
-import { CommandBar } from './components/CommandBar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
-import { wsClient } from './api.ts';
+import { Login } from './pages/Login.tsx';
+import { ChangePassword } from './pages/ChangePassword.tsx';
+import { api, type AuthUser, wsClient } from './api.ts';
+import { navBus } from './navBus.ts';
 
-const validPages: PageId[] = ['dashboard', 'agents', 'tasks', 'chat', 'messages', 'team', 'skills', 'settings'];
+const validPages: PageId[] = ['dashboard', 'agents', 'tasks', 'chat', 'team', 'skills', 'settings'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
@@ -24,33 +25,76 @@ export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Track which pages have been visited — once mounted, never unmount
+  const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
+  const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
     setPage(p);
+    setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
     window.location.hash = p;
   }, []);
 
+  // Register nav bus so deep components can navigate
   useEffect(() => {
+    navBus.setHandler((p) => navigate(p as PageId));
+  }, [navigate]);
+
+  useEffect(() => {
+    // Check auth status on mount
+    api.auth.me()
+      .then(({ user }) => setAuthUser(user))
+      .catch(() => setAuthUser(null));
+
     wsClient.connect();
-    const onHash = () => setPage(getPageFromHash());
+    const onHash = () => {
+      const p = getPageFromHash();
+      setPage(p);
+      setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
+    };
     window.addEventListener('hashchange', onHash);
     return () => { wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
   }, []);
 
-  if (showOnboarding) {
-    return <Onboarding onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); }} />;
-  }
-
-  const pages: Record<PageId, React.JSX.Element> = {
+  // Stable page elements — created once, never recreated
+  const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
+  const pageElements = useMemo<Record<PageId, React.JSX.Element>>(() => ({
     dashboard: <Dashboard />,
     agents: <Agents />,
     tasks: <TaskBoard />,
-    chat: <Chat />,
-    messages: <Messages />,
-    team: <TeamPage />,
+    chat: <Chat authUser={currentUser} />,
+    team: <TeamPage authUser={currentUser} />,
     settings: <Settings />,
     skills: <SkillStore />,
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [currentUser?.id]);
+
+  if (authUser === 'loading') {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-gray-600 text-sm animate-pulse">Loading…</div>
+      </div>
+    );
+  }
+
+  if (authUser === null) {
+    return <Login onLogin={(user, isDefaultPassword) => {
+      setAuthUser(user);
+      if (isDefaultPassword) setMustChangePassword(true);
+    }} />;
+  }
+
+  if (mustChangePassword) {
+    return <ChangePassword
+      onComplete={() => setMustChangePassword(false)}
+      isFirstTime
+    />;
+  }
+
+  if (showOnboarding) {
+    return <Onboarding onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); }} />;
+  }
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100">
@@ -68,14 +112,28 @@ export function App() {
       )}
 
       <div className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-40 transition-transform duration-200`}>
-        <Sidebar currentPage={page} onNavigate={(p) => { navigate(p); setSidebarOpen(false); }} />
+        <Sidebar
+          currentPage={page}
+          onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
+          authUser={authUser !== 'loading' && authUser !== null ? authUser : undefined}
+          onLogout={() => setAuthUser(null)}
+        />
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         <main className="flex-1 overflow-hidden flex flex-col">
-          {pages[page]}
+          {(Object.keys(pageElements) as PageId[]).map(id => (
+            mountedPages.has(id) ? (
+              <div
+                key={id}
+                className="flex-1 overflow-hidden flex flex-col"
+                style={{ display: id === page ? 'flex' : 'none' }}
+              >
+                {pageElements[id]}
+              </div>
+            ) : null
+          ))}
         </main>
-        <CommandBar onNavigate={(p) => navigate(p as PageId)} />
       </div>
     </div>
   );

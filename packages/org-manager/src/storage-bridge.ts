@@ -13,6 +13,9 @@ export interface StorageBridge {
   agentRepo: import('@markus/storage').AgentRepo;
   messageRepo: import('@markus/storage').MessageRepo;
   memoryRepo: import('@markus/storage').MemoryRepo;
+  chatSessionRepo: import('@markus/storage').ChatSessionRepo;
+  channelMessageRepo: import('@markus/storage').ChannelMessageRepo;
+  userRepo: import('@markus/storage').UserRepo;
 }
 
 export async function initStorage(databaseUrl?: string): Promise<StorageBridge | null> {
@@ -31,6 +34,9 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
       agentRepo: new storage.AgentRepo(db),
       messageRepo: new storage.MessageRepo(db),
       memoryRepo: new storage.MemoryRepo(db),
+      chatSessionRepo: new storage.ChatSessionRepo(db),
+      channelMessageRepo: new storage.ChannelMessageRepo(db),
+      userRepo: new storage.UserRepo(db),
     };
     log.info('Database storage initialized');
     return bridge;

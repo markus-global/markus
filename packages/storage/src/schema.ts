@@ -1,4 +1,4 @@
-import { pgTable, varchar, text, timestamp, integer, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, text, timestamp, integer, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
 
 export const agentStatusEnum = pgEnum('agent_status', ['idle', 'working', 'paused', 'offline', 'error']);
 export const taskStatusEnum = pgEnum('task_status', ['pending', 'assigned', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled']);
@@ -92,4 +92,58 @@ export const agentChannelBindings = pgTable('agent_channel_bindings', {
   channelId: varchar('channel_id', { length: 255 }).notNull(),
   role: varchar('role', { length: 32 }).notNull().default('member'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ─── Chat persistence ────────────────────────────────────────────────────────
+
+/** A conversation session between a user and an agent */
+export const chatSessions = pgTable('chat_sessions', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  agentId: varchar('agent_id', { length: 64 }).notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  userId: varchar('user_id', { length: 255 }),   // null = anonymous
+  title: varchar('title', { length: 255 }),       // auto-generated from first message
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  lastMessageAt: timestamp('last_message_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_chat_sessions_agent').on(t.agentId, t.lastMessageAt),
+]);
+
+/** Individual messages within a chat session */
+export const chatMessages = pgTable('chat_messages', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  sessionId: varchar('session_id', { length: 64 }).notNull().references(() => chatSessions.id, { onDelete: 'cascade' }),
+  agentId: varchar('agent_id', { length: 64 }).notNull(),
+  role: varchar('role', { length: 32 }).notNull(),  // user / assistant / tool
+  content: text('content').notNull(),
+  tokensUsed: integer('tokens_used').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_chat_messages_session').on(t.sessionId, t.createdAt),
+]);
+
+/** Messages in the web UI channels (Messages tab) */
+export const channelMessages = pgTable('channel_messages', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  orgId: varchar('org_id', { length: 64 }).notNull(),
+  channel: varchar('channel', { length: 128 }).notNull(),
+  senderId: varchar('sender_id', { length: 255 }).notNull(),
+  senderType: varchar('sender_type', { length: 16 }).notNull(), // human / agent
+  senderName: varchar('sender_name', { length: 255 }).notNull(),
+  text: text('text').notNull(),
+  mentions: jsonb('mentions').notNull().default([]),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_channel_messages_channel').on(t.channel, t.createdAt),
+]);
+
+/** Users for authentication */
+export const users = pgTable('users', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  orgId: varchar('org_id', { length: 64 }).notNull().references(() => organizations.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  email: varchar('email', { length: 255 }).unique(),
+  role: varchar('role', { length: 32 }).notNull().default('member'), // owner/admin/member/guest
+  passwordHash: varchar('password_hash', { length: 255 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  lastLoginAt: timestamp('last_login_at'),
 });

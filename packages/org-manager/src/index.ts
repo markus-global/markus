@@ -9,3 +9,4 @@ export { AuditService } from './audit-service.js';
 export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';
 export type { APIKey, UsageSummary, OrgPlan } from './billing-service.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';
+export { runMigrations } from '@markus/storage';

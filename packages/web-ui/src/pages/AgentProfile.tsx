@@ -1,18 +1,17 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { api, wsClient } from '../api.ts';
 import type { AgentDetail } from '../api.ts';
+import { navBus } from '../navBus.ts';
 
 interface Props {
   agentId: string;
   onBack: () => void;
+  /** When true, renders as a side panel instead of a full page */
+  inline?: boolean;
 }
 
-export function AgentProfile({ agentId, onBack }: Props) {
+export function AgentProfile({ agentId, onBack, inline }: Props) {
   const [agent, setAgent] = useState<AgentDetail | null>(null);
-  const [chatInput, setChatInput] = useState('');
-  const [messages, setMessages] = useState<Array<{ role: 'user' | 'agent'; text: string }>>([]);
-  const [streaming, setStreaming] = useState(false);
-  const messagesEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.agents.get(agentId).then(setAgent).catch(() => {});
@@ -24,46 +23,14 @@ export function AgentProfile({ agentId, onBack }: Props) {
     return unsub;
   }, [agentId]);
 
-  useEffect(() => {
-    messagesEnd.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const sendMessage = async () => {
-    if (!chatInput.trim() || streaming) return;
-    const text = chatInput.trim();
-    setChatInput('');
-    setMessages(prev => [...prev, { role: 'user', text }]);
-    setStreaming(true);
-
-    let agentReply = '';
-    setMessages(prev => [...prev, { role: 'agent', text: '' }]);
-
-    try {
-      await api.agents.messageStream(agentId, text, (chunk) => {
-        agentReply += chunk;
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: 'agent', text: agentReply };
-          return updated;
-        });
-      });
-    } catch (e) {
-      agentReply = `Error: ${String(e)}`;
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { role: 'agent', text: agentReply };
-        return updated;
-      });
-    }
-    setStreaming(false);
-  };
-
   const triggerDailyReport = async () => {
     try {
-      const res = await fetch(`/api/agents/${agentId}/daily-report`, { method: 'POST' });
-      const data = await res.json() as { report: string };
-      setMessages(prev => [...prev, { role: 'agent', text: `📋 Daily Report:\n\n${data.report}` }]);
+      await fetch(`/api/agents/${agentId}/daily-report`, { method: 'POST', credentials: 'include' });
     } catch { /* ignore */ }
+  };
+
+  const openChat = () => {
+    navBus.navigate('chat', { agentId });
   };
 
   if (!agent) {
@@ -74,127 +41,118 @@ export function AgentProfile({ agentId, onBack }: Props) {
     );
   }
 
-  const statusColor = agent.state.status === 'idle' ? 'bg-green-400' :
+  const statusColor =
+    agent.state.status === 'idle' ? 'bg-green-400' :
     agent.state.status === 'working' ? 'bg-yellow-400' : 'bg-gray-500';
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
+    <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <div className="px-7 py-4 border-b border-gray-800 bg-gray-900 shrink-0">
+      <div className={`px-5 py-4 border-b border-gray-800 bg-gray-900 shrink-0`}>
         <div className="flex items-center gap-3">
-          <button onClick={onBack} className="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</button>
-          <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-lg font-bold">
+          {!inline && (
+            <button onClick={onBack} className="text-gray-500 hover:text-gray-300 text-sm">&larr; Back</button>
+          )}
+          <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-lg font-bold shrink-0">
             {agent.name.charAt(0)}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">{agent.name}</h2>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-semibold">{agent.name}</h2>
               <span className={`w-2 h-2 rounded-full ${statusColor}`} />
               <span className="text-xs text-gray-500">{agent.state.status}</span>
               {agent.agentRole === 'manager' && (
                 <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-400 rounded font-medium">Manager</span>
               )}
             </div>
-            <div className="text-xs text-gray-500">{agent.role} · {agent.id}</div>
+            <div className="text-xs text-gray-500 truncate">{agent.role}</div>
           </div>
-          <div className="ml-auto flex gap-2">
-            <button onClick={triggerDailyReport} className="px-3 py-1.5 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors">
-              Daily Report
+          <div className="flex gap-1.5 shrink-0">
+            <button
+              onClick={triggerDailyReport}
+              className="px-2.5 py-1 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors"
+            >
+              Report
             </button>
+            <button
+              onClick={openChat}
+              className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors flex items-center gap-1"
+            >
+              <span>◈</span> Chat
+            </button>
+            {inline && (
+              <button onClick={onBack} className="p-1 text-gray-500 hover:text-gray-300 text-lg leading-none">&times;</button>
+            )}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden flex">
-        {/* Left: Info Panel */}
-        <div className="w-72 border-r border-gray-800 overflow-y-auto p-5 space-y-6 shrink-0 bg-gray-900/50">
-          {/* Stats */}
-          <Section title="Stats">
-            <StatRow label="Tokens Today" value={String(agent.state.tokensUsedToday)} />
-            <StatRow label="Current Task" value={agent.state.currentTaskId ?? 'None'} />
-            <StatRow label="Last Heartbeat" value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : 'Never'} />
-          </Section>
+      {/* Body */}
+      <div className={`p-5 grid gap-4 ${inline ? 'grid-cols-1' : 'grid-cols-2 max-w-3xl'}`}>
+        {/* Stats */}
+        <Card title="Stats">
+          <StatRow label="Status" value={agent.state.status} />
+          <StatRow label="Tokens Today" value={String(agent.state.tokensUsedToday)} />
+          <StatRow label="Current Task" value={agent.state.currentTaskId ?? 'None'} />
+          <StatRow label="Last Heartbeat" value={
+            agent.state.lastHeartbeat
+              ? new Date(agent.state.lastHeartbeat).toLocaleTimeString()
+              : 'Never'
+          } />
+        </Card>
 
-          {/* Skills */}
-          <Section title="Skills">
-            {agent.skills.length === 0 ? (
-              <div className="text-xs text-gray-600">No skills configured</div>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {agent.skills.map(s => (
-                  <span key={s} className="px-2 py-0.5 text-[10px] bg-indigo-500/15 text-indigo-400 rounded-full">{s}</span>
-                ))}
-              </div>
-            )}
-          </Section>
+        {/* Identity */}
+        <Card title="Identity">
+          <StatRow label="Agent Role" value={agent.agentRole} />
+          <StatRow label="Role Template" value={agent.role} />
+          <StatRow label="ID" value={agent.id} mono />
+        </Card>
 
-          {/* Identity */}
-          <Section title="Identity">
-            <StatRow label="Agent Role" value={agent.agentRole} />
-            <StatRow label="Role Template" value={agent.role} />
-          </Section>
-        </div>
+        {/* Skills */}
+        <Card title="Skills">
+          {agent.skills.length === 0 ? (
+            <div className="text-xs text-gray-600">No skills configured</div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {agent.skills.map(s => (
+                <span key={s} className="px-2 py-0.5 text-[10px] bg-indigo-500/15 text-indigo-400 rounded-full">{s}</span>
+              ))}
+            </div>
+          )}
+        </Card>
 
-        {/* Right: Chat */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-5 space-y-3">
-            {messages.length === 0 && (
-              <div className="text-center text-gray-600 py-20">
-                <div className="text-3xl mb-3 opacity-30">◈</div>
-                <div className="text-sm">Start a conversation with {agent.name}</div>
-              </div>
-            )}
-            {messages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[75%] rounded-xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                  msg.role === 'user'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-gray-800 text-gray-300'
-                }`}>
-                  {msg.text || (streaming ? '...' : '')}
-                </div>
-              </div>
-            ))}
-            <div ref={messagesEnd} />
-          </div>
-
-          <div className="border-t border-gray-800 px-5 py-3 flex gap-2 shrink-0">
-            <input
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-              placeholder={`Message ${agent.name}...`}
-              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm outline-none focus:border-indigo-500"
-              disabled={streaming}
-            />
-            <button
-              onClick={sendMessage}
-              disabled={streaming || !chatInput.trim()}
-              className="px-5 py-2.5 bg-indigo-600 rounded-lg text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
-            >
-              Send
-            </button>
-          </div>
+        {/* Chat CTA */}
+        <div className="col-span-2 mt-2">
+          <button
+            onClick={openChat}
+            className="w-full py-4 border border-dashed border-indigo-700/60 rounded-xl text-indigo-400 hover:bg-indigo-900/20 transition-colors flex items-center justify-center gap-3 text-sm"
+          >
+            <span className="text-xl">◈</span>
+            <div className="text-left">
+              <div className="font-medium">Open Chat with {agent.name}</div>
+              <div className="text-xs text-indigo-500/70 mt-0.5">Navigate to the Chat tab to start or continue a conversation</div>
+            </div>
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
-      <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">{title}</h3>
+    <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
+      <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-3">{title}</h3>
       {children}
     </div>
   );
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex items-center justify-between text-xs py-1">
+    <div className="flex items-center justify-between text-xs py-1.5 border-b border-gray-800/60 last:border-0">
       <span className="text-gray-500">{label}</span>
-      <span className="text-gray-300 font-mono">{value}</span>
+      <span className={`text-gray-300 ${mono ? 'font-mono text-[10px]' : ''}`}>{value}</span>
     </div>
   );
 }

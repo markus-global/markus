@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { loadConfig, createLogger } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
-import { OrganizationService, TaskService, APIServer, HITLService, BillingService, AuditService, initStorage } from '@markus/org-manager';
+import { OrganizationService, TaskService, APIServer, HITLService, BillingService, AuditService, initStorage, runMigrations } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
 // Load .env file from project root
@@ -234,17 +234,29 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const skillRegistry = createDefaultSkillRegistry();
 
+  // Run DB migrations before initializing storage (idempotent, safe on every startup)
+  const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
+  if (dbUrl) await runMigrations(dbUrl);
+
+  const storage = await initStorage(config.database?.url);
+
+  const taskService = new TaskService();
+  if (storage) {
+    taskService.setTaskRepo(storage.taskRepo);
+    await taskService.loadFromDB('default');
+  }
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
     dataDir: resolve(process.cwd(), '.markus', 'agents'),
     skillRegistry,
+    taskService,
   });
 
-  const storage = await initStorage(config.database?.url);
-  const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
-  const taskService = new TaskService();
   taskService.setAgentManager(agentManager);
+
+  const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
 
   await orgService.createOrganization(config.org.name, 'default', 'default');
 
@@ -272,6 +284,15 @@ async function startServer(
   apiServer.setHITLService(hitlService);
   apiServer.setBillingService(billingService);
   apiServer.setAuditService(auditService);
+
+  // Wire storage for chat persistence and auth
+  const storage = orgService.getStorage();
+  if (storage) {
+    apiServer.setStorage(storage);
+    const firstOrgId = 'default';
+    await apiServer.ensureAdminUser(firstOrgId);
+  }
+
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
@@ -352,7 +373,7 @@ async function startServer(
   Markus is running!
 
   API Server:  http://localhost:${apiPort}
-  Web UI:      Open packages/web-ui/index.html in a browser
+  Web UI:      http://localhost:3000  (run: pnpm --filter @markus/web-ui dev)
   WebUI Comm:  http://localhost:3002
 
   Press Ctrl+C to stop.

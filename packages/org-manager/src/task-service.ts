@@ -2,6 +2,7 @@ import type { Task, TaskStatus, TaskPriority } from '@markus/shared';
 import { createLogger, taskId } from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
+import type { TaskRepo } from '@markus/storage';
 
 const log = createLogger('task-service');
 
@@ -21,6 +22,7 @@ export class TaskService {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
   private ws?: WSBroadcaster;
+  private taskRepo?: TaskRepo;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -28,6 +30,38 @@ export class TaskService {
 
   setWSBroadcaster(ws: WSBroadcaster): void {
     this.ws = ws;
+  }
+
+  setTaskRepo(repo: TaskRepo): void {
+    this.taskRepo = repo;
+  }
+
+  /** Load tasks from DB into in-memory map (call once on startup) */
+  async loadFromDB(orgId: string): Promise<void> {
+    if (!this.taskRepo) return;
+    try {
+      const rows = await this.taskRepo.listByOrg(orgId);
+      for (const row of rows) {
+        const task: Task = {
+          id: row.id,
+          orgId: row.orgId,
+          title: row.title,
+          description: row.description ?? '',
+          status: row.status as TaskStatus,
+          priority: (row.priority ?? 'medium') as TaskPriority,
+          assignedAgentId: row.assignedAgentId ?? undefined,
+          parentTaskId: row.parentTaskId ?? undefined,
+          subtaskIds: [],
+          createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+          updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+          dueAt: row.dueAt instanceof Date ? row.dueAt.toISOString() : (row.dueAt ? String(row.dueAt) : undefined),
+        };
+        this.tasks.set(task.id, task);
+      }
+      log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
+    } catch (err) {
+      log.warn('Failed to load tasks from DB', { error: String(err) });
+    }
   }
 
   createTask(request: CreateTaskRequest): Task {
@@ -60,6 +94,21 @@ export class TaskService {
     }
 
     this.tasks.set(task.id, task);
+
+    // Persist to DB
+    if (this.taskRepo) {
+      this.taskRepo.create({
+        id: task.id,
+        orgId: task.orgId,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        assignedAgentId: task.assignedAgentId,
+        parentTaskId: task.parentTaskId,
+        dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
+      }).catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
     log.info(`Task created: ${task.title}`, { id: task.id, status: task.status, assignedTo: assignedAgentId });
     return task;
@@ -74,6 +123,12 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${id}`);
     task.status = status;
     task.updatedAt = new Date().toISOString();
+
+    // Persist to DB
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(id, status).catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(id, status, { title: task.title });
 
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
@@ -90,9 +145,25 @@ export class TaskService {
     task.assignedAgentId = agentId;
     task.status = 'assigned';
     task.updatedAt = new Date().toISOString();
+
+    // Persist to DB
+    if (this.taskRepo) {
+      this.taskRepo.assign(id, agentId).catch(err => log.warn('Failed to persist task assignment to DB', { error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(id, 'assigned', { title: task.title, assignedAgentId: agentId });
     log.info(`Task assigned`, { taskId: id, agentId });
     return task;
+  }
+
+  addTaskNote(id: string, note: string): void {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    const ts = new Date().toISOString();
+    if (!task.notes) task.notes = [];
+    task.notes.push(`[${ts}] ${note}`);
+    task.updatedAt = ts;
+    log.info(`Task note added`, { taskId: id, note: note.slice(0, 80) });
   }
 
   listTasks(filters?: {

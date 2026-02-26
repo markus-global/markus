@@ -1,20 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api, wsClient, type AgentInfo } from '../api.ts';
 import { AgentProfile } from './AgentProfile.tsx';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 export function Agents() {
-  const [profileAgentId, setProfileAgentId] = useState<string | null>(null);
-
-  if (profileAgentId) {
-    return <AgentProfile agentId={profileAgentId} onBack={() => setProfileAgentId(null)} />;
-  }
-
-  return <AgentList onViewProfile={setProfileAgentId} />;
-}
-
-function AgentList({ onViewProfile }: { onViewProfile: (id: string) => void }) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<{ id: string; name: string } | null>(null);
 
   const refresh = () => {
     api.agents.list().then((d) => setAgents(d.agents)).catch(() => {});
@@ -27,22 +19,26 @@ function AgentList({ onViewProfile }: { onViewProfile: (id: string) => void }) {
     return () => { clearInterval(i); unsub(); };
   }, []);
 
-  const detail = agents.find((a) => a.id === selected);
+  const selectedAgent = agents.find(a => a.id === selectedId);
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="px-7 h-15 flex items-center border-b border-gray-800 bg-gray-900">
+    <div className="flex-1 overflow-hidden flex flex-col">
+      {/* Header */}
+      <div className="px-7 h-14 flex items-center border-b border-gray-800 bg-gray-900 shrink-0">
         <h2 className="text-lg font-semibold">Digital Employees</h2>
+        <span className="ml-3 text-xs text-gray-500">{agents.length} agents</span>
       </div>
-      <div className="p-7 flex gap-6">
-        <div className={`overflow-hidden rounded-xl border border-gray-800 ${selected ? 'flex-1' : 'w-full'}`}>
+
+      <div className="flex-1 overflow-hidden flex">
+        {/* Agent list */}
+        <div className={`overflow-y-auto border-r border-gray-800 ${selectedId ? 'w-80 shrink-0' : 'flex-1'}`}>
           <table className="w-full text-sm">
-            <thead className="bg-gray-900 text-gray-400 text-left">
+            <thead className="bg-gray-900/80 text-gray-400 text-left sticky top-0 z-10">
               <tr>
                 <th className="px-5 py-3 font-medium">Name</th>
-                <th className="px-5 py-3 font-medium">Role</th>
+                {!selectedId && <th className="px-5 py-3 font-medium">Role</th>}
                 <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">ID</th>
+                {!selectedId && <th className="px-5 py-3 font-medium">ID</th>}
                 <th className="px-5 py-3 font-medium">Actions</th>
               </tr>
             </thead>
@@ -50,69 +46,86 @@ function AgentList({ onViewProfile }: { onViewProfile: (id: string) => void }) {
               {agents.map((a) => (
                 <tr
                   key={a.id}
-                  className={`hover:bg-gray-900/50 cursor-pointer ${selected === a.id ? 'bg-gray-800/60' : ''}`}
-                  onClick={() => setSelected(selected === a.id ? null : a.id)}
+                  className={`hover:bg-gray-900/50 cursor-pointer transition-colors ${selectedId === a.id ? 'bg-indigo-900/20 border-l-2 border-indigo-500' : ''}`}
+                  onClick={() => setSelectedId(selectedId === a.id ? null : a.id)}
                 >
-                  <td className="px-5 py-3 font-medium">{a.name}{a.agentRole === 'manager' ? <span className="ml-1.5 text-xs text-amber-400">★ Manager</span> : ''}</td>
-                  <td className="px-5 py-3 text-gray-400">{a.role}</td>
                   <td className="px-5 py-3">
-                    <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-full bg-indigo-700 flex items-center justify-center text-xs font-bold shrink-0">
+                        {a.name[0]}
+                      </div>
+                      <div>
+                        <div className="font-medium leading-tight">{a.name}</div>
+                        {a.agentRole === 'manager' && (
+                          <span className="text-[10px] text-amber-400">★ Manager</span>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  {!selectedId && (
+                    <td className="px-5 py-3 text-gray-400 text-xs">{a.role}</td>
+                  )}
+                  <td className="px-5 py-3">
+                    <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${
                       a.status === 'idle' ? 'bg-green-400' :
                       a.status === 'working' ? 'bg-indigo-400 animate-pulse' :
                       'bg-gray-500'
                     }`} />
-                    {a.status}
+                    <span className="text-xs text-gray-400">{a.status}</span>
                   </td>
-                  <td className="px-5 py-3 text-gray-500 font-mono text-xs">{a.id}</td>
+                  {!selectedId && (
+                    <td className="px-5 py-3 text-gray-500 font-mono text-[11px]">{a.id}</td>
+                  )}
                   <td className="px-5 py-3">
-                    <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => onViewProfile(a.id)} className="text-xs text-indigo-400 hover:text-indigo-300">Profile</button>
-                      <button onClick={() => api.agents.start(a.id).then(refresh)} className="text-xs text-green-400 hover:text-green-300">Start</button>
-                      <button onClick={() => api.agents.stop(a.id).then(refresh)} className="text-xs text-gray-400 hover:text-gray-300">Stop</button>
-                      <button onClick={() => { if (confirm('Remove this agent?')) api.agents.remove(a.id).then(refresh); }} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+                    <div className="flex gap-2 items-center" onClick={(e) => e.stopPropagation()}>
+                      {a.status === 'offline'
+                        ? <button onClick={() => api.agents.start(a.id).then(refresh)} className="text-xs text-green-400 hover:text-green-300">Start</button>
+                        : <button onClick={() => api.agents.stop(a.id).then(refresh)} className="text-xs text-gray-400 hover:text-gray-300">Stop</button>
+                      }
+                      <button
+                        onClick={() => setPendingRemove({ id: a.id, name: a.name })}
+                        className="text-xs text-red-400 hover:text-red-300"
+                      >
+                        Remove
+                      </button>
                     </div>
                   </td>
                 </tr>
               ))}
               {agents.length === 0 && (
-                <tr><td colSpan={5} className="px-5 py-10 text-center text-gray-500">No agents found.</td></tr>
+                <tr>
+                  <td colSpan={5} className="px-5 py-12 text-center text-gray-500">
+                    No agents found. Go to the Team tab to hire agents.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
 
-        {detail && (
-          <div className="w-80 shrink-0 border border-gray-800 rounded-xl bg-gray-900/50 p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-base">{detail.name}</h3>
-              <button onClick={() => setSelected(null)} className="text-gray-500 hover:text-gray-300 text-sm">&times;</button>
-            </div>
-            <div className="space-y-3 text-sm">
-              <InfoRow label="Role" value={detail.role} />
-              <InfoRow label="Status">
-                <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${
-                  detail.status === 'idle' ? 'bg-green-400' :
-                  detail.status === 'working' ? 'bg-indigo-400' :
-                  'bg-gray-500'
-                }`} />
-                {detail.status}
-              </InfoRow>
-              <InfoRow label="Agent ID">
-                <span className="font-mono text-xs text-gray-400">{detail.id}</span>
-              </InfoRow>
-            </div>
+        {/* Profile panel */}
+        {selectedId && selectedAgent && (
+          <div className="flex-1 overflow-y-auto">
+            <AgentProfile agentId={selectedId} onBack={() => setSelectedId(null)} inline />
           </div>
         )}
       </div>
-    </div>
-  );
-}
 
-function InfoRow({ label, value, children }: { label: string; value?: string; children?: React.ReactNode }) {
-  return (
-    <div className="flex justify-between">
-      <span className="text-gray-500">{label}</span>
-      <span className="text-gray-200">{children ?? value}</span>
+      {pendingRemove && (
+        <ConfirmModal
+          title={`Remove "${pendingRemove.name}"?`}
+          message="This agent will be permanently removed from the organization."
+          confirmLabel="Remove Agent"
+          onConfirm={() => {
+            api.agents.remove(pendingRemove.id).then(() => {
+              refresh();
+              if (selectedId === pendingRemove.id) setSelectedId(null);
+            });
+            setPendingRemove(null);
+          }}
+          onCancel={() => setPendingRemove(null)}
+        />
+      )}
     </div>
   );
 }

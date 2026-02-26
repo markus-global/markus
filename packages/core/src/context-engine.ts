@@ -45,6 +45,7 @@ export class ContextEngine {
     currentQuery?: string;
     identity?: IdentityContext;
     senderIdentity?: { id: string; name: string; role: string };
+    assignedTasks?: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
   }): string {
     const parts: string[] = [];
 
@@ -93,7 +94,39 @@ export class ContextEngine {
       parts.push(dailyLog.slice(0, 1500));
     }
 
-    // 8. Current conversation context
+    // 8. Assigned tasks (task board context)
+    if (opts.assignedTasks && opts.assignedTasks.length > 0) {
+      const activeTasks = opts.assignedTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+      const doneTasks = opts.assignedTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+      parts.push('\n## Your Task Board');
+      if (activeTasks.length > 0) {
+        parts.push('### Active Tasks (work on these):');
+        for (const t of activeTasks) {
+          parts.push(`- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`);
+          if (t.description) parts.push(`  ${t.description.slice(0, 200)}`);
+        }
+      }
+      if (doneTasks.length > 0) {
+        parts.push(`### Completed/Closed (${doneTasks.length} tasks)`);
+      }
+      parts.push('');
+      parts.push('**MANDATORY RULE: Every piece of work you perform MUST be linked to a task.**');
+      parts.push('- Before starting any work, check if an existing task covers it. If not, call `task_create` first.');
+      parts.push('- Immediately after creating or identifying the relevant task, call `task_update` to set its status to `in_progress`.');
+      parts.push('- When the work is complete, call `task_update` to mark it `completed`.');
+      parts.push('- Never do meaningful work without a corresponding task entry.');
+    } else {
+      parts.push('\n## Task Management');
+      parts.push('You have no tasks currently assigned.');
+      parts.push('');
+      parts.push('**MANDATORY RULE: Every piece of work you perform MUST be linked to a task.**');
+      parts.push('- Before starting any work, call `task_create` to register the task, then immediately set it to `in_progress`.');
+      parts.push('- Use `task_list` to check whether a relevant task already exists on the team board before creating a duplicate.');
+      parts.push('- When complete, call `task_update` to mark the task `completed`.');
+      parts.push('- Never do meaningful work without a corresponding task entry.');
+    }
+
+    // 10. Current conversation context
     if (opts.senderIdentity) {
       parts.push(`\n## Current Conversation`);
       parts.push(`You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`);

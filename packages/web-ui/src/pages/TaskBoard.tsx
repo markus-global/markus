@@ -79,11 +79,16 @@ export function TaskBoard() {
                     {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
                     <div className="flex items-center justify-between mt-2">
                       <span className="text-xs text-gray-500">{task.priority}</span>
-                      {task.assignedAgentId && (
-                        <span className="text-xs text-indigo-400">
-                          {agents.find((a) => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 12)}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {task.notes && task.notes.length > 0 && (
+                          <span className="text-[10px] text-gray-600">📝{task.notes.length}</span>
+                        )}
+                        {task.assignedAgentId && (
+                          <span className="text-xs text-indigo-400">
+                            {agents.find((a) => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 12)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -145,11 +150,23 @@ export function TaskBoard() {
               <button onClick={() => setSelectedTask(null)} className="text-gray-500 hover:text-gray-300">&times;</button>
             </div>
             {selectedTask.description && <p className="text-sm text-gray-400 mb-4">{selectedTask.description}</p>}
-            <div className="space-y-2 text-sm mb-6">
+            <div className="space-y-2 text-sm mb-4">
               <div className="flex justify-between"><span className="text-gray-500">Status</span><span>{selectedTask.status}</span></div>
               <div className="flex justify-between"><span className="text-gray-500">Priority</span><span>{selectedTask.priority}</span></div>
               <div className="flex justify-between"><span className="text-gray-500">Assigned</span><span>{selectedTask.assignedAgentId ? agents.find((a) => a.id === selectedTask.assignedAgentId)?.name ?? selectedTask.assignedAgentId : 'Unassigned'}</span></div>
+              {selectedTask.parentTaskId && <div className="flex justify-between"><span className="text-gray-500">Parent Task</span><span className="font-mono text-xs text-gray-400">{selectedTask.parentTaskId}</span></div>}
+              {selectedTask.subtaskIds && selectedTask.subtaskIds.length > 0 && <div className="flex justify-between"><span className="text-gray-500">Subtasks</span><span>{selectedTask.subtaskIds.length}</span></div>}
             </div>
+            {selectedTask.notes && selectedTask.notes.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                  {selectedTask.notes.map((note, i) => (
+                    <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed">{note}</div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {selectedTask.status === 'pending' && <button onClick={() => updateStatus(selectedTask.id, 'in_progress')} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Start</button>}
               {selectedTask.status === 'assigned' && <button onClick={() => updateStatus(selectedTask.id, 'in_progress')} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Start</button>}

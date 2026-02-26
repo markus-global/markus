@@ -1,8 +1,53 @@
 const BASE = '/api';
 
+export interface AgentToolEvent {
+  tool: string;
+  phase: 'start' | 'end';
+  success?: boolean;
+}
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  email?: string;
+  role: string;
+  orgId: string;
+}
+
+export interface ChatSessionInfo {
+  id: string;
+  agentId: string;
+  userId: string | null;
+  title: string | null;
+  createdAt: string;
+  lastMessageAt: string;
+}
+
+export interface ChatMessageInfo {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  role: string;
+  content: string;
+  tokensUsed: number;
+  createdAt: string;
+}
+
+export interface ChannelMessageInfo {
+  id: string;
+  channel: string;
+  senderId: string;
+  senderType: string;
+  senderName: string;
+  text: string;
+  mentions: string[];
+  createdAt: string;
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',  // send cookies
     ...opts,
     body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
   });
@@ -16,6 +61,7 @@ export interface AgentInfo {
   role: string;
   status: string;
   agentRole?: 'manager' | 'worker';
+  teamId?: string;
 }
 
 export interface HumanUserInfo {
@@ -24,6 +70,35 @@ export interface HumanUserInfo {
   role: 'owner' | 'admin' | 'member' | 'guest';
   orgId: string;
   email?: string;
+  teamId?: string;
+}
+
+export interface RoleInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface TeamMemberInfo {
+  id: string;
+  name: string;
+  type: 'human' | 'agent';
+  role: string;
+  agentRole?: 'manager' | 'worker';
+  status?: string;
+  teamId?: string;
+}
+
+export interface TeamInfo {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  managerId?: string;
+  managerType?: 'human' | 'agent';
+  managerName?: string;
+  members: TeamMemberInfo[];
 }
 
 export interface TaskInfo {
@@ -33,6 +108,11 @@ export interface TaskInfo {
   status: string;
   priority: string;
   assignedAgentId?: string;
+  parentTaskId?: string;
+  subtaskIds?: string[];
+  notes?: string[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface AgentDetail {
@@ -54,19 +134,20 @@ export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents'),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
-    create: (name: string, roleName: string, agentRole?: 'manager' | 'worker') =>
-      request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole }) }),
+    create: (name: string, roleName: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
+      request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     remove: (id: string) => request(`/agents/${id}`, { method: 'DELETE' }),
     message: (id: string, text: string) =>
       request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void): Promise<string> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void): Promise<string> => {
       return new Promise(async (resolve, reject) => {
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ text, stream: true }),
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -85,12 +166,18 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
+                } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
+                  // LLM just named the tool it wants to use — show loading immediately
+                  onActivity?.({ tool: event.toolCall.name, phase: 'start' });
+                } else if (event.type === 'agent_tool' && event.tool && event.phase) {
+                  // Only propagate 'end' from agent_tool to avoid double 'start'
+                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success });
                 }
               } catch { /* skip */ }
             }
@@ -101,7 +188,19 @@ export const api = {
     },
   },
   roles: {
-    list: () => request<{ roles: string[] }>('/roles'),
+    list: () => request<{ roles: RoleInfo[] }>('/roles'),
+  },
+  teams: {
+    list: (orgId?: string) => request<{ teams: TeamInfo[]; ungrouped: TeamMemberInfo[] }>(`/teams?orgId=${orgId ?? 'default'}`),
+    create: (name: string, description?: string) =>
+      request<{ team: TeamInfo }>('/teams', { method: 'POST', body: JSON.stringify({ name, description }) }),
+    update: (id: string, data: { name?: string; description?: string; managerId?: string; managerType?: 'human' | 'agent' }) =>
+      request<{ team: TeamInfo }>(`/teams/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/teams/${id}`, { method: 'DELETE' }),
+    addMember: (teamId: string, memberId: string, memberType: 'human' | 'agent') =>
+      request(`/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType }) }),
+    removeMember: (teamId: string, memberId: string) =>
+      request(`/teams/${teamId}/members/${memberId}`, { method: 'DELETE' }),
   },
   tasks: {
     list: () => request<{ tasks: TaskInfo[] }>('/tasks'),
@@ -115,8 +214,8 @@ export const api = {
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),
-    create: (name: string, role: string, orgId?: string, email?: string) =>
-      request<{ user: HumanUserInfo }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email }) }),
+    create: (name: string, role: string, orgId?: string, email?: string, password?: string, teamId?: string) =>
+      request<{ user: HumanUserInfo }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email, password, teamId }) }),
     remove: (id: string) => request(`/users/${id}`, { method: 'DELETE' }),
   },
   message: {
@@ -125,12 +224,13 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ text, ...opts }),
       }),
-    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string }): Promise<{ content: string; agentId: string }> => {
+    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
       return new Promise(async (resolve, reject) => {
         try {
           const res = await fetch(`${BASE}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ text, stream: true, ...opts }),
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -150,13 +250,17 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                   routedAgentId = event.agentId ?? routedAgentId;
+                } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
+                  onActivity?.({ tool: event.toolCall.name, phase: 'start' });
+                } else if (event.type === 'agent_tool' && event.tool && event.phase) {
+                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success });
                 }
               } catch { /* skip */ }
             }
@@ -167,6 +271,34 @@ export const api = {
     },
   },
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
+  auth: {
+    login: (email: string, password: string) =>
+      request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+    logout: () => request('/auth/logout', { method: 'POST' }),
+    me: () => request<{ user: AuthUser }>('/auth/me'),
+    changePassword: (currentPassword: string, newPassword: string) =>
+      request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
+  },
+  sessions: {
+    listByAgent: (agentId: string, limit = 20) =>
+      request<{ sessions: ChatSessionInfo[] }>(`/agents/${agentId}/sessions?limit=${limit}`),
+    getMessages: (sessionId: string, limit = 50, before?: string) =>
+      request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
+        `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
+      ),
+    delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  },
+  channels: {
+    getMessages: (channel: string, limit = 50, before?: string) =>
+      request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
+        `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
+      ),
+    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean }) =>
+      request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
+        `/channels/${encodeURIComponent(channel)}/messages`,
+        { method: 'POST', body: JSON.stringify(data) }
+      ),
+  },
 };
 
 export interface WSEvent {

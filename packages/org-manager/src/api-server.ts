@@ -1,14 +1,92 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createLogger } from '@markus/shared';
+import { createLogger, generateId } from '@markus/shared';
 import type { SkillRegistry } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService } from './audit-service.js';
+import type { StorageBridge } from './storage-bridge.js';
 import { WSBroadcaster } from './ws-server.js';
 
 const log = createLogger('api-server');
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+// Simple JWT-lite using HMAC-SHA256 (no external deps required)
+async function signToken(payload: Record<string, unknown>, secret: string): Promise<string> {
+  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = btoa(JSON.stringify(payload));
+  const data = `${header}.${body}`;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return `${data}.${sigB64}`;
+}
+
+async function verifyToken(token: string, secret: string): Promise<Record<string, unknown> | null> {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const data = `${parts[0]}.${parts[1]}`;
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    const sigBytes = Uint8Array.from(atob(parts[2]!.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
+    if (!valid) return null;
+    const payload = JSON.parse(atob(parts[1]!)) as Record<string, unknown>;
+    if (payload['exp'] && (payload['exp'] as number) < Date.now() / 1000) return null;
+    return payload;
+  } catch { return null; }
+}
+
+const PBKDF2_ITERATIONS = 10000;
+
+async function hashPassword(password: string): Promise<string> {
+  // Format: pbkdf2:<iterations>:<saltHex>:<hashHex>
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, key, 256);
+  const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `pbkdf2:${PBKDF2_ITERATIONS}:${saltHex}:${hashHex}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const parts = stored.split(':');
+  // Support old format (3 parts) and new format (4 parts with iterations)
+  if (parts[0] !== 'pbkdf2') return false;
+  let iterations: number;
+  let saltHex: string;
+  let expectedHash: string;
+  if (parts.length === 4) {
+    iterations = parseInt(parts[1]!, 10);
+    saltHex = parts[2]!;
+    expectedHash = parts[3]!;
+  } else if (parts.length === 3) {
+    iterations = 100000; // legacy
+    saltHex = parts[1]!;
+    expectedHash = parts[2]!;
+  } else {
+    return false;
+  }
+  const salt = Uint8Array.from((saltHex.match(/.{2}/g) ?? []).map(b => parseInt(b, 16)));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256);
+  const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex === expectedHash;
+}
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) return {};
+  const result: Record<string, string> = {};
+  for (const part of cookieHeader.split(';')) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = decodeURIComponent(part.slice(0, eqIdx).trim());
+    const val = decodeURIComponent(part.slice(eqIdx + 1).trim());
+    if (key) result[key] = val;
+  }
+  return result;
+}
 
 export class APIServer {
   private server?: ReturnType<typeof createServer>;
@@ -17,6 +95,7 @@ export class APIServer {
   private hitlService?: HITLService;
   private billingService?: BillingService;
   private auditService?: AuditService;
+  private storage?: StorageBridge;
 
   constructor(
     private orgService: OrganizationService,
@@ -43,6 +122,80 @@ export class APIServer {
     service.onNotification((n) => {
       this.ws.broadcast({ type: 'notification', payload: { notification: n }, timestamp: new Date().toISOString() });
     });
+  }
+
+  setStorage(storage: StorageBridge): void {
+    this.storage = storage;
+  }
+
+  /** Ensure at least one admin user exists; called once after storage init */
+  async ensureAdminUser(orgId: string): Promise<void> {
+    if (!this.storage) return;
+    const count = await this.storage.userRepo.countByOrg(orgId);
+    if (count > 0) return;
+    const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
+    const hash = await hashPassword(adminPassword);
+    await this.storage.userRepo.create({
+      id: generateId('usr'),
+      orgId,
+      name: 'Admin',
+      email: 'admin@markus.local',
+      role: 'owner',
+      passwordHash: hash,
+    });
+    log.info('Created default admin user (admin@markus.local)');
+  }
+
+  private get jwtSecret(): string {
+    return process.env['JWT_SECRET'] ?? 'markus-dev-secret-change-in-prod';
+  }
+
+  private get authEnabled(): boolean {
+    return process.env['AUTH_ENABLED'] !== 'false';
+  }
+
+  /** Returns user payload from JWT cookie, or null if not authenticated */
+  private async getAuthUser(req: IncomingMessage): Promise<{ userId: string; orgId: string; role: string } | null> {
+    if (!this.authEnabled) return { userId: 'anonymous', orgId: 'default', role: 'owner' };
+    const cookies = parseCookies(req.headers['cookie']);
+    const token = cookies['markus_token'];
+    if (!token) return null;
+    const payload = await verifyToken(token, this.jwtSecret);
+    if (!payload) return null;
+    return payload as { userId: string; orgId: string; role: string };
+  }
+
+  /** Returns user or sends 401 and returns null */
+  private async requireAuth(req: IncomingMessage, res: ServerResponse): Promise<{ userId: string; orgId: string; role: string } | null> {
+    const user = await this.getAuthUser(req);
+    if (!user) { this.json(res, 401, { error: 'Unauthorized' }); return null; }
+    return user;
+  }
+
+  /** Persist a chat turn (user + assistant) to DB if storage is available */
+  private async persistChatTurn(
+    agentId: string,
+    userMessage: string,
+    reply: string,
+    senderId?: string,
+    tokensUsed = 0,
+  ): Promise<void> {
+    if (!this.storage) return;
+    try {
+      // Find or create session for this agent
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
+      let session = sessions[0];
+      if (!session) {
+        session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
+      }
+      // Generate title from first message (first 60 chars)
+      const title = !session.title ? userMessage.slice(0, 60) : undefined;
+      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
+      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'assistant', reply, tokensUsed);
+      await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+    } catch (err) {
+      log.warn('Failed to persist chat turn', { error: String(err) });
+    }
   }
 
   start(): void {
@@ -82,6 +235,166 @@ export class APIServer {
   }
 
   private async route(req: IncomingMessage, res: ServerResponse, path: string, url: URL): Promise<void> {
+    // ── Auth endpoints (no auth required) ──────────────────────────────────
+    if (path === '/api/auth/login' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const email = (body['email'] as string ?? '').trim().toLowerCase();
+      const password = body['password'] as string ?? '';
+
+      if (!this.authEnabled) {
+        this.json(res, 200, { user: { id: 'anonymous', name: 'Admin', role: 'owner' } });
+        return;
+      }
+
+      const userRow = this.storage ? await this.storage.userRepo.findByEmail(email) : null;
+      if (!userRow || !userRow.passwordHash) {
+        this.json(res, 401, { error: 'Invalid email or password' });
+        return;
+      }
+      const valid = await verifyPassword(password, userRow.passwordHash);
+      if (!valid) {
+        this.json(res, 401, { error: 'Invalid email or password' });
+        return;
+      }
+      await this.storage!.userRepo.updateLastLogin(userRow.id);
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken({ userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp }, this.jwtSecret);
+      res.setHeader('Set-Cookie', `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`);
+      this.json(res, 200, { user: { id: userRow.id, name: userRow.name, email: userRow.email, role: userRow.role, orgId: userRow.orgId } });
+      return;
+    }
+
+    if (path === '/api/auth/logout' && req.method === 'POST') {
+      res.setHeader('Set-Cookie', 'markus_token=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path === '/api/auth/me' && req.method === 'GET') {
+      const authUser = await this.getAuthUser(req);
+      if (!authUser) { this.json(res, 401, { error: 'Unauthorized' }); return; }
+      if (!this.authEnabled) {
+        this.json(res, 200, { user: { id: 'anonymous', name: 'Admin', role: 'owner', orgId: 'default' } });
+        return;
+      }
+      const userRow = this.storage ? await this.storage.userRepo.findById(authUser.userId) : null;
+      if (!userRow) { this.json(res, 401, { error: 'User not found' }); return; }
+      this.json(res, 200, { user: { id: userRow.id, name: userRow.name, email: userRow.email, role: userRow.role, orgId: userRow.orgId } });
+      return;
+    }
+
+    if (path === '/api/auth/change-password' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) { this.json(res, 503, { error: 'Storage not available' }); return; }
+      const body = await this.readBody(req);
+      const currentPassword = body['currentPassword'] as string ?? '';
+      const newPassword = body['newPassword'] as string ?? '';
+      if (!newPassword || newPassword.length < 6) {
+        this.json(res, 400, { error: 'New password must be at least 6 characters' });
+        return;
+      }
+      const userRow = await this.storage.userRepo.findById(authUser.userId);
+      if (!userRow) { this.json(res, 404, { error: 'User not found' }); return; }
+      // If they already have a password, verify current one (skip for first-time setup where hash is null/empty)
+      if (userRow.passwordHash && currentPassword) {
+        const valid = await verifyPassword(currentPassword, userRow.passwordHash);
+        if (!valid) { this.json(res, 401, { error: 'Current password is incorrect' }); return; }
+      }
+      const newHash = await hashPassword(newPassword);
+      await this.storage.userRepo.updatePassword(authUser.userId, newHash);
+      // Re-issue token so session stays valid
+      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+      const token = await signToken({ userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp }, this.jwtSecret);
+      res.setHeader('Set-Cookie', `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // ── Chat sessions ──────────────────────────────────────────────────────
+    if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      if (!this.storage) { this.json(res, 200, { sessions: [] }); return; }
+      const limit = parseInt(url.searchParams.get('limit') ?? '20');
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit);
+      this.json(res, 200, { sessions });
+      return;
+    }
+
+    if (path.match(/^\/api\/sessions\/[^/]+\/messages$/) && req.method === 'GET') {
+      const sessionId = path.split('/')[3]!;
+      if (!this.storage) { this.json(res, 200, { messages: [], hasMore: false }); return; }
+      const limit = parseInt(url.searchParams.get('limit') ?? '50');
+      const before = url.searchParams.get('before') ?? undefined;
+      const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
+      this.json(res, 200, result);
+      return;
+    }
+
+    if (path.match(/^\/api\/sessions\/[^/]+$/) && req.method === 'DELETE') {
+      const sessionId = path.split('/')[3]!;
+      if (this.storage) await this.storage.chatSessionRepo.deleteSession(sessionId);
+      this.json(res, 204, {});
+      return;
+    }
+
+    // ── Channel messages ───────────────────────────────────────────────────
+    if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'GET') {
+      const channel = decodeURIComponent(path.split('/')[3]!);
+      if (!this.storage) { this.json(res, 200, { messages: [], hasMore: false }); return; }
+      const limit = parseInt(url.searchParams.get('limit') ?? '50');
+      const before = url.searchParams.get('before') ?? undefined;
+      const result = await this.storage.channelMessageRepo.getMessages(channel, limit, before);
+      this.json(res, 200, result);
+      return;
+    }
+
+    if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'POST') {
+      const channel = decodeURIComponent(path.split('/')[3]!);
+      const body = await this.readBody(req);
+      const text = body['text'] as string;
+      const senderId = (body['senderId'] as string) ?? 'anonymous';
+      const senderName = (body['senderName'] as string) ?? 'You';
+      const mentions = (body['mentions'] as string[]) ?? [];
+      const targetAgentId = body['targetAgentId'] as string | undefined;
+      const orgId = (body['orgId'] as string) ?? 'default';
+
+      // Persist user message
+      let userMsg: import('@markus/storage').ChannelMsg | undefined;
+      if (this.storage) {
+        userMsg = await this.storage.channelMessageRepo.append({
+          orgId, channel, senderId, senderType: 'human', senderName, text, mentions,
+        });
+      }
+
+      // DM / personal-notepad channels never route to agents
+      const humanOnly = (body['humanOnly'] as boolean) === true;
+      const isHumanChannel = humanOnly || channel.startsWith('notes:') || channel.startsWith('dm:');
+      // Route to agent
+      const routedAgentId = isHumanChannel ? null : (targetAgentId ?? this.orgService.routeMessage(orgId, { text }));
+      if (!routedAgentId) {
+        this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+        return;
+      }
+      const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
+      const senderInfo = this.orgService.resolveHumanIdentity(senderId);
+      const reply = await agent.handleMessage(text, senderId, senderInfo);
+
+      // Persist agent reply
+      let agentMsg: import('@markus/storage').ChannelMsg | undefined;
+      if (this.storage) {
+        agentMsg = await this.storage.channelMessageRepo.append({
+          orgId, channel, senderId: routedAgentId, senderType: 'agent',
+          senderName: agent.config.name, text: reply, mentions: [],
+        });
+        void this.persistChatTurn(routedAgentId, text, reply, senderId);
+      }
+
+      this.ws.broadcastChat(routedAgentId, reply, 'agent');
+      this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: agentMsg ?? { id: `tmp_${Date.now()}`, channel, senderId: routedAgentId, senderType: 'agent', senderName: agent.config.name, text: reply, mentions: [], createdAt: new Date() } });
+      return;
+    }
+
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
       const agents = this.orgService.getAgentManager().listAgents();
@@ -152,8 +465,9 @@ export class APIServer {
             'Access-Control-Allow-Origin': '*',
           });
 
+          const userText = body['text'] as string;
           const reply = await agent.handleMessageStream(
-            body['text'] as string,
+            userText,
             (event) => {
               res.write(`data: ${JSON.stringify(event)}\n\n`);
               if (event.type === 'text_delta' && event.text) {
@@ -166,10 +480,13 @@ export class APIServer {
 
           res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
           res.end();
+          void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
         } else {
-          const reply = await agent.handleMessage(body['text'] as string, senderId, senderInfo);
+          const userText = body['text'] as string;
+          const reply = await agent.handleMessage(userText, senderId, senderInfo);
           this.ws.broadcastChat(agentId!, reply, 'agent');
           this.json(res, 200, { reply });
+          void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
         }
 
         this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
@@ -184,9 +501,101 @@ export class APIServer {
       return;
     }
 
+    // Teams
+    if (path === '/api/teams' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const teams = this.orgService.listTeamsWithMembers(orgId);
+      const ungrouped = this.orgService.listUngroupedMembers(orgId);
+      this.json(res, 200, { teams, ungrouped });
+      return;
+    }
+
+    if (path === '/api/teams' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+      }
+      const body = await this.readBody(req);
+      const orgId = (body['orgId'] as string) ?? authUser.orgId ?? 'default';
+      const name = body['name'] as string;
+      if (!name) { this.json(res, 400, { error: 'name is required' }); return; }
+      const team = this.orgService.createTeam(orgId, name, body['description'] as string | undefined);
+      this.json(res, 201, { team });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+      }
+      const teamId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const team = this.orgService.updateTeam(teamId, {
+        name: body['name'] as string | undefined,
+        description: body['description'] as string | undefined,
+        managerId: body['managerId'] as string | undefined,
+        managerType: body['managerType'] as 'human' | 'agent' | undefined,
+      });
+      this.json(res, 200, { team });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+      }
+      const teamId = path.split('/')[3]!;
+      this.orgService.deleteTeam(teamId);
+      this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+\/members$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+      }
+      const teamId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const memberId = body['memberId'] as string;
+      const memberType = body['memberType'] as 'human' | 'agent';
+      if (!memberId || !memberType) { this.json(res, 400, { error: 'memberId and memberType are required' }); return; }
+      this.orgService.addMemberToTeam(teamId, memberId, memberType);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+\/members\/[^/]+$/) && req.method === 'DELETE') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+      }
+      const parts = path.split('/');
+      const teamId = parts[3]!;
+      const memberId = parts[5]!;
+      this.orgService.removeMemberFromTeam(teamId, memberId);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
     // Roles
     if (path === '/api/roles' && req.method === 'GET') {
-      const roles = this.orgService.listAvailableRoles();
+      const roleNames = this.orgService.listAvailableRoles();
+      const roles = roleNames.map(name => {
+        try {
+          const details = this.orgService.getRoleDetails(name);
+          return { id: name, name, description: details.description ?? '', category: details.category ?? 'custom' };
+        } catch {
+          return { id: name, name, description: '', category: 'custom' };
+        }
+      });
       this.json(res, 200, { roles });
       return;
     }
@@ -294,12 +703,34 @@ export class APIServer {
 
     if (path === '/api/users' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const user = this.orgService.addHumanUser(
-        (body['orgId'] as string) ?? 'default',
-        body['name'] as string,
-        (body['role'] as 'owner' | 'admin' | 'member' | 'guest') ?? 'member',
-        { id: body['id'] as string | undefined, email: body['email'] as string | undefined },
-      );
+      const orgId = (body['orgId'] as string) ?? 'default';
+      const name = body['name'] as string;
+      const role = (body['role'] as 'owner' | 'admin' | 'member' | 'guest') ?? 'member';
+      const email = body['email'] as string | undefined;
+      const password = body['password'] as string | undefined;
+      const teamId = body['teamId'] as string | undefined;
+      const userId = (body['id'] as string | undefined) ?? generateId('usr');
+
+      // Persist to DB if storage is available and password is provided (for login-capable users)
+      if (this.storage && (email || password)) {
+        const passwordHash = password ? await hashPassword(password) : undefined;
+        await this.storage.userRepo.create({
+          id: userId,
+          orgId,
+          name,
+          email: email ?? `${userId}@markus.local`,
+          role,
+          passwordHash,
+        });
+      }
+
+      const user = this.orgService.addHumanUser(orgId, name, role, { id: userId, email });
+
+      // Add to team if specified
+      if (teamId) {
+        try { this.orgService.addMemberToTeam(teamId, userId, 'human'); } catch { /* ok */ }
+      }
+
       this.json(res, 201, { user });
       return;
     }
@@ -339,8 +770,9 @@ export class APIServer {
           Connection: 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
+        const userText = body['text'] as string;
         const reply = await agent.handleMessageStream(
-          body['text'] as string,
+          userText,
           (event) => {
             res.write(`data: ${JSON.stringify(event)}\n\n`);
           },
@@ -349,9 +781,12 @@ export class APIServer {
         );
         res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
         res.end();
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
       } else {
-        const reply = await agent.handleMessage(body['text'] as string, senderId, senderInfo);
+        const userText = body['text'] as string;
+        const reply = await agent.handleMessage(userText, senderId, senderInfo);
         this.json(res, 200, { reply, agentId: targetAgentId });
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
       }
       this.ws.broadcastAgentUpdate(targetAgentId, agent.getState().status);
       return;

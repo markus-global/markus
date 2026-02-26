@@ -9,6 +9,7 @@ import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { createManagerTools } from './tools/manager.js';
 import { createA2ATools } from './tools/a2a.js';
+import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { join } from 'node:path';
@@ -19,6 +20,25 @@ const log = createLogger('agent-manager');
 export interface SandboxFactory {
   create(agentId: string, image?: string): Promise<SandboxHandle>;
   destroy(agentId: string): Promise<void>;
+}
+
+/** Minimal interface that AgentManager needs from TaskService */
+export interface TaskServiceBridge {
+  createTask(request: {
+    orgId: string;
+    title: string;
+    description: string;
+    priority?: string;
+    assignedAgentId?: string;
+    parentTaskId?: string;
+  }): { id: string; title: string; status: string };
+  listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string }): Array<{
+    id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string;
+  }>;
+  updateTaskStatus(id: string, status: string): { id: string; title: string; status: string };
+  getTask(id: string): { id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string } | undefined;
+  assignTask(id: string, agentId: string): { id: string; status: string };
+  addTaskNote(id: string, note: string): void;
 }
 
 export interface MCPServerConfig {
@@ -53,6 +73,7 @@ export class AgentManager {
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
+  private taskService?: TaskServiceBridge;
   private agentAuditCallback?: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
   private escalationHandler?: (agentId: string, reason: string) => void;
 
@@ -65,6 +86,7 @@ export class AgentManager {
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
     skillRegistry?: SkillRegistry;
+    taskService?: TaskServiceBridge;
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
@@ -75,7 +97,12 @@ export class AgentManager {
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
+    this.taskService = options.taskService;
     mkdirSync(this.dataDir, { recursive: true });
+  }
+
+  setTaskService(taskService: TaskServiceBridge): void {
+    this.taskService = taskService;
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
@@ -146,6 +173,65 @@ export class AgentManager {
       agent.registerTool(tool);
     }
 
+    // Task tools — every agent can create/list/update tasks
+    if (this.taskService) {
+      const ts = this.taskService;
+      const orgId = config.orgId;
+      const taskCtx: AgentTaskContext = {
+        agentId: id,
+        agentName: config.name,
+        createTask: async (params) => {
+          return ts.createTask({
+            orgId,
+            title: params.title,
+            description: params.description,
+            priority: params.priority,
+            assignedAgentId: params.assignedAgentId,
+            parentTaskId: params.parentTaskId,
+          });
+        },
+        listTasks: async (filter) => {
+          return ts.listTasks({
+            orgId,
+            status: filter?.status,
+            assignedAgentId: filter?.assignedToMe ? id : undefined,
+          });
+        },
+        updateTaskStatus: async (taskId, status) => {
+          return ts.updateTaskStatus(taskId, status);
+        },
+        getTask: async (taskId) => {
+          return ts.getTask(taskId) ?? null;
+        },
+        assignTask: async (taskId, agentId) => {
+          return ts.assignTask(taskId, agentId);
+        },
+        addTaskNote: async (taskId, note) => {
+          ts.addTaskNote(taskId, note);
+        },
+      };
+      for (const tool of createAgentTaskTools(taskCtx)) {
+        agent.registerTool(tool);
+      }
+
+      // Wire tasks fetcher so system prompt shows this agent's assigned tasks
+      agent.setTasksFetcher(() => {
+        try {
+          return ts.listTasks({ orgId, assignedAgentId: id }).map(t => ({
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+            priority: t.priority,
+          }));
+        } catch {
+          return [];
+        }
+      });
+
+      log.info(`Task tools injected for agent ${id}`);
+    }
+
     // If this is a manager agent, inject manager-specific tools
     if (request.agentRole === 'manager') {
       const managerTools = createManagerTools({
@@ -160,6 +246,17 @@ export class AgentManager {
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
         createTask: (title, description, assignedAgentId, priority) => {
+          // Use real TaskService if available, otherwise fall back to temp ID
+          if (this.taskService) {
+            const task = this.taskService.createTask({
+              orgId: config.orgId,
+              title,
+              description,
+              priority: priority ?? 'medium',
+              assignedAgentId,
+            });
+            return task.id;
+          }
           return `task_${Date.now()}`;
         },
         getTeamStatus: () => this.listAgents().map(a => {

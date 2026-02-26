@@ -63,22 +63,34 @@ export class OpenAIProvider implements LLMProviderInterface {
 
     const base = this.baseUrl.replace(/\/+$/, '');
     const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`OpenAI API error ${res.status}: ${errText}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`OpenAI API error ${res.status}: ${errText}`);
+      }
+
+      const data = (await res.json()) as OpenAIResponse;
+      return this.convertResponse(data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const cause = (err as NodeJS.ErrnoException).cause;
+      const detail = cause instanceof Error ? ` (${cause.message})` : '';
+      throw new Error(`${msg}${detail}`);
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = (await res.json()) as OpenAIResponse;
-    return this.convertResponse(data);
   }
 
   private convertMessages(messages: LLMMessage[]): OpenAIMessage[] {
@@ -132,16 +144,29 @@ export class OpenAIProvider implements LLMProviderInterface {
 
     const base = this.baseUrl.replace(/\/+$/, '');
     const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      const msg = err instanceof Error ? err.message : String(err);
+      const cause = (err as NodeJS.ErrnoException).cause;
+      const detail = cause instanceof Error ? ` (${cause.message})` : '';
+      throw new Error(`${msg}${detail}`);
+    }
 
     if (!res.ok) {
+      clearTimeout(timeout);
       const errText = await res.text();
       throw new Error(`OpenAI API error ${res.status}: ${errText}`);
     }
@@ -218,6 +243,8 @@ export class OpenAIProvider implements LLMProviderInterface {
         } catch { /* skip unparseable lines */ }
       }
     }
+
+    clearTimeout(timeout);
 
     const resultToolCalls = [...toolCalls.values()]
       .filter((tc) => tc.name)

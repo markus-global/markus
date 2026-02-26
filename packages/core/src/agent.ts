@@ -62,6 +62,7 @@ export class Agent {
   private identityContext?: IdentityContext;
   private auditCallback?: (event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
+  private tasksFetcher?: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>;
   private consecutiveFailures = 0;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
@@ -156,6 +157,11 @@ export class Agent {
     this.escalationCallback = cb;
   }
 
+  /** Inject a function that returns this agent's currently assigned tasks for system prompt context */
+  setTasksFetcher(fetcher: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>): void {
+    this.tasksFetcher = fetcher;
+  }
+
   async generateDailyReport(): Promise<string> {
     const dailyLog = this.memory.getRecentDailyLogs(1);
     const state = this.getState();
@@ -206,6 +212,7 @@ export class Agent {
       currentQuery: userMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      assignedTasks: this.tasksFetcher?.(),
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -330,6 +337,7 @@ export class Agent {
       currentQuery: userMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      assignedTasks: this.tasksFetcher?.(),
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -366,9 +374,11 @@ export class Agent {
 
         for (const tc of response.toolCalls) {
           const toolStart = Date.now();
+          onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
           try {
             const result = await this.executeTool(tc);
             this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: true, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: true });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: result,
@@ -376,6 +386,7 @@ export class Agent {
             });
           } catch (toolErr) {
             this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: `Error: ${String(toolErr)}`,
@@ -591,7 +602,20 @@ export class Agent {
     }
 
     log.info(`Processing heartbeat task: ${ctx.task.name}`);
-    const prompt = `[HEARTBEAT TASK] ${ctx.task.name}\n\n${ctx.task.description}\n\nBriefly check status. If no actionable items found, just report "No action needed." Do NOT run excessive commands — at most 2-3 tool calls.`;
+    const prompt = [
+      `[HEARTBEAT TASK] ${ctx.task.name}`,
+      '',
+      ctx.task.description,
+      '',
+      '## Heartbeat Retrospective',
+      'As part of this heartbeat, perform the following review:',
+      '1. **Task Review**: Call `task_list` to see all your assigned tasks. For each active task, assess whether progress is stale or blocked.',
+      '2. **Status Update**: If any task status is outdated, call `task_update` to correct it.',
+      '3. **Orphaned Work**: Check if there is any work in progress that has no corresponding task. If so, call `task_create` to register it.',
+      '4. **Work Action**: If no actionable items are found, report "No action needed." Otherwise, advance the highest-priority active task by at most 2-3 tool calls.',
+      '',
+      'Do NOT run more than 5 total tool calls in this heartbeat session.',
+    ].join('\n');
 
     try {
       await this.handleMessage(prompt);

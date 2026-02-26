@@ -1,14 +1,16 @@
 import type { PageId } from '../types.ts';
+import { api, type AuthUser } from '../api.ts';
 
 interface Props {
   currentPage: string;
   onNavigate: (page: PageId) => void;
+  authUser?: AuthUser;
+  onLogout?: () => void;
 }
 
 const navItems: Array<{ id: PageId; label: string; icon: string; section?: string }> = [
   { id: 'dashboard', label: 'Overview', icon: '▦', section: 'team' },
-  { id: 'chat', label: 'Workspace', icon: '◈', section: 'team' },
-  { id: 'messages', label: 'Messages', icon: '✉', section: 'team' },
+  { id: 'chat', label: 'Chat', icon: '◈', section: 'team' },
   { id: 'tasks', label: 'Tasks', icon: '☑', section: 'team' },
   { id: 'team', label: 'Team', icon: '◎', section: 'members' },
   { id: 'agents', label: 'Agents', icon: '⊕', section: 'members' },
@@ -16,7 +18,11 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section?: strin
   { id: 'settings', label: 'Settings', icon: '⚙', section: 'tools' },
 ];
 
-export function Sidebar({ currentPage, onNavigate }: Props) {
+export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) {
+  const handleLogout = async () => {
+    try { await api.auth.logout(); } catch { /* ignore */ }
+    onLogout?.();
+  };
   const sections = [
     { key: 'team', label: 'WORKSPACE' },
     { key: 'members', label: 'ORGANIZATION' },
@@ -54,8 +60,26 @@ export function Sidebar({ currentPage, onNavigate }: Props) {
           </div>
         ))}
       </nav>
-      <div className="p-4 border-t border-gray-800 text-xs text-gray-600">
-        v0.7.0
+      <div className="p-4 border-t border-gray-800 space-y-2">
+        {authUser && (
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+              {authUser.name?.[0]?.toUpperCase() ?? 'A'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-gray-300 truncate">{authUser.name ?? authUser.email}</div>
+              <div className="text-[10px] text-gray-600 truncate">{authUser.role}</div>
+            </div>
+            <button
+              onClick={handleLogout}
+              title="Sign out"
+              className="text-gray-600 hover:text-gray-300 transition-colors text-sm"
+            >
+              ⇥
+            </button>
+          </div>
+        )}
+        <div className="text-[10px] text-gray-700">v0.7.0</div>
       </div>
     </aside>
   );

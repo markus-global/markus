@@ -14,6 +14,8 @@ export interface Task {
   parentTaskId?: string;
   subtaskIds: string[];
   result?: TaskResult;
+  /** Timestamped progress notes added by agents or users */
+  notes?: string[];
   createdAt: string;
   updatedAt: string;
   dueAt?: string;

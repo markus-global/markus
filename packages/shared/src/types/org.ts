@@ -7,6 +7,7 @@ export interface HumanUser {
   email?: string;
   role: HumanRole;
   orgId: string;
+  teamId?: string;
   avatar?: string;
   preferences?: Record<string, unknown>;
   createdAt: string;
@@ -29,6 +30,31 @@ export interface Team {
   description?: string;
   leadAgentId?: string;
   memberAgentIds: string[];
+  // Extended fields for full team management
+  managerId?: string;
+  managerType?: 'human' | 'agent';
+  humanMemberIds?: string[];
+}
+
+export interface TeamMemberInfo {
+  id: string;
+  name: string;
+  type: 'human' | 'agent';
+  role: string;
+  agentRole?: 'manager' | 'worker';
+  status?: string;
+  teamId?: string;
+}
+
+export interface TeamInfo {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  managerId?: string;
+  managerType?: 'human' | 'agent';
+  managerName?: string;
+  members: TeamMemberInfo[];
 }
 
 export interface ColleagueInfo {

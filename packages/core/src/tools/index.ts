@@ -7,3 +7,4 @@ export { MCPClientManager } from './mcp-client.js';
 export { createBuiltinTools } from './builtin.js';
 export { createManagerTools, type ManagerToolsContext } from './manager.js';
 export { createA2ATools, type A2AContext } from './a2a.js';
+export { createAgentTaskTools, type AgentTaskContext } from './task-tools.js';

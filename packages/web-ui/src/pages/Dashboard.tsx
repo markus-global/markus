@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import { api, wsClient, type AgentInfo, type TaskInfo } from '../api.ts';
+import { api, wsClient, type AgentInfo, type TaskInfo, type RoleInfo } from '../api.ts';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 export function Dashboard() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [roles, setRoles] = useState<string[]>([]);
+  const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [showHire, setShowHire] = useState(false);
   const [hireName, setHireName] = useState('');
   const [hireRole, setHireRole] = useState('');
+  const [pendingRemove, setPendingRemove] = useState<{ id: string; name: string } | null>(null);
 
   const refresh = () => {
     api.agents.list().then((d) => setAgents(d.agents)).catch(() => {});
@@ -47,7 +49,7 @@ export function Dashboard() {
         <div className="grid grid-cols-4 gap-4">
           {[
             { label: 'Active Agents', value: agents.length },
-            { label: 'Available Roles', value: roles.length },
+            { label: 'Role Templates', value: roles.length },
             { label: 'Pending Tasks', value: pending },
             { label: 'Completed', value: completed },
           ].map((s) => (
@@ -78,13 +80,23 @@ export function Dashboard() {
                 <div className="flex gap-2 mt-4 pt-4 border-t border-gray-800">
                   <button onClick={() => { api.agents.start(a.id).then(refresh); }} className="px-3 py-1.5 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors">Start</button>
                   <button onClick={() => { api.agents.stop(a.id).then(refresh); }} className="px-3 py-1.5 text-xs border border-gray-700 rounded-lg hover:border-gray-500 transition-colors">Stop</button>
-                  <button onClick={() => { if (confirm('Remove?')) api.agents.remove(a.id).then(refresh); }} className="px-3 py-1.5 text-xs text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors">Remove</button>
+                  <button onClick={() => setPendingRemove({ id: a.id, name: a.name })} className="px-3 py-1.5 text-xs text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors">Remove</button>
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {pendingRemove && (
+        <ConfirmModal
+          title={`Remove "${pendingRemove.name}"?`}
+          message="This agent will be permanently removed from the organization."
+          confirmLabel="Remove Agent"
+          onConfirm={() => { api.agents.remove(pendingRemove.id).then(refresh); setPendingRemove(null); }}
+          onCancel={() => setPendingRemove(null)}
+        />
+      )}
 
       {/* Hire Modal */}
       {showHire && (
@@ -98,7 +110,7 @@ export function Dashboard() {
             <select value={hireRole} onChange={(e) => setHireRole(e.target.value)}
               className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-6 focus:border-indigo-500 outline-none">
               <option value="">Select a role...</option>
-              {roles.map((r) => <option key={r} value={r}>{r}</option>)}
+              {roles.map((r) => <option key={r.id} value={r.id}>{r.name.replace(/-/g, ' ')}</option>)}
             </select>
             <div className="flex justify-end gap-3">
               <button onClick={() => setShowHire(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
