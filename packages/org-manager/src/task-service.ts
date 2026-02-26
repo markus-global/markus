@@ -235,6 +235,42 @@ export class TaskService {
     return bestId ?? idleAgents[0]?.id;
   }
 
+  updateTask(id: string, data: { title?: string; description?: string; priority?: TaskPriority }): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    if (data.title !== undefined) task.title = data.title;
+    if (data.description !== undefined) task.description = data.description;
+    if (data.priority !== undefined) task.priority = data.priority;
+    task.updatedAt = new Date().toISOString();
+    return task;
+  }
+
+  deleteTask(id: string): void {
+    const task = this.tasks.get(id);
+    if (!task) return;
+    // Remove from parent's subtaskIds
+    if (task.parentTaskId) {
+      const parent = this.tasks.get(task.parentTaskId);
+      if (parent) {
+        parent.subtaskIds = parent.subtaskIds.filter(sid => sid !== id);
+      }
+    }
+    // Delete all child subtasks recursively
+    for (const subId of [...(task.subtaskIds ?? [])]) {
+      this.deleteTask(subId);
+    }
+    this.tasks.delete(id);
+    if (this.taskRepo) {
+      this.taskRepo.delete(id).catch(err => log.warn('Failed to delete task from DB', { error: String(err) }));
+    }
+  }
+
+  listSubtasks(parentId: string): Task[] {
+    const parent = this.tasks.get(parentId);
+    if (!parent) return [];
+    return (parent.subtaskIds ?? []).map(id => this.tasks.get(id)).filter((t): t is Task => !!t);
+  }
+
   private checkParentCompletion(task: Task): void {
     if (!task.parentTaskId) return;
     const parent = this.tasks.get(task.parentTaskId);

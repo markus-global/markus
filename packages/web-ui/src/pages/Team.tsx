@@ -307,7 +307,7 @@ function TeamCard({
   onAddExisting: () => void;
 }) {
   return (
-    <div className="bg-gray-900/60 border border-gray-800 rounded-xl overflow-hidden hover:border-gray-700 transition-colors">
+    <div className="bg-gray-900/60 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors">
       {/* Team header */}
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800/60">
         <div className="flex items-center gap-3">
@@ -504,7 +504,7 @@ function UngroupedSection({
   onMoveToTeam: (memberId: string, memberType: 'human' | 'agent', teamId: string) => void;
 }) {
   return (
-    <div className="border border-dashed border-gray-700/50 rounded-xl overflow-hidden">
+    <div className="border border-dashed border-gray-700/50 rounded-xl">
       <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-800/40">
         <span className="text-sm font-medium text-gray-400">Ungrouped</span>
         <span className="text-xs text-gray-600">{members.length} member{members.length !== 1 ? 's' : ''}</span>

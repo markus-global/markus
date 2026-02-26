@@ -114,7 +114,8 @@ export class AgentManager {
     const config: AgentConfig = {
       id,
       name: request.name,
-      roleId: role.id,
+      // Store the template folder name so agents can be restored on restart
+      roleId: request.roleName,
       orgId: request.orgId ?? 'default',
       teamId: request.teamId,
       agentRole: request.agentRole ?? 'worker',
@@ -321,7 +322,23 @@ export class AgentManager {
     heartbeatIntervalMs: number;
   }): Promise<Agent> {
     const id = row.id;
-    const role = this.roleLoader.loadRole(row.roleName);
+    // Try loading role by: 1) roleId (template folder name for new agents),
+    // 2) roleName (display name stored by older agents), 3) display-name→folder lookup
+    let role = (() => {
+      // Try roleId first (it stores the folder name for agents hired after this fix)
+      try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
+      // Try roleName directly (might be a folder name for some agents)
+      try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
+      // Last resort: find by matching display name across available roles
+      const available = this.roleLoader.listAvailableRoles();
+      for (const templateName of available) {
+        try {
+          const candidate = this.roleLoader.loadRole(templateName);
+          if (candidate.name.toLowerCase() === row.roleName.toLowerCase()) return candidate;
+        } catch { /* skip */ }
+      }
+      throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
+    })();
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 

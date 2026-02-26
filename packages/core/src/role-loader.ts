@@ -38,17 +38,29 @@ export class RoleLoader {
     const name = this.extractTitle(roleContent) || roleNameOrPath;
     const category = this.inferCategory(roleNameOrPath);
 
+    // Append shared instructions (SHARED.md in the roles root) to every role's prompt
+    const sharedContent = this.loadSharedInstructions();
+    const systemPrompt = sharedContent ? `${roleContent}\n\n${sharedContent}` : roleContent;
+
     return {
       id: generateId('role'),
       name,
       description: this.extractDescription(roleContent),
       category,
-      systemPrompt: roleContent,
+      systemPrompt,
       defaultSkills: files.skills ? this.parseSkillsList(files.skills) : [],
       defaultHeartbeatTasks: files.heartbeat ? this.parseHeartbeatTasks(files.heartbeat) : [],
       defaultPolicies: files.policies ? this.parsePolicies(files.policies) : [],
       builtIn: true,
     };
+  }
+
+  private loadSharedInstructions(): string | undefined {
+    for (const dir of this.templateDirs) {
+      const p = join(dir, 'SHARED.md');
+      if (existsSync(p)) return readFileSync(p, 'utf-8');
+    }
+    return undefined;
   }
 
   private resolveRoleFiles(nameOrPath: string): RoleFiles {

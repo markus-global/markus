@@ -210,11 +210,17 @@ export const api = {
     list: () => request<{ tasks: TaskInfo[] }>('/tasks'),
     create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean) =>
       request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign }) }),
+    update: (id: string, data: { title?: string; description?: string; priority?: string }) =>
+      request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
     assign: (id: string, agentId: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
+    delete: (id: string) => request(`/tasks/${id}`, { method: 'DELETE' }),
     board: () => request<{ board: Record<string, TaskInfo[]> }>('/taskboard'),
+    listSubtasks: (parentId: string) => request<{ subtasks: TaskInfo[] }>(`/tasks/${parentId}/subtasks`),
+    createSubtask: (parentId: string, title: string, description?: string, priority?: string) =>
+      request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),

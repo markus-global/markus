@@ -387,8 +387,8 @@ export class OrganizationService {
           name: agent.config.name,
           orgId: org.id,
           teamId: request.teamId,
-          roleId: agent.config.roleId,
-          roleName: agent.role.name,
+          roleId: agent.config.roleId,  // template folder name (e.g. 'developer')
+          roleName: agent.role.name,    // display name (e.g. 'Software Developer')
           agentRole: agent.config.agentRole ?? 'worker',
           skills: agent.config.skills,
           llmConfig: agent.config.llmConfig,

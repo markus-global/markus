@@ -667,7 +667,49 @@ export class APIServer {
         return;
       }
 
-      this.json(res, 400, { error: 'Provide status or assignedAgentId' });
+      // General field update (title/description/priority)
+      if (body['title'] !== undefined || body['description'] !== undefined || body['priority'] !== undefined) {
+        const task = this.taskService.updateTask(taskId, {
+          title: body['title'] as string | undefined,
+          description: body['description'] as string | undefined,
+          priority: body['priority'] as import('@markus/shared').TaskPriority | undefined,
+        });
+        this.json(res, 200, { task });
+        return;
+      }
+
+      this.json(res, 400, { error: 'Provide status, assignedAgentId, or task fields to update' });
+      return;
+    }
+
+    if (path.startsWith('/api/tasks/') && req.method === 'DELETE') {
+      const taskId = path.split('/')[3]!;
+      this.taskService.deleteTask(taskId);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // Subtasks
+    if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      const subtasks = this.taskService.listSubtasks(taskId);
+      this.json(res, 200, { subtasks });
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const parentId = path.split('/')[3]!;
+      const parent = this.taskService.getTask(parentId);
+      if (!parent) { this.json(res, 404, { error: 'Parent task not found' }); return; }
+      const subtask = this.taskService.createTask({
+        orgId: parent.orgId,
+        title: body['title'] as string,
+        description: (body['description'] as string) ?? '',
+        priority: (body['priority'] as import('@markus/shared').TaskPriority) ?? 'medium',
+        parentTaskId: parentId,
+      });
+      this.json(res, 201, { subtask });
       return;
     }
 

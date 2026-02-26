@@ -16,8 +16,13 @@ export function Settings() {
   useEffect(() => {
     api.health().then(setHealth).catch(() => {});
     fetch('/api/settings/llm')
-      .then(r => r.json() as Promise<LLMSettings>)
-      .then(d => { setLlm(d); setSelectedProvider(d.defaultProvider); })
+      .then(r => r.ok ? r.json() as Promise<LLMSettings> : Promise.reject(r.status))
+      .then(d => {
+        if (d && typeof d === 'object' && 'providers' in d) {
+          setLlm(d);
+          setSelectedProvider(d.defaultProvider);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -45,7 +50,7 @@ export function Settings() {
     }
   };
 
-  const configuredProviders = llm
+  const configuredProviders = llm?.providers
     ? Object.entries(llm.providers).filter(([, v]) => v.configured).map(([k]) => k)
     : [];
 
@@ -110,7 +115,7 @@ export function Settings() {
             )}
 
             {/* Provider status table */}
-            {llm && Object.entries(llm.providers).length > 0 && (
+            {llm?.providers && Object.entries(llm.providers).length > 0 && (
               <div className="border-t border-gray-800 pt-4 space-y-2">
                 <div className="text-xs text-gray-500 mb-2">Configured providers (set via .env or markus.config.yaml)</div>
                 {Object.entries(llm.providers).map(([name, info]) => (
