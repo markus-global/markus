@@ -304,6 +304,134 @@ export class AgentManager {
     return agent;
   }
 
+  /**
+   * Restore an agent from a persisted DB row, reusing its original ID.
+   * Used on server startup to rebuild in-memory state from the database.
+   */
+  async restoreAgent(row: {
+    id: string;
+    name: string;
+    orgId: string;
+    teamId: string | null;
+    roleId: string;
+    roleName: string;
+    agentRole: string;
+    skills: unknown;
+    llmConfig: unknown;
+    heartbeatIntervalMs: number;
+  }): Promise<Agent> {
+    const id = row.id;
+    const role = this.roleLoader.loadRole(row.roleName);
+    const agentDataDir = join(this.dataDir, id);
+    mkdirSync(agentDataDir, { recursive: true });
+
+    const config: AgentConfig = {
+      id,
+      name: row.name,
+      roleId: row.roleId,
+      orgId: row.orgId,
+      teamId: row.teamId ?? undefined,
+      agentRole: (row.agentRole as 'manager' | 'worker') ?? 'worker',
+      skills: Array.isArray(row.skills) ? (row.skills as string[]) : role.defaultSkills,
+      llmConfig: (row.llmConfig as AgentConfig['llmConfig']) ?? { primary: 'anthropic' },
+      computeConfig: { type: 'docker' },
+      channels: [],
+      heartbeatIntervalMs: row.heartbeatIntervalMs ?? 30 * 60 * 1000,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const security = new SecurityGuard(this.globalSecurityPolicy);
+    const tools = createBuiltinTools({ agentId: id, security });
+
+    const agent = new Agent({ config, role, llmRouter: this.llmRouter, dataDir: agentDataDir, tools });
+
+    if (this.skillRegistry && config.skills.length > 0) {
+      for (const tool of this.skillRegistry.getToolsForSkills(config.skills)) {
+        agent.registerTool(tool);
+      }
+    }
+
+    const a2aTools = createA2ATools({
+      selfId: id,
+      selfName: config.name,
+      listColleagues: () => this.listAgents().map(a => {
+        try {
+          const ag = this.getAgent(a.id);
+          return { ...a, skills: ag.config.skills };
+        } catch { return { ...a, skills: [] }; }
+      }),
+      sendMessage: async (targetId, message, fromId, fromName) => {
+        const target = this.getAgent(targetId);
+        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
+      },
+    });
+    for (const tool of a2aTools) agent.registerTool(tool);
+
+    if (this.taskService) {
+      const ts = this.taskService;
+      const orgId = config.orgId;
+      const taskCtx: AgentTaskContext = {
+        agentId: id,
+        agentName: config.name,
+        createTask: async (params) => ts.createTask({ orgId, ...params }),
+        listTasks: async (filter) => ts.listTasks({ orgId, status: filter?.status, assignedAgentId: filter?.assignedToMe ? id : undefined }),
+        updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status),
+        getTask: async (taskId) => ts.getTask(taskId) ?? null,
+        assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
+        addTaskNote: async (taskId, note) => { ts.addTaskNote(taskId, note); },
+      };
+      for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
+      agent.setTasksFetcher(() => {
+        try {
+          return ts.listTasks({ orgId, assignedAgentId: id }).map(t => ({
+            id: t.id, title: t.title, description: t.description, status: t.status, priority: t.priority,
+          }));
+        } catch { return []; }
+      });
+    }
+
+    if (config.agentRole === 'manager') {
+      const managerTools = createManagerTools({
+        listAgents: () => this.listAgents().map(a => {
+          try { const ag = this.getAgent(a.id); return { ...a, skills: ag.config.skills }; }
+          catch { return { ...a, skills: [] }; }
+        }),
+        delegateMessage: async (targetId, message) => {
+          const target = this.getAgent(targetId);
+          return target.handleMessage(message, id, { name: config.name, role: 'manager' });
+        },
+        createTask: (title, description, assignedAgentId, priority) => {
+          if (this.taskService) {
+            return this.taskService.createTask({ orgId: config.orgId, title, description, priority: priority ?? 'medium', assignedAgentId }).id;
+          }
+          return `task_${Date.now()}`;
+        },
+        getTeamStatus: () => this.listAgents().map(a => {
+          try {
+            const ag = this.getAgent(a.id);
+            const state = ag.getState();
+            return { ...a, currentTask: state.currentTaskId, tokensUsedToday: state.tokensUsedToday };
+          } catch { return { ...a, tokensUsedToday: 0 }; }
+        }),
+      });
+      for (const tool of managerTools) agent.registerTool(tool);
+    }
+
+    if (this.agentAuditCallback) {
+      const cb = this.agentAuditCallback;
+      agent.setAuditCallback((event) => cb(id, event));
+    }
+    if (this.escalationHandler) {
+      agent.setEscalationCallback(this.escalationHandler);
+    }
+
+    this.agents.set(id, agent);
+    this.eventBus.emit('agent:created', { agentId: id, name: row.name });
+    log.info(`Agent restored: ${row.name} (${id})`);
+    return agent;
+  }
+
   async startAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
 
@@ -353,6 +481,10 @@ export class AgentManager {
     const agent = this.agents.get(agentId);
     if (!agent) throw new Error(`Agent not found: ${agentId}`);
     return agent;
+  }
+
+  hasAgent(agentId: string): boolean {
+    return this.agents.has(agentId);
   }
 
   setAuditCallback(cb: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void): void {

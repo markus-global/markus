@@ -17,6 +17,7 @@ const ROLE_ICONS: Record<string, string> = {
   'finance': '💰',
   'operations': '🔧',
   'org-manager': '⭐',
+  'secretary': '🗂',
 };
 
 function roleIcon(roleName: string): string {
@@ -57,6 +58,24 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     const i = setInterval(refresh, 15000);
     const unsub = wsClient.on('*', () => refresh());
     return () => { clearInterval(i); unsub(); };
+  }, []);
+
+  // Handle navigation from Dashboard "Hire Agent" button
+  useEffect(() => {
+    const openHire = localStorage.getItem('markus_nav_openHire');
+    if (openHire === 'true') {
+      localStorage.removeItem('markus_nav_openHire');
+      setShowHire({});
+    }
+
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
+      if (detail.page === 'team' && detail.params?.openHire === 'true') {
+        setShowHire({});
+      }
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
   }, []);
 
   // Close add-member menu on outside click

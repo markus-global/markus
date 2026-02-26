@@ -35,6 +35,15 @@ export class OrganizationService {
     };
     this.humans.set(user.id, user);
     this.refreshIdentityContextsForOrg(orgId);
+
+    // Only persist users with an email address to DB — emailless users are synthetic
+    // in-memory sentinels (e.g. the default 'Owner') and must not pollute auth user count.
+    if (this.storage && opts?.email) {
+      this.storage.userRepo.upsert({ id: user.id, orgId, name, email: opts.email, role }).catch((error) => {
+        log.warn('Failed to persist user to DB', { error: String(error) });
+      });
+    }
+
     log.info(`Human user added: ${name} (${role})`, { orgId, userId: user.id });
     return user;
   }
@@ -52,6 +61,13 @@ export class OrganizationService {
     if (user) {
       this.humans.delete(userId);
       this.refreshIdentityContextsForOrg(user.orgId);
+
+      if (this.storage) {
+        this.storage.userRepo.delete(userId).catch((error) => {
+          log.warn('Failed to delete user from DB', { error: String(error) });
+        });
+      }
+
       log.info(`Human user removed: ${user.name}`);
     }
   }
@@ -123,7 +139,7 @@ export class OrganizationService {
     return [...this.orgs.values()];
   }
 
-  createTeam(orgId: string, name: string, description?: string): Team {
+  async createTeam(orgId: string, name: string, description?: string): Promise<Team> {
     const org = this.orgs.get(orgId);
     if (!org) throw new Error(`Organization not found: ${orgId}`);
 
@@ -136,21 +152,44 @@ export class OrganizationService {
       humanMemberIds: [],
     };
     this.teams.set(team.id, team);
+
+    if (this.storage) {
+      try {
+        await this.storage.teamRepo.create({ id: team.id, orgId, name, description });
+      } catch (error) {
+        log.warn('Failed to persist team to DB', { error: String(error) });
+      }
+    }
+
     log.info(`Team created: ${name}`, { orgId, teamId: team.id });
     return team;
   }
 
-  updateTeam(teamId: string, data: { name?: string; description?: string; managerId?: string; managerType?: 'human' | 'agent' }): Team {
+  async updateTeam(teamId: string, data: { name?: string; description?: string; managerId?: string | null; managerType?: 'human' | 'agent' | null }): Promise<Team> {
     const team = this.teams.get(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
     if (data.name !== undefined) team.name = data.name;
     if (data.description !== undefined) team.description = data.description;
-    if (data.managerId !== undefined) team.managerId = data.managerId;
-    if (data.managerType !== undefined) team.managerType = data.managerType;
+    if ('managerId' in data) team.managerId = data.managerId ?? undefined;
+    if ('managerType' in data) team.managerType = (data.managerType as 'human' | 'agent' | undefined) ?? undefined;
+
+    if (this.storage) {
+      try {
+        await this.storage.teamRepo.update(teamId, {
+          name: data.name,
+          description: data.description,
+          managerId: 'managerId' in data ? (data.managerId ?? null) : undefined,
+          managerType: 'managerType' in data ? (data.managerType ?? null) : undefined,
+        });
+      } catch (error) {
+        log.warn('Failed to update team in DB', { error: String(error) });
+      }
+    }
+
     return team;
   }
 
-  deleteTeam(teamId: string): void {
+  async deleteTeam(teamId: string): Promise<void> {
     const team = this.teams.get(teamId);
     if (!team) return;
     // Unassign all agents from this team
@@ -166,6 +205,15 @@ export class OrganizationService {
       if (user && user.teamId === teamId) user.teamId = undefined;
     }
     this.teams.delete(teamId);
+
+    if (this.storage) {
+      try {
+        await this.storage.teamRepo.delete(teamId);
+      } catch (error) {
+        log.warn('Failed to delete team from DB', { error: String(error) });
+      }
+    }
+
     log.info(`Team deleted: ${teamId}`);
   }
 
@@ -182,7 +230,14 @@ export class OrganizationService {
       if (!team.humanMemberIds) team.humanMemberIds = [];
       if (!team.humanMemberIds.includes(memberId)) team.humanMemberIds.push(memberId);
       const user = this.humans.get(memberId);
-      if (user) user.teamId = teamId;
+      if (user) {
+        user.teamId = teamId;
+        if (this.storage) {
+          this.storage.userRepo.updateTeamId(memberId, teamId).catch((error) => {
+            log.warn('Failed to update user teamId in DB', { error: String(error) });
+          });
+        }
+      }
     }
   }
 
@@ -201,7 +256,14 @@ export class OrganizationService {
       if (agent.config.teamId === teamId) agent.config.teamId = undefined;
     } catch { /* ok */ }
     const user = this.humans.get(memberId);
-    if (user && user.teamId === teamId) user.teamId = undefined;
+    if (user && user.teamId === teamId) {
+      user.teamId = undefined;
+      if (this.storage) {
+        this.storage.userRepo.updateTeamId(memberId, null).catch((error) => {
+          log.warn('Failed to clear user teamId in DB', { error: String(error) });
+        });
+      }
+    }
   }
 
   listTeamsWithMembers(orgId: string): TeamInfo[] {
@@ -327,6 +389,7 @@ export class OrganizationService {
           teamId: request.teamId,
           roleId: agent.config.roleId,
           roleName: agent.role.name,
+          agentRole: agent.config.agentRole ?? 'worker',
           skills: agent.config.skills,
           llmConfig: agent.config.llmConfig,
           computeConfig: agent.config.computeConfig,
@@ -432,5 +495,150 @@ export class OrganizationService {
 
   getStorage(): StorageBridge | undefined {
     return this.storage;
+  }
+
+  /**
+   * Restore all persisted data (teams, agents, users) from the database.
+   * Should be called once during server startup after the org is created.
+   */
+  async loadFromDB(orgId: string): Promise<void> {
+    if (!this.storage) return;
+
+    log.info('Loading data from DB...', { orgId });
+
+    // 1. Restore teams
+    try {
+      const teamRows = await this.storage.teamRepo.findByOrgId(orgId);
+      for (const row of teamRows) {
+        if (this.teams.has(row.id)) continue; // already loaded
+        const team: Team = {
+          id: row.id,
+          orgId: row.orgId,
+          name: row.name,
+          description: row.description ?? undefined,
+          memberAgentIds: [],
+          humanMemberIds: [],
+          managerId: row.managerId ?? undefined,
+          managerType: (row.managerType as 'human' | 'agent' | undefined) ?? undefined,
+        };
+        this.teams.set(team.id, team);
+      }
+      log.info(`Restored ${teamRows.length} teams from DB`);
+    } catch (error) {
+      log.warn('Failed to restore teams from DB', { error: String(error) });
+    }
+
+    // 2. Restore agents
+    try {
+      const agentRows = await this.storage.agentRepo.findByOrgId(orgId);
+      let restoredCount = 0;
+      for (const row of agentRows) {
+        if (this.agentManager.hasAgent(row.id)) continue; // already loaded
+        try {
+          await this.agentManager.restoreAgent(row);
+          restoredCount++;
+
+          // Re-add to team membership
+          if (row.teamId) {
+            const team = this.teams.get(row.teamId);
+            if (team && !team.memberAgentIds.includes(row.id)) {
+              team.memberAgentIds.push(row.id);
+            }
+          }
+
+          // Auto-start restored agents
+          try {
+            await this.agentManager.startAgent(row.id);
+          } catch (startErr) {
+            log.warn(`Failed to auto-start restored agent ${row.id}`, { error: String(startErr) });
+          }
+        } catch (agentErr) {
+          log.warn(`Failed to restore agent ${row.id}`, { error: String(agentErr) });
+        }
+      }
+      log.info(`Restored ${restoredCount} agents from DB`);
+    } catch (error) {
+      log.warn('Failed to restore agents from DB', { error: String(error) });
+    }
+
+    // 3. Restore human users (skip default owner which is already seeded)
+    try {
+      const userRows = await this.storage.userRepo.listByOrg(orgId);
+      let restoredCount = 0;
+      for (const row of userRows) {
+        if (this.humans.has(row.id)) continue; // already loaded (e.g. default owner)
+        const user: HumanUser = {
+          id: row.id,
+          name: row.name,
+          email: row.email ?? undefined,
+          role: row.role as HumanRole,
+          orgId: row.orgId,
+          teamId: row.teamId ?? undefined,
+          createdAt: row.createdAt.toISOString(),
+        };
+        this.humans.set(user.id, user);
+
+        // Re-add to team membership
+        if (row.teamId) {
+          const team = this.teams.get(row.teamId);
+          if (team && !team.humanMemberIds?.includes(row.id)) {
+            if (!team.humanMemberIds) team.humanMemberIds = [];
+            team.humanMemberIds.push(row.id);
+          }
+        }
+        restoredCount++;
+      }
+      log.info(`Restored ${restoredCount} users from DB`);
+    } catch (error) {
+      log.warn('Failed to restore users from DB', { error: String(error) });
+    }
+
+    this.refreshIdentityContextsForOrg(orgId);
+    log.info('Data restored from DB successfully', { orgId });
+  }
+
+  /**
+   * Seed a default team ("My Team") for a fresh organization.
+   * Creates the team, adds the owner as a human member, and hires a Secretary agent
+   * as the team manager. Skips if any teams already exist for the org.
+   */
+  async seedDefaultTeam(orgId: string, ownerUserId: string): Promise<void> {
+    const existing = this.listTeams(orgId);
+    if (existing.length > 0) return; // Already has teams — nothing to seed
+
+    log.info('Seeding default team for org', { orgId });
+
+    try {
+      // Create the default team
+      const team = await this.createTeam(orgId, 'My Team', 'Your primary team — you and your personal AI Secretary.');
+
+      // Add the owner as a human member
+      const owner = this.humans.get(ownerUserId);
+      if (owner) {
+        this.addMemberToTeam(team.id, ownerUserId, 'human');
+      }
+
+      // Hire a Secretary agent as manager of this team
+      const secretary = await this.hireAgent({
+        name: 'Secretary',
+        roleName: 'secretary',
+        orgId,
+        teamId: team.id,
+        agentRole: 'manager',
+      });
+
+      // Set the secretary as the team manager
+      await this.updateTeam(team.id, {
+        managerId: secretary.id,
+        managerType: 'agent',
+      });
+
+      log.info('Default team seeded', {
+        teamId: team.id,
+        secretaryId: secretary.id,
+      });
+    } catch (error) {
+      log.warn('Failed to seed default team', { error: String(error) });
+    }
   }
 }

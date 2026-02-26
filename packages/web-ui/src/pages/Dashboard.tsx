@@ -1,19 +1,15 @@
 import { useEffect, useState } from 'react';
-import { api, wsClient, type AgentInfo, type TaskInfo, type RoleInfo } from '../api.ts';
+import { api, wsClient, type AgentInfo, type TaskInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { navBus } from '../navBus.ts';
 
 export function Dashboard() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
-  const [showHire, setShowHire] = useState(false);
-  const [hireName, setHireName] = useState('');
-  const [hireRole, setHireRole] = useState('');
   const [pendingRemove, setPendingRemove] = useState<{ id: string; name: string } | null>(null);
 
   const refresh = () => {
     api.agents.list().then((d) => setAgents(d.agents)).catch(() => {});
-    api.roles.list().then((d) => setRoles(d.roles)).catch(() => {});
     api.tasks.board().then((d) => setBoard(d.board)).catch(() => {});
   };
 
@@ -24,14 +20,6 @@ export function Dashboard() {
     return () => { clearInterval(i); unsub(); };
   }, []);
 
-  const hire = async () => {
-    if (!hireName || !hireRole) return;
-    await api.agents.create(hireName, hireRole);
-    setShowHire(false);
-    setHireName('');
-    refresh();
-  };
-
   const pending = (board['pending']?.length ?? 0) + (board['assigned']?.length ?? 0);
   const completed = board['completed']?.length ?? 0;
 
@@ -39,17 +27,19 @@ export function Dashboard() {
     <div className="flex-1 overflow-y-auto">
       <div className="flex items-center justify-between px-7 h-15 border-b border-gray-800 bg-gray-900">
         <h2 className="text-lg font-semibold">Dashboard</h2>
-        <button onClick={() => setShowHire(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">
+        <button
+          onClick={() => navBus.navigate('team', { openHire: 'true' })}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors"
+        >
           + Hire Agent
         </button>
       </div>
 
       <div className="p-7 space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           {[
             { label: 'Active Agents', value: agents.length },
-            { label: 'Role Templates', value: roles.length },
             { label: 'Pending Tasks', value: pending },
             { label: 'Completed', value: completed },
           ].map((s) => (
@@ -98,27 +88,6 @@ export function Dashboard() {
         />
       )}
 
-      {/* Hire Modal */}
-      {showHire && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowHire(false)}>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-7 w-[440px] shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold mb-5">Hire a Digital Employee</h3>
-            <label className="block text-sm text-gray-400 mb-1.5">Name</label>
-            <input value={hireName} onChange={(e) => setHireName(e.target.value)} placeholder="e.g. Alice"
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none" />
-            <label className="block text-sm text-gray-400 mb-1.5">Role</label>
-            <select value={hireRole} onChange={(e) => setHireRole(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-6 focus:border-indigo-500 outline-none">
-              <option value="">Select a role...</option>
-              {roles.map((r) => <option key={r.id} value={r.id}>{r.name.replace(/-/g, ' ')}</option>)}
-            </select>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setShowHire(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
-              <button onClick={hire} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Hire</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

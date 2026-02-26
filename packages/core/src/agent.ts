@@ -17,6 +17,16 @@ import { ContextEngine, type OrgContext } from './context-engine.js';
 
 const log = createLogger('agent');
 
+/** Returns true when a tool returned a structured error (status: 'error' | 'denied'). */
+function isErrorResult(result: string): boolean {
+  try {
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    return parsed.status === 'error' || parsed.status === 'denied';
+  } catch {
+    return false;
+  }
+}
+
 export interface AgentToolHandler {
   name: string;
   description: string;
@@ -252,7 +262,8 @@ export class Agent {
           const toolStart = Date.now();
           try {
             const result = await this.executeTool(tc);
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: true, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            const isToolError = isErrorResult(result);
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: result,
@@ -377,8 +388,9 @@ export class Agent {
           onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
           try {
             const result = await this.executeTool(tc);
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: true, detail: JSON.stringify(tc.arguments).slice(0, 200) });
-            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: true });
+            const isToolError = isErrorResult(result);
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: result,

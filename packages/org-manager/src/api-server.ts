@@ -131,8 +131,11 @@ export class APIServer {
   /** Ensure at least one admin user exists; called once after storage init */
   async ensureAdminUser(orgId: string): Promise<void> {
     if (!this.storage) return;
-    const count = await this.storage.userRepo.countByOrg(orgId);
-    if (count > 0) return;
+    // Check for auth-capable users (those with a passwordHash) only.
+    // Synthetic in-memory users (e.g. default owner without email) must not prevent admin creation.
+    const allUsers = await this.storage.userRepo.listByOrg(orgId);
+    const hasAuthUser = allUsers.some(u => u.passwordHash);
+    if (hasAuthUser) return;
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
     await this.storage.userRepo.create({
@@ -230,7 +233,15 @@ export class APIServer {
 
     this.route(req, res, path, url).catch((error) => {
       log.error('Request handler error', { error: String(error), path });
-      this.json(res, 500, { error: 'Internal server error' });
+      if (res.headersSent) {
+        // SSE or chunked stream already started — send an error event and close gracefully
+        try {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Internal server error' })}\n\n`);
+        } catch { /* ignore if write also fails */ }
+        res.end();
+      } else {
+        this.json(res, 500, { error: 'Internal server error' });
+      }
     });
   }
 
@@ -466,21 +477,25 @@ export class APIServer {
           });
 
           const userText = body['text'] as string;
-          const reply = await agent.handleMessageStream(
-            userText,
-            (event) => {
-              res.write(`data: ${JSON.stringify(event)}\n\n`);
-              if (event.type === 'text_delta' && event.text) {
-                this.ws.broadcastChat(agentId!, event.text, 'agent');
-              }
-            },
-            senderId,
-            senderInfo,
-          );
-
-          res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
+          try {
+            const reply = await agent.handleMessageStream(
+              userText,
+              (event) => {
+                res.write(`data: ${JSON.stringify(event)}\n\n`);
+                if (event.type === 'text_delta' && event.text) {
+                  this.ws.broadcastChat(agentId!, event.text, 'agent');
+                }
+              },
+              senderId,
+              senderInfo,
+            );
+            res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
+            void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
+          } catch (streamErr) {
+            log.error('Agent stream error', { agentId, error: String(streamErr) });
+            res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
+          }
           res.end();
-          void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
         } else {
           const userText = body['text'] as string;
           const reply = await agent.handleMessage(userText, senderId, senderInfo);
@@ -520,7 +535,7 @@ export class APIServer {
       const orgId = (body['orgId'] as string) ?? authUser.orgId ?? 'default';
       const name = body['name'] as string;
       if (!name) { this.json(res, 400, { error: 'name is required' }); return; }
-      const team = this.orgService.createTeam(orgId, name, body['description'] as string | undefined);
+      const team = await this.orgService.createTeam(orgId, name, body['description'] as string | undefined);
       this.json(res, 201, { team });
       return;
     }
@@ -533,7 +548,7 @@ export class APIServer {
       }
       const teamId = path.split('/')[3]!;
       const body = await this.readBody(req);
-      const team = this.orgService.updateTeam(teamId, {
+      const team = await this.orgService.updateTeam(teamId, {
         name: body['name'] as string | undefined,
         description: body['description'] as string | undefined,
         managerId: body['managerId'] as string | undefined,
@@ -550,7 +565,7 @@ export class APIServer {
         this.json(res, 403, { error: 'Insufficient permissions' }); return;
       }
       const teamId = path.split('/')[3]!;
-      this.orgService.deleteTeam(teamId);
+      await this.orgService.deleteTeam(teamId);
       this.json(res, 200, { deleted: true });
       return;
     }
@@ -771,17 +786,22 @@ export class APIServer {
           'Access-Control-Allow-Origin': '*',
         });
         const userText = body['text'] as string;
-        const reply = await agent.handleMessageStream(
-          userText,
-          (event) => {
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
-          },
-          senderId,
-          senderInfo,
-        );
-        res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
+        try {
+          const reply = await agent.handleMessageStream(
+            userText,
+            (event) => {
+              res.write(`data: ${JSON.stringify(event)}\n\n`);
+            },
+            senderId,
+            senderInfo,
+          );
+          res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
+          void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
+        } catch (streamErr) {
+          log.error('Channel agent stream error', { agentId: targetAgentId, error: String(streamErr) });
+          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
+        }
         res.end();
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
       } else {
         const userText = body['text'] as string;
         const reply = await agent.handleMessage(userText, senderId, senderInfo);

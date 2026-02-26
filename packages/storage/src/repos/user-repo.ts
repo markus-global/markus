@@ -8,6 +8,7 @@ export interface User {
   name: string;
   email: string | null;
   role: string;
+  teamId: string | null;
   passwordHash: string | null;
   createdAt: Date;
   lastLoginAt: Date | null;
@@ -22,6 +23,7 @@ export class UserRepo {
     name: string;
     email?: string;
     role?: string;
+    teamId?: string;
     passwordHash?: string;
   }): Promise<User> {
     const [row] = await this.db.insert(users).values({
@@ -30,9 +32,43 @@ export class UserRepo {
       name: data.name,
       email: data.email ?? null,
       role: data.role ?? 'member',
+      teamId: data.teamId ?? null,
       passwordHash: data.passwordHash ?? null,
     }).returning();
     return row!;
+  }
+
+  async upsert(data: {
+    id: string;
+    orgId: string;
+    name: string;
+    email?: string;
+    role?: string;
+    teamId?: string;
+  }): Promise<void> {
+    await this.db.insert(users).values({
+      id: data.id,
+      orgId: data.orgId,
+      name: data.name,
+      email: data.email ?? null,
+      role: data.role ?? 'member',
+      teamId: data.teamId ?? null,
+    }).onConflictDoUpdate({
+      target: users.id,
+      set: {
+        name: data.name,
+        role: data.role ?? 'member',
+        teamId: data.teamId ?? null,
+      },
+    });
+  }
+
+  async updateTeamId(id: string, teamId: string | null): Promise<void> {
+    await this.db.update(users).set({ teamId }).where(eq(users.id, id));
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.db.delete(users).where(eq(users.id, id));
   }
 
   async findByEmail(email: string): Promise<User | null> {

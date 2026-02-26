@@ -232,7 +232,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
-  const skillRegistry = createDefaultSkillRegistry();
+  const skillRegistry = await createDefaultSkillRegistry();
 
   // Run DB migrations before initializing storage (idempotent, safe on every startup)
   const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
@@ -287,11 +287,17 @@ async function startServer(
 
   // Wire storage for chat persistence and auth
   const storage = orgService.getStorage();
+  const firstOrgId = 'default';
   if (storage) {
     apiServer.setStorage(storage);
-    const firstOrgId = 'default';
     await apiServer.ensureAdminUser(firstOrgId);
+
+    // Restore persisted teams, agents, and users from DB
+    await orgService.loadFromDB(firstOrgId);
   }
+
+  // Seed default team + Secretary agent (runs for both DB and in-memory mode)
+  await orgService.seedDefaultTeam(firstOrgId, 'default');
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
@@ -596,7 +602,7 @@ async function dbInit(config: ReturnType<typeof loadConfig>) {
 }
 
 async function listSkills() {
-  const registry = createDefaultSkillRegistry();
+  const registry = await createDefaultSkillRegistry();
   const skills = registry.list();
 
   if (skills.length === 0) {

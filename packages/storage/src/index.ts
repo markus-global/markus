@@ -9,3 +9,4 @@ export { MemoryRepo } from './repos/memory-repo.js';
 export { ChatSessionRepo, type ChatSession, type ChatMessage } from './repos/chat-session-repo.js';
 export { ChannelMessageRepo, type ChannelMsg } from './repos/channel-message-repo.js';
 export { UserRepo, type User } from './repos/user-repo.js';
+export { TeamRepo, type TeamRow } from './repos/team-repo.js';

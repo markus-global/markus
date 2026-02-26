@@ -141,7 +141,7 @@ export const api = {
     remove: (id: string) => request(`/agents/${id}`, { method: 'DELETE' }),
     message: (id: string, text: string) =>
       request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void): Promise<string> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal): Promise<string> => {
       return new Promise(async (resolve, reject) => {
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
@@ -149,6 +149,7 @@ export const api = {
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ text, stream: true }),
+            signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
           const reader = res.body?.getReader();
@@ -183,7 +184,10 @@ export const api = {
             }
           }
           resolve(fullContent);
-        } catch (err) { reject(err); }
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') { resolve(fullContent); }
+          else { reject(err); }
+        }
       });
     },
   },
@@ -224,14 +228,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ text, ...opts }),
       }),
-    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
+    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
       return new Promise(async (resolve, reject) => {
         try {
+          const { signal, ...restOpts } = opts ?? {};
           const res = await fetch(`${BASE}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, ...opts }),
+            body: JSON.stringify({ text, stream: true, ...restOpts }),
+            signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
           const reader = res.body?.getReader();
@@ -266,7 +272,10 @@ export const api = {
             }
           }
           resolve({ content: fullContent, agentId: routedAgentId });
-        } catch (err) { reject(err); }
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, agentId: routedAgentId }); }
+          else { reject(err); }
+        }
       });
     },
   },

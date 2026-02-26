@@ -127,10 +127,22 @@ export function createFileEditTool(security?: SecurityGuard): AgentToolHandler {
         const count = content.split(oldStr).length - 1;
 
         if (count === 0) {
-          return JSON.stringify({ status: 'error', error: 'old_string not found in file' });
+          // Include the actual file content so the LLM can self-correct with the right old_string
+          const preview = content.length > 3000
+            ? content.slice(0, 3000) + `\n... (truncated, total ${content.length} chars)`
+            : content;
+          return JSON.stringify({
+            status: 'error',
+            error: 'old_string not found in file — the text you provided does not exist verbatim.',
+            hint: 'Read the current_content below, find the exact text to change, and retry file_edit with a correct old_string.',
+            current_content: preview,
+          });
         }
         if (count > 1) {
-          return JSON.stringify({ status: 'error', error: `old_string found ${count} times — must be unique. Add more context.` });
+          return JSON.stringify({
+            status: 'error',
+            error: `old_string found ${count} times — must be unique. Add more surrounding context to make it unique.`,
+          });
         }
 
         const updated = content.replace(oldStr, newStr);

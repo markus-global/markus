@@ -11,6 +11,7 @@ export interface StorageBridge {
   orgRepo: import('@markus/storage').OrgRepo;
   taskRepo: import('@markus/storage').TaskRepo;
   agentRepo: import('@markus/storage').AgentRepo;
+  teamRepo: import('@markus/storage').TeamRepo;
   messageRepo: import('@markus/storage').MessageRepo;
   memoryRepo: import('@markus/storage').MemoryRepo;
   chatSessionRepo: import('@markus/storage').ChatSessionRepo;
@@ -32,6 +33,7 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
       orgRepo: new storage.OrgRepo(db),
       taskRepo: new storage.TaskRepo(db),
       agentRepo: new storage.AgentRepo(db),
+      teamRepo: new storage.TeamRepo(db),
       messageRepo: new storage.MessageRepo(db),
       memoryRepo: new storage.MemoryRepo(db),
       chatSessionRepo: new storage.ChatSessionRepo(db),

@@ -23,6 +23,8 @@ export const teams = pgTable('teams', {
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   leadAgentId: varchar('lead_agent_id', { length: 64 }),
+  managerId: varchar('manager_id', { length: 64 }),
+  managerType: varchar('manager_type', { length: 16 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -38,6 +40,7 @@ export const agents = pgTable('agents', {
   llmConfig: jsonb('llm_config').default({}),
   computeConfig: jsonb('compute_config').default({}),
   channels: jsonb('channels').default([]),
+  agentRole: varchar('agent_role', { length: 16 }).notNull().default('worker'),
   heartbeatIntervalMs: integer('heartbeat_interval_ms').notNull().default(1800000),
   containerId: varchar('container_id', { length: 128 }),
   tokensUsedToday: integer('tokens_used_today').notNull().default(0),
@@ -143,6 +146,7 @@ export const users = pgTable('users', {
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }).unique(),
   role: varchar('role', { length: 32 }).notNull().default('member'), // owner/admin/member/guest
+  teamId: varchar('team_id', { length: 64 }),
   passwordHash: varchar('password_hash', { length: 255 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   lastLoginAt: timestamp('last_login_at'),

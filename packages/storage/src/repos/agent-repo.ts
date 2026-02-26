@@ -9,6 +9,7 @@ export interface AgentRow {
   teamId: string | null;
   roleId: string;
   roleName: string;
+  agentRole: string;
   status: 'idle' | 'working' | 'paused' | 'offline' | 'error';
   skills: unknown;
   llmConfig: unknown;
@@ -32,6 +33,7 @@ export class AgentRepo {
     teamId?: string;
     roleId: string;
     roleName: string;
+    agentRole?: string;
     skills?: string[];
     llmConfig?: unknown;
     computeConfig?: unknown;
@@ -44,6 +46,7 @@ export class AgentRepo {
       teamId: data.teamId ?? null,
       roleId: data.roleId,
       roleName: data.roleName,
+      agentRole: data.agentRole ?? 'worker',
       skills: data.skills ?? [],
       llmConfig: data.llmConfig ?? {},
       computeConfig: data.computeConfig ?? {},

@@ -249,30 +249,57 @@ export class ContextEngine {
   }
 
   /**
-   * Ensures tool role messages always follow an assistant message with toolCalls.
-   * Orphaned tool messages (from trimming) are dropped to prevent LLM API errors.
+   * Ensures every assistant+toolCalls message is followed by ALL its tool_result messages.
+   * - Orphaned tool_result messages (no preceding toolCalls) are dropped.
+   * - Incomplete assistant+toolCalls blocks (some tool_results trimmed away) are also dropped
+   *   entirely — sending a partial sequence causes LLM API 400 errors.
    */
   private sanitizeMessageSequence(messages: LLMMessage[]): LLMMessage[] {
     const result: LLMMessage[] = [];
-    const pendingToolCallIds = new Set<string>();
+
+    // Buffer for an in-progress assistant+toolCalls block
+    let pendingAssistant: LLMMessage | null = null;
+    const pendingIds = new Set<string>();
+    const collectedResults: LLMMessage[] = [];
+
+    const flushPending = (drop = false) => {
+      if (!pendingAssistant) return;
+      if (!drop && pendingIds.size === 0) {
+        // All tool_results arrived — safe to commit
+        result.push(pendingAssistant, ...collectedResults);
+      } else {
+        log.debug('Dropping incomplete assistant toolCalls block', {
+          missing: [...pendingIds],
+        });
+      }
+      pendingAssistant = null;
+      pendingIds.clear();
+      collectedResults.length = 0;
+    };
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.toolCalls?.length) {
-        for (const tc of msg.toolCalls) {
-          pendingToolCallIds.add(tc.id);
-        }
-        result.push(msg);
+        // A new toolCalls block starts — flush any previous incomplete one first
+        flushPending(true);
+        pendingAssistant = msg;
+        for (const tc of msg.toolCalls) pendingIds.add(tc.id);
       } else if (msg.role === 'tool') {
-        if (msg.toolCallId && pendingToolCallIds.has(msg.toolCallId)) {
-          pendingToolCallIds.delete(msg.toolCallId);
-          result.push(msg);
+        if (pendingAssistant && msg.toolCallId && pendingIds.has(msg.toolCallId)) {
+          pendingIds.delete(msg.toolCallId);
+          collectedResults.push(msg);
+          if (pendingIds.size === 0) flushPending(); // Complete — commit now
         } else {
           log.debug('Dropping orphaned tool message', { toolCallId: msg.toolCallId });
         }
       } else {
+        // Any non-tool message while waiting for tool_results → block is incomplete
+        flushPending(pendingIds.size > 0);
         result.push(msg);
       }
     }
+
+    // End of messages — flush whatever remains
+    flushPending(pendingIds.size > 0);
 
     return result;
   }

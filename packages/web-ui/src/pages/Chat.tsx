@@ -258,6 +258,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [mentionFilter, setMentionFilter] = useState('');
 
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // ── Conv-buffer helpers ───────────────────────────────────────────────────────
   const makeDmChannel = (myId: string, otherId: string) => {
@@ -475,6 +476,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // ── Sending ──────────────────────────────────────────────────────────────────
   const parseMentions = (text: string) => (text.match(/@(\w+)/g) ?? []).map(m => m.slice(1));
 
+  const stopSending = () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || sending) return;
@@ -607,12 +613,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         }
       };
 
+      const abortCtrl = new AbortController();
+      abortControllerRef.current = abortCtrl;
+
       try {
         if (chatMode === 'smart') {
           const result = await api.message.sendStream(
             text,
             appendTextChunk,
-            { senderId: authUser?.id || undefined },
+            { senderId: authUser?.id || undefined, signal: abortCtrl.signal },
             handleToolEvent,
           );
           const ra = agents.find(a => a.id === result.agentId);
@@ -627,6 +636,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             selectedAgent, text,
             appendTextChunk,
             handleToolEvent,
+            abortCtrl.signal,
           );
           loadSessions(selectedAgent).then(s => {
             setSessions(s);
@@ -661,7 +671,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       });
     }
 
-    // Clear sending state for this conv
+    // Clear abort controller and sending state for this conv
+    abortControllerRef.current = null;
     sendingConvs.current.delete(sendKey);
     actBuffers.current.delete(sendKey);
     if (currentConvKeyRef.current === sendKey) {
@@ -1089,13 +1100,26 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm')}
               className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors"
             />
-            <button
-              onClick={() => void send()}
-              disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm') || !input.trim()}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
-            >
-              Send
-            </button>
+            {sending && chatMode !== 'dm' ? (
+              <button
+                onClick={stopSending}
+                className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm rounded-xl transition-colors flex items-center gap-1.5"
+                title="Stop agent"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                </svg>
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={() => void send()}
+                disabled={(chatMode === 'direct' && !selectedAgent) || !input.trim()}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+              >
+                Send
+              </button>
+            )}
           </div>
         </div>
       </div>
