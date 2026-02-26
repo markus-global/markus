@@ -276,7 +276,7 @@ async function startServer(
 ) {
   console.log('Starting Markus server...');
 
-  const { orgService, taskService, agentManager, skillRegistry, hitlService, billingService, auditService } = await createServices(config);
+  const { orgService, taskService, agentManager, llmRouter, skillRegistry, hitlService, billingService, auditService } = await createServices(config);
 
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
@@ -284,6 +284,9 @@ async function startServer(
   apiServer.setHITLService(hitlService);
   apiServer.setBillingService(billingService);
   apiServer.setAuditService(auditService);
+
+  // Expose LLM router to API server so settings can read/write it at runtime
+  apiServer.setLLMRouter(llmRouter);
 
   // Wire storage for chat persistence and auth
   const storage = orgService.getStorage();

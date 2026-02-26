@@ -292,6 +292,62 @@ export class LLMRouter {
     return [...this.providers.keys()];
   }
 
+  getDefaultProvider(): string {
+    return this.defaultProvider;
+  }
+
+  /**
+   * Update the default provider at runtime (e.g. from Settings UI).
+   * Also refreshes the auto-select tier configuration so the new default
+   * gets priority for all complexity levels.
+   */
+  setDefaultProvider(name: string): void {
+    if (!this.providers.has(name)) {
+      throw new Error(`Cannot set default to unknown provider: ${name}. Available: ${[...this.providers.keys()].join(', ')}`);
+    }
+    this.defaultProvider = name;
+    log.info(`Default LLM provider updated to: ${name}`);
+
+    // Re-run tier configuration with the new default
+    const providerNames = this.listProviders();
+    if (this.autoSelect && providerNames.length > 1) {
+      const isDeepseekDefault = name === 'deepseek';
+      this.providerTiers = [
+        ...providerNames.includes('deepseek') ? [{
+          name: 'deepseek',
+          complexity: isDeepseekDefault
+            ? ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel, 'complex' as ComplexityLevel]
+            : ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel],
+        }] : [],
+        ...providerNames.includes('anthropic') ? [{ name: 'anthropic', complexity: ['complex' as ComplexityLevel] }] : [],
+        ...providerNames.includes('openai') ? [{ name: 'openai', complexity: ['complex' as ComplexityLevel, 'moderate' as ComplexityLevel] }] : [],
+      ];
+      // Ensure default is first in fallback order
+      this.fallbackOrder = [
+        name,
+        ...providerNames.filter(n => n !== name),
+      ];
+    }
+  }
+
+  /**
+   * Returns info about all configured providers and the current default,
+   * for use by the settings API.
+   */
+  getSettings(): { defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> } {
+    const providers: Record<string, { model: string; configured: boolean }> = {};
+    for (const [name, p] of this.providers.entries()) {
+      providers[name] = { model: p.model, configured: true };
+    }
+    // Show known providers that aren't configured too
+    for (const name of ['anthropic', 'openai', 'deepseek']) {
+      if (!providers[name]) {
+        providers[name] = { model: '', configured: false };
+      }
+    }
+    return { defaultProvider: this.defaultProvider, providers };
+  }
+
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
   }

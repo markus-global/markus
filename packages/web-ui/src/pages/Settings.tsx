@@ -1,12 +1,53 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.ts';
 
+interface LLMSettings {
+  defaultProvider: string;
+  providers: Record<string, { model: string; configured: boolean }>;
+}
+
 export function Settings() {
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
+  const [llm, setLlm] = useState<LLMSettings | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => {});
+    fetch('/api/settings/llm')
+      .then(r => r.json() as Promise<LLMSettings>)
+      .then(d => { setLlm(d); setSelectedProvider(d.defaultProvider); })
+      .catch(() => {});
   }, []);
+
+  const saveLLM = async () => {
+    if (!selectedProvider || selectedProvider === llm?.defaultProvider) return;
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const res = await fetch('/api/settings/llm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}` },
+        body: JSON.stringify({ defaultProvider: selectedProvider }),
+      });
+      const data = await res.json() as LLMSettings;
+      if (res.ok) {
+        setLlm(data);
+        setSaveMsg({ type: 'ok', text: `Default provider updated to ${data.defaultProvider}` });
+      } else {
+        setSaveMsg({ type: 'err', text: (data as unknown as { error: string }).error ?? 'Save failed' });
+      }
+    } catch {
+      setSaveMsg({ type: 'err', text: 'Network error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const configuredProviders = llm
+    ? Object.entries(llm.providers).filter(([, v]) => v.configured).map(([k]) => k)
+    : [];
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -27,34 +68,70 @@ export function Settings() {
           )}
         </Section>
 
-        {/* Organization */}
-        <Section title="Organization">
-          <SettingRow label="Organization Name" description="Name of your AI organization">
-            <input defaultValue="My Organization" className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-60 focus:border-indigo-500 outline-none" />
-          </SettingRow>
-          <SettingRow label="Max Agents" description="Maximum number of agents allowed">
-            <input defaultValue="5" type="number" className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-24 focus:border-indigo-500 outline-none" />
-          </SettingRow>
-        </Section>
-
         {/* LLM Providers */}
         <Section title="LLM Providers">
-          <SettingRow label="Default Provider" description="Primary LLM provider for agents">
-            <select className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-40 focus:border-indigo-500 outline-none">
-              <option>deepseek</option>
-              <option>anthropic</option>
-              <option>openai</option>
-            </select>
-          </SettingRow>
-          <SettingRow label="Anthropic API Key" description="For Claude models">
-            <input type="password" placeholder="sk-ant-..." className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-60 focus:border-indigo-500 outline-none" />
-          </SettingRow>
-          <SettingRow label="OpenAI API Key" description="For GPT models">
-            <input type="password" placeholder="sk-..." className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-60 focus:border-indigo-500 outline-none" />
-          </SettingRow>
-          <SettingRow label="DeepSeek API Key" description="For DeepSeek models">
-            <input type="password" placeholder="sk-..." className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-60 focus:border-indigo-500 outline-none" />
-          </SettingRow>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Default Provider</div>
+                <div className="text-xs text-gray-500 mt-0.5">Primary LLM provider for all agents</div>
+              </div>
+              <div className="flex items-center gap-3">
+                {llm ? (
+                  <select
+                    value={selectedProvider}
+                    onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
+                    className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-40 focus:border-indigo-500 outline-none"
+                  >
+                    {configuredProviders.length > 0
+                      ? configuredProviders.map(p => <option key={p} value={p}>{p}</option>)
+                      : <option value="">No providers configured</option>
+                    }
+                  </select>
+                ) : (
+                  <div className="text-xs text-gray-500">Loading...</div>
+                )}
+                {selectedProvider !== llm?.defaultProvider && (
+                  <button
+                    onClick={() => void saveLLM()}
+                    disabled={saving}
+                    className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {saveMsg && (
+              <div className={`text-xs px-3 py-2 rounded-lg ${saveMsg.type === 'ok' ? 'bg-green-900/30 text-green-400 border border-green-800/40' : 'bg-red-900/20 text-red-400 border border-red-800/40'}`}>
+                {saveMsg.text}
+              </div>
+            )}
+
+            {/* Provider status table */}
+            {llm && Object.entries(llm.providers).length > 0 && (
+              <div className="border-t border-gray-800 pt-4 space-y-2">
+                <div className="text-xs text-gray-500 mb-2">Configured providers (set via .env or markus.config.yaml)</div>
+                {Object.entries(llm.providers).map(([name, info]) => (
+                  <div key={name} className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-1.5 h-1.5 rounded-full ${info.configured ? 'bg-green-400' : 'bg-gray-600'}`} />
+                      <span className={info.configured ? 'text-gray-300' : 'text-gray-600'}>{name}</span>
+                      {name === llm.defaultProvider && (
+                        <span className="text-[10px] bg-indigo-900/50 text-indigo-400 px-1.5 py-0.5 rounded">default</span>
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-500">{info.configured ? (info.model || 'configured') : 'not configured'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs text-gray-600 px-1">
+            To configure API keys, edit your <code className="text-gray-500">.env</code> file (OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY) and restart the server.
+          </div>
         </Section>
 
         {/* Integrations */}
@@ -82,13 +159,6 @@ export function Settings() {
               <option>Restricted</option>
               <option>Permissive</option>
             </select>
-          </SettingRow>
-        </Section>
-
-        {/* Database */}
-        <Section title="Storage">
-          <SettingRow label="Database URL" description="PostgreSQL connection string">
-            <input type="password" placeholder="postgresql://..." className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-60 focus:border-indigo-500 outline-none" />
           </SettingRow>
         </Section>
       </div>

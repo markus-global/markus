@@ -96,6 +96,7 @@ export class APIServer {
   private billingService?: BillingService;
   private auditService?: AuditService;
   private storage?: StorageBridge;
+  private llmRouter?: import('@markus/core').LLMRouter;
 
   constructor(
     private orgService: OrganizationService,
@@ -126,6 +127,10 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+  }
+
+  setLLMRouter(router: import('@markus/core').LLMRouter): void {
+    this.llmRouter = router;
   }
 
   /** Ensure at least one admin user exists; called once after storage init */
@@ -1007,6 +1012,32 @@ export class APIServer {
         url.searchParams.get('agentId') ?? undefined,
       );
       this.json(res, 200, { usage });
+      return;
+    }
+
+    // Settings — LLM configuration
+    if (path === '/api/settings/llm' && req.method === 'GET') {
+      if (!this.llmRouter) {
+        this.json(res, 200, { defaultProvider: 'unknown', providers: {} });
+        return;
+      }
+      this.json(res, 200, this.llmRouter.getSettings());
+      return;
+    }
+
+    if (path === '/api/settings/llm' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) { this.json(res, 503, { error: 'LLM router not available' }); return; }
+      const body = await this.readBody(req);
+      const { defaultProvider } = body as { defaultProvider?: string };
+      if (!defaultProvider) { this.json(res, 400, { error: 'defaultProvider is required' }); return; }
+      try {
+        this.llmRouter.setDefaultProvider(defaultProvider);
+        this.json(res, 200, this.llmRouter.getSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
       return;
     }
 
