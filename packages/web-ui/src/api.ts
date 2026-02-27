@@ -190,6 +190,10 @@ export const api = {
                   onChunk(event.text);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
+                } else if (event.type === 'error') {
+                  reject(new Error((event as { type: string; message?: string }).message ?? 'Stream error'));
+                  reader.cancel().catch(() => {});
+                  return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   // LLM just named the tool it wants to use — show loading immediately
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
@@ -288,6 +292,10 @@ export const api = {
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                   routedAgentId = event.agentId ?? routedAgentId;
+                } else if (event.type === 'error') {
+                  reject(new Error((event as { type: string; message?: string }).message ?? 'Stream error'));
+                  reader.cancel().catch(() => {});
+                  return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {

@@ -56,6 +56,22 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
+/** Convert a raw LLM/network error into a user-friendly message */
+function friendlyAgentError(err: unknown): string {
+  const raw = String(err);
+  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
+    return '⚠ The AI service is temporarily unavailable — insufficient credits. Please contact your administrator.';
+  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
+    return '⚠ AI service authentication failed. Please check the API key configuration.';
+  if (raw.includes('429') || /rate.?limit/i.test(raw))
+    return '⚠ Too many requests. Please wait a moment and try again.';
+  if (raw.includes('503') || /service.?unavailable/i.test(raw))
+    return '⚠ The AI service is temporarily unavailable. Please try again later.';
+  if (raw.includes('AbortError') || raw.includes('abort'))
+    return '';  // user cancelled — show nothing
+  return '⚠ The AI service encountered an error. Please try again.';
+}
+
 // ─── Tool icon map (inline to avoid extra file) ────────────────────────────────
 const TOOL_META: Record<string, { label: string; icon: string }> = {
   shell_execute: { label: 'Running command', icon: '⌨' },
@@ -671,17 +687,22 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           });
         }
       } catch (e) {
-        updateConvMsgs(sendKey, prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx >= 0) {
-            // Append error as a text segment
-            const segs = u[idx]!.segments ?? [];
-            u[idx] = { ...u[idx]!, text: `Error: ${String(e)}`,
-              segments: [...segs, { type: 'text', content: `⚠ Error: ${String(e)}` }] };
-          }
-          return u;
-        });
+        const errText = friendlyAgentError(e);
+        if (errText) {
+          updateConvMsgs(sendKey, prev => {
+            const u = [...prev];
+            const idx = u.findIndex(m => m.id === agentMsgId);
+            if (idx >= 0) {
+              const segs = u[idx]!.segments ?? [];
+              u[idx] = { ...u[idx]!, text: errText,
+                segments: [...segs, { type: 'text', content: errText }] };
+            }
+            return u;
+          });
+        } else {
+          // User cancelled — remove the empty agent bubble
+          updateConvMsgs(sendKey, prev => prev.filter(m => m.id !== agentMsgId));
+        }
       }
 
       // Mark any still-running tool segments as error (stream ended unexpectedly)
