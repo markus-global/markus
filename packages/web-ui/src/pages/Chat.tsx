@@ -56,20 +56,39 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
-/** Convert a raw LLM/network error into a user-friendly message */
+/** Convert a raw LLM/network error into a user-friendly message with the actual reason */
 function friendlyAgentError(err: unknown): string {
   const raw = String(err);
-  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return '⚠ The AI service is temporarily unavailable — insufficient credits. Please contact your administrator.';
-  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
-    return '⚠ AI service authentication failed. Please check the API key configuration.';
-  if (raw.includes('429') || /rate.?limit/i.test(raw))
-    return '⚠ Too many requests. Please wait a moment and try again.';
-  if (raw.includes('503') || /service.?unavailable/i.test(raw))
-    return '⚠ The AI service is temporarily unavailable. Please try again later.';
+
   if (raw.includes('AbortError') || raw.includes('abort'))
     return '';  // user cancelled — show nothing
-  return '⚠ The AI service encountered an error. Please try again.';
+
+  // Try to extract a clean message from JSON payloads like:
+  // Error: OpenAI API error 402: {"error":{"message":"Insufficient Balance",...}}
+  let detail = '';
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
+      detail = parsed.error?.message ?? parsed.message ?? '';
+    } catch { /* ignore */ }
+  }
+  if (!detail) {
+    // Fall back to the text after the last colon (e.g. "OpenAI API error 402: Unauthorized")
+    const colonIdx = raw.lastIndexOf(': ');
+    if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
+  }
+
+  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
+    return `⚠ AI service error: ${detail || 'Insufficient credits'}. Please top up the API balance or contact your administrator.`;
+  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
+    return `⚠ AI service authentication failed: ${detail || 'Invalid API key'}. Please check the configuration.`;
+  if (raw.includes('429') || /rate.?limit/i.test(raw))
+    return `⚠ Rate limit exceeded: ${detail || 'Too many requests'}. Please wait a moment and try again.`;
+  if (raw.includes('503') || /service.?unavailable/i.test(raw))
+    return `⚠ AI service unavailable: ${detail || 'Service temporarily down'}. Please try again later.`;
+
+  return `⚠ AI service error: ${detail || raw.slice(0, 120)}`;
 }
 
 // ─── Tool icon map (inline to avoid extra file) ────────────────────────────────
