@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo,
@@ -259,6 +259,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const messagesEnd = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
+  const skipScrollRef = useRef(false);
 
   // ── Conv-buffer helpers ───────────────────────────────────────────────────────
   const makeDmChannel = (myId: string, otherId: string) => {
@@ -326,8 +328,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     return () => window.removeEventListener('markus:navigate', handleNav);
   }, []);
 
-  useEffect(() => {
-    messagesEnd.current?.scrollIntoView({ behavior: 'smooth' });
+  // Snap to bottom immediately after DOM updates.
+  // Use `instant` so there's no scroll animation — the bottom is simply the initial position.
+  // When `loadMore` prepends older messages we set skipScrollRef so the view doesn't jump.
+  useLayoutEffect(() => {
+    if (skipScrollRef.current) {
+      skipScrollRef.current = false;
+      return;
+    }
+    messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
   }, [messages, activities]);
 
   // Load channel messages from DB → store in buffer + update display
@@ -378,16 +387,30 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     if (loadingMore || !hasMore || !oldestMsgId.current) return;
     setLoadingMore(true);
     try {
+      const convKey = currentConvKeyRef.current;
       if (chatMode === 'channel' || chatMode === 'smart' || chatMode === 'dm') {
         const channelName = chatMode === 'smart' ? 'smart:default' :
           chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
-        setMessages(prev => [...result.messages.map(channelMsgToChat), ...prev]);
+        const newMsgs = result.messages.map(channelMsgToChat);
+        // Suppress scroll-to-bottom — prepending old messages must not jump the viewport
+        skipScrollRef.current = true;
+        setMessages(prev => {
+          const combined = [...newMsgs, ...prev];
+          msgBuffers.current.set(convKey, combined); // keep buffer in sync
+          return combined;
+        });
         setHasMore(result.hasMore);
         if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       } else if (activeSessionId) {
         const result = await api.sessions.getMessages(activeSessionId, 50, oldestMsgId.current);
-        setMessages(prev => [...result.messages.map(dbMsgToChat), ...prev]);
+        const newMsgs = result.messages.map(dbMsgToChat);
+        skipScrollRef.current = true;
+        setMessages(prev => {
+          const combined = [...newMsgs, ...prev];
+          msgBuffers.current.set(convKey, combined);
+          return combined;
+        });
         setHasMore(result.hasMore);
         if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       }
