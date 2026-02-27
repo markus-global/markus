@@ -1,13 +1,25 @@
-import { useEffect, useState, useCallback } from 'react';
-import { api, wsClient, type TaskInfo, type AgentInfo } from '../api.ts';
+import { useEffect, useState, useCallback, useRef, type DragEvent } from 'react';
+import { api, wsClient, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
-const COLUMNS = ['pending', 'assigned', 'in_progress', 'completed'] as const;
+const ALL_STATUSES = ['pending', 'assigned', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'] as const;
 const COLUMN_LABELS: Record<string, string> = {
   pending: 'Pending',
   assigned: 'Assigned',
   in_progress: 'In Progress',
+  blocked: 'Blocked',
   completed: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+const COLUMN_ACCENT: Record<string, string> = {
+  pending: 'border-t-gray-500',
+  assigned: 'border-t-blue-500',
+  in_progress: 'border-t-indigo-500',
+  blocked: 'border-t-amber-500',
+  completed: 'border-t-green-500',
+  failed: 'border-t-red-500',
+  cancelled: 'border-t-gray-600',
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500',
@@ -15,6 +27,150 @@ const PRIORITY_COLORS: Record<string, string> = {
   medium: 'border-l-blue-500',
   low: 'border-l-gray-500',
 };
+const STATUS_DOT: Record<string, string> = {
+  pending: 'bg-gray-400',
+  assigned: 'bg-blue-400',
+  in_progress: 'bg-indigo-400',
+  blocked: 'bg-amber-400',
+  completed: 'bg-green-400',
+  failed: 'bg-red-400',
+  cancelled: 'bg-gray-600',
+};
+
+// ─── Execution Log Panel ────────────────────────────────────────────────────────
+
+function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
+  if (entry.type === 'status') {
+    const isCompleted = entry.content === 'completed';
+    const isStarted = entry.content === 'started';
+    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : 'text-gray-500';
+    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : 'bg-gray-500';
+    return (
+      <div className="flex items-center gap-2 py-0.5 px-1">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+        <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
+      </div>
+    );
+  }
+  if (entry.type === 'text') {
+    return (
+      <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+        {entry.content}
+      </div>
+    );
+  }
+  if (entry.type === 'tool_start') {
+    return (
+      <div className="flex items-center gap-2 py-1 px-1">
+        <svg className="w-3 h-3 text-indigo-400 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" strokeLinecap="round" />
+        </svg>
+        <span className="text-xs text-indigo-300 font-medium">{entry.content}</span>
+        <span className="text-xs text-gray-600">calling…</span>
+      </div>
+    );
+  }
+  if (entry.type === 'tool_end') {
+    const success = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
+    return (
+      <div className="flex items-center gap-2 py-0.5 px-1">
+        <span className={`text-xs ${success ? 'text-green-400' : 'text-red-400'}`}>
+          {success ? '✓' : '✗'}
+        </span>
+        <span className={`text-xs font-medium ${success ? 'text-green-300' : 'text-red-300'}`}>{entry.content}</span>
+        {!success && entry.metadata && (entry.metadata as Record<string, unknown>).error && (
+          <span className="text-xs text-red-400 truncate">{String((entry.metadata as Record<string, unknown>).error)}</span>
+        )}
+      </div>
+    );
+  }
+  if (entry.type === 'error') {
+    return (
+      <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
+        <span className="font-medium">Error:</span> {entry.content}
+      </div>
+    );
+  }
+  return null;
+}
+
+function TaskExecutionLogs({ taskId }: { taskId: string }) {
+  const [logs, setLogs] = useState<TaskLogEntry[]>([]);
+  const [streamingText, setStreamingText] = useState('');
+  const [loading, setLoading] = useState(true);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.tasks.getLogs(taskId).then(d => {
+      setLogs(d.logs);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [taskId]);
+
+  useEffect(() => {
+    const unsubLog = wsClient.on('task:log', (event) => {
+      const p = event.payload;
+      if (p.taskId !== taskId) return;
+      const entry: TaskLogEntry = {
+        id: p.id as string,
+        taskId: p.taskId as string,
+        agentId: p.agentId as string,
+        seq: p.seq as number,
+        type: p.logType as string,
+        content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined,
+        createdAt: p.createdAt as string,
+      };
+      setLogs(prev => {
+        // Avoid duplicates by seq
+        if (prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
+        return [...prev, entry];
+      });
+      if (entry.type === 'text') setStreamingText('');
+    });
+
+    const unsubDelta = wsClient.on('task:log:delta', (event) => {
+      const p = event.payload;
+      if (p.taskId !== taskId) return;
+      setStreamingText(prev => prev + (p.text as string));
+    });
+
+    return () => { unsubLog(); unsubDelta(); };
+  }, [taskId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs, streamingText]);
+
+  if (loading) {
+    return <div className="flex-1 flex items-center justify-center text-xs text-gray-600">Loading logs…</div>;
+  }
+
+  if (logs.length === 0 && !streamingText) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center text-gray-600">
+          <div className="text-2xl mb-2">📋</div>
+          <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
+      {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
+      {streamingText && (
+        <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+          {streamingText}
+          <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+        </div>
+      )}
+      <div ref={endRef} />
+    </div>
+  );
+}
 
 // ─── Task Detail Modal ─────────────────────────────────────────────────────────
 
@@ -31,6 +187,9 @@ function TaskDetailModal({
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<TaskInfo | null>(null);
   const [pendingDeleteParent, setPendingDeleteParent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [activeTab, setActiveTab] = useState<'details' | 'logs'>('details');
+  const [running, setRunning] = useState(false);
 
   const loadSubtasks = useCallback(async () => {
     try {
@@ -41,10 +200,54 @@ function TaskDetailModal({
 
   useEffect(() => { void loadSubtasks(); }, [loadSubtasks]);
 
-  const updateStatus = async (taskId: string, status: string) => {
-    await api.tasks.updateStatus(taskId, status);
-    onRefresh();
-    void loadSubtasks();
+  const doUpdate = async (fn: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+      onRefresh();
+      void loadSubtasks();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateStatus = (taskId: string, status: string) =>
+    doUpdate(() => api.tasks.updateStatus(taskId, status));
+
+  const updatePriority = (priority: string) =>
+    doUpdate(() => api.tasks.update(task.id, { priority }));
+
+  const assignAgent = (agentId: string) =>
+    doUpdate(() => api.tasks.assign(task.id, agentId || null));
+
+  const startTask = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (!task.assignedAgentId) {
+        const idle = agents.find(a => a.status === 'idle');
+        if (idle) {
+          await api.tasks.assign(task.id, idle.id);
+        }
+      }
+      await api.tasks.updateStatus(task.id, 'in_progress');
+      onRefresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pauseTask = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const nextStatus = task.assignedAgentId ? 'assigned' : 'pending';
+      await api.tasks.updateStatus(task.id, nextStatus);
+      onRefresh();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const addSubtask = async () => {
@@ -77,17 +280,41 @@ function TaskDetailModal({
     onRefresh();
   };
 
+  const runWithAgent = async () => {
+    if (running) return;
+    setRunning(true);
+    setActiveTab('logs');
+    try {
+      await api.tasks.run(task.id);
+      onRefresh();
+    } catch (err) {
+      console.error('Failed to run task:', err);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // Auto-switch to logs tab when execution starts via WS
+  useEffect(() => {
+    const unsub = wsClient.on('task:log:delta', (event) => {
+      if (event.payload.taskId === task.id) setActiveTab('logs');
+    });
+    return unsub;
+  }, [task.id]);
+
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
-  const assignedName = agents.find(a => a.id === task.assignedAgentId)?.name;
+  const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
+  const isTerminal = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
+  const isRunning = task.status === 'in_progress';
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-gray-900 border border-gray-800 rounded-xl w-[520px] max-h-[85vh] flex flex-col shadow-2xl"
+        className="bg-gray-900 border border-gray-800 rounded-xl w-[600px] max-h-[88vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between p-6 border-b border-gray-800">
+        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-800">
           <div className="flex-1 min-w-0 pr-4">
             <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
             {task.description && <p className="text-sm text-gray-400 mt-1">{task.description}</p>}
@@ -95,134 +322,285 @@ function TaskDetailModal({
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg shrink-0">×</button>
         </div>
 
-        {/* Meta */}
-        <div className="px-6 py-3 border-b border-gray-800/60 flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
-          <span>Status: <span className="text-gray-300">{task.status}</span></span>
-          <span>Priority: <span className="text-gray-300">{task.priority}</span></span>
-          <span>Assigned: <span className="text-gray-300">{assignedName ?? 'Unassigned'}</span></span>
-          {task.parentTaskId && <span>Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span></span>}
+        {/* Tabs */}
+        <div className="flex gap-1 px-6 pt-3 border-b border-gray-800 shrink-0">
+          <button
+            onClick={() => setActiveTab('details')}
+            className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${
+              activeTab === 'details'
+                ? 'bg-gray-800 text-gray-100 font-medium'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            Details
+          </button>
+          <button
+            onClick={() => setActiveTab('logs')}
+            className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${
+              activeTab === 'logs'
+                ? 'bg-gray-800 text-gray-100 font-medium'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            Execution Log
+            {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
+          </button>
         </div>
 
-        {/* Subtasks */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-              Subtasks {subtasks.length > 0 && (
-                <span className="ml-1.5 text-gray-500 font-normal normal-case">
-                  {completedCount}/{subtasks.length} done
-                </span>
-              )}
-            </span>
-            <button
-              onClick={() => setAddingSubtask(true)}
-              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-            >
-              + Add subtask
-            </button>
-          </div>
-
-          {subtasks.length > 0 && (
-            <div className="space-y-1.5 mb-3">
-              {subtasks.map(sub => (
-                <div
-                  key={sub.id}
-                  className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/50 transition-colors"
-                >
-                  <button
-                    onClick={() => void toggleSubtask(sub)}
-                    className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
-                      sub.status === 'completed'
-                        ? 'bg-green-600 border-green-600 text-white'
-                        : 'border-gray-600 hover:border-indigo-500'
-                    }`}
-                    title={sub.status === 'completed' ? 'Mark incomplete' : 'Mark complete'}
+        {activeTab === 'details' ? (
+          <>
+            {/* Editable Meta */}
+            <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
+              <div className="grid grid-cols-3 gap-4">
+                {/* Status */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</label>
+                  <select
+                    value={task.status}
+                    onChange={e => void updateStatus(task.id, e.target.value)}
+                    disabled={busy}
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer"
                   >
-                    {sub.status === 'completed' && (
-                      <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none">
-                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
-                  <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-300'}`}>
-                    {sub.title}
-                  </span>
-                  <span className={`text-[10px] shrink-0 ${
-                    sub.priority === 'urgent' ? 'text-red-400' :
-                    sub.priority === 'high' ? 'text-amber-400' :
-                    sub.priority === 'low' ? 'text-gray-600' : 'text-gray-600'
-                  }`}>
-                    {sub.priority !== 'medium' ? sub.priority : ''}
-                  </span>
-                  <button
-                    onClick={() => setPendingDelete(sub)}
-                    className="shrink-0 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all text-xs"
-                    title="Delete subtask"
-                  >
-                    ✕
-                  </button>
+                    {ALL_STATUSES.map(s => (
+                      <option key={s} value={s}>{COLUMN_LABELS[s]}</option>
+                    ))}
+                  </select>
                 </div>
-              ))}
-            </div>
-          )}
 
-          {subtasks.length === 0 && !addingSubtask && (
-            <div className="text-xs text-gray-600 text-center py-4">
-              No subtasks yet. Break this task into smaller steps.
-            </div>
-          )}
+                {/* Priority */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Priority</label>
+                  <select
+                    value={task.priority}
+                    onChange={e => void updatePriority(e.target.value)}
+                    disabled={busy}
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer"
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                  </select>
+                </div>
 
-          {addingSubtask && (
-            <div className="flex gap-2 mt-2">
-              <input
-                autoFocus
-                value={newSubtask}
-                onChange={e => setNewSubtask(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') void addSubtask();
-                  if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); }
-                }}
-                placeholder="Subtask title..."
-                className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none"
-              />
-              <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add</button>
-              <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
-            </div>
-          )}
-
-          {/* Notes */}
-          {task.notes && task.notes.length > 0 && (
-            <div className="mt-5">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
-              <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                {task.notes.map((note, i) => (
-                  <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed">{note}</div>
-                ))}
+                {/* Assignee */}
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
+                  <select
+                    value={task.assignedAgentId ?? ''}
+                    onChange={e => void assignAgent(e.target.value)}
+                    disabled={busy}
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer"
+                  >
+                    <option value="">Unassigned</option>
+                    {agents.map(a => (
+                      <option key={a.id} value={a.id}>{a.name} ({a.status})</option>
+                    ))}
+                  </select>
+                </div>
               </div>
+
+              {task.parentTaskId && (
+                <div className="text-xs text-gray-500">
+                  Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+
+            {/* Subtasks */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                  Subtasks {subtasks.length > 0 && (
+                    <span className="ml-1.5 text-gray-500 font-normal normal-case">
+                      {completedCount}/{subtasks.length} done
+                    </span>
+                  )}
+                </span>
+                <button
+                  onClick={() => setAddingSubtask(true)}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  + Add subtask
+                </button>
+              </div>
+
+              {subtasks.length > 0 && (
+                <div className="space-y-1.5 mb-3">
+                  {subtasks.map(sub => (
+                    <div
+                      key={sub.id}
+                      className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/50 transition-colors"
+                    >
+                      <button
+                        onClick={() => void toggleSubtask(sub)}
+                        className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                          sub.status === 'completed'
+                            ? 'bg-green-600 border-green-600 text-white'
+                            : 'border-gray-600 hover:border-indigo-500'
+                        }`}
+                        title={sub.status === 'completed' ? 'Mark incomplete' : 'Mark complete'}
+                      >
+                        {sub.status === 'completed' && (
+                          <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none">
+                            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        )}
+                      </button>
+                      <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-300'}`}>
+                        {sub.title}
+                      </span>
+                      <span className={`text-[10px] shrink-0 ${
+                        sub.priority === 'urgent' ? 'text-red-400' :
+                        sub.priority === 'high' ? 'text-amber-400' :
+                        sub.priority === 'low' ? 'text-gray-600' : 'text-gray-600'
+                      }`}>
+                        {sub.priority !== 'medium' ? sub.priority : ''}
+                      </span>
+                      <button
+                        onClick={() => setPendingDelete(sub)}
+                        className="shrink-0 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all text-xs"
+                        title="Delete subtask"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {subtasks.length === 0 && !addingSubtask && (
+                <div className="text-xs text-gray-600 text-center py-4">
+                  No subtasks yet. Break this task into smaller steps.
+                </div>
+              )}
+
+              {addingSubtask && (
+                <div className="flex gap-2 mt-2">
+                  <input
+                    autoFocus
+                    value={newSubtask}
+                    onChange={e => setNewSubtask(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') void addSubtask();
+                      if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); }
+                    }}
+                    placeholder="Subtask title..."
+                    className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none"
+                  />
+                  <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add</button>
+                  <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
+                </div>
+              )}
+
+              {/* Notes */}
+              {task.notes && task.notes.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
+                  <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                    {task.notes.map((note, i) => (
+                      <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed">{note}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          /* Execution Logs Tab */
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <TaskExecutionLogs taskId={task.id} />
+          </div>
+        )}
 
         {/* Actions */}
         <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {(task.status === 'pending' || task.status === 'assigned') && (
-              <button onClick={() => void updateStatus(task.id, 'in_progress')} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Start</button>
+            {/* Run with Agent — triggers actual LLM execution */}
+            {task.assignedAgentId && !isTerminal && (
+              <button
+                onClick={() => void runWithAgent()}
+                disabled={running}
+                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {running ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83" strokeLinecap="round" />
+                    </svg>
+                    Running…
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>
+                    Run with Agent
+                  </>
+                )}
+              </button>
             )}
-            {task.status === 'in_progress' && (
-              <button onClick={() => void updateStatus(task.id, 'completed')} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white">Complete</button>
+            {!isRunning && !isTerminal && (
+              <button
+                onClick={() => void startTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50"
+                title="Mark as in_progress without agent execution"
+              >
+                Mark In Progress
+              </button>
             )}
-            {task.status === 'in_progress' && (
-              <button onClick={() => void updateStatus(task.id, 'blocked')} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white">Block</button>
+            {isRunning && (
+              <button
+                onClick={() => void pauseTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5" /><rect x="7" y="1.5" width="3" height="9" rx="0.5" /></svg>
+                Pause
+              </button>
             )}
-            {task.status !== 'completed' && task.status !== 'cancelled' && (
-              <button onClick={() => void updateStatus(task.id, 'cancelled')} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10">Cancel</button>
+            {isTerminal && (
+              <button
+                onClick={() => void startTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1 6a5 5 0 019.33-2.5M11 6a5 5 0 01-9.33 2.5" strokeLinecap="round" /><path d="M10.33 1v2.5H7.83M1.67 11V8.5H4.17" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                Restart
+              </button>
+            )}
+            {!isTerminal && (
+              <button
+                onClick={() => void updateStatus(task.id, 'completed')}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50"
+              >
+                Complete
+              </button>
+            )}
+            {isRunning && (
+              <button
+                onClick={() => void updateStatus(task.id, 'blocked')}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50"
+              >
+                Block
+              </button>
+            )}
+            {!isTerminal && (
+              <button
+                onClick={() => void updateStatus(task.id, 'cancelled')}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50"
+              >
+                Cancel
+              </button>
             )}
           </div>
           <button
             onClick={() => setPendingDeleteParent(true)}
             className="px-3 py-1.5 text-xs text-gray-500 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors"
           >
-            Delete task
+            Delete
           </button>
         </div>
       </div>
@@ -262,6 +640,8 @@ export function TaskBoard() {
   const [autoAssign, setAutoAssign] = useState(true);
   const [assignTo, setAssignTo] = useState('');
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const dragTaskRef = useRef<TaskInfo | null>(null);
 
   const refresh = useCallback(() => {
     api.tasks.board().then((d) => setBoard(d.board)).catch(() => {});
@@ -284,21 +664,66 @@ export function TaskBoard() {
     refresh();
   };
 
-  // When a selected task is updated, refresh board and re-fetch the task
   const handleRefresh = () => {
     refresh();
     if (selectedTask) {
-      // Re-read the updated task from board after refresh
       setTimeout(() => {
         api.tasks.board().then(d => {
           const allTasks = Object.values(d.board).flat();
           const updated = allTasks.find(t => t.id === selectedTask.id);
           if (updated) setSelectedTask(updated);
-          else setSelectedTask(null); // task was deleted
+          else setSelectedTask(null);
         }).catch(() => {});
       }, 150);
     }
   };
+
+  // ── Drag handlers ──
+
+  const onDragStart = (e: DragEvent<HTMLDivElement>, task: TaskInfo) => {
+    dragTaskRef.current = task;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', task.id);
+    (e.currentTarget as HTMLElement).style.opacity = '0.4';
+  };
+
+  const onDragEnd = (e: DragEvent<HTMLDivElement>) => {
+    (e.currentTarget as HTMLElement).style.opacity = '1';
+    dragTaskRef.current = null;
+    setDragOverCol(null);
+  };
+
+  const onDragOver = (e: DragEvent<HTMLDivElement>, col: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverCol !== col) setDragOverCol(col);
+  };
+
+  const onDragLeave = (e: DragEvent<HTMLDivElement>, col: string) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const { clientX: x, clientY: y } = e;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      if (dragOverCol === col) setDragOverCol(null);
+    }
+  };
+
+  const onDrop = async (e: DragEvent<HTMLDivElement>, col: string) => {
+    e.preventDefault();
+    setDragOverCol(null);
+    const task = dragTaskRef.current;
+    if (!task || task.status === col) return;
+    try {
+      await api.tasks.updateStatus(task.id, col);
+      refresh();
+    } catch { /* ok */ }
+  };
+
+  const visibleColumns = ALL_STATUSES.filter(col => {
+    const tasks = board[col] ?? [];
+    const hasRootTasks = tasks.some(t => !t.parentTaskId);
+    if (col === 'failed' || col === 'cancelled') return hasRootTasks;
+    return true;
+  });
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
@@ -309,51 +734,73 @@ export function TaskBoard() {
 
       <div className="flex-1 overflow-x-auto p-7">
         <div className="flex gap-4 min-h-full">
-          {COLUMNS.map((col) => (
-            <div key={col} className="w-72 shrink-0 bg-gray-900 rounded-xl p-4">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{COLUMN_LABELS[col]}</span>
-                <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{board[col]?.length ?? 0}</span>
-              </div>
-              <div className="space-y-2">
-                {(board[col] ?? []).filter(t => !t.parentTaskId).map((task) => {
-                  const subCount = task.subtaskIds?.length ?? 0;
-                  return (
-                    <div
-                      key={task.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={task.title}
-                      onClick={() => setSelectedTask(task)}
-                      onKeyDown={(e) => e.key === 'Enter' && setSelectedTask(task)}
-                      className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-pointer`}
-                    >
-                      <div className="text-sm font-medium leading-snug">{task.title}</div>
-                      {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
-                      <div className="flex items-center justify-between mt-2">
-                        <span className="text-xs text-gray-600">{task.priority}</span>
-                        <div className="flex items-center gap-2">
-                          {subCount > 0 && (
-                            <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">
-                              ⋮ {subCount}
-                            </span>
-                          )}
-                          {task.notes && task.notes.length > 0 && (
-                            <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>
-                          )}
-                          {task.assignedAgentId && (
-                            <span className="text-xs text-indigo-400">
-                              {agents.find((a) => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
-                            </span>
-                          )}
+          {visibleColumns.map((col) => {
+            const colTasks = (board[col] ?? []).filter(t => !t.parentTaskId);
+            const isOver = dragOverCol === col;
+            return (
+              <div
+                key={col}
+                className={`w-64 shrink-0 rounded-xl p-4 border-t-2 transition-colors ${COLUMN_ACCENT[col]} ${
+                  isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'
+                }`}
+                onDragOver={e => onDragOver(e, col)}
+                onDragLeave={e => onDragLeave(e, col)}
+                onDrop={e => void onDrop(e, col)}
+              >
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{COLUMN_LABELS[col]}</span>
+                  <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {colTasks.map((task) => {
+                    const subCount = task.subtaskIds?.length ?? 0;
+                    return (
+                      <div
+                        key={task.id}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={task.title}
+                        draggable
+                        onDragStart={e => onDragStart(e, task)}
+                        onDragEnd={onDragEnd}
+                        onClick={() => setSelectedTask(task)}
+                        onKeyDown={(e) => e.key === 'Enter' && setSelectedTask(task)}
+                        className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}
+                      >
+                        <div className="text-sm font-medium leading-snug">{task.title}</div>
+                        {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
+                        <div className="flex items-center justify-between mt-2">
+                          <span className="text-xs text-gray-600">{task.priority}</span>
+                          <div className="flex items-center gap-2">
+                            {subCount > 0 && (
+                              <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">
+                                ⋮ {subCount}
+                              </span>
+                            )}
+                            {task.notes && task.notes.length > 0 && (
+                              <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>
+                            )}
+                            {task.assignedAgentId && (
+                              <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
+                                {agents.find((a) => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
+
+                {isOver && (
+                  <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
+                    <span className="text-xs text-indigo-400/60">Drop here</span>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

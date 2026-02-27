@@ -10,3 +10,4 @@ export { ChatSessionRepo, type ChatSession, type ChatMessage } from './repos/cha
 export { ChannelMessageRepo, type ChannelMsg } from './repos/channel-message-repo.js';
 export { UserRepo, type User } from './repos/user-repo.js';
 export { TeamRepo, type TeamRow } from './repos/team-repo.js';
+export { TaskLogRepo, type TaskLogRow, type TaskLogType } from './repos/task-log-repo.js';

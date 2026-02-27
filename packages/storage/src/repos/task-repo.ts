@@ -41,12 +41,21 @@ export class TaskRepo {
     await this.db.update(tasks).set({ status, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
-  async assign(id: string, agentId: string) {
+  async assign(id: string, agentId: string | null) {
     await this.db.update(tasks).set({
       assignedAgentId: agentId,
-      status: 'assigned',
+      status: agentId ? 'assigned' : 'pending',
       updatedAt: new Date(),
     }).where(eq(tasks.id, id));
+  }
+
+  async update(id: string, data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[] }) {
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (data.title !== undefined) updates['title'] = data.title;
+    if (data.description !== undefined) updates['description'] = data.description;
+    if (data.priority !== undefined) updates['priority'] = data.priority;
+    if (data.notes !== undefined) updates['notes'] = data.notes;
+    await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
   async setResult(id: string, result: unknown) {

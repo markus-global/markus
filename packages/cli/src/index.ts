@@ -243,6 +243,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const taskService = new TaskService();
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
+    taskService.setTaskLogRepo(storage.taskLogRepo);
     await taskService.loadFromDB('default');
   }
 

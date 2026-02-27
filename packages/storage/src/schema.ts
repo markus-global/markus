@@ -60,6 +60,7 @@ export const tasks = pgTable('tasks', {
   assignedAgentId: varchar('assigned_agent_id', { length: 64 }).references(() => agents.id),
   parentTaskId: varchar('parent_task_id', { length: 64 }),
   result: jsonb('result'),
+  notes: jsonb('notes').default([]),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
   dueAt: timestamp('due_at'),
@@ -137,6 +138,21 @@ export const channelMessages = pgTable('channel_messages', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (t) => [
   index('idx_channel_messages_channel').on(t.channel, t.createdAt),
+]);
+
+/** Structured execution logs for each task run — persisted for audit and live display */
+export const taskLogs = pgTable('task_logs', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  taskId: varchar('task_id', { length: 64 }).notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  agentId: varchar('agent_id', { length: 64 }).notNull(),
+  seq: integer('seq').notNull().default(0),
+  /** 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' */
+  type: varchar('type', { length: 32 }).notNull(),
+  content: text('content').notNull().default(''),
+  metadata: jsonb('metadata').default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_task_logs_task').on(t.taskId, t.seq),
 ]);
 
 /** Users for authentication */

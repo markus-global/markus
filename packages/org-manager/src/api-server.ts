@@ -190,19 +190,47 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage) return;
     try {
-      // Find or create session for this agent
       const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
       let session = sessions[0];
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      // Generate title from first message (first 60 chars)
       const title = !session.title ? userMessage.slice(0, 60) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'assistant', reply, tokensUsed);
       await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
+    }
+  }
+
+  /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence */
+  private async persistUserMessage(agentId: string, userMessage: string, senderId?: string): Promise<string | null> {
+    if (!this.storage) return null;
+    try {
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
+      let session = sessions[0];
+      if (!session) {
+        session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
+      }
+      const title = !session.title ? userMessage.slice(0, 60) : undefined;
+      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
+      if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+      return session.id;
+    } catch (err) {
+      log.warn('Failed to persist user message', { error: String(err) });
+      return null;
+    }
+  }
+
+  /** Persist the assistant reply after LLM completes */
+  private async persistAssistantMessage(sessionId: string | null, agentId: string, reply: string, tokensUsed = 0): Promise<void> {
+    if (!this.storage || !sessionId) return;
+    try {
+      await this.storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', reply, tokensUsed);
+      await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+    } catch (err) {
+      log.warn('Failed to persist assistant message', { error: String(err) });
     }
   }
 
@@ -482,6 +510,8 @@ export class APIServer {
           });
 
           const userText = body['text'] as string;
+          // Persist user message before LLM call so it survives even if LLM fails
+          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
           try {
             const reply = await agent.handleMessageStream(
               userText,
@@ -495,7 +525,7 @@ export class APIServer {
               senderInfo,
             );
             res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
-            void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
+            void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday);
           } catch (streamErr) {
             log.error('Agent stream error', { agentId, error: String(streamErr) });
             res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
@@ -503,10 +533,11 @@ export class APIServer {
           res.end();
         } else {
           const userText = body['text'] as string;
+          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
           const reply = await agent.handleMessage(userText, senderId, senderInfo);
           this.ws.broadcastChat(agentId!, reply, 'agent');
           this.json(res, 200, { reply });
-          void this.persistChatTurn(agentId!, userText, reply, senderId, agent.getState().tokensUsedToday);
+          void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday);
         }
 
         this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
@@ -661,8 +692,11 @@ export class APIServer {
         return;
       }
 
-      if (body['assignedAgentId']) {
-        const task = this.taskService.assignTask(taskId, body['assignedAgentId'] as string);
+      if ('assignedAgentId' in body) {
+        const agentId = body['assignedAgentId'] as string | null;
+        const task = agentId
+          ? this.taskService.assignTask(taskId, agentId)
+          : this.taskService.unassignTask(taskId);
         this.json(res, 200, { task });
         return;
       }
@@ -720,6 +754,31 @@ export class APIServer {
       return;
     }
 
+    // Task execution: run a task with its assigned agent (fire-and-forget)
+    if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        await this.taskService.runTask(taskId);
+        this.json(res, 202, { status: 'running', taskId });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task execution logs
+    if (path.match(/^\/api\/tasks\/[^/]+\/logs$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      if (!this.storage) { this.json(res, 200, { logs: [] }); return; }
+      try {
+        const logs = await this.storage.taskLogRepo.getByTask(taskId);
+        this.json(res, 200, { logs });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // Organizations
     if (path === '/api/orgs' && req.method === 'GET') {
       const orgs = this.orgService.listOrganizations();
@@ -746,6 +805,8 @@ export class APIServer {
           role: agent.role.name,
           agentRole: agent.config.agentRole,
           state,
+          activeTaskCount: state.activeTaskCount,
+          activeTaskIds: state.activeTaskIds,
           skills: agent.config.skills,
           proficiency: agent.getSkillProficiency(),
         });
@@ -833,6 +894,14 @@ export class APIServer {
           'Access-Control-Allow-Origin': '*',
         });
         const userText = body['text'] as string;
+        // Persist user message to smart channel before LLM call so it's never lost
+        if (this.storage) {
+          void this.storage.channelMessageRepo.append({
+            orgId: targetOrgId, channel: 'smart:default',
+            senderId: senderId ?? 'anonymous', senderType: 'human',
+            senderName: senderInfo?.name ?? 'You', text: userText, mentions: [],
+          }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+        }
         try {
           const reply = await agent.handleMessageStream(
             userText,
@@ -844,6 +913,14 @@ export class APIServer {
           );
           res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
           void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
+          // Persist agent reply to smart channel
+          if (this.storage) {
+            void this.storage.channelMessageRepo.append({
+              orgId: targetOrgId, channel: 'smart:default',
+              senderId: targetAgentId, senderType: 'agent',
+              senderName: agent.config.name, text: reply, mentions: [],
+            }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+          }
         } catch (streamErr) {
           log.error('Channel agent stream error', { agentId: targetAgentId, error: String(streamErr) });
           res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
@@ -851,9 +928,25 @@ export class APIServer {
         res.end();
       } else {
         const userText = body['text'] as string;
+        // Persist user message before LLM call
+        if (this.storage) {
+          void this.storage.channelMessageRepo.append({
+            orgId: targetOrgId, channel: 'smart:default',
+            senderId: senderId ?? 'anonymous', senderType: 'human',
+            senderName: senderInfo?.name ?? 'You', text: userText, mentions: [],
+          }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+        }
         const reply = await agent.handleMessage(userText, senderId, senderInfo);
         this.json(res, 200, { reply, agentId: targetAgentId });
         void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
+        // Persist agent reply to smart channel
+        if (this.storage) {
+          void this.storage.channelMessageRepo.append({
+            orgId: targetOrgId, channel: 'smart:default',
+            senderId: targetAgentId, senderType: 'agent',
+            senderName: agent.config.name, text: reply, mentions: [],
+          }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+        }
       }
       this.ws.broadcastAgentUpdate(targetAgentId, agent.getState().status);
       return;

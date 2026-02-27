@@ -518,15 +518,20 @@ export class AgentManager {
     }
   }
 
-  listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[] }> {
-    return [...this.agents.values()].map((a) => ({
-      id: a.id,
-      name: a.config.name,
-      role: a.role.name,
-      status: a.getState().status,
-      agentRole: a.config.agentRole,
-      skills: a.config.skills,
-    }));
+  listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[]; activeTaskCount: number; teamId?: string }> {
+    return [...this.agents.values()].map((a) => {
+      const state = a.getState();
+      return {
+        id: a.id,
+        name: a.config.name,
+        role: a.role.name,
+        status: state.status,
+        agentRole: a.config.agentRole,
+        skills: a.config.skills,
+        activeTaskCount: state.activeTaskCount ?? 0,
+        teamId: a.config.teamId,
+      };
+    });
   }
 
   listAvailableRoles(): string[] {

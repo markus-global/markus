@@ -60,6 +60,7 @@ export interface AgentInfo {
   name: string;
   role: string;
   status: string;
+  activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
 }
@@ -115,15 +116,31 @@ export interface TaskInfo {
   updatedAt?: string;
 }
 
+export interface TaskLogEntry {
+  id: string;
+  taskId: string;
+  agentId: string;
+  seq: number;
+  /** 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' */
+  type: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface AgentDetail {
   id: string;
   name: string;
   role: string;
   agentRole: string;
   skills: string[];
+  activeTaskCount?: number;
+  activeTaskIds?: string[];
   state: {
     status: string;
     tokensUsedToday: number;
+    activeTaskCount?: number;
+    activeTaskIds?: string[];
     currentTaskId?: string;
     containerId?: string;
     lastHeartbeat?: string;
@@ -214,13 +231,15 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
-    assign: (id: string, agentId: string) =>
+    assign: (id: string, agentId: string | null) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     delete: (id: string) => request(`/tasks/${id}`, { method: 'DELETE' }),
     board: () => request<{ board: Record<string, TaskInfo[]> }>('/taskboard'),
     listSubtasks: (parentId: string) => request<{ subtasks: TaskInfo[] }>(`/tasks/${parentId}/subtasks`),
     createSubtask: (parentId: string, title: string, description?: string, priority?: string) =>
       request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),
+    run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
+    getLogs: (id: string) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs`),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),

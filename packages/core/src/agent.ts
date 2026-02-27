@@ -74,6 +74,9 @@ export class Agent {
   private escalationCallback?: (agentId: string, reason: string) => void;
   private tasksFetcher?: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>;
   private consecutiveFailures = 0;
+  /** Tracks concurrently executing task IDs */
+  private activeTasks = new Set<string>();
+  private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
@@ -90,6 +93,8 @@ export class Agent {
     this.state = {
       agentId: this.id,
       status: 'idle',
+      activeTaskCount: 0,
+      activeTaskIds: [],
       tokensUsedToday: 0,
     };
 
@@ -304,7 +309,8 @@ export class Agent {
 
       const reply = response.content;
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
-      this.state.status = 'idle';
+      // Only go idle if no tasks are concurrently executing
+      if (this.activeTasks.size === 0) this.state.status = 'idle';
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -316,7 +322,7 @@ export class Agent {
 
       return reply;
     } catch (error) {
-      this.state.status = 'error';
+      if (this.activeTasks.size === 0) this.state.status = 'error';
       this.auditCallback?.({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
@@ -427,7 +433,7 @@ export class Agent {
 
       const reply = response.content;
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
-      this.state.status = 'idle';
+      if (this.activeTasks.size === 0) this.state.status = 'idle';
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -439,10 +445,171 @@ export class Agent {
 
       return reply;
     } catch (error) {
-      this.state.status = 'error';
+      if (this.activeTasks.size === 0) this.state.status = 'error';
       this.auditCallback?.({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
+    }
+  }
+
+  /**
+   * Execute a task concurrently (non-blocking). Multiple tasks can run simultaneously.
+   * Each task gets its own isolated LLM session independent of the chat session.
+   *
+   * @param onLog callback receives structured log entries.
+   *   persist=true entries should be saved to DB (status/text/tool_start/tool_end/error).
+   *   persist=false entries are real-time text_delta chunks for live streaming only.
+   */
+  async executeTask(
+    taskId: string,
+    description: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+  ): Promise<void> {
+    if (this.activeTasks.size >= Agent.MAX_CONCURRENT_TASKS) {
+      throw new Error(`Agent ${this.config.name} has reached max concurrent tasks (${Agent.MAX_CONCURRENT_TASKS})`);
+    }
+
+    this.activeTasks.add(taskId);
+    this.state.activeTaskCount = this.activeTasks.size;
+    this.state.activeTaskIds = [...this.activeTasks];
+    this.state.status = 'working';
+
+    let seq = 0;
+    const emit = (type: string, content: string, metadata?: unknown) => {
+      onLog({ seq: seq++, type, content, metadata, persist: true });
+    };
+    const emitDelta = (text: string) => {
+      // text_delta: real-time streaming, not persisted individually
+      onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
+    };
+
+    emit('status', 'started', { agentId: this.id, agentName: this.config.name });
+
+    // Isolated session for this task — does NOT share with chat session
+    const session = this.memory.createSession(this.id);
+    const sessionId = session.id;
+
+    const taskPrompt = [
+      `[TASK EXECUTION — Task ID: ${taskId}]`,
+      '',
+      description,
+      '',
+      'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
+    ].join('\n');
+
+    this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
+
+    const systemPrompt = this.contextEngine.buildSystemPrompt({
+      agentId: this.id,
+      agentName: this.config.name,
+      role: this.role,
+      orgContext: this.orgContext,
+      contextMdPath: this.contextMdPath,
+      memory: this.memory,
+      currentQuery: taskPrompt,
+      identity: this.identityContext,
+      assignedTasks: this.tasksFetcher?.(),
+    });
+
+    const llmTools = this.buildToolDefinitions();
+    let textBuffer = '';
+
+    const flushText = () => {
+      if (textBuffer.trim()) {
+        emit('text', textBuffer);
+        textBuffer = '';
+      }
+    };
+
+    try {
+      const messages = this.contextEngine.prepareMessages({
+        systemPrompt,
+        sessionMessages: this.memory.getRecentMessages(sessionId, 100),
+        memory: this.memory,
+        sessionId,
+      });
+
+      let response = await this.llmRouter.chatStream(
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined },
+        (event) => {
+          if (event.type === 'text_delta' && event.text) {
+            textBuffer += event.text;
+            emitDelta(event.text);
+          }
+        },
+      );
+      this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+
+      let iterations = 0;
+      const maxIterations = 20;
+
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
+        iterations++;
+        flushText();
+
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+        });
+
+        for (const tc of response.toolCalls) {
+          emit('tool_start', tc.name, { arguments: tc.arguments });
+          const toolStart = Date.now();
+          try {
+            const result = await this.executeTool(tc);
+            const isErr = isErrorResult(result);
+            const durationMs = Date.now() - toolStart;
+            emit('tool_end', tc.name, { success: !isErr, durationMs, result: result.slice(0, 500) });
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
+            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+          } catch (toolErr) {
+            const durationMs = Date.now() - toolStart;
+            emit('tool_end', tc.name, { success: false, durationMs, error: String(toolErr) });
+            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs, success: false });
+            this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+          }
+        }
+
+        response = await this.llmRouter.chatStream(
+          {
+            messages: this.contextEngine.prepareMessages({
+              systemPrompt,
+              sessionMessages: this.memory.getRecentMessages(sessionId, 100),
+              memory: this.memory,
+              sessionId,
+            }),
+            tools: llmTools.length > 0 ? llmTools : undefined,
+          },
+          (event) => {
+            if (event.type === 'text_delta' && event.text) {
+              textBuffer += event.text;
+              emitDelta(event.text);
+            }
+          },
+        );
+        this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      }
+
+      flushText();
+      const finalReply = response.content;
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      emit('status', 'completed');
+      this.eventBus.emit('task:completed', { taskId, agentId: this.id });
+      log.info(`Task execution completed`, { taskId, agentId: this.id, iterations });
+    } catch (error) {
+      flushText();
+      emit('error', String(error));
+      this.auditCallback?.({ type: 'error', action: 'execute_task', success: false, detail: String(error).slice(0, 200) });
+      log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
+      this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
+    } finally {
+      this.activeTasks.delete(taskId);
+      this.state.activeTaskCount = this.activeTasks.size;
+      this.state.activeTaskIds = [...this.activeTasks];
+      if (this.activeTasks.size === 0) {
+        this.state.status = 'idle';
+      }
     }
   }
 
@@ -608,8 +775,8 @@ export class Agent {
     task: { name: string; description: string };
     triggeredAt: string;
   }): Promise<void> {
-    if (this.state.status === 'working') {
-      log.debug('Skipping heartbeat — agent is busy', { task: ctx.task.name });
+    if (this.state.status === 'working' || this.activeTasks.size > 0) {
+      log.debug('Skipping heartbeat — agent is busy', { task: ctx.task.name, activeTasks: this.activeTasks.size });
       return;
     }
 

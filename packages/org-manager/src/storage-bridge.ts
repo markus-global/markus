@@ -10,6 +10,7 @@ const log = createLogger('storage-bridge');
 export interface StorageBridge {
   orgRepo: import('@markus/storage').OrgRepo;
   taskRepo: import('@markus/storage').TaskRepo;
+  taskLogRepo: import('@markus/storage').TaskLogRepo;
   agentRepo: import('@markus/storage').AgentRepo;
   teamRepo: import('@markus/storage').TeamRepo;
   messageRepo: import('@markus/storage').MessageRepo;
@@ -32,6 +33,7 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
     const bridge: StorageBridge = {
       orgRepo: new storage.OrgRepo(db),
       taskRepo: new storage.TaskRepo(db),
+      taskLogRepo: new storage.TaskLogRepo(db),
       agentRepo: new storage.AgentRepo(db),
       teamRepo: new storage.TeamRepo(db),
       messageRepo: new storage.MessageRepo(db),

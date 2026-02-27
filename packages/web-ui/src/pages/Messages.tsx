@@ -44,7 +44,7 @@ export function Messages() {
     const oldest = messages[0]!;
     setLoadingMore(true);
     try {
-      const result = await api.channels.getMessages(activeChannel, PAGE_SIZE, oldest.id);
+      const result = await api.channels.getMessages(activeChannel, PAGE_SIZE, new Date(oldest.createdAt).toISOString());
       setMessages(prev => [...result.messages, ...prev]);
       setHasMore(result.hasMore);
     } catch { /* ignore */ } finally {

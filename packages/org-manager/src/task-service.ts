@@ -2,7 +2,7 @@ import type { Task, TaskStatus, TaskPriority } from '@markus/shared';
 import { createLogger, taskId } from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
-import type { TaskRepo } from '@markus/storage';
+import type { TaskRepo, TaskLogRepo } from '@markus/storage';
 
 const log = createLogger('task-service');
 
@@ -23,6 +23,7 @@ export class TaskService {
   private agentManager?: AgentManager;
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
+  private taskLogRepo?: TaskLogRepo;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -34,6 +35,110 @@ export class TaskService {
 
   setTaskRepo(repo: TaskRepo): void {
     this.taskRepo = repo;
+  }
+
+  setTaskLogRepo(repo: TaskLogRepo): void {
+    this.taskLogRepo = repo;
+  }
+
+  /**
+   * Start executing a task with its assigned agent — fire-and-forget.
+   * Returns immediately; execution runs concurrently via async.
+   */
+  async runTask(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
+    if (!this.agentManager) throw new Error('AgentManager not set');
+
+    const agent = this.agentManager.getAgent(task.assignedAgentId);
+    this.updateTaskStatus(taskId, 'in_progress');
+
+    let seq = 0;
+    const agentId = task.assignedAgentId;
+    const taskLogRepo = this.taskLogRepo;
+    const ws = this.ws;
+
+    // Fire and forget — runs concurrently
+    void agent.executeTask(taskId, `${task.title}\n\n${task.description}`, async (entry) => {
+      // Broadcast real-time delta via WS (not persisted)
+      if (!entry.persist) {
+        ws?.broadcast({
+          type: 'task:log:delta',
+          payload: { taskId, agentId, text: entry.content },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Persist structured log entries to DB
+      const logEntry = {
+        taskId,
+        agentId,
+        seq: seq++,
+        type: entry.type as import('@markus/storage').TaskLogType,
+        content: entry.content,
+        metadata: entry.metadata,
+      };
+
+      let savedId: string | undefined;
+      if (taskLogRepo) {
+        try {
+          const row = await taskLogRepo.append(logEntry);
+          savedId = row.id;
+        } catch (err) {
+          log.warn('Failed to persist task log', { taskId, error: String(err) });
+        }
+      }
+
+      // Broadcast structured log event via WS
+      ws?.broadcast({
+        type: 'task:log',
+        payload: {
+          taskId,
+          agentId,
+          id: savedId,
+          seq: logEntry.seq,
+          logType: entry.type,
+          content: entry.content,
+          metadata: entry.metadata,
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: new Date().toISOString(),
+      });
+
+      // Handle task completion/failure from log events
+      if (entry.type === 'status') {
+        if (entry.content === 'completed') {
+          this.updateTaskStatus(taskId, 'completed');
+          // Also broadcast agent status update
+          const agentState = agent.getState();
+          ws?.broadcast({
+            type: 'agent:update',
+            payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
+            timestamp: new Date().toISOString(),
+          });
+        } else if (entry.content === 'started') {
+          const agentState = agent.getState();
+          ws?.broadcast({
+            type: 'agent:update',
+            payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } else if (entry.type === 'error') {
+        this.updateTaskStatus(taskId, 'failed');
+        const agentState = agent.getState();
+        ws?.broadcast({
+          type: 'agent:update',
+          payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }).catch(err => {
+      log.error('Task execution promise rejected', { taskId, error: String(err) });
+      this.updateTaskStatus(taskId, 'failed');
+    });
   }
 
   /** Load tasks from DB into in-memory map (call once on startup) */
@@ -49,15 +154,29 @@ export class TaskService {
           description: row.description ?? '',
           status: row.status as TaskStatus,
           priority: (row.priority ?? 'medium') as TaskPriority,
+          executionMode: (row.executionMode as Task['executionMode']) ?? undefined,
           assignedAgentId: row.assignedAgentId ?? undefined,
           parentTaskId: row.parentTaskId ?? undefined,
           subtaskIds: [],
+          result: (row.result as Task['result']) ?? undefined,
+          notes: (Array.isArray(row.notes) ? row.notes as string[] : undefined),
           createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
           updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
           dueAt: row.dueAt instanceof Date ? row.dueAt.toISOString() : (row.dueAt ? String(row.dueAt) : undefined),
         };
         this.tasks.set(task.id, task);
       }
+
+      // Reconstruct subtaskIds from parentTaskId relationships
+      for (const task of this.tasks.values()) {
+        if (task.parentTaskId) {
+          const parent = this.tasks.get(task.parentTaskId);
+          if (parent && !parent.subtaskIds.includes(task.id)) {
+            parent.subtaskIds.push(task.id);
+          }
+        }
+      }
+
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
     } catch (err) {
       log.warn('Failed to load tasks from DB', { error: String(err) });
@@ -156,6 +275,22 @@ export class TaskService {
     return task;
   }
 
+  unassignTask(id: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.assignedAgentId = undefined;
+    if (task.status === 'assigned') task.status = 'pending';
+    task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.assign(id, null).catch(err => log.warn('Failed to persist task unassignment to DB', { error: String(err) }));
+    }
+
+    this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title });
+    log.info(`Task unassigned`, { taskId: id });
+    return task;
+  }
+
   addTaskNote(id: string, note: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -163,6 +298,11 @@ export class TaskService {
     if (!task.notes) task.notes = [];
     task.notes.push(`[${ts}] ${note}`);
     task.updatedAt = ts;
+
+    if (this.taskRepo) {
+      this.taskRepo.update(id, { notes: task.notes }).catch(err => log.warn('Failed to persist task note to DB', { error: String(err) }));
+    }
+
     log.info(`Task note added`, { taskId: id, note: note.slice(0, 80) });
   }
 
@@ -242,6 +382,11 @@ export class TaskService {
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
     task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.update(id, data).catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
+    }
+
     return task;
   }
 

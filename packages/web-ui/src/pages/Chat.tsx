@@ -332,7 +332,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string) => {
-    const key = `ch:${channel}`;
+    const key = channel === 'smart:default' ? '_smart' : `ch:${channel}`;
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(channelMsgToChat);
@@ -340,7 +340,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       if (currentConvKeyRef.current === key) {
         setMessages(msgs);
         setHasMore(result.hasMore);
-        oldestMsgId.current = result.messages[0]?.id ?? null;
+        oldestMsgId.current = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
       }
     } catch {
       if (currentConvKeyRef.current === key) { setMessages([]); setHasMore(false); }
@@ -356,7 +356,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       if (currentConvKeyRef.current === convKey) {
         setMessages(msgs);
         setHasMore(result.hasMore);
-        oldestMsgId.current = result.messages[0]?.id ?? null;
+        oldestMsgId.current = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
       }
     } catch {
       if (currentConvKeyRef.current === convKey) { setMessages([]); setHasMore(false); oldestMsgId.current = null; }
@@ -378,19 +378,21 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     if (loadingMore || !hasMore || !oldestMsgId.current) return;
     setLoadingMore(true);
     try {
-      if (chatMode === 'channel') {
-        const result = await api.channels.getMessages(activeChannel, 50, oldestMsgId.current);
+      if (chatMode === 'channel' || chatMode === 'smart' || chatMode === 'dm') {
+        const channelName = chatMode === 'smart' ? 'smart:default' :
+          chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
+        const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
         setMessages(prev => [...result.messages.map(channelMsgToChat), ...prev]);
         setHasMore(result.hasMore);
-        if (result.messages[0]) oldestMsgId.current = result.messages[0].id;
+        if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       } else if (activeSessionId) {
         const result = await api.sessions.getMessages(activeSessionId, 50, oldestMsgId.current);
         setMessages(prev => [...result.messages.map(dbMsgToChat), ...prev]);
         setHasMore(result.hasMore);
-        if (result.messages[0]) oldestMsgId.current = result.messages[0].id;
+        if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       }
     } catch { /* ignore */ } finally { setLoadingMore(false); }
-  }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId]);
+  }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId, authUser?.id, activeDmUserId]);
 
   // When mode/target changes: switch to the new conversation's buffer.
   // If the new conv is already streaming or has buffered messages, show them immediately.
@@ -422,6 +424,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
         loadChannelMessages(channelName);
+      } else if (chatMode === 'smart') {
+        loadChannelMessages('smart:default');
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
           if (s.length > 0) {

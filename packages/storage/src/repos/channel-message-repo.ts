@@ -47,7 +47,7 @@ export class ChannelMessageRepo {
     before?: string,
   ): Promise<{ messages: ChannelMsg[]; hasMore: boolean }> {
     const conditions = before
-      ? and(eq(channelMessages.channel, channel), lt(channelMessages.id, before))
+      ? and(eq(channelMessages.channel, channel), lt(channelMessages.createdAt, new Date(before)))
       : eq(channelMessages.channel, channel);
 
     const rows = await this.db.select().from(channelMessages)

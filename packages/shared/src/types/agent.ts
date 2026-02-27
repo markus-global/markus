@@ -41,6 +41,10 @@ export interface ChannelBinding {
 export interface AgentState {
   agentId: string;
   status: AgentStatus;
+  /** Number of tasks currently being executed concurrently */
+  activeTaskCount: number;
+  /** IDs of tasks currently being executed */
+  activeTaskIds: string[];
   currentTaskId?: string;
   lastHeartbeat?: string;
   containerId?: string;

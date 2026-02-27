@@ -92,7 +92,7 @@ export class ChatSessionRepo {
     const conditions = before
       ? and(
           eq(chatMessages.sessionId, sessionId),
-          lt(chatMessages.id, before),
+          lt(chatMessages.createdAt, new Date(before)),
         )
       : eq(chatMessages.sessionId, sessionId);
 
