@@ -269,7 +269,7 @@ export class APIServer {
       if (res.headersSent) {
         // SSE or chunked stream already started — send an error event and close gracefully
         try {
-          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Internal server error' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\n\n`);
         } catch { /* ignore if write also fails */ }
         res.end();
       } else {
@@ -528,7 +528,7 @@ export class APIServer {
             void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday);
           } catch (streamErr) {
             log.error('Agent stream error', { agentId, error: String(streamErr) });
-            res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
+            res.write(`data: ${JSON.stringify({ type: 'error', message: String(streamErr) })}\n\n`);
           }
           res.end();
         } else {
@@ -923,7 +923,7 @@ export class APIServer {
           }
         } catch (streamErr) {
           log.error('Channel agent stream error', { agentId: targetAgentId, error: String(streamErr) });
-          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Agent encountered an error' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: String(streamErr) })}\n\n`);
         }
         res.end();
       } else {

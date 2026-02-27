@@ -191,7 +191,8 @@ export const api = {
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                 } else if (event.type === 'error') {
-                  reject(new Error((event as { type: string; message?: string }).message ?? 'Stream error'));
+                  const errEvent = event as { type: string; message?: string; error?: string };
+                  reject(new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error'));
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
@@ -293,7 +294,8 @@ export const api = {
                   fullContent = event.content ?? fullContent;
                   routedAgentId = event.agentId ?? routedAgentId;
                 } else if (event.type === 'error') {
-                  reject(new Error((event as { type: string; message?: string }).message ?? 'Stream error'));
+                  const errEvent = event as { type: string; message?: string; error?: string };
+                  reject(new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error'));
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
