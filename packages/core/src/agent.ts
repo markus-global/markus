@@ -251,12 +251,7 @@ export class Agent {
       this.state.tokensUsedToday += tokensThisCall;
       this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
-      let iterations = 0;
-      const maxIterations = 20;
-
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
-        iterations++;
-
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         this.memory.appendMessage(this.currentSessionId, {
           role: 'assistant',
           content: response.content,
@@ -301,10 +296,6 @@ export class Agent {
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.state.tokensUsedToday += tokens2;
         this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
-      }
-
-      if (iterations >= maxIterations) {
-        log.warn('Tool loop hit max iterations', { agentId: this.id, iterations });
       }
 
       const reply = response.content;
@@ -377,12 +368,7 @@ export class Agent {
       this.state.tokensUsedToday += tokensThisCall;
       this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
-      let iterations = 0;
-      const maxIterations = 20;
-
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
-        iterations++;
-
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         this.memory.appendMessage(this.currentSessionId, {
           role: 'assistant',
           content: response.content,
@@ -540,11 +526,7 @@ export class Agent {
       );
       this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
 
-      let iterations = 0;
-      const maxIterations = 20;
-
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length && iterations < maxIterations) {
-        iterations++;
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         flushText();
 
         this.memory.appendMessage(sessionId, {
@@ -596,7 +578,7 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
       emit('status', 'completed');
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
-      log.info(`Task execution completed`, { taskId, agentId: this.id, iterations });
+      log.info(`Task execution completed`, { taskId, agentId: this.id });
     } catch (error) {
       flushText();
       emit('error', String(error));

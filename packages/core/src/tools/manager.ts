@@ -48,16 +48,14 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
         required: ['agent_id', 'message'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        try {
-          const reply = await ctx.delegateMessage(
-            args['agent_id'] as string,
-            args['message'] as string,
-            'manager',
-          );
-          return JSON.stringify({ status: 'success', reply: reply.slice(0, 2000) });
-        } catch (error) {
-          return JSON.stringify({ status: 'error', error: String(error) });
-        }
+        const targetId = args['agent_id'] as string;
+        const message = args['message'] as string;
+        // Fire-and-forget: dispatch to target agent and return immediately.
+        // The target agent works independently; do not block waiting for its reply.
+        ctx.delegateMessage(targetId, message, 'manager').catch((err: unknown) => {
+          log.warn(`Delegated task to ${targetId} failed in background`, { error: String(err) });
+        });
+        return JSON.stringify({ status: 'dispatched', message: 'Task dispatched. The agent will work on it independently.' });
       },
     },
     {

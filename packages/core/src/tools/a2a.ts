@@ -31,13 +31,13 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           return JSON.stringify({ status: 'error', error: 'Cannot send a message to yourself' });
         }
 
-        try {
-          log.info(`A2A message: ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
-          const reply = await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName);
-          return JSON.stringify({ status: 'delivered', reply: reply.slice(0, 3000) });
-        } catch (error) {
-          return JSON.stringify({ status: 'error', error: String(error) });
-        }
+        log.info(`A2A message dispatched: ${ctx.selfName} → ${targetId}`, { messageLen: message.length });
+        // Fire-and-forget: dispatch to target agent and return immediately.
+        // The target agent works independently; do not block waiting for its reply.
+        ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName).catch((err: unknown) => {
+          log.warn(`A2A message to ${targetId} failed in background`, { error: String(err) });
+        });
+        return JSON.stringify({ status: 'dispatched', message: 'Message dispatched. The agent will process it independently.' });
       },
     },
     {
