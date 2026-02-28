@@ -177,6 +177,20 @@ export class TaskService {
         }
       }
 
+      // Reset in_progress tasks: execution state is lost on restart, make them re-runnable
+      for (const task of this.tasks.values()) {
+        if (task.status === 'in_progress') {
+          const newStatus: TaskStatus = task.assignedAgentId ? 'assigned' : 'pending';
+          task.status = newStatus;
+          if (this.taskRepo) {
+            this.taskRepo.updateStatus(task.id, newStatus).catch(err =>
+              log.warn('Failed to reset task status on startup', { taskId: task.id, error: String(err) })
+            );
+          }
+          log.info(`Reset in_progress task to ${newStatus} on startup`, { taskId: task.id, title: task.title });
+        }
+      }
+
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
     } catch (err) {
       log.warn('Failed to load tasks from DB', { error: String(err) });

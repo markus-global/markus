@@ -187,6 +187,7 @@ export class APIServer {
     reply: string,
     senderId?: string,
     tokensUsed = 0,
+    metadata?: unknown,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -197,7 +198,7 @@ export class APIServer {
       }
       const title = !session.title ? userMessage.slice(0, 60) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'assistant', reply, tokensUsed);
+      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'assistant', reply, tokensUsed, metadata);
       await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -224,10 +225,10 @@ export class APIServer {
   }
 
   /** Persist the assistant reply after LLM completes */
-  private async persistAssistantMessage(sessionId: string | null, agentId: string, reply: string, tokensUsed = 0): Promise<void> {
+  private async persistAssistantMessage(sessionId: string | null, agentId: string, reply: string, tokensUsed = 0, metadata?: unknown): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
-      await this.storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', reply, tokensUsed);
+      await this.storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', reply, tokensUsed, metadata);
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
     } catch (err) {
       log.warn('Failed to persist assistant message', { error: String(err) });
@@ -513,19 +514,31 @@ export class APIServer {
           // Persist user message before LLM call so it survives even if LLM fails
           const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
           try {
+            const msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> = [];
+            let textBuf = '';
             const reply = await agent.handleMessageStream(
               userText,
               (event) => {
                 res.write(`data: ${JSON.stringify(event)}\n\n`);
                 if (event.type === 'text_delta' && event.text) {
+                  textBuf += event.text;
                   this.ws.broadcastChat(agentId!, event.text, 'agent');
+                } else if ((event as {type: string; phase?: string; tool?: string; success?: boolean}).type === 'agent_tool') {
+                  const ae = event as {type: string; phase?: string; tool?: string; success?: boolean};
+                  if (ae.phase === 'start') {
+                    if (textBuf) { msgSegments.push({ type: 'text', content: textBuf }); textBuf = ''; }
+                  } else if (ae.phase === 'end' && ae.tool) {
+                    msgSegments.push({ type: 'tool', tool: ae.tool, status: ae.success === false ? 'error' : 'done' });
+                  }
                 }
               },
               senderId,
               senderInfo,
             );
+            if (textBuf) msgSegments.push({ type: 'text', content: textBuf });
             res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
-            void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday);
+            const msgMeta = msgSegments.length > 0 ? { segments: msgSegments } : undefined;
+            void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday, msgMeta);
           } catch (streamErr) {
             log.error('Agent stream error', { agentId, error: String(streamErr) });
             res.write(`data: ${JSON.stringify({ type: 'error', message: String(streamErr) })}\n\n`);
@@ -662,8 +675,17 @@ export class APIServer {
     if (path === '/api/tasks' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? undefined;
       const status = url.searchParams.get('status') as import('@markus/shared').TaskStatus | undefined;
-      const tasks = this.taskService.listTasks({ orgId, status });
+      const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
+      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId });
       this.json(res, 200, { tasks });
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      const task = this.taskService.getTask(taskId);
+      if (!task) { this.json(res, 404, { error: `Task not found: ${taskId}` }); return; }
+      this.json(res, 200, { task });
       return;
     }
 
@@ -903,16 +925,30 @@ export class APIServer {
           }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
         try {
+          const smartSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> = [];
+          let smartTextBuf = '';
           const reply = await agent.handleMessageStream(
             userText,
             (event) => {
               res.write(`data: ${JSON.stringify(event)}\n\n`);
+              if (event.type === 'text_delta' && event.text) {
+                smartTextBuf += event.text;
+              } else if ((event as {type: string; phase?: string; tool?: string; success?: boolean}).type === 'agent_tool') {
+                const ae = event as {type: string; phase?: string; tool?: string; success?: boolean};
+                if (ae.phase === 'start') {
+                  if (smartTextBuf) { smartSegments.push({ type: 'text', content: smartTextBuf }); smartTextBuf = ''; }
+                } else if (ae.phase === 'end' && ae.tool) {
+                  smartSegments.push({ type: 'tool', tool: ae.tool, status: ae.success === false ? 'error' : 'done' });
+                }
+              }
             },
             senderId,
             senderInfo,
           );
+          if (smartTextBuf) smartSegments.push({ type: 'text', content: smartTextBuf });
           res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
-          void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
+          const smartMeta = smartSegments.length > 0 ? { segments: smartSegments } : undefined;
+          void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, smartMeta);
           // Persist agent reply to smart channel
           if (this.storage) {
             void this.storage.channelMessageRepo.append({

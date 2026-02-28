@@ -18,6 +18,7 @@ export interface ChatMessage {
   agentId: string;
   role: string;
   content: string;
+  metadata: unknown;
   tokensUsed: number;
   createdAt: Date;
 }
@@ -72,6 +73,7 @@ export class ChatSessionRepo {
     role: string,
     content: string,
     tokensUsed = 0,
+    metadata?: unknown,
   ): Promise<ChatMessage> {
     const [row] = await this.db.insert(chatMessages).values({
       id: generateId('msg'),
@@ -79,6 +81,7 @@ export class ChatSessionRepo {
       agentId,
       role,
       content,
+      metadata: metadata ?? null,
       tokensUsed,
     }).returning();
     return row!;

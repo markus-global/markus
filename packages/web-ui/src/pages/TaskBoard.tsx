@@ -190,6 +190,7 @@ function TaskDetailModal({
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs'>('details');
   const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
 
   const loadSubtasks = useCallback(async () => {
     try {
@@ -280,15 +281,28 @@ function TaskDetailModal({
     onRefresh();
   };
 
+  const reopenTask = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.tasks.updateStatus(task.id, 'pending');
+      onRefresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runWithAgent = async () => {
     if (running) return;
     setRunning(true);
+    setRunError(null);
     setActiveTab('logs');
     try {
       await api.tasks.run(task.id);
       onRefresh();
     } catch (err) {
-      console.error('Failed to run task:', err);
+      const msg = String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', '');
+      setRunError(msg);
     } finally {
       setRunning(false);
     }
@@ -304,8 +318,12 @@ function TaskDetailModal({
 
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
-  const isTerminal = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
   const isRunning = task.status === 'in_progress';
+  const isBlocked = task.status === 'blocked';
+  const isCompleted = task.status === 'completed';
+  const isFailed = task.status === 'failed';
+  const isCancelled = task.status === 'cancelled';
+  const isTerminal = isCompleted || isFailed || isCancelled;
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
@@ -347,7 +365,17 @@ function TaskDetailModal({
           </button>
         </div>
 
-        {activeTab === 'details' ? (
+        {/* Logs tab — always mounted so WS events aren't missed; hidden when on details tab */}
+        <div className={`flex-1 flex flex-col overflow-hidden ${activeTab !== 'logs' ? 'hidden' : ''}`}>
+          {runError && (
+            <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
+              <span className="font-medium">Failed to start:</span> {runError}
+            </div>
+          )}
+          <TaskExecutionLogs taskId={task.id} />
+        </div>
+
+        {activeTab === 'details' && (
           <>
             {/* Editable Meta */}
             <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
@@ -506,18 +534,14 @@ function TaskDetailModal({
               )}
             </div>
           </>
-        ) : (
-          /* Execution Logs Tab */
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <TaskExecutionLogs taskId={task.id} />
-          </div>
         )}
 
-        {/* Actions */}
+        {/* Actions — follow the task state machine strictly */}
         <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {/* Run with Agent — triggers actual LLM execution */}
-            {task.assignedAgentId && !isTerminal && (
+
+            {/* ── pending / assigned / blocked: Run with Agent (triggers LLM execution) */}
+            {task.assignedAgentId && !isRunning && !isTerminal && (
               <button
                 onClick={() => void runWithAgent()}
                 disabled={running}
@@ -538,45 +562,24 @@ function TaskDetailModal({
                 )}
               </button>
             )}
-            {!isRunning && !isTerminal && (
-              <button
-                onClick={() => void startTask()}
-                disabled={busy}
-                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50"
-                title="Mark as in_progress without agent execution"
-              >
-                Mark In Progress
-              </button>
-            )}
+
+            {/* ── in_progress: Pause (status → assigned/pending, execution continues) */}
             {isRunning && (
               <button
                 onClick={() => void pauseTask()}
                 disabled={busy}
                 className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
+                title="Change status to assigned/pending (does not abort running agent)"
               >
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5" /><rect x="7" y="1.5" width="3" height="9" rx="0.5" /></svg>
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+                  <rect x="2" y="1.5" width="3" height="9" rx="0.5" />
+                  <rect x="7" y="1.5" width="3" height="9" rx="0.5" />
+                </svg>
                 Pause
               </button>
             )}
-            {isTerminal && (
-              <button
-                onClick={() => void startTask()}
-                disabled={busy}
-                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
-              >
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1 6a5 5 0 019.33-2.5M11 6a5 5 0 01-9.33 2.5" strokeLinecap="round" /><path d="M10.33 1v2.5H7.83M1.67 11V8.5H4.17" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                Restart
-              </button>
-            )}
-            {!isTerminal && (
-              <button
-                onClick={() => void updateStatus(task.id, 'completed')}
-                disabled={busy}
-                className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50"
-              >
-                Complete
-              </button>
-            )}
+
+            {/* ── in_progress: Block */}
             {isRunning && (
               <button
                 onClick={() => void updateStatus(task.id, 'blocked')}
@@ -586,6 +589,69 @@ function TaskDetailModal({
                 Block
               </button>
             )}
+
+            {/* ── blocked: Unblock (manual status change, no agent execution) */}
+            {isBlocked && (
+              <button
+                onClick={() => void startTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50"
+                title="Mark as in-progress without running agent"
+              >
+                Unblock
+              </button>
+            )}
+
+            {/* ── pending / assigned: Mark In Progress (manual, no agent execution) */}
+            {(task.status === 'pending' || task.status === 'assigned') && (
+              <button
+                onClick={() => void startTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50"
+                title="Mark as in-progress without running agent"
+              >
+                Mark In Progress
+              </button>
+            )}
+
+            {/* ── completed / failed: Run Again (re-execute with agent) */}
+            {(isCompleted || isFailed) && task.assignedAgentId && (
+              <button
+                onClick={() => void runWithAgent()}
+                disabled={running}
+                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M1 6a5 5 0 019.33-2.5M11 6a5 5 0 01-9.33 2.5" strokeLinecap="round" />
+                  <path d="M10.33 1v2.5H7.83M1.67 11V8.5H4.17" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Run Again
+              </button>
+            )}
+
+            {/* ── all terminal: Reopen → back to pending */}
+            {isTerminal && (
+              <button
+                onClick={() => void reopenTask()}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50"
+              >
+                Reopen
+              </button>
+            )}
+
+            {/* ── all non-terminal: Complete */}
+            {!isTerminal && (
+              <button
+                onClick={() => void updateStatus(task.id, 'completed')}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50"
+              >
+                Complete
+              </button>
+            )}
+
+            {/* ── all non-terminal: Cancel */}
             {!isTerminal && (
               <button
                 onClick={() => void updateStatus(task.id, 'cancelled')}

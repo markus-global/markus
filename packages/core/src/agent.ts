@@ -780,6 +780,7 @@ export class Agent {
 
     try {
       await this.handleMessage(prompt);
+      this.state.lastHeartbeat = new Date().toISOString();
     } catch (error) {
       log.error('Heartbeat task failed', { task: ctx.task.name, error: String(error) });
     }

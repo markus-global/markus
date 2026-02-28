@@ -3,7 +3,7 @@ import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo,
-  type TaskInfo, type AuthUser,
+  type TaskInfo, type AuthUser, type StoredSegment,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
@@ -34,12 +34,21 @@ const DEFAULT_CHANNELS = ['#general', '#dev', '#support'];
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
-  return {
+  const base: ChatMsg = {
     id: m.id,
     sender: m.role === 'user' ? 'user' : 'agent',
     text: m.content,
     time: new Date(m.createdAt).toLocaleTimeString(),
   };
+  // Reconstruct interleaved segments from persisted metadata
+  if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
+    base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
+      s.type === 'tool'
+        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status }
+        : { type: 'text' as const, content: s.content }
+    );
+  }
+  return base;
 }
 
 function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {

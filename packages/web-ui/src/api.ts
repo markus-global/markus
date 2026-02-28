@@ -23,12 +23,17 @@ export interface ChatSessionInfo {
   lastMessageAt: string;
 }
 
+export type StoredSegment =
+  | { type: 'text'; content: string }
+  | { type: 'tool'; tool: string; status: 'done' | 'error' };
+
 export interface ChatMessageInfo {
   id: string;
   sessionId: string;
   agentId: string;
   role: string;
   content: string;
+  metadata?: { segments?: StoredSegment[] } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -229,7 +234,14 @@ export const api = {
       request(`/teams/${teamId}/members/${memberId}`, { method: 'DELETE' }),
   },
   tasks: {
-    list: () => request<{ tasks: TaskInfo[] }>('/tasks'),
+    list: (filters?: { assignedAgentId?: string; status?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
+      if (filters?.status) params.set('status', filters.status);
+      const qs = params.toString();
+      return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
+    },
+    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
     create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean) =>
       request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string }) =>

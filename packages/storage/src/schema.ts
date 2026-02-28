@@ -119,6 +119,8 @@ export const chatMessages = pgTable('chat_messages', {
   agentId: varchar('agent_id', { length: 64 }).notNull(),
   role: varchar('role', { length: 32 }).notNull(),  // user / assistant / tool
   content: text('content').notNull(),
+  /** Stores interleaved segments (text + tool calls) for assistant messages */
+  metadata: jsonb('metadata'),
   tokensUsed: integer('tokens_used').notNull().default(0),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (t) => [
