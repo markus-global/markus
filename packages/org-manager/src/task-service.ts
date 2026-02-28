@@ -24,6 +24,8 @@ export class TaskService {
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
+  /** Cancel tokens for active task executions — keyed by taskId */
+  private taskCancelTokens = new Map<string, { cancelled: boolean }>();
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -52,6 +54,14 @@ export class TaskService {
     if (!this.agentManager) throw new Error('AgentManager not set');
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
+
+    // Cancel any currently running execution for this task before starting a new one
+    const existing = this.taskCancelTokens.get(taskId);
+    if (existing) existing.cancelled = true;
+
+    const cancelToken = { cancelled: false };
+    this.taskCancelTokens.set(taskId, cancelToken);
+
     this.updateTaskStatus(taskId, 'in_progress');
 
     let seq = 0;
@@ -135,9 +145,16 @@ export class TaskService {
           timestamp: new Date().toISOString(),
         });
       }
-    }).catch(err => {
+    }, cancelToken).catch(err => {
       log.error('Task execution promise rejected', { taskId, error: String(err) });
-      this.updateTaskStatus(taskId, 'failed');
+      if (!cancelToken.cancelled) {
+        this.updateTaskStatus(taskId, 'failed');
+      }
+    }).finally(() => {
+      // Clean up cancel token after execution ends
+      if (this.taskCancelTokens.get(taskId) === cancelToken) {
+        this.taskCancelTokens.delete(taskId);
+      }
     });
   }
 
@@ -177,23 +194,47 @@ export class TaskService {
         }
       }
 
-      // Reset in_progress tasks: execution state is lost on restart, make them re-runnable
-      for (const task of this.tasks.values()) {
-        if (task.status === 'in_progress') {
-          const newStatus: TaskStatus = task.assignedAgentId ? 'assigned' : 'pending';
-          task.status = newStatus;
-          if (this.taskRepo) {
-            this.taskRepo.updateStatus(task.id, newStatus).catch(err =>
-              log.warn('Failed to reset task status on startup', { taskId: task.id, error: String(err) })
-            );
-          }
-          log.info(`Reset in_progress task to ${newStatus} on startup`, { taskId: task.id, title: task.title });
-        }
-      }
-
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
     } catch (err) {
       log.warn('Failed to load tasks from DB', { error: String(err) });
+    }
+  }
+
+  /**
+   * Resume execution for all tasks that are currently in_progress.
+   * Call this after agents have been loaded and started (on server startup).
+   * Tasks without an assigned agent are reset to pending.
+   */
+  async resumeInProgressTasks(): Promise<void> {
+    const inProgressTasks = [...this.tasks.values()].filter(t => t.status === 'in_progress');
+    if (inProgressTasks.length === 0) return;
+
+    log.info(`Resuming ${inProgressTasks.length} in_progress task(s) after restart`);
+
+    for (const task of inProgressTasks) {
+      if (!task.assignedAgentId) {
+        // No agent — reset to pending so it can be assigned later
+        task.status = 'pending';
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, 'pending').catch(err =>
+            log.warn('Failed to reset unassigned in_progress task', { taskId: task.id, error: String(err) })
+          );
+        }
+        log.info(`Reset unassigned in_progress task to pending`, { taskId: task.id, title: task.title });
+        continue;
+      }
+
+      try {
+        await this.runTask(task.id);
+        log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title });
+      } catch (err) {
+        log.warn(`Failed to resume task on startup`, { taskId: task.id, title: task.title, error: String(err) });
+        // Reset to assigned so user can manually retry
+        task.status = 'assigned';
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, 'assigned').catch(() => {});
+        }
+      }
     }
   }
 
@@ -254,8 +295,20 @@ export class TaskService {
   updateTaskStatus(id: string, status: TaskStatus): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+
+    const prevStatus = task.status;
     task.status = status;
     task.updatedAt = new Date().toISOString();
+
+    // If moving away from in_progress, cancel any running execution
+    if (prevStatus === 'in_progress' && status !== 'in_progress') {
+      const token = this.taskCancelTokens.get(id);
+      if (token) {
+        token.cancelled = true;
+        this.taskCancelTokens.delete(id);
+        log.info(`Cancelled running execution for task ${id} (status → ${status})`);
+      }
+    }
 
     // Persist to DB
     if (this.taskRepo) {

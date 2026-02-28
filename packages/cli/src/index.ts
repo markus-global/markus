@@ -303,6 +303,11 @@ async function startServer(
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, 'default');
 
+  // Resume any tasks that were in_progress when the server last stopped.
+  // Must be called AFTER agents are loaded (orgService.loadFromDB) so their
+  // AgentManager entries exist and are started.
+  await taskService.resumeInProgressTasks();
+
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
 

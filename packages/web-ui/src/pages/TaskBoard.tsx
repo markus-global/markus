@@ -123,8 +123,9 @@ function TaskExecutionLogs({ taskId }: { taskId: string }) {
         createdAt: p.createdAt as string,
       };
       setLogs(prev => {
-        // Avoid duplicates by seq
-        if (prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
+        // Dedup by DB id when available, else fall back to seq+type
+        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
+        if (!entry.id && prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
         return [...prev, entry];
       });
       if (entry.type === 'text') setStreamingText('');

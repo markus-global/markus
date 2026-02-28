@@ -450,6 +450,7 @@ export class Agent {
     taskId: string,
     description: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    cancelToken?: { cancelled: boolean },
   ): Promise<void> {
     if (this.activeTasks.size >= Agent.MAX_CONCURRENT_TASKS) {
       throw new Error(`Agent ${this.config.name} has reached max concurrent tasks (${Agent.MAX_CONCURRENT_TASKS})`);
@@ -527,6 +528,14 @@ export class Agent {
       this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+        // Check for external cancellation (e.g., task paused or status changed away from in_progress)
+        if (cancelToken?.cancelled) {
+          flushText();
+          emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+          log.info('Task execution cancelled externally', { taskId, agentId: this.id });
+          return;
+        }
+
         flushText();
 
         this.memory.appendMessage(sessionId, {
@@ -536,6 +545,7 @@ export class Agent {
         });
 
         for (const tc of response.toolCalls) {
+          if (cancelToken?.cancelled) break;
           emit('tool_start', tc.name, { arguments: tc.arguments });
           const toolStart = Date.now();
           try {
@@ -551,6 +561,12 @@ export class Agent {
             this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs, success: false });
             this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
           }
+        }
+
+        if (cancelToken?.cancelled) {
+          emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+          log.info('Task execution cancelled externally after tools', { taskId, agentId: this.id });
+          return;
         }
 
         response = await this.llmRouter.chatStream(

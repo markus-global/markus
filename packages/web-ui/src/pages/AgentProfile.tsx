@@ -117,7 +117,9 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
         createdAt: p.createdAt as string,
       };
       setLogs(prev => {
-        if (prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
+        // Dedup by DB id when available, else fall back to seq+type
+        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
+        if (!entry.id && prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
         return [...prev, entry];
       });
       if (entry.type === 'text') setStreamingText('');
@@ -161,7 +163,13 @@ function AgentTasks({ agentId, activeTaskIds }: { agentId: string; activeTaskIds
 
   const loadTasks = () => {
     api.tasks.list({ assignedAgentId: agentId })
-      .then(d => setTasks(d.tasks.filter(t => !t.parentTaskId)))
+      .then(d => {
+        const filtered = d.tasks.filter(t => !t.parentTaskId);
+        setTasks(filtered);
+        // Auto-expand the first in_progress task so live logs are immediately visible
+        const running = filtered.find(t => t.status === 'in_progress');
+        if (running) setExpandedId(prev => prev ?? running.id);
+      })
       .catch(() => {});
   };
 
@@ -204,7 +212,7 @@ function AgentTasks({ agentId, activeTaskIds }: { agentId: string; activeTaskIds
       <div className="divide-y divide-gray-800/50">
         {sorted.map(task => {
           const isExpanded = expandedId === task.id;
-          const isExecuting = activeTaskIds.includes(task.id);
+          const isExecuting = activeTaskIds.includes(task.id) || task.status === 'in_progress';
           const isTerminal = TERMINAL.has(task.status);
           const hasLogs = task.status === 'in_progress' || task.status === 'failed' || task.status === 'completed';
 
