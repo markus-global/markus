@@ -2,26 +2,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, append
 import { join } from 'node:path';
 import type { LLMMessage } from '@markus/shared';
 import { createLogger } from '@markus/shared';
+import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
+
+export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
 const log = createLogger('memory-store');
 
-export interface MemoryEntry {
-  id: string;
-  timestamp: string;
-  type: 'conversation' | 'fact' | 'task_result' | 'note';
-  content: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ConversationSession {
-  id: string;
-  agentId: string;
-  messages: LLMMessage[];
-  startedAt: string;
-  lastActivityAt: string;
-}
-
-export class MemoryStore {
+export class MemoryStore implements IMemoryStore {
   private dataDir: string;
   private entries: MemoryEntry[] = [];
   private sessions = new Map<string, ConversationSession>();

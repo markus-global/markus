@@ -157,6 +157,27 @@ export const taskLogs = pgTable('task_logs', {
   index('idx_task_logs_task').on(t.taskId, t.seq),
 ]);
 
+/** Agent knowledge base entries for enhanced memory */
+export const agentKnowledge = pgTable('agent_knowledge', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  agentId: varchar('agent_id', { length: 64 }).notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  orgId: varchar('org_id', { length: 64 }).notNull(),
+  category: varchar('category', { length: 64 }).notNull(),
+  title: varchar('title', { length: 512 }).notNull(),
+  content: text('content').notNull(),
+  tags: jsonb('tags').notNull().default([]),
+  source: varchar('source', { length: 128 }).notNull().default('agent'),
+  metadata: jsonb('metadata').default({}),
+  importance: integer('importance').notNull().default(50), // 0-100
+  accessCount: integer('access_count').notNull().default(0),
+  lastAccessedAt: timestamp('last_accessed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_agent_knowledge_agent').on(t.agentId, t.category),
+  index('idx_agent_knowledge_org').on(t.orgId),
+]);
+
 /** Users for authentication */
 export const users = pgTable('users', {
   id: varchar('id', { length: 64 }).primaryKey(),

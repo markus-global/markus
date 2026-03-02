@@ -185,24 +185,46 @@ describe('EnhancedMemorySystem', () => {
     });
   });
 
-  describe('integration gap documentation', () => {
-    it('verifies EnhancedMemorySystem is NOT used in Agent class (gap to close in Phase 1)', () => {
-      // This test documents the known gap:
-      // Agent uses MemoryStore directly, not EnhancedMemorySystem.
-      // Phase 1 should integrate EnhancedMemorySystem into Agent for
-      // cross-session memory, knowledge base, and context enrichment.
-      //
-      // Current state:
-      // - Agent → MemoryStore (basic: sessions, messages, long-term text)
-      // - EnhancedMemorySystem → MemoryStore + KnowledgeBase + search
-      // - EnhancedMemorySystem is exported but NOT wired into Agent
-      //
-      // Phase 1 plan:
-      // 1. Replace MemoryStore with EnhancedMemorySystem in Agent
-      // 2. Add DB persistence (PostgreSQL) to EnhancedMemorySystem
-      // 3. Use getAgentContext() in ContextEngine.buildSystemPrompt()
+  describe('IMemoryStore compliance', () => {
+    it('implements all IMemoryStore methods', () => {
+      const system = new EnhancedMemorySystem(tmpDir);
 
-      expect(true).toBe(true);
+      // Session management
+      const session = system.createSession('agent-1');
+      expect(session.id).toBeDefined();
+      expect(session.agentId).toBe('agent-1');
+
+      system.appendMessage(session.id, { role: 'user', content: 'Hello' });
+      system.appendMessage(session.id, { role: 'assistant', content: 'Hi there' });
+
+      const messages = system.getRecentMessages(session.id, 10);
+      expect(messages).toHaveLength(2);
+
+      const latest = system.getLatestSession('agent-1');
+      expect(latest?.id).toBe(session.id);
+
+      const all = system.listSessions('agent-1');
+      expect(all).toHaveLength(1);
+
+      // Memory entries
+      system.addEntry({ id: 'e1', timestamp: new Date().toISOString(), type: 'fact', content: 'Test fact' });
+      expect(system.getEntries('fact')).toHaveLength(1);
+      expect(system.search('Test fact')).toHaveLength(1);
+
+      // Daily logs
+      system.writeDailyLog('agent-1', 'End of day summary');
+      expect(system.getDailyLog()).toContain('End of day summary');
+      expect(system.getRecentDailyLogs(1)).toContain('End of day summary');
+
+      // Long-term
+      system.addLongTermMemory('project-info', 'Markus is an AI platform');
+      expect(system.getLongTermMemory()).toContain('Markus is an AI platform');
+
+      // Compaction
+      const result = system.compactSession(session.id, 1);
+      expect(result.flushedCount).toBe(1);
+      const remaining = system.summarizeAndTruncate(session.id, 1);
+      expect(remaining.length).toBeLessThanOrEqual(1);
     });
   });
 });

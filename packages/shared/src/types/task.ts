@@ -13,12 +13,18 @@ export interface Task {
   assignedAgentId?: string;
   parentTaskId?: string;
   subtaskIds: string[];
+  /** Task IDs that must be completed before this task can start */
+  blockedBy?: string[];
   result?: TaskResult;
   /** Timestamped progress notes added by agents or users */
   notes?: string[];
   createdAt: string;
   updatedAt: string;
   dueAt?: string;
+  /** Timeout in ms from when the task starts (transitions to in_progress) */
+  timeoutMs?: number;
+  /** Timestamp when the task started executing */
+  startedAt?: string;
 }
 
 export interface TaskResult {

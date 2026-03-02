@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LLMMessage, RoleTemplate, IdentityContext } from '@markus/shared';
 import { createLogger } from '@markus/shared';
-import type { MemoryStore, MemoryEntry } from './memory/store.js';
+import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 
 const log = createLogger('context-engine');
 
@@ -41,11 +41,13 @@ export class ContextEngine {
     role: RoleTemplate;
     orgContext?: OrgContext;
     contextMdPath?: string;
-    memory: MemoryStore;
+    memory: IMemoryStore;
     currentQuery?: string;
     identity?: IdentityContext;
     senderIdentity?: { id: string; name: string; role: string };
     assignedTasks?: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
+    /** Pre-built knowledge context from EnhancedMemorySystem.getAgentContext() */
+    knowledgeContext?: string;
   }): string {
     const parts: string[] = [];
 
@@ -77,7 +79,13 @@ export class ContextEngine {
       parts.push(longTermMem.slice(0, 3000));
     }
 
-    // 6. Relevant memories (fact-based retrieval)
+    // 6. Knowledge base context (from EnhancedMemorySystem if available)
+    if (opts.knowledgeContext) {
+      parts.push('\n## Knowledge Base');
+      parts.push(opts.knowledgeContext.slice(0, 3000));
+    }
+
+    // 7. Relevant memories (fact-based retrieval)
     const relevantMemories = this.retrieveRelevantMemories(opts.memory, opts.currentQuery);
     if (relevantMemories.length > 0) {
       parts.push('\n## Relevant Memories');
@@ -205,7 +213,7 @@ export class ContextEngine {
   prepareMessages(opts: {
     systemPrompt: string;
     sessionMessages: LLMMessage[];
-    memory: MemoryStore;
+    memory: IMemoryStore;
     sessionId: string;
   }): LLMMessage[] {
     let recentMessages = opts.sessionMessages;
@@ -342,7 +350,7 @@ export class ContextEngine {
     return parts.join('\n');
   }
 
-  private retrieveRelevantMemories(memory: MemoryStore, query?: string): MemoryEntry[] {
+  private retrieveRelevantMemories(memory: IMemoryStore, query?: string): MemoryEntry[] {
     // Get recent facts
     const facts = memory.getEntries('fact', this.config.memorySearchTopK);
 

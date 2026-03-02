@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogger, generateId } from '@markus/shared';
-import type { SkillRegistry } from '@markus/core';
+import { ExternalAgentGateway, GatewayError, type SkillRegistry } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -99,6 +99,7 @@ export class APIServer {
   private auditService?: AuditService;
   private storage?: StorageBridge;
   private llmRouter?: import('@markus/core').LLMRouter;
+  private gateway?: ExternalAgentGateway;
 
   constructor(
     private orgService: OrganizationService,
@@ -129,6 +130,10 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+  }
+
+  setGateway(gateway: ExternalAgentGateway): void {
+    this.gateway = gateway;
   }
 
   setLLMRouter(router: import('@markus/core').LLMRouter): void {
@@ -799,6 +804,20 @@ export class APIServer {
       return;
     }
 
+    // Agent metrics — must be before the generic GET /api/agents/:id handler
+    if (path.match(/^\/api\/agents\/[^/]+\/metrics$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const period = (url.searchParams.get('period') ?? '24h') as '1h' | '24h' | '7d';
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const metrics = agent.getMetrics(period);
+        this.json(res, 200, metrics);
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent status
     if (path.startsWith('/api/agents/') && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -818,6 +837,78 @@ export class APIServer {
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // ── External Agent Gateway ──────────────────────────────────────────────
+    if (path === '/api/gateway/register' && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const body = await this.readBody(req);
+      try {
+        const reg = await this.gateway.register({
+          externalAgentId: body['agentId'] as string,
+          agentName: body['agentName'] as string,
+          orgId: body['orgId'] as string,
+          capabilities: (body['capabilities'] as string[]) ?? [],
+          openClawConfig: body['openClawConfig'] as string | undefined,
+        });
+        this.json(res, 201, reg);
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/gateway/auth' && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const body = await this.readBody(req);
+      try {
+        const result = this.gateway.authenticate({
+          externalAgentId: body['agentId'] as string,
+          orgId: body['orgId'] as string,
+          secret: body['secret'] as string,
+        });
+        this.json(res, 200, result);
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/gateway/message' && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const body = await this.readBody(req);
+        const result = await this.gateway.routeMessage(token, {
+          type: body['type'] as 'task' | 'status' | 'heartbeat',
+          content: body['content'] as string,
+          metadata: body['metadata'] as Record<string, unknown> | undefined,
+        });
+        this.json(res, 200, result);
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/gateway/status' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const status = this.gateway.getStatus(token);
+        this.json(res, 200, status);
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
       }
       return;
     }

@@ -1,4 +1,6 @@
-import { MemoryStore, MemoryEntry, ConversationSession } from './memory/store.js';
+import { MemoryStore } from './memory/store.js';
+import type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
+import type { LLMMessage } from '@markus/shared';
 import { createLogger } from '@markus/shared';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -40,7 +42,7 @@ export interface OpenClawMemoryConfig {
   contextWindow?: number;
 }
 
-export class EnhancedMemorySystem {
+export class EnhancedMemorySystem implements IMemoryStore {
   private baseStore: MemoryStore;
   private knowledgeBaseDir: string;
   private knowledgeIndex: Map<string, KnowledgeEntry> = new Map();
@@ -329,7 +331,7 @@ export class EnhancedMemorySystem {
     return this.baseStore.createSession(agentId);
   }
   
-  appendMessage(sessionId: string, message: any): void {
+  appendMessage(sessionId: string, message: LLMMessage): void {
     this.baseStore.appendMessage(sessionId, message);
   }
   
@@ -343,6 +345,26 @@ export class EnhancedMemorySystem {
   
   getLongTermMemory(): string {
     return this.baseStore.getLongTermMemory();
+  }
+
+  getRecentMessages(sessionId: string, limit: number): LLMMessage[] {
+    return this.baseStore.getRecentMessages(sessionId, limit);
+  }
+
+  writeDailyLog(agentId: string, summary: string): void {
+    this.baseStore.writeDailyLog(agentId, summary);
+  }
+
+  getDailyLog(date?: string): string {
+    return this.baseStore.getDailyLog(date);
+  }
+
+  compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number } {
+    return this.baseStore.compactSession(sessionId, keepLast);
+  }
+
+  summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {
+    return this.baseStore.summarizeAndTruncate(sessionId, keepLast);
   }
 
   /**

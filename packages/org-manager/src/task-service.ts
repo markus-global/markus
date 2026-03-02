@@ -16,7 +16,24 @@ export interface CreateTaskRequest {
   dueAt?: string;
   requiredSkills?: string[];
   autoAssign?: boolean;
+  blockedBy?: string[];
+  timeoutMs?: number;
 }
+
+export type TaskEventType = 'created' | 'status_changed' | 'completed' | 'failed' | 'timeout' | 'unblocked';
+export interface TaskEvent {
+  type: TaskEventType;
+  taskId: string;
+  taskTitle: string;
+  orgId: string;
+  status: TaskStatus;
+  previousStatus?: TaskStatus;
+  agentId?: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type TaskWebhook = (event: TaskEvent) => void | Promise<void>;
 
 export class TaskService {
   private tasks = new Map<string, Task>();
@@ -26,6 +43,8 @@ export class TaskService {
   private taskLogRepo?: TaskLogRepo;
   /** Cancel tokens for active task executions — keyed by taskId */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
+  private webhooks: TaskWebhook[] = [];
+  private timeoutCheckInterval?: ReturnType<typeof setInterval>;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -41,6 +60,22 @@ export class TaskService {
 
   setTaskLogRepo(repo: TaskLogRepo): void {
     this.taskLogRepo = repo;
+  }
+
+  onTaskEvent(webhook: TaskWebhook): void {
+    this.webhooks.push(webhook);
+  }
+
+  startTimeoutChecker(intervalMs = 30_000): void {
+    if (this.timeoutCheckInterval) return;
+    this.timeoutCheckInterval = setInterval(() => this.checkTimeouts(), intervalMs);
+  }
+
+  stopTimeoutChecker(): void {
+    if (this.timeoutCheckInterval) {
+      clearInterval(this.timeoutCheckInterval);
+      this.timeoutCheckInterval = undefined;
+    }
   }
 
   private static readonly MAX_TASK_RETRIES = 3;
@@ -365,19 +400,24 @@ export class TaskService {
       assignedAgentId = this.autoAssignAgent(request.requiredSkills);
     }
 
+    const hasBlockers = request.blockedBy && request.blockedBy.length > 0;
+    const initialStatus = hasBlockers ? 'blocked' : (assignedAgentId ? 'assigned' : 'pending');
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: assignedAgentId ? 'assigned' : 'pending',
+      status: initialStatus,
       priority: request.priority ?? 'medium',
       assignedAgentId,
       parentTaskId: request.parentTaskId,
       subtaskIds: [],
+      blockedBy: request.blockedBy,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       dueAt: request.dueAt,
+      timeoutMs: request.timeoutMs,
     };
 
     if (request.parentTaskId) {
@@ -404,6 +444,15 @@ export class TaskService {
     }
 
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
+    this.emitTaskEvent({
+      type: 'created',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: task.status,
+      agentId: task.assignedAgentId,
+      timestamp: task.createdAt,
+    });
     log.info(`Task created: ${task.title}`, { id: task.id, status: task.status, assignedTo: assignedAgentId });
     return task;
   }
@@ -416,9 +465,20 @@ export class TaskService {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
 
+    // Prevent starting a blocked task
+    if (status === 'in_progress' && task.status === 'blocked') {
+      if (!this.areBlockersSatisfied(task)) {
+        throw new Error(`Task ${id} is blocked by unfinished dependencies`);
+      }
+    }
+
     const prevStatus = task.status;
     task.status = status;
     task.updatedAt = new Date().toISOString();
+
+    if (status === 'in_progress' && !task.startedAt) {
+      task.startedAt = new Date().toISOString();
+    }
 
     // If moving away from in_progress, cancel any running execution
     if (prevStatus === 'in_progress' && status !== 'in_progress') {
@@ -436,8 +496,6 @@ export class TaskService {
     }
 
     // Auto-start execution when a task transitions to in_progress but has no active runner.
-    // This covers the case where an agent's heartbeat calls task_update(in_progress) —
-    // the token is not yet set, so we know runTask() hasn't been invoked for this transition.
     if (status === 'in_progress' && prevStatus !== 'in_progress' && task.assignedAgentId && this.agentManager) {
       const activeToken = this.taskCancelTokens.get(id);
       if (!activeToken || activeToken.cancelled) {
@@ -454,7 +512,24 @@ export class TaskService {
 
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
       this.checkParentCompletion(task);
+      this.checkDependentTasks(task);
     }
+
+    // Emit task event
+    const eventType: TaskEventType =
+      status === 'completed' ? 'completed' :
+      status === 'failed' ? 'failed' :
+      'status_changed';
+    this.emitTaskEvent({
+      type: eventType,
+      taskId: id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status,
+      previousStatus: prevStatus,
+      agentId: task.assignedAgentId,
+      timestamp: task.updatedAt,
+    });
 
     log.info(`Task status updated: ${task.title}`, { id, status });
     return task;
@@ -576,7 +651,7 @@ export class TaskService {
       let agentName: string | undefined;
       try {
         const agents = this.agentManager?.listAgents() ?? [];
-        agentName = agents.find(a => a.id === agentId)?.config?.name;
+        agentName = agents.find(a => a.id === agentId)?.name;
       } catch { /* ignore */ }
       return { agentId, agentName, activeTasks: counts.active, completedTasks: counts.completed };
     });
@@ -688,6 +763,81 @@ export class TaskService {
 
     if (allSubDone && parent.subtaskIds.length > 0) {
       this.updateTaskStatus(parent.id, 'completed');
+    }
+  }
+
+  /**
+   * When a task completes, check if any other tasks were blocked by it
+   * and unblock them if all their dependencies are satisfied.
+   */
+  private checkDependentTasks(completedTask: Task): void {
+    for (const [, task] of this.tasks) {
+      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
+      if (!task.blockedBy.includes(completedTask.id)) continue;
+
+      if (this.areBlockersSatisfied(task)) {
+        const newStatus = task.assignedAgentId ? 'assigned' : 'pending';
+        log.info(`Unblocking task ${task.id} (dependency ${completedTask.id} completed)`);
+        task.status = newStatus;
+        task.updatedAt = new Date().toISOString();
+        this.ws?.broadcastTaskUpdate(task.id, newStatus, { title: task.title });
+        this.emitTaskEvent({
+          type: 'unblocked',
+          taskId: task.id,
+          taskTitle: task.title,
+          orgId: task.orgId,
+          status: newStatus,
+          previousStatus: 'blocked',
+          agentId: task.assignedAgentId,
+          timestamp: task.updatedAt,
+        });
+      }
+    }
+  }
+
+  private areBlockersSatisfied(task: Task): boolean {
+    if (!task.blockedBy?.length) return true;
+    return task.blockedBy.every(blockerId => {
+      const blocker = this.tasks.get(blockerId);
+      return blocker && (blocker.status === 'completed' || blocker.status === 'cancelled');
+    });
+  }
+
+  private checkTimeouts(): void {
+    const now = Date.now();
+    for (const [, task] of this.tasks) {
+      if (task.status !== 'in_progress') continue;
+      if (!task.timeoutMs || !task.startedAt) continue;
+
+      const elapsed = now - new Date(task.startedAt).getTime();
+      if (elapsed > task.timeoutMs) {
+        log.warn(`Task ${task.id} timed out after ${elapsed}ms (limit: ${task.timeoutMs}ms)`);
+        this.updateTaskStatus(task.id, 'failed');
+        this.emitTaskEvent({
+          type: 'timeout',
+          taskId: task.id,
+          taskTitle: task.title,
+          orgId: task.orgId,
+          status: 'failed',
+          previousStatus: 'in_progress',
+          agentId: task.assignedAgentId,
+          timestamp: new Date().toISOString(),
+          metadata: { reason: 'timeout', elapsedMs: elapsed, timeoutMs: task.timeoutMs },
+        });
+      }
+    }
+  }
+
+  private emitTaskEvent(event: TaskEvent): void {
+    for (const webhook of this.webhooks) {
+      try {
+        const result = webhook(event);
+        if (result instanceof Promise) {
+          result.catch(err => log.warn('Task webhook error', { error: String(err) }));
+        }
+      } catch (err) {
+        log.warn('Task webhook error (sync)', { error: String(err) });
+      }
     }
   }
 }

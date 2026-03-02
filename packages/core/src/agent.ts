@@ -13,6 +13,9 @@ import { EventBus } from './events.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
+import type { IMemoryStore } from './memory/types.js';
+import { EnhancedMemorySystem } from './enhanced-memory-system.js';
+import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext } from './context-engine.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskType, TaskStatus } from './concurrent/task-queue.js';
@@ -53,6 +56,8 @@ export interface AgentOptions {
   sandbox?: SandboxHandle;
   orgContext?: OrgContext;
   contextMdPath?: string;
+  /** Optional custom memory implementation. Defaults to MemoryStore. */
+  memory?: IMemoryStore;
 }
 
 export class Agent {
@@ -64,7 +69,7 @@ export class Agent {
   private eventBus: EventBus;
   private heartbeat: HeartbeatScheduler;
   private llmRouter: LLMRouter;
-  private memory: MemoryStore;
+  private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private currentSessionId?: string;
@@ -76,6 +81,7 @@ export class Agent {
   private escalationCallback?: (agentId: string, reason: string) => void;
   private tasksFetcher?: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>;
   private consecutiveFailures = 0;
+  private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
   private activeTasks = new Set<string>();
   /** Task executor for concurrent task management */
@@ -105,8 +111,9 @@ export class Agent {
     };
 
     this.eventBus = new EventBus();
-    this.memory = new MemoryStore(options.dataDir);
+    this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
+    this.metricsCollector = new AgentMetricsCollector(this.id);
     this.heartbeat = new HeartbeatScheduler(
       this.id,
       this.eventBus,
@@ -347,6 +354,15 @@ export class Agent {
     this.auditCallback = cb;
   }
 
+  getMetrics(period: '1h' | '24h' | '7d' = '24h'): AgentMetricsSnapshot {
+    return this.metricsCollector.getMetrics(period);
+  }
+
+  private emitAudit(event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }): void {
+    this.metricsCollector.recordAudit(event);
+    this.auditCallback?.(event);
+  }
+
   setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
     this.escalationCallback = cb;
   }
@@ -387,8 +403,6 @@ export class Agent {
   }
 
   async handleMessage(userMessage: string, senderId?: string, senderInfo?: { name: string; role: string }): Promise<string> {
-    // 只有在没有活动任务时才设置状态为working
-    // 如果有任务在执行，状态应该已经是working
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
     }
@@ -411,6 +425,7 @@ export class Agent {
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: this.tasksFetcher?.(),
+      knowledgeContext: this.getKnowledgeContext(userMessage),
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -432,7 +447,7 @@ export class Agent {
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         this.memory.appendMessage(this.currentSessionId, {
@@ -446,14 +461,14 @@ export class Agent {
           try {
             const result = await this.executeTool(tc);
             const isToolError = isErrorResult(result);
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: result,
               toolCallId: tc.id,
             });
           } catch (toolErr) {
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
               content: `Error: ${String(toolErr)}`,
@@ -478,7 +493,7 @@ export class Agent {
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       const reply = response.content;
@@ -498,7 +513,7 @@ export class Agent {
       return reply;
     } catch (error) {
       if (this.activeTasks.size === 0) this.setStatus('error');
-      this.auditCallback?.({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
+      this.emitAudit({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     }
@@ -510,8 +525,6 @@ export class Agent {
     senderId?: string,
     senderInfo?: { name: string; role: string },
   ): Promise<string> {
-    // 只有在没有活动任务时才设置状态为working
-    // 如果有任务在执行，状态应该已经是working
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
     }
@@ -534,6 +547,7 @@ export class Agent {
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: this.tasksFetcher?.(),
+      knowledgeContext: this.getKnowledgeContext(userMessage),
     });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
@@ -554,7 +568,7 @@ export class Agent {
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
+      this.emitAudit({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         this.memory.appendMessage(this.currentSessionId, {
@@ -569,7 +583,7 @@ export class Agent {
           try {
             const result = await this.executeTool(tc);
             const isToolError = isErrorResult(result);
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
             onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
@@ -577,7 +591,7 @@ export class Agent {
               toolCallId: tc.id,
             });
           } catch (toolErr) {
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
             onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
@@ -602,7 +616,7 @@ export class Agent {
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
+        this.emitAudit({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       const reply = response.content;
@@ -620,7 +634,7 @@ export class Agent {
       return reply;
     } catch (error) {
       if (this.activeTasks.size === 0) this.setStatus('error');
-      this.auditCallback?.({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
+      this.emitAudit({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
     }
@@ -691,9 +705,9 @@ export class Agent {
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     cancelToken?: { cancelled: boolean },
   ): Promise<void> {
-    // 更新状态（通过TaskExecutor管理）
     this.setStatus('working');
     this.activeTasks.add(taskId);
+    const taskStartMs = Date.now();
 
     let seq = 0;
     const emit = (type: string, content: string, metadata?: unknown) => {
@@ -733,6 +747,7 @@ export class Agent {
       currentQuery: taskPrompt,
       identity: this.identityContext,
       assignedTasks: this.tasksFetcher?.(),
+      knowledgeContext: this.getKnowledgeContext(taskPrompt),
     });
 
     const llmTools = this.buildToolDefinitions();
@@ -790,12 +805,12 @@ export class Agent {
             const isErr = isErrorResult(result);
             const durationMs = Date.now() - toolStart;
             emit('tool_end', tc.name, { success: !isErr, durationMs, result: result.slice(0, 500) });
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
             this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
           } catch (toolErr) {
             const durationMs = Date.now() - toolStart;
             emit('tool_end', tc.name, { success: false, durationMs, error: String(toolErr) });
-            this.auditCallback?.({ type: 'tool_call', action: tc.name, durationMs, success: false });
+            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
             this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
           }
         }
@@ -830,12 +845,14 @@ export class Agent {
       const finalReply = response.content;
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
       emit('status', 'completed');
+      this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
       log.info(`Task execution completed`, { taskId, agentId: this.id });
     } catch (error) {
       flushText();
       emit('error', String(error));
-      this.auditCallback?.({ type: 'error', action: 'execute_task', success: false, detail: String(error).slice(0, 200) });
+      this.metricsCollector.recordTaskCompletion(taskId, 'failed', Date.now() - taskStartMs);
+      this.emitAudit({ type: 'error', action: 'execute_task', success: false, detail: String(error).slice(0, 200) });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
       throw error; // 重新抛出错误，让TaskExecutor处理
@@ -885,8 +902,15 @@ export class Agent {
     return this.eventBus;
   }
 
-  getMemory(): MemoryStore {
+  getMemory(): IMemoryStore {
     return this.memory;
+  }
+
+  private getKnowledgeContext(query?: string): string | undefined {
+    if (this.memory instanceof EnhancedMemorySystem) {
+      return this.memory.getAgentContext(this.id, query) || undefined;
+    }
+    return undefined;
   }
 
   private registerSandboxedTools(sandbox: SandboxHandle): void {
@@ -1036,7 +1060,9 @@ export class Agent {
     try {
       await this.handleMessage(prompt);
       this.state.lastHeartbeat = new Date().toISOString();
+      this.metricsCollector.recordHeartbeat(true);
     } catch (error) {
+      this.metricsCollector.recordHeartbeat(false);
       log.error('Heartbeat task failed', { task: ctx.task.name, error: String(error) });
     }
   }
