@@ -1,5 +1,4 @@
-import type { RoleTemplate, HeartbeatTask, Policy, RoleCategory } from '@markus/shared';
-import { generateId } from '@markus/shared';
+import { generateId, type RoleTemplate, type HeartbeatTask, type Policy, type RoleCategory } from '@markus/shared';
 
 export interface OpenClawRoleConfig {
   memoryConfig?: {
@@ -53,8 +52,6 @@ export class OpenClawConfigParser {
         throw new Error('Invalid OpenClaw configuration: must contain at least one heading');
       }
       
-      const lines = markdown.split('\n');
-      
       // Extract basic information
       const name = this.extractNameFromOpenClaw(markdown);
       const description = this.extractDescription(markdown);
@@ -101,7 +98,7 @@ export class OpenClawConfigParser {
       };
 
       const openClawConfig: OpenClawRoleConfig = {
-        memoryConfig: memoryConfig as any,
+        memoryConfig: memoryConfig as OpenClawRoleConfig['memoryConfig'],
         heartbeatTasks: heartbeatTasks.map(task => ({
           name: task.name,
           description: task.description,
@@ -185,7 +182,7 @@ export class OpenClawConfigParser {
    */
   private inferCategory(md: string): RoleCategory {
     const lower = md.toLowerCase();
-    if (lower.includes('develop') || lower.includes('engineer') || lower.includes('code')) return 'engineering';
+    if (lower.includes('develop') || lower.includes('engineer') || lower.includes('code') || lower.includes('design')) return 'engineering';
     if (lower.includes('product') || lower.includes('pm')) return 'product';
     if (lower.includes('operation') || lower.includes('ops') || lower.includes('manager')) return 'operations';
     if (lower.includes('market') || lower.includes('sales')) return 'marketing';
@@ -202,14 +199,16 @@ export class OpenClawConfigParser {
   private parseCapabilities(md: string): string[] {
     const capabilities: string[] = [];
     
-    // First, check for dedicated capabilities/skills/tools sections
-    const sections = this.extractSection(md, ['## Capabilities', '## Skills', '## Tools']);
-    if (sections) {
-      const sectionCapabilities = sections
-        .split('\n')
-        .map(line => line.replace(/^[-*]\s*/, '').trim())
-        .filter(line => line && !line.startsWith('#'));
-      capabilities.push(...sectionCapabilities);
+    // Extract from each section type independently (not just the first match)
+    for (const header of ['## Capabilities', '## Skills', '## Tools']) {
+      const section = this.extractSection(md, [header]);
+      if (section) {
+        const items = section
+          .split('\n')
+          .map(line => line.replace(/^[-*]\s*/, '').trim())
+          .filter(line => line && !line.startsWith('#'));
+        capabilities.push(...items);
+      }
     }
     
     // Also check for skills listed in Identity section
@@ -219,11 +218,9 @@ export class OpenClawConfigParser {
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.toLowerCase().includes('skills:')) {
-          // Extract skills from line like "- Skills: Testing, Debugging, Documentation"
           const match = trimmed.match(/skills:\s*(.+)$/i);
           if (match) {
             const skillsStr = match[1].trim();
-            // Split by commas, semicolons, or "and"
             const skills = skillsStr.split(/[,;]|\s+and\s+/)
               .map(s => s.trim())
               .filter(s => s);

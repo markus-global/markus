@@ -1,8 +1,7 @@
-import type { AgentConfig, IdentityContext, HumanUser } from '@markus/shared';
-import { createLogger, agentId as genAgentId } from '@markus/shared';
+import { createLogger, agentId as genAgentId, type AgentConfig, type IdentityContext, type HumanUser } from '@markus/shared';
 import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
-import { LLMRouter } from './llm/router.js';
+import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
@@ -256,7 +255,7 @@ export class AgentManager {
             return { ...a, skills: ag.config.skills };
           } catch { return { ...a, skills: [] }; }
         }),
-        delegateMessage: async (targetId, message, from) => {
+        delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
@@ -338,7 +337,7 @@ export class AgentManager {
     const id = row.id;
     // Try loading role by: 1) roleId (template folder name for new agents),
     // 2) roleName (display name stored by older agents), 3) display-name→folder lookup
-    let role = (() => {
+    const role = (() => {
       // Try roleId first (it stores the folder name for agents hired after this fix)
       try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
       // Try roleName directly (might be a folder name for some agents)
