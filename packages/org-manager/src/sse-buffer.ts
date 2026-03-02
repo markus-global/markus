@@ -96,7 +96,7 @@ export class SSEBuffer {
       return;
     }
 
-    const eventStr = `data: ${JSON.stringify(message)}\\n\\n`;
+    const eventStr = `data: ${JSON.stringify(message)}\n\n`;
     this.buffer.push(eventStr);
     this.bufferSize += Buffer.byteLength(eventStr, 'utf8');
 
@@ -116,7 +116,7 @@ export class SSEBuffer {
     if (this.isClosed) return;
     
     try {
-      const eventStr = `data: ${JSON.stringify(message)}\\n\\n`;
+      const eventStr = `data: ${JSON.stringify(message)}\n\n`;
       this.response.write(eventStr);
       this.stats.messagesSent++;
       this.stats.bytesSent += Buffer.byteLength(eventStr, 'utf8');
@@ -179,6 +179,7 @@ export class SSEBuffer {
       this.buffer = [];
       this.bufferSize = 0;
 
+      // 重置定时器
       if (this.flushTimer) {
         clearTimeout(this.flushTimer);
         this.flushTimer = null;
@@ -244,10 +245,13 @@ export class SSEBuffer {
 
     // 发送结束事件
     try {
-      this.response.write(`data: ${JSON.stringify({ type: 'complete', timestamp: Date.now() })}\\n\\n`);
-      this.response.end();
+      if (!this.response.writableEnded && !this.response.destroyed) {
+        this.response.write(`data: ${JSON.stringify({ type: 'complete', timestamp: Date.now() })}\n\n`);
+        this.response.end();
+      }
     } catch (err) {
       // 忽略结束时的错误
+      log.debug('Error closing SSE connection', { error: String(err) });
     }
 
     log.debug('SSE connection closed', { stats: this.stats });

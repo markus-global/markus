@@ -69,6 +69,10 @@ export class LLMRouter {
     this.defaultProvider = defaultProvider ?? 'anthropic';
   }
 
+  get defaultProviderName(): string {
+    return this.defaultProvider;
+  }
+
   private getHealth(name: string): ProviderHealth {
     if (!this.health.has(name)) {
       this.health.set(name, { consecutiveFailures: 0, lastFailureAt: 0, degraded: false });

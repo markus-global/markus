@@ -120,7 +120,7 @@ export class AgentManager {
       teamId: request.teamId,
       agentRole: request.agentRole ?? 'worker',
       skills: request.skills ?? role.defaultSkills,
-      llmConfig: { primary: 'anthropic' },
+      llmConfig: { primary: this.llmRouter.defaultProviderName },
       computeConfig: { type: 'docker' },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? 30 * 60 * 1000,

@@ -84,6 +84,15 @@ export class SSEHandler {
         segments: this.msgSegments 
       });
 
+      // 立即刷新缓冲区，确保完成事件被发送
+      if (this.sseBuffer) {
+        // 强制刷新缓冲区
+        const buffer = this.sseBuffer as any;
+        if (buffer.flush) {
+          buffer.flush();
+        }
+      }
+
       // 持久化助手消息（如果提供了持久化函数）
       if (this.options.persistAssistantMessage && userMsgPersisted) {
         const msgMeta = this.msgSegments.length > 0 ? { segments: this.msgSegments } : undefined;
@@ -175,6 +184,18 @@ export class SSEHandler {
         });
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${ae.tool}`);
       }
+    } else if (event.type === 'message_end') {
+      // 处理消息结束事件
+      if (this.textBuf) {
+        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.textBuf = '';
+      }
+      // 更新总token数
+      if (event.usage?.outputTokens) {
+        this.totalTokens = Math.max(this.totalTokens, event.usage.outputTokens);
+        this.processedTokens = event.usage.outputTokens;
+      }
+      this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, '回复生成完成');
     }
   }
 
