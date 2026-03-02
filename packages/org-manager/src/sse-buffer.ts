@@ -229,12 +229,13 @@ export class SSEBuffer {
   close(): void {
     if (this.isClosed) return;
 
-    this.isClosed = true;
-    
-    // 刷新剩余缓冲区
+    // Flush remaining buffer BEFORE marking as closed,
+    // since flush() skips when isClosed is true
     if (this.buffer.length > 0) {
       this.flush();
     }
+
+    this.isClosed = true;
 
     // 停止定时器
     this.stopHeartbeat();

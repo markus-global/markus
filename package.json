@@ -26,6 +26,7 @@
   "devDependencies": {
     "@types/node-cron": "^3.0.11",
     "drizzle-kit": "^0.31.9",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "^4.0.18"
   }
 }
