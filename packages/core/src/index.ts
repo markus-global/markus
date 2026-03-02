@@ -19,6 +19,8 @@ export { EnhancedRoleLoader } from './enhanced-role-loader.js';
 export type { EnhancedRoleTemplate } from './enhanced-role-loader.js';
 export { ExternalAgentGateway, GatewayError } from './external-gateway.js';
 export type { GatewayConfig, ExternalAgentRegistration, GatewayToken, GatewayMessage, GatewayMessageResult } from './external-gateway.js';
+export { ReviewService, createDescriptionChecker, createChangedFilesChecker } from './review-service.js';
+export type { ReviewReport, ReviewCheckResult, ReviewChecker, ReviewContext } from './review-service.js';
 export { EventBus } from './events.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
 export type { LLMProviderInterface } from './llm/provider.js';

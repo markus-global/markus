@@ -1,7 +1,3 @@
-import { createLogger } from '@markus/shared';
-
-const log = createLogger('agent-metrics');
-
 export interface TokenUsage {
   input: number;
   output: number;

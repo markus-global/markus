@@ -2,13 +2,18 @@
   "name": "markus",
   "version": "0.3.0",
   "private": true,
+  "type": "module",
   "description": "AI Native Digital Employee Platform",
   "license": "Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
-    "lint": "pnpm -r lint",
-    "test": "pnpm -r test",
+    "lint": "eslint packages/*/src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -b --noEmit",
+    "quality": "npm run typecheck && npm run test",
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",
     "example:gui": "tsx examples/gui-automation-workflow.ts"
@@ -25,7 +30,10 @@
   },
   "devDependencies": {
     "@types/node-cron": "^3.0.11",
+    "@typescript-eslint/eslint-plugin": "^8.56.1",
+    "@typescript-eslint/parser": "^8.56.1",
     "drizzle-kit": "^0.31.9",
+    "eslint": "^10.0.2",
     "tsx": "^4.21.0",
     "vitest": "^4.0.18"
   }

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogger, generateId } from '@markus/shared';
-import { ExternalAgentGateway, GatewayError, type SkillRegistry } from '@markus/core';
+import { ExternalAgentGateway, GatewayError, ReviewService, type SkillRegistry } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -100,6 +100,7 @@ export class APIServer {
   private storage?: StorageBridge;
   private llmRouter?: import('@markus/core').LLMRouter;
   private gateway?: ExternalAgentGateway;
+  private reviewService?: ReviewService;
 
   constructor(
     private orgService: OrganizationService,
@@ -134,6 +135,10 @@ export class APIServer {
 
   setGateway(gateway: ExternalAgentGateway): void {
     this.gateway = gateway;
+  }
+
+  setReviewService(svc: ReviewService): void {
+    this.reviewService = svc;
   }
 
   setLLMRouter(router: import('@markus/core').LLMRouter): void {
@@ -765,6 +770,15 @@ export class APIServer {
       return;
     }
 
+    // Comprehensive operations dashboard
+    if (path === '/api/ops/dashboard' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? undefined;
+      const period = (url.searchParams.get('period') ?? '24h') as '1h' | '24h' | '7d';
+      const opsDashboard = this.buildOpsDashboard(orgId, period);
+      this.json(res, 200, opsDashboard);
+      return;
+    }
+
     // Task execution: run a task with its assigned agent (fire-and-forget)
     if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
@@ -838,6 +852,40 @@ export class APIServer {
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
+      return;
+    }
+
+    // ── Review Service ─────────────────────────────────────────────────────
+    if (path === '/api/reviews' && req.method === 'POST') {
+      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      const body = await this.readBody(req);
+      const report = await this.reviewService.runReview({
+        taskId: body['taskId'] as string | undefined,
+        agentId: body['agentId'] as string | undefined,
+        changedFiles: body['changedFiles'] as string[] | undefined,
+        description: body['description'] as string | undefined,
+      });
+      this.json(res, 200, report);
+      return;
+    }
+
+    if (path === '/api/reviews' && req.method === 'GET') {
+      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      const taskId = url.searchParams.get('taskId');
+      const limit = parseInt(url.searchParams.get('limit') ?? '20', 10);
+      const reports = taskId
+        ? this.reviewService.getReportsByTask(taskId)
+        : this.reviewService.getRecentReports(limit);
+      this.json(res, 200, { reports });
+      return;
+    }
+
+    if (path.match(/^\/api\/reviews\/[^/]+$/) && req.method === 'GET') {
+      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      const reviewId = path.split('/')[3]!;
+      const report = this.reviewService.getReport(reviewId);
+      if (!report) { this.json(res, 404, { error: 'Review not found' }); return; }
+      this.json(res, 200, report);
       return;
     }
 
@@ -1285,6 +1333,84 @@ export class APIServer {
     }
 
     this.json(res, 404, { error: 'Not found' });
+  }
+
+  private buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {
+    const taskDashboard = this.taskService.getDashboard(orgId);
+
+    // Agent efficiency ranking with health scores
+    const agentManager = this.orgService.getAgentManager();
+    const allAgents = agentManager.listAgents();
+    const agentRanking = allAgents.map(a => {
+      try {
+        const agent = agentManager.getAgent(a.id);
+        const metrics = agent.getMetrics(period);
+        return {
+          agentId: a.id,
+          agentName: a.name,
+          role: a.role,
+          agentRole: a.agentRole,
+          status: a.status,
+          healthScore: metrics.healthScore,
+          tokenUsage: metrics.tokenUsage,
+          taskMetrics: metrics.taskMetrics,
+          averageResponseTimeMs: metrics.averageResponseTimeMs,
+          errorRate: metrics.errorRate,
+          totalInteractions: metrics.totalInteractions,
+        };
+      } catch {
+        return {
+          agentId: a.id,
+          agentName: a.name,
+          role: a.role,
+          agentRole: a.agentRole,
+          status: a.status,
+          healthScore: 0,
+          tokenUsage: { input: 0, output: 0, cost: 0 },
+          taskMetrics: { completed: 0, failed: 0, cancelled: 0, averageCompletionTimeMs: 0 },
+          averageResponseTimeMs: 0,
+          errorRate: 0,
+          totalInteractions: 0,
+        };
+      }
+    }).sort((a, b) => b.healthScore - a.healthScore);
+
+    // System health summary
+    const healthScores = agentRanking.map(a => a.healthScore);
+    const avgHealth = healthScores.length > 0
+      ? Math.round(healthScores.reduce((s, h) => s + h, 0) / healthScores.length)
+      : 0;
+    const criticalAgents = agentRanking.filter(a => a.healthScore < 50);
+    const totalTokenCost = agentRanking.reduce((s, a) => s + a.tokenUsage.cost, 0);
+    const totalInteractions = agentRanking.reduce((s, a) => s + a.totalInteractions, 0);
+
+    const taskSuccessRate = taskDashboard.totalTasks > 0
+      ? Math.round((taskDashboard.statusCounts.completed / taskDashboard.totalTasks) * 100)
+      : 0;
+
+    const blockedTasks = taskDashboard.statusCounts.blocked ?? 0;
+
+    return {
+      period,
+      generatedAt: new Date().toISOString(),
+      systemHealth: {
+        overallScore: avgHealth,
+        activeAgents: allAgents.filter(a => a.status !== 'offline').length,
+        totalAgents: allAgents.length,
+        criticalAgents: criticalAgents.map(a => ({ id: a.agentId, name: a.agentName, score: a.healthScore })),
+        totalTokenCost: Math.round(totalTokenCost * 10000) / 10000,
+        totalInteractions,
+      },
+      taskKPI: {
+        totalTasks: taskDashboard.totalTasks,
+        statusCounts: taskDashboard.statusCounts,
+        successRate: taskSuccessRate,
+        blockedCount: blockedTasks,
+        averageCompletionTimeMs: taskDashboard.averageCompletionTimeMs,
+        recentActivity: taskDashboard.recentActivity.slice(0, 10),
+      },
+      agentEfficiency: agentRanking,
+    };
   }
 
   private json(res: ServerResponse, status: number, data: unknown): void {
