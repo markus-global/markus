@@ -43,11 +43,79 @@ export class TaskService {
     this.taskLogRepo = repo;
   }
 
+  private static readonly MAX_TASK_RETRIES = 3;
+  private static readonly RETRY_DELAYS_MS = [10_000, 30_000, 60_000];
+
+  /**
+   * Format previous execution logs into a context block so the agent can resume
+   * from where it left off instead of starting fresh.
+   */
+  private formatPreviousExecutionContext(logs: import('@markus/storage').TaskLogRow[]): string {
+    if (logs.length === 0) return '';
+
+    const lines: string[] = [];
+    lines.push('## Previous Execution History');
+    lines.push('This task was previously worked on and paused/interrupted. Below is a record of what was already done.');
+    lines.push('**Continue from where the work stopped — do NOT repeat steps that are already marked as completed.**');
+    lines.push('');
+
+    let runIndex = 0;
+    let inRun = false;
+
+    for (const entry of logs) {
+      if (entry.type === 'status' && entry.content === 'started') {
+        runIndex++;
+        lines.push(`### Run ${runIndex}`);
+        inRun = true;
+        continue;
+      }
+      if (entry.type === 'status') {
+        lines.push(`[${entry.content}]`);
+        lines.push('');
+        inRun = false;
+        continue;
+      }
+      if (!inRun) continue;
+
+      if (entry.type === 'text') {
+        // Truncate long reasoning to avoid bloating context too much
+        const text = entry.content.length > 600
+          ? entry.content.slice(0, 600) + '…'
+          : entry.content;
+        lines.push(text);
+        lines.push('');
+      } else if (entry.type === 'tool_start') {
+        const args = (entry.metadata as Record<string, unknown> | null)?.arguments;
+        const argStr = args ? ` (${JSON.stringify(args).slice(0, 120)})` : '';
+        lines.push(`→ Calling: ${entry.content}${argStr}`);
+      } else if (entry.type === 'tool_end') {
+        const meta = entry.metadata as Record<string, unknown> | null;
+        const ok = meta?.success !== false;
+        const result = meta?.result ? ` → ${String(meta.result).slice(0, 200)}` : '';
+        lines.push(`  ${ok ? '✓' : '✗'} ${entry.content}${result}`);
+      } else if (entry.type === 'error') {
+        lines.push(`[ERROR] ${entry.content}`);
+        lines.push('');
+      }
+    }
+
+    // If the last run didn't finish, add a note about where it stopped
+    if (inRun) {
+      lines.push('[interrupted — work was not completed]');
+      lines.push('');
+    }
+
+    lines.push('---');
+    lines.push('');
+    return lines.join('\n');
+  }
+
   /**
    * Start executing a task with its assigned agent — fire-and-forget.
    * Returns immediately; execution runs concurrently via async.
+   * @param _retryAttempt - internal retry counter, do not pass from outside
    */
-  async runTask(taskId: string): Promise<void> {
+  async runTask(taskId: string, _retryAttempt = 0): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
@@ -64,13 +132,28 @@ export class TaskService {
 
     this.updateTaskStatus(taskId, 'in_progress');
 
+    // Load previous execution history so the agent can resume from where it left off
+    let prevContext = '';
+    if (this.taskLogRepo) {
+      try {
+        const prevLogs = await this.taskLogRepo.getByTask(taskId);
+        prevContext = this.formatPreviousExecutionContext(prevLogs);
+      } catch (err) {
+        log.warn('Failed to load previous task logs for context', { taskId, error: String(err) });
+      }
+    }
+
+    const taskDescription = prevContext
+      ? `${prevContext}${task.title}\n\n${task.description}`
+      : `${task.title}\n\n${task.description}`;
+
     let seq = 0;
     const agentId = task.assignedAgentId;
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
 
     // Fire and forget — runs concurrently
-    void agent.executeTask(taskId, `${task.title}\n\n${task.description}`, async (entry) => {
+    void agent.executeTask(taskId, taskDescription, async (entry) => {
       // Broadcast real-time delta via WS (not persisted)
       if (!entry.persist) {
         ws?.broadcast({
@@ -137,7 +220,30 @@ export class TaskService {
           });
         }
       } else if (entry.type === 'error') {
-        this.updateTaskStatus(taskId, 'failed');
+        // Retry on transient failures (network / LLM timeout); give up after MAX_TASK_RETRIES
+        const nextAttempt = _retryAttempt + 1;
+        if (!cancelToken.cancelled && nextAttempt <= TaskService.MAX_TASK_RETRIES) {
+          const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
+          const retryMsg = `Attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES} failed. Retrying in ${delayMs / 1000}s…`;
+          log.warn(retryMsg, { taskId, error: entry.content });
+          // Append a visible retry notice to the execution log
+          const noticeEntry = { taskId, agentId, seq: seq++, type: 'error' as import('@markus/storage').TaskLogType, content: retryMsg };
+          taskLogRepo?.append(noticeEntry).catch(() => {});
+          ws?.broadcast({
+            type: 'task:log',
+            payload: { taskId, agentId, logType: 'error', content: retryMsg, createdAt: new Date().toISOString() },
+            timestamp: new Date().toISOString(),
+          });
+          setTimeout(() => {
+            const current = this.tasks.get(taskId);
+            if (!current || current.status !== 'in_progress') return;
+            this.runTask(taskId, nextAttempt).catch(e =>
+              log.error('Retry invocation failed', { taskId, error: String(e) })
+            );
+          }, delayMs);
+        } else if (!cancelToken.cancelled) {
+          this.updateTaskStatus(taskId, 'failed');
+        }
         const agentState = agent.getState();
         ws?.broadcast({
           type: 'agent:update',
@@ -146,9 +252,23 @@ export class TaskService {
         });
       }
     }, cancelToken).catch(err => {
+      // Promise-level rejection (rare — usually executeTask catches internally)
       log.error('Task execution promise rejected', { taskId, error: String(err) });
       if (!cancelToken.cancelled) {
-        this.updateTaskStatus(taskId, 'failed');
+        const nextAttempt = _retryAttempt + 1;
+        if (nextAttempt <= TaskService.MAX_TASK_RETRIES) {
+          const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
+          log.warn(`Retrying task in ${delayMs / 1000}s (attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES})`, { taskId });
+          setTimeout(() => {
+            const current = this.tasks.get(taskId);
+            if (!current || current.status !== 'in_progress') return;
+            this.runTask(taskId, nextAttempt).catch(e =>
+              log.error('Retry invocation failed', { taskId, error: String(e) })
+            );
+          }, delayMs);
+        } else {
+          this.updateTaskStatus(taskId, 'failed');
+        }
       }
     }).finally(() => {
       // Clean up cancel token after execution ends
@@ -313,6 +433,21 @@ export class TaskService {
     // Persist to DB
     if (this.taskRepo) {
       this.taskRepo.updateStatus(id, status).catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
+    }
+
+    // Auto-start execution when a task transitions to in_progress but has no active runner.
+    // This covers the case where an agent's heartbeat calls task_update(in_progress) —
+    // the token is not yet set, so we know runTask() hasn't been invoked for this transition.
+    if (status === 'in_progress' && prevStatus !== 'in_progress' && task.assignedAgentId && this.agentManager) {
+      const activeToken = this.taskCancelTokens.get(id);
+      if (!activeToken || activeToken.cancelled) {
+        log.info(`Auto-starting task execution (triggered by status change to in_progress)`, { taskId: id });
+        setImmediate(() => {
+          this.runTask(id).catch(err =>
+            log.warn('Auto-start runTask failed', { taskId: id, error: String(err) })
+          );
+        });
+      }
     }
 
     this.ws?.broadcastTaskUpdate(id, status, { title: task.title });

@@ -369,16 +369,26 @@ class WSClient {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<WSEventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Set to true by disconnect() to suppress auto-reconnect from the onclose handler */
+  private intentionalClose = false;
 
   connect(): void {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+    // Guard against duplicate connections in CONNECTING or OPEN state
+    if (this.ws && (
+      this.ws.readyState === WebSocket.CONNECTING ||
+      this.ws.readyState === WebSocket.OPEN
+    )) return;
 
+    this.intentionalClose = false;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.hostname}:3001/ws`;
 
-    this.ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl);
+    this.ws = ws;
 
-    this.ws.onmessage = (e) => {
+    ws.onmessage = (e) => {
+      // Ignore events from a stale connection that was superseded
+      if (this.ws !== ws) return;
       try {
         const event = JSON.parse(e.data as string) as WSEvent;
         const typeHandlers = this.handlers.get(event.type);
@@ -392,19 +402,24 @@ class WSClient {
       } catch { /* ignore parse errors */ }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.intentionalClose) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 3000);
     };
 
-    this.ws.onerror = () => {
-      this.ws?.close();
+    ws.onerror = () => {
+      ws.close();
     };
   }
 
   disconnect(): void {
+    this.intentionalClose = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.ws?.close();
-    this.ws = null;
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
   }
 
   on(type: string, handler: WSEventHandler): () => void {

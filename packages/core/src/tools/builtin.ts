@@ -3,7 +3,6 @@ import { createShellTool } from './shell.js';
 import { createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 import { WebFetchTool } from './web-fetch.js';
 import { WebSearchTool } from './web-search.js';
-import { createTodoWriteTool, createTodoReadTool } from './todo.js';
 import type { SecurityGuard } from '../security.js';
 
 export interface BuiltinToolsOptions {
@@ -12,7 +11,6 @@ export interface BuiltinToolsOptions {
 }
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
-  const agentId = opts?.agentId ?? 'default';
   return [
     createShellTool(opts?.security),
     createFileReadTool(opts?.security),
@@ -20,7 +18,5 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
     createFileEditTool(opts?.security),
     WebFetchTool,
     WebSearchTool,
-    createTodoWriteTool(agentId),
-    createTodoReadTool(agentId),
   ];
 }

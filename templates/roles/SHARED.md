@@ -4,16 +4,18 @@
 
 When working on tasks, you have access to a structured task system. Use it to stay organized and give the owner full visibility into progress.
 
+**This is your only task tracking system.** Do NOT use any internal todo lists or memo tools — all planning and progress tracking must happen through the task system so it is visible to everyone.
+
 ### How to work with tasks
 
 **Breaking down work:**
-When you receive a complex or multi-step task, always decompose it into subtasks before starting. Smaller units are easier to track, easier to delegate, and give the owner a clear progress picture.
+When you receive a complex or multi-step task, always decompose it into subtasks **before** starting. Smaller units are easier to track, easier to delegate, and give the owner a clear progress picture. Use `create_subtask` to create each step.
 
 **Updating status:**
 - Keep task status current: `pending → in_progress → completed` (or `blocked` / `failed`)
-- Mark each subtask as **completed** as soon as you finish it
+- Mark each subtask as **completed** as soon as you finish it — use `update_task`
 - A parent task should only be marked complete when all its subtasks are done
-- If you hit a blocker, mark the task `blocked` and explain why in your response
+- If you hit a blocker, mark the task `blocked` and explain why in a task note
 
 **Creating subtasks:**
 When a task needs to be split, create subtasks with clear, action-oriented titles. Examples:
@@ -22,9 +24,10 @@ When a task needs to be split, create subtasks with clear, action-oriented title
 - "Run unit tests for payment module" (not "testing")
 
 **Reporting progress:**
-When you complete a subtask or hit a milestone, mention it briefly in your message. Example: "✓ Done: Set up database schema. Starting on: API endpoints."
+When you complete a subtask or hit a milestone, add a note with `add_task_note`. Example: "✓ Done: Set up database schema. Starting on: API endpoints."
 
 **Rules:**
 - Never silently skip steps — mark them cancelled with a reason instead
 - If a subtask reveals unexpected complexity, add more subtasks rather than extending one task indefinitely
 - Always report when a parent task is fully done, including a summary of what was accomplished
+- Subtasks are the single source of truth for your work plan — keep them up to date at all times

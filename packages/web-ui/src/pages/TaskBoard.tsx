@@ -94,11 +94,29 @@ function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
   return null;
 }
 
-function TaskExecutionLogs({ taskId }: { taskId: string }) {
+/** Remove tool_start entries that have a matching tool_end later in the list.
+ *  This prevents showing "calling…" for tools that have already completed. */
+function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
+  const matchedStartIndices = new Set<number>();
+  for (let i = 0; i < logs.length; i++) {
+    if (logs[i]!.type === 'tool_end') {
+      for (let j = i - 1; j >= 0; j--) {
+        if (logs[j]!.type === 'tool_start' && !matchedStartIndices.has(j)) {
+          matchedStartIndices.add(j);
+          break;
+        }
+      }
+    }
+  }
+  return logs.filter((_, i) => !matchedStartIndices.has(i));
+}
+
+function TaskExecutionLogs({ taskId, isVisible }: { taskId: string; isVisible: boolean }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -123,7 +141,6 @@ function TaskExecutionLogs({ taskId }: { taskId: string }) {
         createdAt: p.createdAt as string,
       };
       setLogs(prev => {
-        // Dedup by DB id when available, else fall back to seq+type
         if (entry.id && prev.some(e => e.id === entry.id)) return prev;
         if (!entry.id && prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
         return [...prev, entry];
@@ -140,9 +157,12 @@ function TaskExecutionLogs({ taskId }: { taskId: string }) {
     return () => { unsubLog(); unsubDelta(); };
   }, [taskId]);
 
+  // Scroll to bottom when logs update (live) or when tab becomes visible
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs, streamingText]);
+    if (isVisible) {
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, streamingText, isVisible]);
 
   if (loading) {
     return <div className="flex-1 flex items-center justify-center text-xs text-gray-600">Loading logs…</div>;
@@ -159,9 +179,11 @@ function TaskExecutionLogs({ taskId }: { taskId: string }) {
     );
   }
 
+  const visibleLogs = filterCompletedToolStarts(logs);
+
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
-      {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
+    <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
+      {visibleLogs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
       {streamingText && (
         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
           {streamingText}
@@ -373,7 +395,7 @@ function TaskDetailModal({
               <span className="font-medium">Failed to start:</span> {runError}
             </div>
           )}
-          <TaskExecutionLogs taskId={task.id} />
+          <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} />
         </div>
 
         {activeTab === 'details' && (

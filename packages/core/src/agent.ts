@@ -476,12 +476,15 @@ export class Agent {
     const session = this.memory.createSession(this.id);
     const sessionId = session.id;
 
+    const isResume = description.startsWith('## Previous Execution History');
     const taskPrompt = [
       `[TASK EXECUTION — Task ID: ${taskId}]`,
       '',
       description,
       '',
-      'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
+      isResume
+        ? 'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).'
+        : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
     ].join('\n');
 
     this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
@@ -785,13 +788,13 @@ export class Agent {
       ctx.task.description,
       '',
       '## Heartbeat Retrospective',
-      'As part of this heartbeat, perform the following review:',
-      '1. **Task Review**: Call `task_list` to see all your assigned tasks. For each active task, assess whether progress is stale or blocked.',
-      '2. **Status Update**: If any task status is outdated, call `task_update` to correct it.',
-      '3. **Orphaned Work**: Check if there is any work in progress that has no corresponding task. If so, call `task_create` to register it.',
-      '4. **Work Action**: If no actionable items are found, report "No action needed." Otherwise, advance the highest-priority active task by at most 2-3 tool calls.',
+      'As part of this heartbeat, perform the following review (max 5 tool calls total):',
+      '1. **Task Review**: Call `task_list` to see all your assigned tasks.',
+      '2. **Start Pending Work**: For any task that is `assigned` (not yet started) and should be worked on, call `task_update` with status `in_progress`. The system will automatically launch a dedicated execution session for that task — you do NOT need to do the work yourself in this heartbeat.',
+      '3. **Status Correction**: If any in_progress task has been completed or blocked, call `task_update` to reflect the correct status.',
+      '4. **Orphaned Work**: If there is work you are doing with no corresponding task, call `task_create` to register it.',
       '',
-      'Do NOT run more than 5 total tool calls in this heartbeat session.',
+      'IMPORTANT: Do NOT try to directly execute task work in this heartbeat. Your role here is only to review task statuses and trigger execution via `task_update(in_progress)`. Actual work happens in a separate dedicated session.',
     ].join('\n');
 
     try {

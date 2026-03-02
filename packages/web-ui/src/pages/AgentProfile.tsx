@@ -85,6 +85,22 @@ function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
   return null;
 }
 
+/** Remove tool_start entries that have a matching tool_end later in the list. */
+function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
+  const matchedStartIndices = new Set<number>();
+  for (let i = 0; i < logs.length; i++) {
+    if (logs[i]!.type === 'tool_end') {
+      for (let j = i - 1; j >= 0; j--) {
+        if (logs[j]!.type === 'tool_start' && !matchedStartIndices.has(j)) {
+          matchedStartIndices.add(j);
+          break;
+        }
+      }
+    }
+  }
+  return logs.filter((_, i) => !matchedStartIndices.has(i));
+}
+
 // ─── Task Execution Log ──────────────────────────────────────────────────────
 
 function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
@@ -117,7 +133,6 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
         createdAt: p.createdAt as string,
       };
       setLogs(prev => {
-        // Dedup by DB id when available, else fall back to seq+type
         if (entry.id && prev.some(e => e.id === entry.id)) return prev;
         if (!entry.id && prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
         return [...prev, entry];
@@ -132,6 +147,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     return () => { unsubLog(); unsubDelta(); };
   }, [taskId, isLive]);
 
+  // Scroll to bottom on new logs or on initial mount (after load)
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, streamingText]);
@@ -139,9 +155,11 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading…</div>;
   if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
 
+  const visibleLogs = filterCompletedToolStarts(logs);
+
   return (
     <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
-      {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
+      {visibleLogs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
       {streamingText && (
         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
           {streamingText}
