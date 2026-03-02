@@ -1,14 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createLogger, generateId } from '@markus/shared';
-import { ExternalAgentGateway, GatewayError, ReviewService, type SkillRegistry, type TemplateRegistry } from '@markus/core';
+import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { GatewayError, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry } from '@markus/core';
+import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
-import type { AuditService } from './audit-service.js';
+import type { AuditService, AuditEventType } from './audit-service.js';
 import type { StorageBridge } from './storage-bridge.js';
 import { WSBroadcaster } from './ws-server.js';
-import { SSEBuffer } from './sse-buffer.js';
 import { SSEHandler } from './sse-handler.js';
 
 const log = createLogger('api-server');
@@ -98,7 +98,7 @@ export class APIServer {
   private billingService?: BillingService;
   private auditService?: AuditService;
   private storage?: StorageBridge;
-  private llmRouter?: import('@markus/core').LLMRouter;
+  private llmRouter?: LLMRouter;
   private gateway?: ExternalAgentGateway;
   private reviewService?: ReviewService;
   private templateRegistry?: TemplateRegistry;
@@ -146,7 +146,7 @@ export class APIServer {
     this.templateRegistry = registry;
   }
 
-  setLLMRouter(router: import('@markus/core').LLMRouter): void {
+  setLLMRouter(router: LLMRouter): void {
     this.llmRouter = router;
   }
 
@@ -422,7 +422,7 @@ export class APIServer {
       const orgId = (body['orgId'] as string) ?? 'default';
 
       // Persist user message
-      let userMsg: import('@markus/storage').ChannelMsg | undefined;
+      let userMsg: ChannelMsg | undefined;
       if (this.storage) {
         userMsg = await this.storage.channelMessageRepo.append({
           orgId, channel, senderId, senderType: 'human', senderName, text, mentions,
@@ -443,7 +443,7 @@ export class APIServer {
       const reply = await agent.handleMessage(text, senderId, senderInfo);
 
       // Persist agent reply
-      let agentMsg: import('@markus/storage').ChannelMsg | undefined;
+      let agentMsg: ChannelMsg | undefined;
       if (this.storage) {
         agentMsg = await this.storage.channelMessageRepo.append({
           orgId, channel, senderId: routedAgentId, senderType: 'agent',
@@ -473,8 +473,7 @@ export class APIServer {
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
         agentRole: body['agentRole'] as 'manager' | 'worker' | undefined,
-        // 确保新创建的Agent继承默认工具集
-        tools: body['tools'] as any[] | undefined,
+        tools: body['tools'] as AgentToolHandler[] | undefined,
       });
       this.json(res, 201, { agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status } });
       return;
@@ -666,7 +665,7 @@ export class APIServer {
     // Tasks
     if (path === '/api/tasks' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? undefined;
-      const status = url.searchParams.get('status') as import('@markus/shared').TaskStatus | undefined;
+      const status = url.searchParams.get('status') as TaskStatus | undefined;
       const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
       const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId });
       this.json(res, 200, { tasks });
@@ -687,7 +686,7 @@ export class APIServer {
         orgId: (body['orgId'] as string) ?? 'default',
         title: body['title'] as string,
         description: body['description'] as string,
-        priority: body['priority'] as import('@markus/shared').TaskPriority | undefined,
+        priority: body['priority'] as TaskPriority | undefined,
         assignedAgentId: body['assignedAgentId'] as string | undefined,
         requiredSkills: body['requiredSkills'] as string[] | undefined,
         autoAssign: body['autoAssign'] as boolean | undefined,
@@ -701,7 +700,7 @@ export class APIServer {
       const body = await this.readBody(req);
 
       if (body['status']) {
-        const task = this.taskService.updateTaskStatus(taskId, body['status'] as import('@markus/shared').TaskStatus);
+        const task = this.taskService.updateTaskStatus(taskId, body['status'] as TaskStatus);
         this.json(res, 200, { task });
         return;
       }
@@ -720,7 +719,7 @@ export class APIServer {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
           description: body['description'] as string | undefined,
-          priority: body['priority'] as import('@markus/shared').TaskPriority | undefined,
+          priority: body['priority'] as TaskPriority | undefined,
         });
         this.json(res, 200, { task });
         return;
@@ -754,7 +753,7 @@ export class APIServer {
         orgId: parent.orgId,
         title: body['title'] as string,
         description: (body['description'] as string) ?? '',
-        priority: (body['priority'] as import('@markus/shared').TaskPriority) ?? 'medium',
+        priority: (body['priority'] as TaskPriority) ?? 'medium',
         parentTaskId: parentId,
       });
       this.json(res, 201, { subtask });
@@ -1054,11 +1053,11 @@ export class APIServer {
           userText,
           senderId,
           senderInfo,
-          onTextDelta: (text) => {
-            // 智能频道不需要WebSocket广播，但可以在这里添加其他处理
+          onTextDelta: (_text) => {
+            // Smart channels don't need WebSocket broadcast
           },
-          onToolEvent: (event) => {
-            // 处理工具事件
+          onToolEvent: (_event) => {
+            // Tool event handling hook
           },
           onComplete: async (reply, segments, tokensUsed) => {
             // 持久化助手消息
@@ -1320,7 +1319,7 @@ export class APIServer {
       const entries = this.auditService.query({
         orgId: url.searchParams.get('orgId') ?? 'default',
         agentId: url.searchParams.get('agentId') ?? undefined,
-        type: (url.searchParams.get('type') as import('./audit-service.js').AuditEventType) ?? undefined,
+        type: (url.searchParams.get('type') as AuditEventType) ?? undefined,
         limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 50,
         since: url.searchParams.get('since') ?? undefined,
       });

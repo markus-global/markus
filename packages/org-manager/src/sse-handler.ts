@@ -1,22 +1,24 @@
 import type { ServerResponse } from 'node:http';
 import type { Agent } from '@markus/core';
-import { createLogger } from '@markus/shared';
+import { createLogger, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 
 const log = createLogger('sse-handler');
+
+type AgentStreamEvent = LLMStreamEvent & { agentEvent?: string };
 
 export interface SSEMessageHandlerOptions {
   agentId: string;
   agent: Agent;
   userText: string;
   senderId?: string;
-  senderInfo?: any;
-  wsBroadcaster?: any;
-  persistUserMessage?: (agentId: string, text: string, senderId?: string) => Promise<any>;
-  persistAssistantMessage?: (userMsg: any, agentId: string, reply: string, tokensUsed: number, meta?: any) => Promise<void>;
+  senderInfo?: { name: string; role: string };
+  wsBroadcaster?: { broadcastChat: (agentId: string, message: string, sender: 'agent' | 'user') => void };
+  persistUserMessage?: (agentId: string, text: string, senderId?: string) => Promise<string | null>;
+  persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
-  onToolEvent?: (event: any) => void;
-  onComplete?: (reply: string, segments: any[], tokensUsed: number) => Promise<void>;
+  onToolEvent?: (event: AgentStreamEvent) => void;
+  onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;
 }
 
 /**
@@ -86,8 +88,7 @@ export class SSEHandler {
 
       // 立即刷新缓冲区，确保完成事件被发送
       if (this.sseBuffer) {
-        // 强制刷新缓冲区
-        const buffer = this.sseBuffer as any;
+        const buffer = this.sseBuffer as unknown as { flush?: () => void };
         if (buffer.flush) {
           buffer.flush();
         }
@@ -134,11 +135,11 @@ export class SSEHandler {
   /**
    * 处理流式事件
    */
-  private handleStreamEvent(event: any): void {
+  private handleStreamEvent(event: AgentStreamEvent): void {
     if (!this.sseBuffer) return;
 
     // 发送事件到SSE缓冲器
-    this.sseBuffer.send(event);
+    this.sseBuffer.send({ ...event });
     
     if (event.type === 'text_delta' && event.text) {
       this.textBuf += event.text;
@@ -163,26 +164,23 @@ export class SSEHandler {
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, '正在生成回复...');
       }
     } else if (event.type === 'agent_tool') {
-      const ae = event as {type: string; phase?: string; tool?: string; success?: boolean};
-      
-      // 调用自定义工具事件处理函数
       if (this.options.onToolEvent) {
         this.options.onToolEvent(event);
       }
       
-      if (ae.phase === 'start') {
+      if (event.phase === 'start') {
         if (this.textBuf) { 
           this.msgSegments.push({ type: 'text', content: this.textBuf }); 
           this.textBuf = ''; 
         }
-        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `正在执行工具: ${ae.tool}`);
-      } else if (ae.phase === 'end' && ae.tool) {
+        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `正在执行工具: ${event.tool}`);
+      } else if (event.phase === 'end' && event.tool) {
         this.msgSegments.push({ 
           type: 'tool', 
-          tool: ae.tool, 
-          status: ae.success === false ? 'error' : 'done' 
+          tool: event.tool, 
+          status: event.success === false ? 'error' : 'done' 
         });
-        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${ae.tool}`);
+        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
       }
     } else if (event.type === 'message_end') {
       // 处理消息结束事件
@@ -202,10 +200,10 @@ export class SSEHandler {
   /**
    * 处理错误
    */
-  private handleError(error: any, res: ServerResponse): void {
+  private handleError(error: unknown, res: ServerResponse): void {
     try {
       if (this.sseBuffer) {
-        this.sseBuffer.sendError(error, false);
+        this.sseBuffer.sendError(error instanceof Error ? error : String(error), false);
         setTimeout(() => {
           if (this.sseBuffer) {
             this.sseBuffer.close();
