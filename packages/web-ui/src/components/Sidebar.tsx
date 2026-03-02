@@ -15,6 +15,7 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section?: strin
   { id: 'team', label: 'Team', icon: '◎', section: 'members' },
   { id: 'agents', label: 'Agents', icon: '⊕', section: 'members' },
   { id: 'skills', label: 'Skill Store', icon: '◆', section: 'tools' },
+  { id: 'templates', label: 'Templates', icon: '⧉', section: 'tools' },
   { id: 'settings', label: 'Settings', icon: '⚙', section: 'tools' },
 ];
 

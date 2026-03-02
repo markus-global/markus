@@ -3,8 +3,46 @@ import type { AgentTemplate, TemplateSearchQuery, TemplateSearchResult, Template
 
 const log = createLogger('template-registry');
 
+/**
+ * Persistence adapter for storing templates in a database.
+ * Implement this interface to connect the registry to your storage layer.
+ */
+export interface TemplatePersistenceAdapter {
+  loadPublished(): Promise<AgentTemplate[]>;
+  save(template: AgentTemplate): Promise<void>;
+  remove(id: string): Promise<void>;
+}
+
 export class TemplateRegistry {
   private templates = new Map<string, AgentTemplate>();
+  private persistence?: TemplatePersistenceAdapter;
+
+  setPersistenceAdapter(adapter: TemplatePersistenceAdapter): void {
+    this.persistence = adapter;
+  }
+
+  /**
+   * Load published community/custom templates from DB into memory.
+   * Call this on startup after setting the persistence adapter.
+   */
+  async syncFromDatabase(): Promise<number> {
+    if (!this.persistence) return 0;
+    try {
+      const dbTemplates = await this.persistence.loadPublished();
+      let loaded = 0;
+      for (const tpl of dbTemplates) {
+        if (!this.templates.has(tpl.id)) {
+          this.templates.set(tpl.id, tpl);
+          loaded++;
+        }
+      }
+      log.info(`Synced ${loaded} templates from database`, { total: this.templates.size });
+      return loaded;
+    } catch (err) {
+      log.warn('Failed to sync templates from database', { error: String(err) });
+      return 0;
+    }
+  }
 
   register(template: AgentTemplate): void {
     this.templates.set(template.id, template);
@@ -14,8 +52,25 @@ export class TemplateRegistry {
     });
   }
 
+  /**
+   * Register and persist a template to the database.
+   */
+  async registerAndPersist(template: AgentTemplate): Promise<void> {
+    this.register(template);
+    if (this.persistence) {
+      await this.persistence.save(template);
+    }
+  }
+
   unregister(id: string): void {
     this.templates.delete(id);
+  }
+
+  async unregisterAndRemove(id: string): Promise<void> {
+    this.unregister(id);
+    if (this.persistence) {
+      await this.persistence.remove(id);
+    }
   }
 
   get(id: string): AgentTemplate | undefined {

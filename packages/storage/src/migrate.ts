@@ -50,6 +50,80 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
       created_at timestamp NOT NULL DEFAULT now()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs (task_id, seq)`,
+
+    // Marketplace enums
+    `DO $$ BEGIN CREATE TYPE template_source AS ENUM('official','community','custom'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+    `DO $$ BEGIN CREATE TYPE marketplace_status AS ENUM('draft','pending_review','published','rejected','archived'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+
+    // marketplace_templates
+    `CREATE TABLE IF NOT EXISTS marketplace_templates (
+      id varchar(64) PRIMARY KEY,
+      name varchar(255) NOT NULL,
+      description text NOT NULL,
+      source template_source NOT NULL DEFAULT 'community',
+      status marketplace_status NOT NULL DEFAULT 'draft',
+      version varchar(32) NOT NULL DEFAULT '1.0.0',
+      author_id varchar(64),
+      author_name varchar(255) NOT NULL,
+      role_id varchar(64) NOT NULL,
+      agent_role varchar(16) NOT NULL DEFAULT 'worker',
+      skills jsonb NOT NULL DEFAULT '[]',
+      llm_provider varchar(64),
+      tags jsonb NOT NULL DEFAULT '[]',
+      category varchar(64) NOT NULL,
+      icon varchar(16),
+      heartbeat_interval_ms integer,
+      starter_tasks jsonb DEFAULT '[]',
+      config jsonb DEFAULT '{}',
+      download_count integer NOT NULL DEFAULT 0,
+      avg_rating integer NOT NULL DEFAULT 0,
+      rating_count integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now(),
+      published_at timestamp
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mkt_templates_source ON marketplace_templates(source, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_mkt_templates_category ON marketplace_templates(category)`,
+
+    // marketplace_skills
+    `CREATE TABLE IF NOT EXISTS marketplace_skills (
+      id varchar(64) PRIMARY KEY,
+      name varchar(255) NOT NULL,
+      description text NOT NULL,
+      source template_source NOT NULL DEFAULT 'community',
+      status marketplace_status NOT NULL DEFAULT 'draft',
+      version varchar(32) NOT NULL DEFAULT '1.0.0',
+      author_id varchar(64),
+      author_name varchar(255) NOT NULL,
+      category varchar(64) NOT NULL,
+      tags jsonb NOT NULL DEFAULT '[]',
+      tools jsonb NOT NULL DEFAULT '[]',
+      readme text,
+      required_permissions jsonb DEFAULT '[]',
+      required_env jsonb DEFAULT '[]',
+      config jsonb DEFAULT '{}',
+      download_count integer NOT NULL DEFAULT 0,
+      avg_rating integer NOT NULL DEFAULT 0,
+      rating_count integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now(),
+      published_at timestamp
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mkt_skills_source ON marketplace_skills(source, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_mkt_skills_category ON marketplace_skills(category)`,
+
+    // marketplace_ratings
+    `CREATE TABLE IF NOT EXISTS marketplace_ratings (
+      id varchar(64) PRIMARY KEY,
+      target_type varchar(16) NOT NULL,
+      target_id varchar(64) NOT NULL,
+      user_id varchar(64) NOT NULL,
+      rating integer NOT NULL,
+      review text,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_mkt_ratings_target ON marketplace_ratings(target_type, target_id)`,
   ];
   for (const stmt of statements) {
     try {

@@ -178,6 +178,86 @@ export const agentKnowledge = pgTable('agent_knowledge', {
   index('idx_agent_knowledge_org').on(t.orgId),
 ]);
 
+// ─── Marketplace ─────────────────────────────────────────────────────────────
+
+export const templateSourceEnum = pgEnum('template_source', ['official', 'community', 'custom']);
+export const marketplaceStatusEnum = pgEnum('marketplace_status', ['draft', 'pending_review', 'published', 'rejected', 'archived']);
+
+/** Community-contributed and official agent templates stored in DB */
+export const marketplaceTemplates = pgTable('marketplace_templates', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description').notNull(),
+  source: templateSourceEnum('source').notNull().default('community'),
+  status: marketplaceStatusEnum('status').notNull().default('draft'),
+  version: varchar('version', { length: 32 }).notNull().default('1.0.0'),
+  authorId: varchar('author_id', { length: 64 }),
+  authorName: varchar('author_name', { length: 255 }).notNull(),
+  roleId: varchar('role_id', { length: 64 }).notNull(),
+  agentRole: varchar('agent_role', { length: 16 }).notNull().default('worker'),
+  skills: jsonb('skills').notNull().default([]),
+  llmProvider: varchar('llm_provider', { length: 64 }),
+  tags: jsonb('tags').notNull().default([]),
+  category: varchar('category', { length: 64 }).notNull(),
+  icon: varchar('icon', { length: 16 }),
+  heartbeatIntervalMs: integer('heartbeat_interval_ms'),
+  starterTasks: jsonb('starter_tasks').default([]),
+  config: jsonb('config').default({}),
+  downloadCount: integer('download_count').notNull().default(0),
+  avgRating: integer('avg_rating').notNull().default(0),
+  ratingCount: integer('rating_count').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  publishedAt: timestamp('published_at'),
+}, (t) => [
+  index('idx_mkt_templates_source').on(t.source, t.status),
+  index('idx_mkt_templates_category').on(t.category),
+  index('idx_mkt_templates_author').on(t.authorId),
+]);
+
+/** Community-contributed and official skills stored in DB */
+export const marketplaceSkills = pgTable('marketplace_skills', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description').notNull(),
+  source: templateSourceEnum('source').notNull().default('community'),
+  status: marketplaceStatusEnum('status').notNull().default('draft'),
+  version: varchar('version', { length: 32 }).notNull().default('1.0.0'),
+  authorId: varchar('author_id', { length: 64 }),
+  authorName: varchar('author_name', { length: 255 }).notNull(),
+  category: varchar('category', { length: 64 }).notNull(),
+  tags: jsonb('tags').notNull().default([]),
+  tools: jsonb('tools').notNull().default([]),
+  readme: text('readme'),
+  requiredPermissions: jsonb('required_permissions').default([]),
+  requiredEnv: jsonb('required_env').default([]),
+  config: jsonb('config').default({}),
+  downloadCount: integer('download_count').notNull().default(0),
+  avgRating: integer('avg_rating').notNull().default(0),
+  ratingCount: integer('rating_count').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  publishedAt: timestamp('published_at'),
+}, (t) => [
+  index('idx_mkt_skills_source').on(t.source, t.status),
+  index('idx_mkt_skills_category').on(t.category),
+]);
+
+/** User ratings and reviews for templates and skills */
+export const marketplaceRatings = pgTable('marketplace_ratings', {
+  id: varchar('id', { length: 64 }).primaryKey(),
+  targetType: varchar('target_type', { length: 16 }).notNull(), // 'template' | 'skill'
+  targetId: varchar('target_id', { length: 64 }).notNull(),
+  userId: varchar('user_id', { length: 64 }).notNull(),
+  rating: integer('rating').notNull(), // 1-5
+  review: text('review'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (t) => [
+  index('idx_mkt_ratings_target').on(t.targetType, t.targetId),
+  index('idx_mkt_ratings_user').on(t.userId),
+]);
+
 /** Users for authentication */
 export const users = pgTable('users', {
   id: varchar('id', { length: 64 }).primaryKey(),

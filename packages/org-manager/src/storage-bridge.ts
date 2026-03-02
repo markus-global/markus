@@ -1,4 +1,9 @@
 import { createLogger } from '@markus/shared';
+import type {
+  OrgRepo, TaskRepo, TaskLogRepo, AgentRepo, TeamRepo,
+  MessageRepo, MemoryRepo, ChatSessionRepo, ChannelMessageRepo, UserRepo,
+  MarketplaceTemplateRepo, MarketplaceSkillRepo, MarketplaceRatingRepo,
+} from '@markus/storage';
 
 const log = createLogger('storage-bridge');
 
@@ -8,16 +13,19 @@ const log = createLogger('storage-bridge');
  * Falls back gracefully to in-memory mode when no database is available.
  */
 export interface StorageBridge {
-  orgRepo: import('@markus/storage').OrgRepo;
-  taskRepo: import('@markus/storage').TaskRepo;
-  taskLogRepo: import('@markus/storage').TaskLogRepo;
-  agentRepo: import('@markus/storage').AgentRepo;
-  teamRepo: import('@markus/storage').TeamRepo;
-  messageRepo: import('@markus/storage').MessageRepo;
-  memoryRepo: import('@markus/storage').MemoryRepo;
-  chatSessionRepo: import('@markus/storage').ChatSessionRepo;
-  channelMessageRepo: import('@markus/storage').ChannelMessageRepo;
-  userRepo: import('@markus/storage').UserRepo;
+  orgRepo: OrgRepo;
+  taskRepo: TaskRepo;
+  taskLogRepo: TaskLogRepo;
+  agentRepo: AgentRepo;
+  teamRepo: TeamRepo;
+  messageRepo: MessageRepo;
+  memoryRepo: MemoryRepo;
+  chatSessionRepo: ChatSessionRepo;
+  channelMessageRepo: ChannelMessageRepo;
+  userRepo: UserRepo;
+  marketplaceTemplateRepo: MarketplaceTemplateRepo;
+  marketplaceSkillRepo: MarketplaceSkillRepo;
+  marketplaceRatingRepo: MarketplaceRatingRepo;
 }
 
 export async function initStorage(databaseUrl?: string): Promise<StorageBridge | null> {
@@ -41,6 +49,9 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
       chatSessionRepo: new storage.ChatSessionRepo(db),
       channelMessageRepo: new storage.ChannelMessageRepo(db),
       userRepo: new storage.UserRepo(db),
+      marketplaceTemplateRepo: new storage.MarketplaceTemplateRepo(db),
+      marketplaceSkillRepo: new storage.MarketplaceSkillRepo(db),
+      marketplaceRatingRepo: new storage.MarketplaceRatingRepo(db),
     };
     log.info('Database storage initialized');
     return bridge;
