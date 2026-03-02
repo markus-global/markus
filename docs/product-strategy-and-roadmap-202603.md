@@ -330,18 +330,89 @@ Project starts 2026-03-03
 | 文档体系 SSOT | 统一流程入口文档，消除重复定义与口径冲突 |
 | CI/CD 质量门禁 | TypeScript 严格模式、Vitest 覆盖率门槛、ESLint 规则统一 |
 
-### 6.5 Phase 3 — 生态扩展（持续）
+### 6.5 Phase 3 — 生态扩展（3-4 周）
 
-**目标**：推进 A2A 结构化协作与跨系统能力。
+**目标**：推进 A2A 结构化协作与跨系统能力，建立 Skill 生态与模板体系。
+
+#### P3.1 A2A 结构化协作集成
+
+- **现状**：`packages/a2a/` 有 A2ABus、DelegationManager、CollaborationManager、StructuredMessageManager，但均未接入 AgentManager；`tools/a2a-structured.ts` 有 6 个结构化工具但未注册到 Agent
+- **交付物**：
+  - AgentManager 创建并管理 A2ABus 实例，Agent 创建/销毁时自动注册/注销
+  - 结构化 A2A 工具（resource_request、progress_sync、capability_discovery、status_broadcast、task_delegation、collaboration）注入每个 Agent
+  - A2ABus 支持 request-response 模式：correlationId 关联 + Promise 等待 + 超时机制
+  - 消息重试：可配置重试次数与退避策略
+- **验收**：Agent 可通过工具调用发起结构化协作请求，对方 Agent 收到并响应
+
+#### P3.2 多 LLM Provider 扩展
+
+- **现状**：仅 Anthropic + OpenAI（兼容 DeepSeek/SiliconFlow 等），LLMRouter 支持复杂度路由和降级
+- **交付物**：
+  - Google/Gemini Provider：原生 Gemini API 适配
+  - Ollama Provider：本地模型推理（Ollama REST API）
+  - Router 自动识别新 Provider 并分配复杂度 tier
+  - 支持 per-agent model preference（AgentConfig.llmConfig 扩展）
+- **验收**：可配置 Gemini/Ollama，Agent 能使用不同 Provider 完成任务
+
+#### P3.3 Skill Store 生态 v1
+
+- **现状**：InMemorySkillRegistry + 6 个内建 Skill，无动态加载或外部 Skill 机制
+- **交付物**：
+  - SkillPackage 格式定义：manifest + tools + README
+  - 从文件系统动态加载 Skill（`~/.markus/skills/` 目录）
+  - Skill 搜索与发现 API
+  - Skill 权限验证（基于 requiredPermissions 字段）
+  - Skill 版本兼容性检查
+- **验收**：用户可将 Skill 目录放入 skills 文件夹，系统自动发现并加载
+
+#### P3.4 Agent Template 系统
+
+- **现状**：Role 系统（RoleLoader）仅从 ROLE.md 文件加载角色定义，无模板层
+- **交付物**：
+  - AgentTemplate 类型定义：角色 + 技能 + LLM 配置 + 工具集 + 启动任务
+  - TemplateRegistry：注册、搜索、分类（official/community/custom）
+  - 内建模板库：developer、reviewer、project-manager、qa-engineer、devops
+  - Template → Agent 一键实例化 API
+  - API 端点：GET/POST /api/templates
+- **验收**：通过选择模板一键创建预配置 Agent
+
+### 6.6 Phase 4 — 社区与市场（4-6 周）
+
+**目标**：建立开放的社区生态，让模板和 Skill 可以被创建、分享、发现。
 
 | 任务 | 说明 |
 |------|------|
-| A2A 结构化协作 | 结构化消息协议：请求/响应/通知/协商，超时与重试机制 |
-| GUI 自动化深度集成 | 截图 → 元素识别 → 操作执行闭环，与任务系统打通 |
-| Skill Store 生态 | 第三方 Skill 注册、发现、安装机制 |
-| 多 LLM Provider 扩展 | DeepSeek、Gemini、本地模型适配 |
+| 官方模板库 | 官方维护的高质量 Agent 模板集合，覆盖主流开发场景 |
+| 模板 Marketplace | 社区模板提交、审核、发布、评分机制 |
+| Skill Marketplace | 社区 Skill 提交、版本管理、依赖解析、安全扫描 |
+| 模板/Skill 分享协议 | 标准化分享格式（JSON Schema + README），支持导入/导出 |
+| 用户评价体系 | 模板和 Skill 的评分、评论、使用统计 |
 
-### 6.6 阶段验收指标
+### 6.7 Phase 5 — 创作与编排（持续）
+
+**目标**：提供可视化创作工具，降低 Agent 构建门槛。
+
+| 任务 | 说明 |
+|------|------|
+| Visual Agent Builder | 可视化拖拽式 Agent 构建器，配置角色/技能/工具/提示词 |
+| Workflow 编排引擎 | DAG 式工作流定义：多 Agent 协作流程编排、条件分支、并行执行 |
+| Prompt Engineering Studio | 系统提示词可视化编辑、A/B 测试、效果评估 |
+| 团队模板 | 整支团队（多 Agent）作为一个模板发布和共享 |
+| Agent Composition | Agent 组合模式：Pipeline、Fan-out/Fan-in、Chain-of-Thought 协作链 |
+
+### 6.8 Phase 6 — 联邦与规模（远期）
+
+**目标**：支持跨组织 Agent 协作和大规模部署。
+
+| 任务 | 说明 |
+|------|------|
+| Cross-Org Federation | 跨组织 Agent 发现与协作，安全沙箱隔离 |
+| Multi-Tenant Deployment | 多租户部署架构，资源隔离与计量 |
+| Agent 克隆与迁移 | Agent 状态序列化、跨环境迁移、版本回滚 |
+| 分布式任务执行 | 任务跨节点调度，负载均衡，故障转移 |
+| GUI 自动化深度集成 | 截图 → 元素识别 → 操作执行闭环，容器化 VNC + OmniParser |
+
+### 6.9 阶段验收指标
 
 | 阶段 | 指标 | 目标值 |
 |------|------|--------|
@@ -351,7 +422,12 @@ Project starts 2026-03-03
 | Phase 1 | 外部 Agent 任务完整生命周期成功率 | ≥ 85% |
 | Phase 2 | 评审一次通过率 | ≥ 90% |
 | Phase 2 | 流式连接失败率下降 | ≥ 50% |
-| Phase 3 | A2A 跨 Agent 协作任务完成率 | 持续提升 |
+| Phase 3 | A2A 跨 Agent 协作任务完成率 | ≥ 70% |
+| Phase 3 | 多 Provider 降级成功率 | ≥ 95% |
+| Phase 3 | Skill 动态加载成功率 | 100% |
+| Phase 4 | 社区模板数量 | ≥ 20 |
+| Phase 4 | 模板一键部署成功率 | ≥ 95% |
+| Phase 5 | 可视化构建 Agent 占比 | ≥ 30% |
 
 ## 7. Phase 1 开发详细设计
 

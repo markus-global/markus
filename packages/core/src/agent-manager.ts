@@ -9,9 +9,13 @@ import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { createManagerTools } from './tools/manager.js';
 import { createA2ATools } from './tools/a2a.js';
+import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
+import { A2ABus } from '@markus/a2a';
+import type { TemplateRegistry } from './templates/registry.js';
+import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
@@ -76,6 +80,8 @@ export class AgentManager {
   private taskService?: TaskServiceBridge;
   private agentAuditCallback?: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
   private escalationHandler?: (agentId: string, reason: string) => void;
+  private a2aBus: A2ABus;
+  private templateRegistry?: TemplateRegistry;
 
   constructor(options: {
     llmRouter: LLMRouter;
@@ -87,6 +93,7 @@ export class AgentManager {
     mcpServers?: Record<string, MCPServerConfig>;
     skillRegistry?: SkillRegistry;
     taskService?: TaskServiceBridge;
+    templateRegistry?: TemplateRegistry;
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
@@ -98,6 +105,8 @@ export class AgentManager {
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
+    this.a2aBus = new A2ABus();
+    this.templateRegistry = options.templateRegistry;
     mkdirSync(this.dataDir, { recursive: true });
   }
 
@@ -156,7 +165,7 @@ export class AgentManager {
     }
 
     // A2A tools — every agent can message colleagues
-    const a2aTools = createA2ATools({
+    const a2aContext = {
       selfId: id,
       selfName: config.name,
       listColleagues: () => this.listAgents().map(a => {
@@ -165,14 +174,19 @@ export class AgentManager {
           return { ...a, skills: ag.config.skills };
         } catch { return { ...a, skills: [] }; }
       }),
-      sendMessage: async (targetId, message, fromId, fromName) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
         return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
       },
+    };
+    for (const tool of createA2ATools(a2aContext)) agent.registerTool(tool);
+    for (const tool of createStructuredA2ATools(a2aContext)) agent.registerTool(tool);
+
+    // Register agent on A2A bus for structured message delivery
+    this.a2aBus.registerAgent(id, async (envelope) => {
+      const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
+      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' });
     });
-    for (const tool of a2aTools) {
-      agent.registerTool(tool);
-    }
 
     // Task tools — every agent can create/list/update tasks
     if (this.taskService) {
@@ -369,7 +383,7 @@ export class AgentManager {
       }
     }
 
-    const a2aTools = createA2ATools({
+    const a2aCtx = {
       selfId: id,
       selfName: config.name,
       listColleagues: () => this.listAgents().map(a => {
@@ -378,12 +392,18 @@ export class AgentManager {
           return { ...a, skills: ag.config.skills };
         } catch { return { ...a, skills: [] }; }
       }),
-      sendMessage: async (targetId, message, fromId, fromName) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
         return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
       },
+    };
+    for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
+    for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
+
+    this.a2aBus.registerAgent(id, async (envelope) => {
+      const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
+      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' });
     });
-    for (const tool of a2aTools) agent.registerTool(tool);
 
     if (this.taskService) {
       const ts = this.taskService;
@@ -485,6 +505,7 @@ export class AgentManager {
     const agent = this.agents.get(agentId);
     if (agent) {
       await agent.stop();
+      this.a2aBus.unregisterAgent(agentId);
       if (this.sandboxFactory) {
         try { await this.sandboxFactory.destroy(agentId); } catch { /* ignore */ }
       }
@@ -544,6 +565,37 @@ export class AgentManager {
 
   setSandboxFactory(factory: SandboxFactory): void {
     this.sandboxFactory = factory;
+  }
+
+  getA2ABus(): A2ABus {
+    return this.a2aBus;
+  }
+
+  setTemplateRegistry(registry: TemplateRegistry): void {
+    this.templateRegistry = registry;
+  }
+
+  getTemplateRegistry(): TemplateRegistry | undefined {
+    return this.templateRegistry;
+  }
+
+  /**
+   * Create an agent from a template with optional overrides.
+   */
+  async createAgentFromTemplate(request: TemplateInstantiateRequest): Promise<Agent> {
+    if (!this.templateRegistry) throw new Error('Template registry not configured');
+    const template = this.templateRegistry.get(request.templateId);
+    if (!template) throw new Error(`Template not found: ${request.templateId}`);
+
+    return this.createAgent({
+      name: request.name,
+      roleName: template.roleId,
+      orgId: request.orgId,
+      teamId: request.teamId,
+      agentRole: template.agentRole,
+      skills: request.overrides?.skills ?? template.skills,
+      heartbeatIntervalMs: request.overrides?.heartbeatIntervalMs ?? template.heartbeatIntervalMs,
+    });
   }
 
   /**

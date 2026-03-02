@@ -7,6 +7,8 @@ export { ContextEngine, type OrgContext, type ContextConfig } from './context-en
 export { LLMRouter } from './llm/router.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
+export { GoogleProvider } from './llm/google.js';
+export { OllamaProvider } from './llm/ollama.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 export { AgentMetricsCollector } from './agent-metrics.js';
@@ -31,9 +33,16 @@ export {
   MCPClientManager, createBuiltinTools,
   createManagerTools, type ManagerToolsContext,
   createA2ATools, type A2AContext,
+  createStructuredA2ATools, type StructuredA2AContext,
 } from './tools/index.js';
 export {
   type SkillManifest, type SkillInstance, type SkillRegistry, type SkillCategory,
   InMemorySkillRegistry, createDefaultSkillRegistry,
   createGitSkill, createCodeAnalysisSkill,
 } from './skills/index.js';
+export { SkillLoader, type SkillPackage, type SkillSearchResult, type SkillLoadResult } from './skills/loader.js';
+export {
+  TemplateRegistry, createDefaultTemplateRegistry,
+  type AgentTemplate, type TemplateSource, type TemplateSearchQuery,
+  type TemplateSearchResult, type TemplateInstantiateRequest,
+} from './templates/index.js';

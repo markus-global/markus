@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogger, generateId } from '@markus/shared';
-import { ExternalAgentGateway, GatewayError, ReviewService, type SkillRegistry } from '@markus/core';
+import { ExternalAgentGateway, GatewayError, ReviewService, type SkillRegistry, type TemplateRegistry } from '@markus/core';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -101,6 +101,7 @@ export class APIServer {
   private llmRouter?: import('@markus/core').LLMRouter;
   private gateway?: ExternalAgentGateway;
   private reviewService?: ReviewService;
+  private templateRegistry?: TemplateRegistry;
 
   constructor(
     private orgService: OrganizationService,
@@ -139,6 +140,10 @@ export class APIServer {
 
   setReviewService(svc: ReviewService): void {
     this.reviewService = svc;
+  }
+
+  setTemplateRegistry(registry: TemplateRegistry): void {
+    this.templateRegistry = registry;
   }
 
   setLLMRouter(router: import('@markus/core').LLMRouter): void {
@@ -1102,6 +1107,51 @@ export class APIServer {
     if (path === '/api/skills' && req.method === 'GET') {
       const skills = this.skillRegistry?.list() ?? [];
       this.json(res, 200, { skills });
+      return;
+    }
+
+    // Agent Templates
+    if (path === '/api/templates' && req.method === 'GET') {
+      if (!this.templateRegistry) { this.json(res, 200, { templates: [] }); return; }
+      const source = url.searchParams.get('source') as 'official' | 'community' | 'custom' | undefined;
+      const category = url.searchParams.get('category') ?? undefined;
+      const text = url.searchParams.get('q') ?? undefined;
+      const result = (source || category || text)
+        ? this.templateRegistry.search({ source: source ?? undefined, category, text })
+        : { templates: this.templateRegistry.list(), total: this.templateRegistry.list().length };
+      this.json(res, 200, result);
+      return;
+    }
+
+    if (path.match(/^\/api\/templates\/[^/]+$/) && req.method === 'GET') {
+      if (!this.templateRegistry) { this.json(res, 404, { error: 'Template registry not configured' }); return; }
+      const templateId = path.split('/')[3]!;
+      const template = this.templateRegistry.get(templateId);
+      if (!template) { this.json(res, 404, { error: `Template not found: ${templateId}` }); return; }
+      this.json(res, 200, { template });
+      return;
+    }
+
+    if (path === '/api/templates/instantiate' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const templateId = body['templateId'] as string;
+      const name = body['name'] as string;
+      const orgId = (body['orgId'] as string) ?? 'default';
+      const teamId = body['teamId'] as string | undefined;
+      if (!templateId || !name) { this.json(res, 400, { error: 'templateId and name are required' }); return; }
+      try {
+        const agentManager = this.orgService.getAgentManager();
+        const agent = await agentManager.createAgentFromTemplate({
+          templateId, name, orgId, teamId,
+          overrides: body['overrides'] as Record<string, unknown> | undefined,
+        });
+        await agentManager.startAgent(agent.id);
+        this.json(res, 201, {
+          agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status },
+        });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
       return;
     }
 

@@ -2,6 +2,8 @@ import type { LLMRequest, LLMResponse, LLMStreamEvent, LLMProviderConfig } from 
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
+import { GoogleProvider } from './google.js';
+import { OllamaProvider } from './ollama.js';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('llm-router');
@@ -192,8 +194,18 @@ export class LLMRouter {
       router.registerProvider('openai', new OpenAIProvider(openaiConfig));
     }
 
+    const googleConfig = configs?.['google'];
+    if (googleConfig?.apiKey) {
+      router.registerProvider('google', new GoogleProvider(googleConfig));
+    }
+
+    const ollamaConfig = configs?.['ollama'];
+    if (ollamaConfig?.baseUrl || ollamaConfig?.model) {
+      router.registerProvider('ollama', new OllamaProvider(ollamaConfig));
+    }
+
     for (const [name, cfg] of Object.entries(configs ?? {})) {
-      if (name === 'anthropic' || name === 'openai') continue;
+      if (['anthropic', 'openai', 'google', 'ollama'].includes(name)) continue;
       if (cfg?.apiKey) {
         router.registerProvider(name, new OpenAIProvider(cfg));
       }
@@ -352,7 +364,7 @@ export class LLMRouter {
       providers[name] = { model: p.model, configured: true };
     }
     // Show known providers that aren't configured too
-    for (const name of ['anthropic', 'openai', 'deepseek', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'deepseek', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
