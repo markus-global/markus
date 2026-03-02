@@ -13,6 +13,39 @@ export interface ProviderTier {
   complexity: ComplexityLevel[];
 }
 
+const ALL_COMPLEXITY: ComplexityLevel[] = ['simple', 'moderate', 'complex'];
+
+/**
+ * Build provider tiers for auto-selection.
+ * - The default provider covers all complexity levels (highest priority).
+ * - anthropic (when not default) covers complex only — suited for hard reasoning tasks.
+ * - openai (when not default) covers complex + moderate.
+ * - All other OpenAI-compatible providers (deepseek, siliconflow, openrouter, etc.)
+ *   cover simple + moderate when not default.
+ */
+function buildTiers(providerNames: string[], defaultProvider: string): ProviderTier[] {
+  const tiers: ProviderTier[] = [];
+
+  // Default provider always first and covers every complexity level
+  if (providerNames.includes(defaultProvider)) {
+    tiers.push({ name: defaultProvider, complexity: ALL_COMPLEXITY });
+  }
+
+  for (const name of providerNames) {
+    if (name === defaultProvider) continue;
+    if (name === 'anthropic') {
+      tiers.push({ name, complexity: ['complex'] });
+    } else if (name === 'openai') {
+      tiers.push({ name, complexity: ['complex', 'moderate'] });
+    } else {
+      // OpenAI-compatible providers (deepseek, siliconflow, openrouter, etc.)
+      tiers.push({ name, complexity: ['simple', 'moderate'] });
+    }
+  }
+
+  return tiers;
+}
+
 interface ProviderHealth {
   consecutiveFailures: number;
   lastFailureAt: number;
@@ -167,27 +200,16 @@ export class LLMRouter {
     // ensuring the preferred provider is selected when healthy.
     const providerNames = router.listProviders();
     if (providerNames.length > 1) {
-      const isDeepseekDefault = defaultProvider === 'deepseek' || (!defaultProvider && providerNames[0] === 'deepseek');
-
-      router.enableAutoSelect([
-        // DeepSeek: covers all levels when it's the default, otherwise just simple/moderate
-        ...providerNames.includes('deepseek') ? [{
-          name: 'deepseek',
-          complexity: isDeepseekDefault
-            ? ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel, 'complex' as ComplexityLevel]
-            : ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel],
-        }] : [],
-        ...providerNames.includes('anthropic') ? [{ name: 'anthropic', complexity: ['complex' as ComplexityLevel] }] : [],
-        ...providerNames.includes('openai') ? [{ name: 'openai', complexity: ['complex' as ComplexityLevel, 'moderate' as ComplexityLevel] }] : [],
-      ]);
+      const effectiveDefault = defaultProvider ?? providerNames[0];
+      router.enableAutoSelect(buildTiers(providerNames, effectiveDefault));
 
       // Fallback order: put the defaultProvider first so it's tried first when another is primary and fails
       const fallbackOrder = [
-        defaultProvider ?? '',
-        ...providerNames.filter(n => n !== (defaultProvider ?? '')),
+        effectiveDefault,
+        ...providerNames.filter(n => n !== effectiveDefault),
       ].filter(n => providerNames.includes(n));
       router.setFallbackOrder(fallbackOrder);
-      log.info('Auto-select enabled with fallback', { providers: providerNames, defaultProvider: defaultProvider ?? 'none', fallbackOrder });
+      log.info('Auto-select enabled with fallback', { providers: providerNames, defaultProvider: effectiveDefault, fallbackOrder });
     }
 
     return router;
@@ -311,22 +333,8 @@ export class LLMRouter {
     // Re-run tier configuration with the new default
     const providerNames = this.listProviders();
     if (this.autoSelect && providerNames.length > 1) {
-      const isDeepseekDefault = name === 'deepseek';
-      this.providerTiers = [
-        ...providerNames.includes('deepseek') ? [{
-          name: 'deepseek',
-          complexity: isDeepseekDefault
-            ? ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel, 'complex' as ComplexityLevel]
-            : ['simple' as ComplexityLevel, 'moderate' as ComplexityLevel],
-        }] : [],
-        ...providerNames.includes('anthropic') ? [{ name: 'anthropic', complexity: ['complex' as ComplexityLevel] }] : [],
-        ...providerNames.includes('openai') ? [{ name: 'openai', complexity: ['complex' as ComplexityLevel, 'moderate' as ComplexityLevel] }] : [],
-      ];
-      // Ensure default is first in fallback order
-      this.fallbackOrder = [
-        name,
-        ...providerNames.filter(n => n !== name),
-      ];
+      this.providerTiers = buildTiers(providerNames, name);
+      this.fallbackOrder = [name, ...providerNames.filter(n => n !== name)];
     }
   }
 
@@ -340,7 +348,7 @@ export class LLMRouter {
       providers[name] = { model: p.model, configured: true };
     }
     // Show known providers that aren't configured too
-    for (const name of ['anthropic', 'openai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'deepseek', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }

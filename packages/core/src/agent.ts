@@ -14,6 +14,8 @@ import { HeartbeatScheduler } from './heartbeat.js';
 import { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
 import { ContextEngine, type OrgContext } from './context-engine.js';
+import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
+import { TaskPriority, TaskType, TaskStatus } from './concurrent/task-queue.js';
 
 const log = createLogger('agent');
 
@@ -76,6 +78,10 @@ export class Agent {
   private consecutiveFailures = 0;
   /** Tracks concurrently executing task IDs */
   private activeTasks = new Set<string>();
+  /** Task executor for concurrent task management */
+  private taskExecutor?: TaskExecutor;
+  /** State manager for synchronizing task and agent states */
+  private stateManager?: AgentStateManager;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
@@ -114,6 +120,16 @@ export class Agent {
       }
     }
 
+    // Initialize task executor
+    this.taskExecutor = new TaskExecutor({
+      agentId: this.id,
+      maxConcurrentTasks: Agent.MAX_CONCURRENT_TASKS,
+      defaultPriority: TaskPriority.MEDIUM,
+    });
+
+    // Initialize state manager
+    this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
+
     // If sandbox is provided, replace shell/file tools with sandboxed versions
     if (this.sandbox) {
       this.registerSandboxedTools(this.sandbox);
@@ -128,8 +144,30 @@ export class Agent {
     log.info(`Agent created: ${this.id}`, { name: this.config.name, role: this.role.name });
   }
 
+  /**
+   * Set agent status and emit status change event
+   */
+  private setStatus(status: AgentState['status']): void {
+    const oldStatus = this.state.status;
+    if (oldStatus === status) return;
+    
+    this.state.status = status;
+    
+    // 同步状态到stateManager
+    if (this.stateManager) {
+      this.stateManager.updateState({ status });
+    }
+    
+    this.eventBus.emit('agent:status-changed', {
+      agentId: this.id,
+      oldStatus,
+      newStatus: status,
+      state: this.getState(),
+    });
+  }
+
   async start(): Promise<void> {
-    this.state.status = 'idle';
+    this.setStatus('idle');
 
     // Resume latest conversation session if available
     const latestSession = this.memory.getLatestSession(this.id);
@@ -145,9 +183,150 @@ export class Agent {
 
   async stop(): Promise<void> {
     this.heartbeat.stop();
-    this.state.status = 'offline';
+    this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
-    log.info(`Agent stopped: ${this.config.name}`);
+    log.info(`Agent stopped: ${this.config.name }`);
+  }
+
+  /**
+   * 执行聊天任务（高优先级）
+   */
+  async executeChatTask(
+    taskId: string,
+    description: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    cancelToken?: { cancelled: boolean },
+  ): Promise<void> {
+    if (!this.taskExecutor) {
+      throw new Error('Task executor not initialized');
+    }
+
+    const result = await this.taskExecutor.executeChatTask(
+      taskId,
+      async () => {
+        return this._executeTaskInternal(taskId, description, onLog, cancelToken);
+      },
+      {
+        priority: TaskPriority.HIGH,
+        onProgress: (progress: number, currentStep?: string) => {
+          onLog({ seq: -1, type: 'progress', content: JSON.stringify({ progress, currentStep }), persist: false });
+        },
+        cancelToken,
+      }
+    );
+
+    if (result.status === TaskStatus.FAILED && result.error) {
+      throw result.error;
+    }
+  }
+
+  /**
+   * 获取Agent状态摘要
+   */
+  getAgentStatusSummary() {
+    if (!this.stateManager) {
+      return {
+        agentId: this.id,
+        isBusy: this.activeTasks.size > 0,
+        activeTaskCount: this.activeTasks.size,
+        queueStats: {
+          pending: 0,
+          running: this.activeTasks.size,
+          completed: 0,
+          failed: 0,
+          cancelled: 0,
+          total: this.activeTasks.size,
+        },
+        currentTasks: Array.from(this.activeTasks).map(taskId => ({
+          id: taskId,
+          type: 'task' as const,
+          priority: TaskPriority.MEDIUM,
+          status: TaskStatus.RUNNING,
+          progress: 0,
+          startedAt: new Date(),
+        })),
+      };
+    }
+
+    return this.stateManager.getStatusSummary();
+  }
+
+  /**
+   * 获取所有任务状态
+   */
+  getAllTasks() {
+    if (!this.stateManager) {
+      return [];
+    }
+    return this.stateManager.getAllTaskInfo();
+  }
+
+  /**
+   * 获取运行中的任务
+   */
+  getRunningTasks() {
+    if (!this.stateManager) {
+      return Array.from(this.activeTasks).map(taskId => ({
+        id: taskId,
+        type: 'task' as const,
+        priority: TaskPriority.MEDIUM,
+        status: TaskStatus.RUNNING,
+        progress: 0,
+        currentStep: undefined,
+        startedAt: new Date(),
+        completedAt: undefined,
+        error: undefined,
+        result: undefined,
+      }));
+    }
+    return this.stateManager.getRunningTaskInfo();
+  }
+
+  /**
+   * 取消任务
+   */
+  cancelTask(taskId: string): boolean {
+    if (!this.taskExecutor) {
+      return false;
+    }
+    return this.taskExecutor.cancelTask(taskId);
+  }
+
+  /**
+   * 更新任务进度
+   */
+  updateTaskProgress(taskId: string, progress: number, currentStep?: string): boolean {
+    if (!this.taskExecutor) {
+      return false;
+    }
+    return this.taskExecutor.updateProgress(taskId, progress, currentStep);
+  }
+
+  /**
+   * 更新令牌使用量
+   */
+  private updateTokensUsed(tokens: number): void {
+    this.state.tokensUsedToday += tokens;
+    if (this.stateManager) {
+      this.stateManager.updateTokensUsed(tokens);
+    }
+  }
+
+  /**
+   * 获取令牌使用量
+   */
+  private getTokensUsed(): number {
+    if (this.stateManager) {
+      return this.stateManager.getTokensUsed();
+    }
+    return this.state.tokensUsedToday;
+  }
+
+  /**
+   * 获取令牌使用量（公开方法）
+   */
+  getTokensUsedToday(): number {
+    return this.getTokensUsed();
   }
 
   setSandbox(sandbox: SandboxHandle): void {
@@ -187,7 +366,7 @@ export class Agent {
       `2. Current status and any blockers`,
       `3. What you plan to work on next`,
       ``,
-      `Your status: ${state.status}, tokens used today: ${state.tokensUsedToday}`,
+      `Your status: ${state.status}, tokens used today: ${this.getTokensUsed()}`,
       dailyLog ? `\nRecent activity log:\n${dailyLog}` : `\nNo recent activity recorded.`,
       ``,
       `Keep the report concise (3-5 sentences). Do NOT use any tools — just summarize from your memory.`,
@@ -208,7 +387,11 @@ export class Agent {
   }
 
   async handleMessage(userMessage: string, senderId?: string, senderInfo?: { name: string; role: string }): Promise<string> {
-    this.state.status = 'working';
+    // 只有在没有活动任务时才设置状态为working
+    // 如果有任务在执行，状态应该已经是working
+    if (this.activeTasks.size === 0) {
+      this.setStatus('working');
+    }
 
     if (!this.currentSessionId) {
       const session = this.memory.createSession(this.id);
@@ -248,7 +431,7 @@ export class Agent {
       });
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
-      this.state.tokensUsedToday += tokensThisCall;
+      this.updateTokensUsed(tokensThisCall);
       this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
@@ -294,26 +477,27 @@ export class Agent {
         });
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
-        this.state.tokensUsedToday += tokens2;
+        this.updateTokensUsed(tokens2);
         this.auditCallback?.({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       const reply = response.content;
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
       // Only go idle if no tasks are concurrently executing
-      if (this.activeTasks.size === 0) this.state.status = 'idle';
+      // 注意：聊天任务不会添加到activeTasks中，所以这里只检查activeTasks
+      if (this.activeTasks.size === 0) this.setStatus('idle');
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
         senderId,
         userMessage,
         reply,
-        tokensUsed: this.state.tokensUsedToday,
+        tokensUsed: this.getTokensUsed(),
       });
 
       return reply;
     } catch (error) {
-      if (this.activeTasks.size === 0) this.state.status = 'error';
+      if (this.activeTasks.size === 0) this.setStatus('error');
       this.auditCallback?.({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
@@ -326,7 +510,11 @@ export class Agent {
     senderId?: string,
     senderInfo?: { name: string; role: string },
   ): Promise<string> {
-    this.state.status = 'working';
+    // 只有在没有活动任务时才设置状态为working
+    // 如果有任务在执行，状态应该已经是working
+    if (this.activeTasks.size === 0) {
+      this.setStatus('working');
+    }
 
     if (!this.currentSessionId) {
       const session = this.memory.createSession(this.id);
@@ -365,7 +553,7 @@ export class Agent {
         onEvent,
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
-      this.state.tokensUsedToday += tokensThisCall;
+      this.updateTokensUsed(tokensThisCall);
       this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
@@ -413,25 +601,25 @@ export class Agent {
           onEvent,
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
-        this.state.tokensUsedToday += tokens2;
+        this.updateTokensUsed(tokens2);
         this.auditCallback?.({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
       }
 
       const reply = response.content;
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
-      if (this.activeTasks.size === 0) this.state.status = 'idle';
+      if (this.activeTasks.size === 0) this.setStatus('idle');
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
         senderId,
         userMessage,
         reply,
-        tokensUsed: this.state.tokensUsedToday,
+        tokensUsed: this.getTokensUsed(),
       });
 
       return reply;
     } catch (error) {
-      if (this.activeTasks.size === 0) this.state.status = 'error';
+      if (this.activeTasks.size === 0) this.setStatus('error');
       this.auditCallback?.({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
@@ -446,20 +634,66 @@ export class Agent {
    *   persist=true entries should be saved to DB (status/text/tool_start/tool_end/error).
    *   persist=false entries are real-time text_delta chunks for live streaming only.
    */
+  /**
+   * 执行任务（兼容旧版本）
+   */
   async executeTask(
     taskId: string,
     description: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     cancelToken?: { cancelled: boolean },
   ): Promise<void> {
-    if (this.activeTasks.size >= Agent.MAX_CONCURRENT_TASKS) {
-      throw new Error(`Agent ${this.config.name} has reached max concurrent tasks (${Agent.MAX_CONCURRENT_TASKS})`);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken);
+  }
+
+  /**
+   * 并发执行任务（使用TaskExecutor）
+   */
+  async executeTaskConcurrent(
+    taskId: string,
+    description: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    cancelToken?: { cancelled: boolean },
+    priority: TaskPriority = TaskPriority.MEDIUM,
+  ): Promise<void> {
+    if (!this.taskExecutor) {
+      throw new Error('Task executor not initialized');
     }
 
+    // 使用TaskExecutor执行任务
+    const result = await this.taskExecutor.executeTaskTask(
+      taskId,
+      async () => {
+        return this._executeTaskInternal(taskId, description, onLog, cancelToken);
+      },
+      {
+        priority,
+        onProgress: (progress: number, currentStep?: string) => {
+          // 发送进度更新
+          onLog({ seq: -1, type: 'progress', content: JSON.stringify({ progress, currentStep }), persist: false });
+        },
+        cancelToken,
+      }
+    );
+
+    // 处理执行结果
+    if (result.status === TaskStatus.FAILED && result.error) {
+      throw result.error;
+    }
+  }
+
+  /**
+   * 内部任务执行逻辑（原executeTask的核心逻辑）
+   */
+  private async _executeTaskInternal(
+    taskId: string,
+    description: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    cancelToken?: { cancelled: boolean },
+  ): Promise<void> {
+    // 更新状态（通过TaskExecutor管理）
+    this.setStatus('working');
     this.activeTasks.add(taskId);
-    this.state.activeTaskCount = this.activeTasks.size;
-    this.state.activeTaskIds = [...this.activeTasks];
-    this.state.status = 'working';
 
     let seq = 0;
     const emit = (type: string, content: string, metadata?: unknown) => {
@@ -528,7 +762,7 @@ export class Agent {
           }
         },
       );
-      this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+      this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         // Check for external cancellation (e.g., task paused or status changed away from in_progress)
@@ -589,7 +823,7 @@ export class Agent {
             }
           },
         );
-        this.state.tokensUsedToday += response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
       }
 
       flushText();
@@ -604,12 +838,14 @@ export class Agent {
       this.auditCallback?.({ type: 'error', action: 'execute_task', success: false, detail: String(error).slice(0, 200) });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
+      throw error; // 重新抛出错误，让TaskExecutor处理
     } finally {
+      // 从活动任务中移除
       this.activeTasks.delete(taskId);
-      this.state.activeTaskCount = this.activeTasks.size;
-      this.state.activeTaskIds = [...this.activeTasks];
+      
+      // 如果没有活动任务，设置状态为idle
       if (this.activeTasks.size === 0) {
-        this.state.status = 'idle';
+        this.setStatus('idle');
       }
     }
   }

@@ -1,6 +1,7 @@
 import { createLogger } from '@markus/shared';
 import type { HeartbeatTask } from '@markus/shared';
 import { EventBus } from './events.js';
+import { OpenClawHeartbeatScheduler } from './openclaw-heartbeat-scheduler.js';
 
 const log = createLogger('heartbeat');
 
@@ -10,59 +11,55 @@ export interface HeartbeatContext {
   triggeredAt: string;
 }
 
+export { type HeartbeatTaskStats, type HealthMetrics } from './openclaw-heartbeat-scheduler.js';
+
 export class HeartbeatScheduler {
-  private timers = new Map<string, ReturnType<typeof setInterval>>();
-  private running = false;
+  private scheduler: OpenClawHeartbeatScheduler;
 
   constructor(
     private agentId: string,
     private eventBus: EventBus,
     private defaultIntervalMs: number = 30 * 60 * 1000,
-  ) {}
+  ) {
+    this.scheduler = new OpenClawHeartbeatScheduler(agentId, eventBus, defaultIntervalMs);
+  }
 
   start(tasks: HeartbeatTask[]): void {
-    if (this.running) return;
-    this.running = true;
-
-    for (const task of tasks) {
-      if (!task.enabled) continue;
-      const interval = task.intervalMs ?? this.defaultIntervalMs;
-      const key = `${this.agentId}:${task.name}`;
-
-      log.info(`Scheduling heartbeat task: ${task.name}`, {
-        agentId: this.agentId,
-        intervalMs: interval,
-      });
-
-      const timer = setInterval(() => {
-        this.trigger(task);
-      }, interval);
-
-      this.timers.set(key, timer);
-    }
+    log.info('Starting heartbeat scheduler', {
+      agentId: this.agentId,
+      taskCount: tasks.length,
+    });
+    
+    this.scheduler.start(tasks);
   }
 
   stop(): void {
-    this.running = false;
-    for (const [key, timer] of this.timers) {
-      clearInterval(timer);
-      log.info(`Stopped heartbeat task: ${key}`);
-    }
-    this.timers.clear();
+    log.info('Stopping heartbeat scheduler', { agentId: this.agentId });
+    this.scheduler.stop();
   }
 
   isRunning(): boolean {
-    return this.running;
+    return this.scheduler.isRunning();
   }
 
-  private trigger(task: HeartbeatTask): void {
-    const context: HeartbeatContext = {
-      agentId: this.agentId,
-      task,
-      triggeredAt: new Date().toISOString(),
-    };
+  /**
+   * Get health metrics for monitoring
+   */
+  getHealthMetrics(): ReturnType<OpenClawHeartbeatScheduler['getHealthMetrics']> {
+    return this.scheduler.getHealthMetrics();
+  }
 
-    log.debug(`Heartbeat triggered: ${task.name}`, { agentId: this.agentId });
-    this.eventBus.emit('heartbeat:trigger', context);
+  /**
+   * Get stats for a specific task
+   */
+  getTaskStats(taskName: string): ReturnType<OpenClawHeartbeatScheduler['getTaskStats']> {
+    return this.scheduler.getTaskStats(taskName);
+  }
+
+  /**
+   * Manually trigger a heartbeat task
+   */
+  async triggerTask(taskName: string): Promise<boolean> {
+    return this.scheduler.triggerTask(taskName);
   }
 }

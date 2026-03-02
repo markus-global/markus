@@ -15,7 +15,7 @@ export interface SlackClientConfig {
   socketMode?: boolean;
 }
 
-export interface SlackMessage {
+export interface SlackMessage extends Record<string, unknown> {
   channel: string;
   text: string;
   blocks?: any[];
@@ -54,17 +54,16 @@ export class SlackClient {
   /**
    * Send a text message to a Slack channel
    */
-  async sendTextMessage(channelId: string, text: string, options?: {
-    thread_ts?: string;
-    reply_broadcast?: boolean;
-  }): Promise<string> {
+  async sendTextMessage(channelId: string, text: string, options?: Record<string, unknown>): Promise<string> {
     try {
-      const message: SlackMessage = {
+      const message: Record<string, unknown> = {
         channel: channelId,
         text,
-        thread_ts: options?.thread_ts,
-        reply_broadcast: options?.reply_broadcast,
       };
+      
+      // Add optional fields if they exist
+      if (options?.thread_ts) message.thread_ts = options.thread_ts;
+      if (options?.reply_broadcast !== undefined) message.reply_broadcast = options.reply_broadcast;
 
       const response = await this.post('chat.postMessage', message);
       
@@ -75,7 +74,7 @@ export class SlackClient {
       log.info(`Slack message sent to channel ${channelId}: ${response.ts}`);
       return response.ts;
     } catch (error) {
-      log.error(`Failed to send Slack message to ${channelId}:`, error);
+      log.error(`Failed to send Slack message to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -83,16 +82,16 @@ export class SlackClient {
   /**
    * Send a message with blocks (rich formatting)
    */
-  async sendBlocksMessage(channelId: string, blocks: any[], text?: string, options?: {
-    thread_ts?: string;
-  }): Promise<string> {
+  async sendBlocksMessage(channelId: string, blocks: any[], text?: string, options?: Record<string, unknown>): Promise<string> {
     try {
-      const message: SlackMessage = {
+      const message: Record<string, unknown> = {
         channel: channelId,
         text: text || 'Message with blocks',
         blocks,
-        thread_ts: options?.thread_ts,
       };
+      
+      // Add optional fields if they exist
+      if (options?.thread_ts) message.thread_ts = options.thread_ts;
 
       const response = await this.post('chat.postMessage', message);
       
@@ -103,7 +102,7 @@ export class SlackClient {
       log.info(`Slack blocks message sent to channel ${channelId}: ${response.ts}`);
       return response.ts;
     } catch (error) {
-      log.error(`Failed to send Slack blocks message to ${channelId}:`, error);
+      log.error(`Failed to send Slack blocks message to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -126,7 +125,7 @@ export class SlackClient {
 
       log.info(`Slack message updated in channel ${channelId}: ${ts}`);
     } catch (error) {
-      log.error(`Failed to update Slack message ${ts} in ${channelId}:`, error);
+      log.error(`Failed to update Slack message ${ts} in ${channelId}:`, { error });
       throw error;
     }
   }
@@ -147,7 +146,7 @@ export class SlackClient {
 
       log.info(`Slack message deleted from channel ${channelId}: ${ts}`);
     } catch (error) {
-      log.error(`Failed to delete Slack message ${ts} from ${channelId}:`, error);
+      log.error(`Failed to delete Slack message ${ts} from ${channelId}:`, { error });
       throw error;
     }
   }
@@ -167,7 +166,7 @@ export class SlackClient {
 
       return response.channel;
     } catch (error) {
-      log.error(`Failed to get channel info for ${channelId}:`, error);
+      log.error(`Failed to get channel info for ${channelId}:`, { error });
       throw error;
     }
   }
@@ -175,7 +174,7 @@ export class SlackClient {
   /**
    * Generic POST request to Slack API
    */
-  private async post(endpoint: string, body: any): Promise<SlackMessageResponse> {
+  private async post(endpoint: string, body: Record<string, unknown>): Promise<SlackMessageResponse> {
     const url = `${this.apiUrl}/${endpoint}`;
     
     const response = await fetch(url, {
@@ -187,7 +186,8 @@ export class SlackClient {
       body: JSON.stringify(body),
     });
 
-    return await response.json();
+    const result = await response.json() as SlackMessageResponse;
+    return result;
   }
 
   /**

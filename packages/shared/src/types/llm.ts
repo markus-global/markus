@@ -1,4 +1,4 @@
-export type LLMProvider = 'anthropic' | 'openai' | 'deepseek' | 'google' | 'ollama' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'deepseek' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'custom';
 
 export interface LLMProviderConfig {
   provider: LLMProvider;

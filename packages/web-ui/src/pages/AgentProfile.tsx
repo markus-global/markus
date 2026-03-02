@@ -106,6 +106,7 @@ function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
 function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
+  const [isExecuting, setIsExecuting] = useState(false);
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +139,11 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
         return [...prev, entry];
       });
       if (entry.type === 'text') setStreamingText('');
+      if (entry.type === 'status') {
+        if (entry.content === 'started') setIsExecuting(true);
+        else if (['completed', 'failed', 'cancelled'].includes(entry.content)) setIsExecuting(false);
+      }
+      if (entry.type === 'error') setIsExecuting(false);
     });
     const unsubDelta = wsClient.on('task:log:delta', (event) => {
       const p = event.payload;
@@ -153,7 +159,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   }, [logs, streamingText]);
 
   if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading…</div>;
-  if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
+  if (logs.length === 0 && !streamingText && !isExecuting) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
 
   const visibleLogs = filterCompletedToolStarts(logs);
 
@@ -164,6 +170,16 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
           {streamingText}
           <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+        </div>
+      )}
+      {isExecuting && !streamingText && (
+        <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-gray-500">
+          <span className="flex gap-0.5">
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+          </span>
+          Thinking…
         </div>
       )}
       <div ref={endRef} />

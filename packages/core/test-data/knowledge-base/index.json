@@ -1,0 +1,17 @@
+[
+  {
+    "id": "kb_1772263485194_9xjmda",
+    "category": "test",
+    "title": "Test Knowledge",
+    "content": "This is a test knowledge entry",
+    "tags": [
+      "test",
+      "memory"
+    ],
+    "source": "test",
+    "metadata": {
+      "test": true
+    },
+    "timestamp": "2026-02-28T07:24:45.194Z"
+  }
+]

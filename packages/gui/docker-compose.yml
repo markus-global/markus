@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  gui-container:
+    image: jlesage/firefox:latest
+    container_name: gui-container
+    environment:
+      - DISPLAY=:1
+      - VNC_PASSWORD=password123
+      - VNC_LISTENING_PORT=5901
+    ports:
+      - "5901:5901"  # VNC端口
+      - "5800:5800"  # Web VNC端口
+    volumes:
+      - ./data:/config
+    shm_size: '2gb'
+    privileged: true
+    stdin_open: true
+    tty: true
+    networks:
+      - gui-network
+
+  xvfb:
+    image: selenium/standalone-chrome:latest
+    container_name: xvfb-container
+    environment:
+      - DISPLAY=:99
+      - SCREEN_WIDTH=1920
+      - SCREEN_HEIGHT=1080
+      - SCREEN_DEPTH=24
+    ports:
+      - "4444:4444"
+    shm_size: '2gb'
+    networks:
+      - gui-network
+
+  vnc-server:
+    image: consol/ubuntu-xfce-vnc:latest
+    container_name: vnc-server
+    environment:
+      - VNC_PASSWORD=password123
+      - VNC_RESOLUTION=1920x1080
+    ports:
+      - "5902:5901"
+      - "6901:6901"
+    volumes:
+      - ./vnc-data:/headless
+    networks:
+      - gui-network
+
+networks:
+  gui-network:
+    driver: bridge
+
+volumes:
+  gui-data:
+  vnc-data:

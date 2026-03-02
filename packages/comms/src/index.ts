@@ -4,5 +4,9 @@ export { buildStatusCard, buildTaskCard, buildProgressCard } from './feishu/card
 export { WebUIAdapter } from './webui/adapter.js';
 export { WhatsAppAdapter } from './whatsapp/adapter.js';
 export { WhatsAppClient } from './whatsapp/client.js';
+export { SlackAdapter } from './slack/adapter.js';
+export { SlackClient } from './slack/client.js';
+export { TelegramAdapter } from './telegram/adapter.js';
+export { TelegramClient } from './telegram/client.js';
 export { MessageRouter } from './router.js';
 export type { CommAdapter, CommAdapterConfig } from './adapter.js';

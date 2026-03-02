@@ -147,18 +147,18 @@ export class FeishuAdapter implements CommAdapter {
 
         if (event.header?.event_type === 'im.message.receive_v1') {
           this.processMessageEvent(event).catch((err) => {
-            log.error('Failed to process Feishu message event', { error: String(err) });
+            log.error('Failed to process Feishu message event', { error: err.message });
           });
         }
 
         // Card action callback
         if ((event as Record<string, unknown>)['action']) {
           this.processCardAction(event as Record<string, unknown>).catch((err) => {
-            log.error('Failed to process card action', { error: String(err) });
+            log.error('Failed to process card action', { error: err.message });
           });
         }
       } catch (error) {
-        log.error('Failed to parse webhook body', { error: String(error) });
+        log.error('Failed to parse webhook body', { error });
         res.writeHead(400);
         res.end('bad request');
       }
@@ -208,7 +208,7 @@ export class FeishuAdapter implements CommAdapter {
       try {
         await handler(message);
       } catch (error) {
-        log.error('Message handler failed', { error: String(error) });
+        log.error('Message handler failed', { error });
       }
     }
   }
@@ -246,7 +246,7 @@ export class FeishuAdapter implements CommAdapter {
       try {
         await handler(message);
       } catch (error) {
-        log.error('Card action handler failed', { error: String(error) });
+        log.error('Card action handler failed', { error });
       }
     }
   }

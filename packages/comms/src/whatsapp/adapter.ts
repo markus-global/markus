@@ -63,7 +63,7 @@ export class WhatsAppAdapter implements CommAdapter {
       log.info(`WhatsApp message sent to ${channelId}: ${messageId}`);
       return messageId;
     } catch (error) {
-      log.error(`Failed to send WhatsApp message to ${channelId}:`, error);
+      log.error(`Failed to send WhatsApp message to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -80,9 +80,71 @@ export class WhatsAppAdapter implements CommAdapter {
       log.info(`WhatsApp reply sent to ${channelId} (in response to ${replyToId}): ${messageId}`);
       return messageId;
     } catch (error) {
-      log.error(`Failed to send WhatsApp reply to ${channelId}:`, error);
+      log.error(`Failed to send WhatsApp reply to ${channelId}:`, { error });
       throw error;
     }
+  }
+
+  async sendBlocks(channelId: string, blocks: any[], text?: string, options?: SendOptions): Promise<string> {
+    if (!this.config || !this.client) throw new Error('WhatsApp adapter not connected');
+    
+    try {
+      // WhatsApp doesn't support rich blocks like Slack, so we send text content
+      const content = text || this.blocksToText(blocks);
+      const messageId = await this.client.sendTextMessage(channelId, content);
+      
+      log.info(`WhatsApp blocks message sent to channel ${channelId}: ${messageId}`);
+      return messageId;
+    } catch (error) {
+      log.error(`Failed to send WhatsApp blocks message to ${channelId}:`, { error });
+      throw error;
+    }
+  }
+
+  async updateMessage(channelId: string, messageId: string, content: string): Promise<void> {
+    if (!this.config || !this.client) throw new Error('WhatsApp adapter not connected');
+    
+    try {
+      // WhatsApp doesn't have an update message API, so we send a new message
+      const updateContent = `(Updated) ${content}`;
+      await this.client.sendTextMessage(channelId, updateContent);
+      
+      log.info(`WhatsApp message update simulated for message ${messageId} in channel ${channelId}`);
+    } catch (error) {
+      log.error(`Failed to update WhatsApp message ${messageId} in ${channelId}:`, { error });
+      throw error;
+    }
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    if (!this.config || !this.client) throw new Error('WhatsApp adapter not connected');
+    
+    try {
+      // WhatsApp doesn't have a delete message API
+      log.warn(`WhatsApp message deletion requested for message ${messageId} in channel ${channelId}, but not implemented`);
+    } catch (error) {
+      log.error(`Failed to delete WhatsApp message ${messageId} in ${channelId}:`, { error });
+      throw error;
+    }
+  }
+
+  private blocksToText(blocks: any[]): string {
+    // Convert blocks to plain text for WhatsApp
+    let text = '';
+    for (const block of blocks) {
+      if (block.type === 'section') {
+        if (block.text?.text) {
+          text += block.text.text + '\n';
+        }
+      } else if (block.type === 'header') {
+        if (block.text?.text) {
+          text += `*${block.text.text}*\n`;
+        }
+      } else if (block.type === 'divider') {
+        text += '---\n';
+      }
+    }
+    return text.trim();
   }
 
   onMessage(handler: IncomingMessageHandler): void {

@@ -6,4 +6,6 @@ export { MCPClientManager } from './mcp-client.js';
 export { createBuiltinTools } from './builtin.js';
 export { createManagerTools, type ManagerToolsContext } from './manager.js';
 export { createA2ATools, type A2AContext } from './a2a.js';
+export { createStructuredA2ATools, type StructuredA2AContext } from './a2a-structured.js';
 export { createAgentTaskTools, type AgentTaskContext } from './task-tools.js';
+export { GUITool, createGUITool, type GUIScreenshotParams, type GUIAnalyzeParams, type GUIMouseParams, type GUIKeyboardParams, type GUIFindElementParams, type GUIScreenInfo, type GUIElement, type GUIAnalysisResult } from './gui.js';

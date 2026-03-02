@@ -94,21 +94,8 @@ export async function createGUISkill(containerId?: string, screenshotDir?: strin
   // Create tools based on availability
   let guiTools: AgentToolHandler[] = [];
 
-  if (containerId && screenshotDir) {
-    // Try to create real GUI tools
-    try {
-      // Dynamically import GUI tools using ES module import
-      const guiModule = await import('@markus/gui');
-      guiTools = guiModule.createGUITools(containerId, screenshotDir);
-    } catch (error) {
-      console.warn('Failed to load @markus/gui package, creating stub tools:', error);
-      // Fall back to stub tools
-      guiTools = createStubTools();
-    }
-  } else {
-    // Create stub tools when container info not provided
-    guiTools = createStubTools();
-  }
+  // Always use stub tools for now
+  guiTools = createStubTools();
 
   return {
     manifest,

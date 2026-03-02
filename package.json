@@ -9,7 +9,9 @@
     "dev": "pnpm -r --parallel dev",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
-    "clean": "pnpm -r clean"
+    "clean": "pnpm -r clean",
+    "test:gui": "tsx test-gui-integration.ts",
+    "example:gui": "tsx examples/gui-automation-workflow.ts"
   },
   "engines": {
     "node": ">=20.0.0",
@@ -22,6 +24,8 @@
     "typescript": "^5.9.3"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.31.9"
+    "@types/node-cron": "^3.0.11",
+    "drizzle-kit": "^0.31.9",
+    "tsx": "^4.21.0"
   }
 }

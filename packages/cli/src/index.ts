@@ -230,6 +230,32 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const siliconflowKey = config.llm.providers['siliconflow']?.apiKey ?? process.env['SILICONFLOW_API_KEY'];
+  if (siliconflowKey) {
+    providerConfigs['siliconflow'] = {
+      provider: 'siliconflow',
+      model: process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen2.5-72B-Instruct',
+      apiKey: siliconflowKey,
+      baseUrl: process.env['SILICONFLOW_BASE_URL'] ?? config.llm.providers['siliconflow']?.baseUrl ?? 'https://api.siliconflow.cn/v1',
+    };
+    if (config.llm.defaultProvider === 'siliconflow') {
+      defaultProvider = 'siliconflow';
+    }
+  }
+
+  const openrouterKey = config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
+  if (openrouterKey) {
+    providerConfigs['openrouter'] = {
+      provider: 'openrouter',
+      model: process.env['OPENROUTER_MODEL'] ?? 'openai/gpt-4o',
+      apiKey: openrouterKey,
+      baseUrl: process.env['OPENROUTER_BASE_URL'] ?? config.llm.providers['openrouter']?.baseUrl ?? 'https://openrouter.ai/api/v1',
+    };
+    if (config.llm.defaultProvider === 'openrouter') {
+      defaultProvider = 'openrouter';
+    }
+  }
+
   const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
   const skillRegistry = await createDefaultSkillRegistry();

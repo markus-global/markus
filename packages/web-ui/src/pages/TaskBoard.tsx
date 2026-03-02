@@ -111,12 +111,20 @@ function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
   return logs.filter((_, i) => !matchedStartIndices.has(i));
 }
 
-function TaskExecutionLogs({ taskId, isVisible }: { taskId: string; isVisible: boolean }) {
+function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; isVisible: boolean; isRunning: boolean }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
+  // Initialise from prop so we show "Thinking…" immediately when modal is opened
+  // while a heartbeat-triggered task is already in_progress.
+  const [isExecuting, setIsExecuting] = useState(isRunning);
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Keep isExecuting in sync when the parent task status changes (e.g. heartbeat flip)
+  useEffect(() => {
+    setIsExecuting(isRunning);
+  }, [isRunning]);
 
   useEffect(() => {
     setLoading(true);
@@ -146,6 +154,11 @@ function TaskExecutionLogs({ taskId, isVisible }: { taskId: string; isVisible: b
         return [...prev, entry];
       });
       if (entry.type === 'text') setStreamingText('');
+      if (entry.type === 'status') {
+        if (entry.content === 'started') setIsExecuting(true);
+        else if (['completed', 'failed', 'cancelled'].includes(entry.content)) setIsExecuting(false);
+      }
+      if (entry.type === 'error') setIsExecuting(false);
     });
 
     const unsubDelta = wsClient.on('task:log:delta', (event) => {
@@ -188,6 +201,16 @@ function TaskExecutionLogs({ taskId, isVisible }: { taskId: string; isVisible: b
         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
           {streamingText}
           <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+        </div>
+      )}
+      {isExecuting && !streamingText && (
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500">
+          <span className="flex gap-0.5">
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+          </span>
+          Thinking…
         </div>
       )}
       <div ref={endRef} />
@@ -395,7 +418,7 @@ function TaskDetailModal({
               <span className="font-medium">Failed to start:</span> {runError}
             </div>
           )}
-          <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} />
+          <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} isRunning={task.status === 'in_progress'} />
         </div>
 
         {activeTab === 'details' && (
@@ -740,7 +763,17 @@ export function TaskBoard() {
   useEffect(() => {
     refresh();
     const i = setInterval(refresh, 15000);
-    const unsub = wsClient.on('task:update', () => refresh());
+    const unsub = wsClient.on('task:update', (event) => {
+      refresh();
+      // If the updated task is currently open in the modal, sync its status immediately
+      // without waiting for the next refresh so the modal doesn't show stale data.
+      const p = event?.payload as { taskId?: string; status?: string; title?: string } | undefined;
+      if (p?.taskId && p.status) {
+        setSelectedTask(prev =>
+          prev && prev.id === p.taskId ? { ...prev, status: p.status as TaskInfo['status'] } : prev
+        );
+      }
+    });
     return () => { clearInterval(i); unsub(); };
   }, [refresh]);
 

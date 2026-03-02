@@ -61,14 +61,15 @@ export class SlackAdapter implements CommAdapter {
     
     try {
       // channelId is the Slack channel ID (e.g., C1234567890)
-      const messageId = await this.client.sendTextMessage(channelId, content, {
-        thread_ts: options?.threadId,
-        reply_broadcast: options?.broadcastReply,
-      });
+      const slackOptions: Record<string, unknown> = {};
+      if (options?.threadId) {
+        slackOptions.thread_ts = options.threadId;
+      }
+      const messageId = await this.client.sendTextMessage(channelId, content, slackOptions);
       log.info(`Slack message sent to channel ${channelId}: ${messageId}`);
       return messageId;
     } catch (error) {
-      log.error(`Failed to send Slack message to ${channelId}:`, error);
+      log.error(`Failed to send Slack message to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -78,14 +79,15 @@ export class SlackAdapter implements CommAdapter {
     
     try {
       // In Slack, replyToId is the thread_ts (timestamp) of the message to reply to
-      const messageId = await this.client.sendTextMessage(channelId, content, {
+      const slackOptions: Record<string, unknown> = {
         thread_ts: replyToId,
         reply_broadcast: false,
-      });
+      };
+      const messageId = await this.client.sendTextMessage(channelId, content, slackOptions);
       log.info(`Slack reply sent to channel ${channelId} (in thread ${replyToId}): ${messageId}`);
       return messageId;
     } catch (error) {
-      log.error(`Failed to send Slack reply to ${channelId}:`, error);
+      log.error(`Failed to send Slack reply to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -94,13 +96,15 @@ export class SlackAdapter implements CommAdapter {
     if (!this.config || !this.client) throw new Error('Slack adapter not connected');
     
     try {
-      const messageId = await this.client.sendBlocksMessage(channelId, blocks, text, {
-        thread_ts: options?.threadId,
-      });
+      const slackOptions: Record<string, unknown> = {};
+      if (options?.threadId) {
+        slackOptions.thread_ts = options.threadId;
+      }
+      const messageId = await this.client.sendBlocksMessage(channelId, blocks, text, slackOptions);
       log.info(`Slack blocks message sent to channel ${channelId}: ${messageId}`);
       return messageId;
     } catch (error) {
-      log.error(`Failed to send Slack blocks message to ${channelId}:`, error);
+      log.error(`Failed to send Slack blocks message to ${channelId}:`, { error });
       throw error;
     }
   }
@@ -109,10 +113,10 @@ export class SlackAdapter implements CommAdapter {
     if (!this.config || !this.client) throw new Error('Slack adapter not connected');
     
     try {
-      await this.client.updateMessage(channelId, messageId, content);
+      await this.client.updateMessage(channelId, messageId, content, undefined);
       log.info(`Slack message updated in channel ${channelId}: ${messageId}`);
     } catch (error) {
-      log.error(`Failed to update Slack message ${messageId} in ${channelId}:`, error);
+      log.error(`Failed to update Slack message ${messageId} in ${channelId}:`, { error });
       throw error;
     }
   }
@@ -124,7 +128,7 @@ export class SlackAdapter implements CommAdapter {
       await this.client.deleteMessage(channelId, messageId);
       log.info(`Slack message deleted from channel ${channelId}: ${messageId}`);
     } catch (error) {
-      log.error(`Failed to delete Slack message ${messageId} from ${channelId}:`, error);
+      log.error(`Failed to delete Slack message ${messageId} from ${channelId}:`, { error });
       throw error;
     }
   }

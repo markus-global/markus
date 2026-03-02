@@ -261,10 +261,9 @@ export class OpenClawConfigParser {
         // Save previous policy if exists
         if (currentPolicy.name && currentPolicy.description) {
           policies.push({
-            id: generateId('policy'),
             name: currentPolicy.name,
             description: currentPolicy.description,
-            category: 'operational',
+            rules: [], // Empty rules array
           });
         }
         
@@ -302,10 +301,9 @@ export class OpenClawConfigParser {
     // Add last policy
     if (currentPolicy.name && currentPolicy.description) {
       policies.push({
-        id: generateId('policy'),
         name: currentPolicy.name,
         description: currentPolicy.description,
-        category: 'operational',
+        rules: [], // Empty rules array
       });
     }
     

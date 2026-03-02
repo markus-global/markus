@@ -118,7 +118,6 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   git_log:       { label: 'Git log',         icon: '📜' },
   git_commit:    { label: 'Git commit',      icon: '💾' },
   code_search:   { label: 'Searching code',  icon: '🔍' },
-  create_task:   { label: 'Creating task',   icon: '📌' },
   agent_send_message: { label: 'Messaging colleague', icon: '💬' },
 };
 function toolMeta(tool: string) {

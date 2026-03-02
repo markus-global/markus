@@ -135,7 +135,9 @@ export function Settings() {
           </div>
 
           <div className="text-xs text-gray-600 px-1">
-            To configure API keys, edit your <code className="text-gray-500">.env</code> file (OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY) and restart the server.
+            To configure API keys, edit your <code className="text-gray-500">.env</code> file and restart the server.
+            Supported env vars: <code className="text-gray-500">ANTHROPIC_API_KEY</code>, <code className="text-gray-500">OPENAI_API_KEY</code>, <code className="text-gray-500">DEEPSEEK_API_KEY</code>, <code className="text-gray-500">SILICONFLOW_API_KEY</code>, <code className="text-gray-500">OPENROUTER_API_KEY</code>.
+            Optionally set <code className="text-gray-500">SILICONFLOW_MODEL</code> / <code className="text-gray-500">OPENROUTER_MODEL</code> to override the default model.
           </div>
         </Section>
 

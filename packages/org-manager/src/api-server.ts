@@ -8,6 +8,8 @@ import type { BillingService } from './billing-service.js';
 import type { AuditService } from './audit-service.js';
 import type { StorageBridge } from './storage-bridge.js';
 import { WSBroadcaster } from './ws-server.js';
+import { SSEBuffer } from './sse-buffer.js';
+import { SSEHandler } from './sse-handler.js';
 
 const log = createLogger('api-server');
 
@@ -503,47 +505,20 @@ export class APIServer {
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
         if (stream) {
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-          });
-
           const userText = body['text'] as string;
-          // Persist user message before LLM call so it survives even if LLM fails
-          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
-          try {
-            const msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> = [];
-            let textBuf = '';
-            const reply = await agent.handleMessageStream(
-              userText,
-              (event) => {
-                res.write(`data: ${JSON.stringify(event)}\n\n`);
-                if (event.type === 'text_delta' && event.text) {
-                  textBuf += event.text;
-                  this.ws.broadcastChat(agentId!, event.text, 'agent');
-                } else if ((event as {type: string; phase?: string; tool?: string; success?: boolean}).type === 'agent_tool') {
-                  const ae = event as {type: string; phase?: string; tool?: string; success?: boolean};
-                  if (ae.phase === 'start') {
-                    if (textBuf) { msgSegments.push({ type: 'text', content: textBuf }); textBuf = ''; }
-                  } else if (ae.phase === 'end' && ae.tool) {
-                    msgSegments.push({ type: 'tool', tool: ae.tool, status: ae.success === false ? 'error' : 'done' });
-                  }
-                }
-              },
-              senderId,
-              senderInfo,
-            );
-            if (textBuf) msgSegments.push({ type: 'text', content: textBuf });
-            res.write(`data: ${JSON.stringify({ type: 'done', content: reply })}\n\n`);
-            const msgMeta = msgSegments.length > 0 ? { segments: msgSegments } : undefined;
-            void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday, msgMeta);
-          } catch (streamErr) {
-            log.error('Agent stream error', { agentId, error: String(streamErr) });
-            res.write(`data: ${JSON.stringify({ type: 'error', message: String(streamErr) })}\n\n`);
-          }
-          res.end();
+          
+          const sseHandler = new SSEHandler({
+            agentId: agentId!,
+            agent,
+            userText,
+            senderId,
+            senderInfo,
+            wsBroadcaster: this.ws,
+            persistUserMessage: this.persistUserMessage.bind(this),
+            persistAssistantMessage: this.persistAssistantMessage.bind(this),
+          });
+          
+          await sseHandler.handle(res);
         } else {
           const userText = body['text'] as string;
           const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
@@ -909,13 +884,8 @@ export class APIServer {
 
       const stream = body['stream'] as boolean | undefined;
       if (stream) {
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-        });
         const userText = body['text'] as string;
+        
         // Persist user message to smart channel before LLM call so it's never lost
         if (this.storage) {
           void this.storage.channelMessageRepo.append({
@@ -924,44 +894,36 @@ export class APIServer {
             senderName: senderInfo?.name ?? 'You', text: userText, mentions: [],
           }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
-        try {
-          const smartSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> = [];
-          let smartTextBuf = '';
-          const reply = await agent.handleMessageStream(
-            userText,
-            (event) => {
-              res.write(`data: ${JSON.stringify(event)}\n\n`);
-              if (event.type === 'text_delta' && event.text) {
-                smartTextBuf += event.text;
-              } else if ((event as {type: string; phase?: string; tool?: string; success?: boolean}).type === 'agent_tool') {
-                const ae = event as {type: string; phase?: string; tool?: string; success?: boolean};
-                if (ae.phase === 'start') {
-                  if (smartTextBuf) { smartSegments.push({ type: 'text', content: smartTextBuf }); smartTextBuf = ''; }
-                } else if (ae.phase === 'end' && ae.tool) {
-                  smartSegments.push({ type: 'tool', tool: ae.tool, status: ae.success === false ? 'error' : 'done' });
-                }
-              }
-            },
-            senderId,
-            senderInfo,
-          );
-          if (smartTextBuf) smartSegments.push({ type: 'text', content: smartTextBuf });
-          res.write(`data: ${JSON.stringify({ type: 'done', content: reply, agentId: targetAgentId })}\n\n`);
-          const smartMeta = smartSegments.length > 0 ? { segments: smartSegments } : undefined;
-          void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, smartMeta);
-          // Persist agent reply to smart channel
-          if (this.storage) {
-            void this.storage.channelMessageRepo.append({
-              orgId: targetOrgId, channel: 'smart:default',
-              senderId: targetAgentId, senderType: 'agent',
-              senderName: agent.config.name, text: reply, mentions: [],
-            }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
-          }
-        } catch (streamErr) {
-          log.error('Channel agent stream error', { agentId: targetAgentId, error: String(streamErr) });
-          res.write(`data: ${JSON.stringify({ type: 'error', message: String(streamErr) })}\n\n`);
-        }
-        res.end();
+        
+        const sseHandler = new SSEHandler({
+          agentId: targetAgentId,
+          agent,
+          userText,
+          senderId,
+          senderInfo,
+          onTextDelta: (text) => {
+            // 智能频道不需要WebSocket广播，但可以在这里添加其他处理
+          },
+          onToolEvent: (event) => {
+            // 处理工具事件
+          },
+          onComplete: async (reply, segments, tokensUsed) => {
+            // 持久化助手消息
+            const smartMeta = segments.length > 0 ? { segments } : undefined;
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, smartMeta);
+            
+            // Persist agent reply to smart channel
+            if (this.storage) {
+              void this.storage.channelMessageRepo.append({
+                orgId: targetOrgId, channel: 'smart:default',
+                senderId: targetAgentId, senderType: 'agent',
+                senderName: agent.config.name, text: reply, mentions: [],
+              }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+            }
+          },
+        });
+        
+        await sseHandler.handle(res);
       } else {
         const userText = body['text'] as string;
         // Persist user message before LLM call

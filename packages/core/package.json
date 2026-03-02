@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@markus/shared": "workspace:*",
-    "@markus/comms": "workspace:*"
+    "@markus/comms": "workspace:*",
+    "@markus/gui": "workspace:*",
+    "@markus/a2a": "workspace:*",
+    "node-cron": "^3.0.3"
   }
 }

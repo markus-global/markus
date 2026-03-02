@@ -35,43 +35,93 @@ export class OpenClawConfigParser {
    * Parse an OpenClaw-style markdown configuration into a Markus RoleTemplate
    */
   parse(markdown: string): RoleTemplate {
-    const lines = markdown.split('\n');
-    
-    // Extract basic information
-    const name = this.extractTitle(markdown) || 'OpenClaw Agent';
-    const description = this.extractDescription(markdown);
-    const category = this.inferCategory(markdown);
-    
-    // Parse OpenClaw-specific sections
-    const capabilities = this.parseCapabilities(markdown);
-    const memoryConfig = this.parseMemoryConfig(markdown);
-    const heartbeatTasks = this.parseHeartbeatTasks(markdown);
-    const policies = this.parsePolicies(markdown);
-    const knowledgeBase = this.parseKnowledgeBase(markdown);
-    
-    // Build system prompt combining all sections
-    const systemPrompt = this.buildSystemPrompt(
-      markdown,
-      capabilities,
-      memoryConfig,
-      heartbeatTasks,
-      knowledgeBase
-    );
-    
-    // Extract skills from capabilities
-    const skills = this.extractSkills(capabilities);
-    
-    return {
-      id: generateId('role'),
-      name,
-      description,
-      category,
-      systemPrompt,
-      defaultSkills: skills,
-      defaultHeartbeatTasks: heartbeatTasks,
-      defaultPolicies: policies,
-      builtIn: false, // Mark as external/OpenClaw configuration
-    };
+    const { roleTemplate } = this.parseFullConfig(markdown);
+    return roleTemplate;
+  }
+
+  /**
+   * Parse an OpenClaw-style markdown configuration and return both RoleTemplate and OpenClawRoleConfig
+   */
+  parseFullConfig(markdown: string): { roleTemplate: RoleTemplate; openClawConfig: OpenClawRoleConfig } {
+    try {
+      // Validate input
+      if (!markdown || typeof markdown !== 'string') {
+        throw new Error('Invalid markdown input: must be a non-empty string');
+      }
+      
+      if (!markdown.includes('#')) {
+        throw new Error('Invalid OpenClaw configuration: must contain at least one heading');
+      }
+      
+      const lines = markdown.split('\n');
+      
+      // Extract basic information
+      const name = this.extractNameFromOpenClaw(markdown);
+      const description = this.extractDescription(markdown);
+      const category = this.inferCategory(markdown);
+      
+      // Parse OpenClaw-specific sections
+      const capabilities = this.parseCapabilities(markdown);
+      const memoryConfig = this.parseMemoryConfig(markdown);
+      const heartbeatTasks = this.parseHeartbeatTasks(markdown);
+      const policies = this.parsePolicies(markdown);
+      const knowledgeBase = this.parseKnowledgeBase(markdown);
+      
+      // Build system prompt combining all sections
+      const systemPrompt = this.buildSystemPrompt(
+        markdown,
+        capabilities,
+        memoryConfig,
+        heartbeatTasks,
+        knowledgeBase
+      );
+      
+      // Extract skills from capabilities
+      const skills = this.extractSkills(capabilities);
+      
+      // Validate required fields
+      if (!name.trim()) {
+        throw new Error('Failed to extract agent name from configuration');
+      }
+      
+      if (!systemPrompt.trim()) {
+        throw new Error('Failed to generate system prompt from configuration');
+      }
+      
+      const roleTemplate: RoleTemplate = {
+        id: generateId('role'),
+        name,
+        description,
+        category,
+        systemPrompt,
+        defaultSkills: skills,
+        defaultHeartbeatTasks: heartbeatTasks,
+        defaultPolicies: policies,
+        builtIn: false, // Mark as external/OpenClaw configuration
+      };
+
+      const openClawConfig: OpenClawRoleConfig = {
+        memoryConfig: memoryConfig as any,
+        heartbeatTasks: heartbeatTasks.map(task => ({
+          name: task.name,
+          description: task.description,
+          schedule: task.cronExpression || '*/5 * * * *' // Default schedule if not specified
+        })),
+        knowledgeBase,
+        externalAgentId: undefined // To be set when integrating external agents
+      };
+      
+      return {
+        roleTemplate,
+        openClawConfig
+      };
+    } catch (error) {
+      // Re-throw with context
+      if (error instanceof Error) {
+        throw new Error(`Failed to parse OpenClaw configuration: ${error.message}`);
+      }
+      throw new Error('Failed to parse OpenClaw configuration: Unknown error');
+    }
   }
   
   /**
@@ -80,6 +130,23 @@ export class OpenClawConfigParser {
   private extractTitle(md: string): string {
     const match = md.match(/^#\s+(.+)$/m);
     return match?.[1]?.trim() ?? '';
+  }
+
+  /**
+   * Extract name from OpenClaw format (looks for **Name:** field)
+   */
+  private extractNameFromOpenClaw(md: string): string {
+    // Look for **Name:** field in the Identity section
+    const identitySection = this.extractSection(md, ['# Identity', '## Identity']);
+    if (identitySection) {
+      const nameMatch = identitySection.match(/\*\*Name:\*\*\s*(.+)/i);
+      if (nameMatch?.[1]) {
+        return nameMatch[1].trim();
+      }
+    }
+    
+    // Fall back to title extraction
+    return this.extractTitle(md) || 'OpenClaw Agent';
   }
   
   /**
@@ -133,13 +200,40 @@ export class OpenClawConfigParser {
    * Format: ## Capabilities / ## Skills / ## Tools
    */
   private parseCapabilities(md: string): string[] {
-    const sections = this.extractSection(md, ['## Capabilities', '## Skills', '## Tools']);
-    if (!sections) return [];
+    const capabilities: string[] = [];
     
-    return sections
-      .split('\n')
-      .map(line => line.replace(/^[-*]\s*/, '').trim())
-      .filter(line => line && !line.startsWith('#'));
+    // First, check for dedicated capabilities/skills/tools sections
+    const sections = this.extractSection(md, ['## Capabilities', '## Skills', '## Tools']);
+    if (sections) {
+      const sectionCapabilities = sections
+        .split('\n')
+        .map(line => line.replace(/^[-*]\s*/, '').trim())
+        .filter(line => line && !line.startsWith('#'));
+      capabilities.push(...sectionCapabilities);
+    }
+    
+    // Also check for skills listed in Identity section
+    const identitySection = this.extractSection(md, ['## Identity']);
+    if (identitySection) {
+      const lines = identitySection.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.toLowerCase().includes('skills:')) {
+          // Extract skills from line like "- Skills: Testing, Debugging, Documentation"
+          const match = trimmed.match(/skills:\s*(.+)$/i);
+          if (match) {
+            const skillsStr = match[1].trim();
+            // Split by commas, semicolons, or "and"
+            const skills = skillsStr.split(/[,;]|\s+and\s+/)
+              .map(s => s.trim())
+              .filter(s => s);
+            capabilities.push(...skills);
+          }
+        }
+      }
+    }
+    
+    return capabilities;
   }
   
   /**
@@ -163,9 +257,12 @@ export class OpenClawConfigParser {
       // Parse key-value pairs like "short-term: 1000 tokens"
       const match = cleanLine.match(/^([^:]+):\s*(.+)$/);
       if (match) {
-        const key = match[1].trim().toLowerCase().replace(/\s+/g, '_');
+        const key = match[1].trim().toLowerCase();
         const value = match[2].trim();
-        config[key] = this.parseValue(value);
+        
+        // Convert hyphenated keys to camelCase for OpenClawMemoryConfig
+        const camelCaseKey = key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        config[camelCaseKey] = this.parseValue(value);
       }
     }
     
@@ -177,7 +274,7 @@ export class OpenClawConfigParser {
    * Format: ## Heartbeat / ## Periodic Tasks / ## Scheduled Tasks
    */
   private parseHeartbeatTasks(md: string): HeartbeatTask[] {
-    const sections = this.extractSection(md, ['## Heartbeat', '## Periodic Tasks', '## Scheduled Tasks']);
+    const sections = this.extractSection(md, ['## Heartbeat', '## Heartbeat Tasks', '## Periodic Tasks', '## Scheduled Tasks']);
     if (!sections) return [];
     
     const tasks: HeartbeatTask[] = [];
@@ -187,14 +284,16 @@ export class OpenClawConfigParser {
     for (const line of lines) {
       const trimmed = line.trim();
       
-      // Task name (starts with ### or -)
-      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s*[^:]+:/)) {
+      // Task name (starts with ### or bullet point)
+      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s+\S/)) {
         // Save previous task if exists
         if (currentTask.name && currentTask.description) {
           tasks.push({
             name: currentTask.name,
             description: currentTask.description,
             enabled: true,
+            ...(currentTask.cronExpression && { cronExpression: currentTask.cronExpression }),
+            ...(currentTask.intervalMs && { intervalMs: currentTask.intervalMs }),
           });
         }
         
@@ -205,26 +304,66 @@ export class OpenClawConfigParser {
         let taskName = trimmed;
         if (trimmed.startsWith('###')) {
           taskName = trimmed.replace(/^###\s*/, '');
+          currentTask.name = taskName.trim();
         } else {
-          // Remove bullet point and capture name before colon
+          // Remove bullet point
           taskName = trimmed.replace(/^[-*]\s*/, '');
-        }
-        
-        // Remove colon and everything after for task name
-        currentTask.name = taskName.replace(/:.*$/, '').trim();
-        
-        // Check for inline description
-        const inlineDesc = trimmed.match(/:?\s*(.+)$/);
-        if (inlineDesc && inlineDesc[1]) {
-          currentTask.description = inlineDesc[1].trim();
+          
+          // Check if there's a colon separating name and description
+          const colonMatch = taskName.match(/^([^:]+):\s*(.+)$/);
+          if (colonMatch) {
+            currentTask.name = colonMatch[1].trim();
+            currentTask.description = colonMatch[2].trim();
+          } else {
+            // No colon, use entire line as name and description
+            currentTask.name = taskName.trim();
+            currentTask.description = taskName.trim();
+          }
         }
       }
       // Task description continuation
       else if (trimmed && currentTask.name && !trimmed.startsWith('#')) {
-        if (currentTask.description) {
-          currentTask.description += ' ' + trimmed;
+        // Check for schedule information
+        const scheduleMatch = trimmed.match(/\*\*Schedule:\*\*\s*(.+)/i);
+        if (scheduleMatch) {
+          const scheduleText = scheduleMatch[1].trim();
+          
+          // Parse cron expression
+          const cronMatch = scheduleText.match(/cron expression:\s*([^\s]+)/i);
+          if (cronMatch) {
+            currentTask.cronExpression = cronMatch[1];
+          }
+          
+          // Parse interval in seconds
+          const intervalMatch = scheduleText.match(/every\s+(\d+)\s+seconds?/i);
+          if (intervalMatch) {
+            currentTask.intervalMs = parseInt(intervalMatch[1]) * 1000;
+          }
+          
+          // Parse interval in minutes
+          const minutesMatch = scheduleText.match(/every\s+(\d+)\s+minutes?/i);
+          if (minutesMatch) {
+            currentTask.intervalMs = parseInt(minutesMatch[1]) * 60 * 1000;
+          }
+          
+          // Parse interval in hours
+          const hoursMatch = scheduleText.match(/every\s+(\d+)\s+hours?/i);
+          if (hoursMatch) {
+            currentTask.intervalMs = parseInt(hoursMatch[1]) * 60 * 60 * 1000;
+          }
+          
+          // Parse interval in days
+          const daysMatch = scheduleText.match(/every\s+(\d+)\s+days?/i);
+          if (daysMatch) {
+            currentTask.intervalMs = parseInt(daysMatch[1]) * 24 * 60 * 60 * 1000;
+          }
         } else {
-          currentTask.description = trimmed;
+          // Regular description text
+          if (currentTask.description) {
+            currentTask.description += ' ' + trimmed;
+          } else {
+            currentTask.description = trimmed;
+          }
         }
       }
     }
@@ -235,6 +374,8 @@ export class OpenClawConfigParser {
         name: currentTask.name,
         description: currentTask.description,
         enabled: true,
+        ...(currentTask.cronExpression && { cronExpression: currentTask.cronExpression }),
+        ...(currentTask.intervalMs && { intervalMs: currentTask.intervalMs }),
       });
     }
     
@@ -256,15 +397,14 @@ export class OpenClawConfigParser {
     for (const line of lines) {
       const trimmed = line.trim();
       
-      // Policy name (starts with ### or -)
-      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s*[^:]+:/)) {
+      // Policy name (starts with ### or bullet point)
+      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s*/)) {
         // Save previous policy if exists
         if (currentPolicy.name && currentPolicy.description) {
           policies.push({
-            id: generateId('policy'),
             name: currentPolicy.name,
             description: currentPolicy.description,
-            category: 'operational',
+            rules: [], // Empty rules array
           });
         }
         
@@ -275,18 +415,21 @@ export class OpenClawConfigParser {
         let policyName = trimmed;
         if (trimmed.startsWith('###')) {
           policyName = trimmed.replace(/^###\s*/, '');
+          currentPolicy.name = policyName.trim();
         } else {
-          // Remove bullet point and capture name before colon
+          // Remove bullet point
           policyName = trimmed.replace(/^[-*]\s*/, '');
-        }
-        
-        // Remove colon and everything after for policy name
-        currentPolicy.name = policyName.replace(/:.*$/, '').trim();
-        
-        // Check for inline description
-        const inlineDesc = trimmed.match(/:?\s*(.+)$/);
-        if (inlineDesc && inlineDesc[1]) {
-          currentPolicy.description = inlineDesc[1].trim();
+          
+          // Check if there's a colon separating name and description
+          const colonMatch = policyName.match(/^([^:]+):\s*(.+)$/);
+          if (colonMatch) {
+            currentPolicy.name = colonMatch[1].trim();
+            currentPolicy.description = colonMatch[2].trim();
+          } else {
+            // No colon, use entire line as name and description
+            currentPolicy.name = policyName.trim();
+            currentPolicy.description = policyName.trim();
+          }
         }
       }
       // Policy description continuation
@@ -302,10 +445,9 @@ export class OpenClawConfigParser {
     // Add last policy
     if (currentPolicy.name && currentPolicy.description) {
       policies.push({
-        id: generateId('policy'),
         name: currentPolicy.name,
         description: currentPolicy.description,
-        category: 'operational',
+        rules: [], // Empty rules array
       });
     }
     
@@ -330,9 +472,12 @@ export class OpenClawConfigParser {
    * Parse value from string (could be number, boolean, or string)
    */
   private parseValue(value: string): unknown {
-    // Try to parse as number
-    const num = Number(value);
-    if (!isNaN(num)) return num;
+    // Try to parse as number (handle units like "1000 tokens")
+    const numMatch = value.match(/^(\d+)\s*(?:tokens|kb|mb|gb)?$/i);
+    if (numMatch) {
+      const num = Number(numMatch[1]);
+      if (!isNaN(num)) return num;
+    }
     
     // Try to parse as boolean
     const lower = value.toLowerCase();
@@ -362,6 +507,9 @@ export class OpenClawConfigParser {
       'onboarding': 'onboarding',
       'conflict_resolution': 'conflict-resolution',
       'communication': 'communication',
+      'testing': 'test_runner', // Map generic "Testing" to test_runner
+      'debugging': 'debugging', // Keep as-is if no direct mapping
+      'documentation': 'documentation', // Keep as-is
     };
     
     return capabilities
@@ -370,7 +518,8 @@ export class OpenClawConfigParser {
         for (const [key, skill] of Object.entries(skillMap)) {
           if (lower.includes(key)) return skill;
         }
-        return null;
+        // If no mapping found, use the capability name normalized
+        return lower.replace(/\s+/g, '_');
       })
       .filter((skill): skill is string => skill !== null);
   }
@@ -436,10 +585,22 @@ export class OpenClawConfigParser {
   private removeSection(md: string, possibleHeaders: string[]): string {
     let result = md;
     for (const header of possibleHeaders) {
-      // Escape regex special characters in header
-      const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escapedHeader}\\s*$\\n([\\s\\S]*?)(?=^##\\s|^#\\s|$)`, 'gm');
-      result = result.replace(regex, '');
+      const headerIndex = result.indexOf(header);
+      if (headerIndex === -1) continue;
+      
+      // Find the end of this section (next ## or # header, or end of string)
+      let sectionEnd = result.length;
+      for (let i = headerIndex + header.length; i < result.length; i++) {
+        if (result.substring(i, i + 3) === "\n##" || result.substring(i, i + 2) === "\n#") {
+          sectionEnd = i;
+          break;
+        }
+      }
+      
+      // Remove the section
+      const beforeSection = result.substring(0, headerIndex);
+      const afterSection = result.substring(sectionEnd);
+      result = beforeSection + afterSection;
     }
     return result;
   }
@@ -449,14 +610,158 @@ export class OpenClawConfigParser {
    */
   private extractSection(md: string, possibleHeaders: string[]): string | null {
     for (const header of possibleHeaders) {
-      // Escape regex special characters in header
-      const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`^${escapedHeader}\\s*$\\n([\\s\\S]*?)(?=^##\\s|^#\\s|$)`, 'm');
-      const match = md.match(regex);
-      if (match) {
-        return match[1].trim();
+      const headerIndex = md.indexOf(header);
+      if (headerIndex === -1) continue;
+      
+      // Find the end of this section (next ## or # header at the start of a line, or end of string)
+      let sectionEnd = md.length;
+      for (let i = headerIndex + header.length; i < md.length; i++) {
+        // Check for newline followed by # or ## (but not ### which is a sub-header)
+        if (md[i] === '\n' && i + 1 < md.length) {
+          // Check for # header (not followed by another #)
+          if (md[i + 1] === '#' && (i + 2 >= md.length || md[i + 2] !== '#')) {
+            sectionEnd = i;
+            break;
+          }
+          // Check for ## header (not followed by another #)
+          if (i + 2 < md.length && md[i + 1] === '#' && md[i + 2] === '#' && 
+              (i + 3 >= md.length || md[i + 3] !== '#')) {
+            sectionEnd = i;
+            break;
+          }
+        }
       }
+      
+      // Extract content after header (skip newline after header)
+      let contentStart = headerIndex + header.length;
+      while (contentStart < md.length && (md[contentStart] === "\n" || md[contentStart] === "\r")) {
+        contentStart++;
+      }
+      
+      const content = md.substring(contentStart, sectionEnd).trim();
+      return content;
     }
     return null;
+  }
+
+  /**
+   * Check if the given markdown content is in OpenClaw format
+   */
+  isOpenClawFormat(markdown: string): boolean {
+    // OpenClaw format typically includes specific headers
+    const openclawHeaders = [
+      '# Identity & Role',
+      '# Capabilities & Tools',
+      '# Memory Configuration',
+      '# Heartbeat Tasks',
+      '# Communication Preferences',
+      '# Knowledge Base'
+    ];
+
+    // Check if any of the OpenClaw headers are present
+    for (const header of openclawHeaders) {
+      if (markdown.includes(header)) {
+        return true;
+      }
+    }
+
+    // Also check for common OpenClaw patterns
+    const openclawPatterns = [
+      /## Memory Configuration/i,
+      /## Heartbeat Tasks/i,
+      /## Knowledge Base/i
+    ];
+
+    for (const pattern of openclawPatterns) {
+      if (pattern.test(markdown)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Convert a Markus RoleTemplate to OpenClaw format markdown
+   */
+  toOpenClawFormat(role: RoleTemplate): string {
+    const sections: string[] = [];
+
+    // Identity & Role section
+    sections.push('# Identity & Role');
+    sections.push('');
+    sections.push(`**Name:** ${role.name}`);
+    sections.push(`**Description:** ${role.description || 'No description provided'}`);
+    sections.push(`**Category:** ${role.category || 'general'}`);
+    sections.push('');
+
+    // Capabilities & Tools section
+    sections.push('# Capabilities & Tools');
+    sections.push('');
+    if (role.defaultSkills && role.defaultSkills.length > 0) {
+      sections.push('## Core Skills');
+      role.defaultSkills.forEach(skill => {
+        sections.push(`- ${skill}`);
+      });
+      sections.push('');
+    }
+    sections.push('');
+
+    // Memory Configuration section
+    sections.push('# Memory Configuration');
+    sections.push('');
+    sections.push('| Memory Type | Capacity |');
+    sections.push('|-------------|----------|');
+    sections.push('| Short-term  | 10,000 tokens |');
+    sections.push('| Medium-term | 50,000 tokens |');
+    sections.push('| Long-term   | Unlimited |');
+    sections.push('| Knowledge Base | Enabled |');
+    sections.push('| Context Window | 8,192 tokens |');
+    sections.push('');
+
+    // Heartbeat Tasks section
+    sections.push('# Heartbeat Tasks');
+    sections.push('');
+    if (role.defaultHeartbeatTasks && role.defaultHeartbeatTasks.length > 0) {
+      role.defaultHeartbeatTasks.forEach(task => {
+        sections.push(`## ${task.name}`);
+        sections.push(task.description);
+        if (task.cronExpression) {
+          sections.push(`**Schedule:** Cron expression: ${task.cronExpression}`);
+        } else if (task.intervalMs) {
+          sections.push(`**Schedule:** Every ${task.intervalMs / 1000} seconds`);
+        } else {
+          sections.push(`**Schedule:** Not specified`);
+        }
+        sections.push('');
+      });
+    } else {
+      sections.push('No heartbeat tasks configured.');
+      sections.push('');
+    }
+
+    // Communication Preferences section
+    sections.push('# Communication Preferences');
+    sections.push('');
+    sections.push('- **Primary Channel:** Direct messaging');
+    sections.push('- **Response Time:** Within 30 seconds');
+    sections.push('- **Format:** Structured messages with clear action items');
+    sections.push('');
+
+    // Knowledge Base section
+    sections.push('# Knowledge Base');
+    sections.push('');
+    sections.push('## Internal Knowledge');
+    sections.push('- Project documentation');
+    sections.push('- Team guidelines');
+    sections.push('- Best practices');
+    sections.push('');
+    sections.push('## External References');
+    sections.push('- Official documentation');
+    sections.push('- Community resources');
+    sections.push('- Technical specifications');
+    sections.push('');
+
+    return sections.join('\n');
   }
 }
