@@ -458,6 +458,8 @@ export class APIServer {
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
         agentRole: body['agentRole'] as 'manager' | 'worker' | undefined,
+        // 确保新创建的Agent继承默认工具集
+        tools: body['tools'] as any[] | undefined,
       });
       this.json(res, 201, { agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status } });
       return;
@@ -748,6 +750,13 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const board = this.taskService.getTaskBoard(orgId);
       this.json(res, 200, { board });
+      return;
+    }
+
+    if (path === '/api/tasks/dashboard' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? undefined;
+      const dashboard = this.taskService.getDashboard(orgId);
+      this.json(res, 200, dashboard);
       return;
     }
 

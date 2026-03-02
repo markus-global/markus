@@ -546,6 +546,64 @@ export class TaskService {
     return board;
   }
 
+  getDashboard(orgId?: string): {
+    statusCounts: Record<TaskStatus, number>;
+    totalTasks: number;
+    agentWorkload: Array<{ agentId: string; agentName?: string; activeTasks: number; completedTasks: number }>;
+    recentActivity: Array<{ taskId: string; title: string; status: TaskStatus; updatedAt: string }>;
+    averageCompletionTimeMs: number | null;
+  } {
+    const tasks = orgId
+      ? [...this.tasks.values()].filter(t => t.orgId === orgId)
+      : [...this.tasks.values()];
+
+    const statusCounts: Record<TaskStatus, number> = {
+      pending: 0, assigned: 0, in_progress: 0, blocked: 0,
+      completed: 0, failed: 0, cancelled: 0,
+    };
+    for (const t of tasks) statusCounts[t.status]++;
+
+    const agentMap = new Map<string, { active: number; completed: number }>();
+    for (const t of tasks) {
+      if (!t.assignedAgentId) continue;
+      const entry = agentMap.get(t.assignedAgentId) ?? { active: 0, completed: 0 };
+      if (t.status === 'in_progress' || t.status === 'assigned') entry.active++;
+      if (t.status === 'completed') entry.completed++;
+      agentMap.set(t.assignedAgentId, entry);
+    }
+
+    const agentWorkload = [...agentMap.entries()].map(([agentId, counts]) => {
+      let agentName: string | undefined;
+      try {
+        const agents = this.agentManager?.listAgents() ?? [];
+        agentName = agents.find(a => a.id === agentId)?.config?.name;
+      } catch { /* ignore */ }
+      return { agentId, agentName, activeTasks: counts.active, completedTasks: counts.completed };
+    });
+
+    const recentActivity = [...tasks]
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .slice(0, 20)
+      .map(t => ({ taskId: t.id, title: t.title, status: t.status, updatedAt: t.updatedAt }));
+
+    const completedTasks = tasks.filter(t => t.status === 'completed' && t.updatedAt && t.createdAt);
+    let averageCompletionTimeMs: number | null = null;
+    if (completedTasks.length > 0) {
+      const totalMs = completedTasks.reduce((sum, t) => {
+        return sum + (new Date(t.updatedAt).getTime() - new Date(t.createdAt).getTime());
+      }, 0);
+      averageCompletionTimeMs = Math.round(totalMs / completedTasks.length);
+    }
+
+    return {
+      statusCounts,
+      totalTasks: tasks.length,
+      agentWorkload,
+      recentActivity,
+      averageCompletionTimeMs,
+    };
+  }
+
   private autoAssignAgent(requiredSkills?: string[]): string | undefined {
     if (!this.agentManager) return undefined;
 
