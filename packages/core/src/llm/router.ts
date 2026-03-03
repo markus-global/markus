@@ -416,6 +416,28 @@ export class LLMRouter {
     return [...BUILTIN_MODEL_CATALOG];
   }
 
+  /**
+   * Returns the context window (in tokens) of the currently active default model.
+   * Used by ContextEngine to dynamically size the message budget.
+   */
+  getActiveModelContextWindow(): number {
+    const provider = this.providers.get(this.defaultProvider);
+    if (!provider) return 64000;
+    const custom = this.customModelConfigs.get(this.defaultProvider);
+    if (custom?.contextWindow) return custom.contextWindow;
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === this.defaultProvider);
+    return catalogEntry?.contextWindow ?? 64000;
+  }
+
+  getActiveModelMaxOutput(): number {
+    const provider = this.providers.get(this.defaultProvider);
+    if (!provider) return 4096;
+    const custom = this.customModelConfigs.get(this.defaultProvider);
+    if (custom?.maxOutputTokens) return custom.maxOutputTokens;
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === this.defaultProvider);
+    return catalogEntry?.maxOutputTokens ?? 4096;
+  }
+
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
   }

@@ -4,6 +4,7 @@ export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './ag
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig } from './context-engine.js';
+export { ToolSelector, type ToolGroup } from './tool-selector.js';
 export { LLMRouter } from './llm/router.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';

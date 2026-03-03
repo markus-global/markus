@@ -7,16 +7,10 @@ import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 const log = createLogger('context-engine');
 
 export interface ContextConfig {
-  maxContextTokens: number;
-  maxRecentMessages: number;
-  summarizeThreshold: number;
   memorySearchTopK: number;
 }
 
 const DEFAULT_CONFIG: ContextConfig = {
-  maxContextTokens: 50_000,
-  maxRecentMessages: 30,
-  summarizeThreshold: 40,
   memorySearchTopK: 5,
 };
 
@@ -26,6 +20,20 @@ export interface OrgContext {
   colleagues?: Array<{ name: string; role: string; id: string }>;
   projects?: Array<{ name: string; description: string }>;
   customContext?: string;
+}
+
+/**
+ * Estimates tokens from a string. Uses a conservative 2.5 chars/token
+ * which accounts for CJK, JSON encoding overhead, and structured content.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 2.5);
+}
+
+function estimateMessageTokens(msg: LLMMessage): number {
+  let chars = msg.content.length + 20; // role overhead
+  if (msg.toolCalls) chars += JSON.stringify(msg.toolCalls).length;
+  return Math.ceil(chars / 2.5);
 }
 
 export class ContextEngine {
@@ -46,22 +54,16 @@ export class ContextEngine {
     identity?: IdentityContext;
     senderIdentity?: { id: string; name: string; role: string };
     assignedTasks?: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
-    /** Pre-built knowledge context from EnhancedMemorySystem.getAgentContext() */
     knowledgeContext?: string;
   }): string {
     const parts: string[] = [];
 
-    // 1. Role definition (highest priority)
     parts.push(opts.role.systemPrompt);
-
-    // 2. Identity & organizational awareness
     parts.push(this.buildIdentitySection(opts));
 
-    // 3. Organization context from CONTEXT.md or OrgContext
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
     if (orgCtx) parts.push(orgCtx);
 
-    // 4. Policies
     if (opts.role.defaultPolicies.length > 0) {
       parts.push('\n## Policies');
       for (const policy of opts.role.defaultPolicies) {
@@ -72,20 +74,17 @@ export class ContextEngine {
       }
     }
 
-    // 5. Long-term memory (MEMORY.md)
     const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
       parts.push(longTermMem.slice(0, 3000));
     }
 
-    // 6. Knowledge base context (from EnhancedMemorySystem if available)
     if (opts.knowledgeContext) {
       parts.push('\n## Knowledge Base');
       parts.push(opts.knowledgeContext.slice(0, 3000));
     }
 
-    // 7. Relevant memories (fact-based retrieval)
     const relevantMemories = this.retrieveRelevantMemories(opts.memory, opts.currentQuery);
     if (relevantMemories.length > 0) {
       parts.push('\n## Relevant Memories');
@@ -95,14 +94,12 @@ export class ContextEngine {
       }
     }
 
-    // 7. Recent daily log summary (medium-term memory)
     const dailyLog = opts.memory.getRecentDailyLogs(1);
     if (dailyLog) {
       parts.push('\n## Recent Activity Summary');
       parts.push(dailyLog.slice(0, 1500));
     }
 
-    // 8. Assigned tasks (task board context)
     if (opts.assignedTasks && opts.assignedTasks.length > 0) {
       const activeTasks = opts.assignedTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
       const doneTasks = opts.assignedTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
@@ -134,7 +131,6 @@ export class ContextEngine {
       parts.push('- Never do meaningful work without a corresponding task entry.');
     }
 
-    // 9.5. Memory management guidance
     parts.push('\n## Memory Management');
     parts.push('You have access to persistent memory tools:');
     parts.push('- `memory_save` — Save important facts, decisions, or observations for future recall');
@@ -144,7 +140,6 @@ export class ContextEngine {
     parts.push('');
     parts.push('**When to save memories:** After learning something important (user preferences, project decisions, key outcomes, blockers discovered). Do NOT save trivial or redundant information.');
 
-    // 10. Current conversation context
     if (opts.senderIdentity) {
       parts.push(`\n## Current Conversation`);
       parts.push(`You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`);
@@ -220,92 +215,249 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
+  /**
+   * Intelligent context assembly. Instead of hardcoded limits, this method:
+   * 1. Queries the model's actual context window to derive a token budget
+   * 2. Reserves space for system prompt, tool definitions, and reply
+   * 3. Fills remaining budget with messages, newest first
+   * 4. Compacts old tool-call turns into summaries instead of truncating
+   */
   prepareMessages(opts: {
     systemPrompt: string;
     sessionMessages: LLMMessage[];
     memory: IMemoryStore;
     sessionId: string;
+    modelContextWindow?: number;
+    modelMaxOutput?: number;
     toolDefinitions?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
   }): LLMMessage[] {
-    let recentMessages = opts.sessionMessages;
+    const contextWindow = opts.modelContextWindow ?? 64000;
+    const maxOutput = opts.modelMaxOutput ?? 4096;
 
-    // Smart window management: if we have too many messages, summarize older ones
-    if (recentMessages.length > this.config.summarizeThreshold) {
-      log.info('Session exceeds threshold, triggering summarization', {
-        messageCount: recentMessages.length,
-        threshold: this.config.summarizeThreshold,
+    const systemTokens = estimateTokens(opts.systemPrompt);
+    const toolDefTokens = opts.toolDefinitions
+      ? estimateTokens(JSON.stringify(opts.toolDefinitions))
+      : 0;
+    // Budget = contextWindow - system - tools - reply - safety margin (10%)
+    const safetyMargin = Math.ceil(contextWindow * 0.10);
+    const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
+
+    if (messageBudget < 500) {
+      log.warn('Very tight message budget', { contextWindow, systemTokens, toolDefTokens, maxOutput, messageBudget });
+    }
+
+    let messages = opts.sessionMessages;
+
+    // Step 1: Summarize very old sessions if memory supports it
+    if (messages.length > 60) {
+      messages = opts.memory.summarizeAndTruncate(opts.sessionId, 40);
+    }
+
+    // Step 2: Shrink oversized individual messages. Any single message
+    // that exceeds 1/8 of the budget is likely a huge tool result or
+    // dumped data — compact it to a short summary in-place.
+    const perMessageCap = Math.max(2000, Math.floor(messageBudget / 8));
+    messages = this.shrinkOversizedMessages(messages, perMessageCap);
+
+    // Step 3: Sanitize message sequence (fix orphaned tool results)
+    messages = this.sanitizeMessageSequence(messages);
+
+    // Step 4: Identify the "current turn" — the most recent user message and
+    // any tool-call chain following it. This is never compacted.
+    const currentTurnStart = this.findCurrentTurnStart(messages);
+
+    // Step 5: Compact old turns to fit budget.
+    // Work from oldest to newest: compact tool-call blocks in history
+    // into one-line summaries. Stop compacting once we fit the budget.
+    let totalTokens = this.sumTokens(messages);
+
+    if (totalTokens > messageBudget) {
+      messages = this.compactOldTurns(messages, currentTurnStart, messageBudget);
+      totalTokens = this.sumTokens(messages);
+    }
+
+    // Step 6: If still over budget (e.g. huge current turn), trim oldest messages
+    if (totalTokens > messageBudget) {
+      messages = this.trimToFitBudget(messages, messageBudget);
+      totalTokens = this.sumTokens(messages);
+      log.info('Trimmed oldest messages to fit budget', {
+        remaining: messages.length, tokens: totalTokens, budget: messageBudget,
       });
-      recentMessages = opts.memory.summarizeAndTruncate(
-        opts.sessionId,
-        this.config.maxRecentMessages,
-      );
     }
 
-    // Trim to max recent messages
-    if (recentMessages.length > this.config.maxRecentMessages) {
-      recentMessages = recentMessages.slice(-this.config.maxRecentMessages);
-    }
-
-    // Truncate oversized tool results in history to prevent context explosion
-    recentMessages = this.truncateLargeToolResults(recentMessages);
-
-    // Account for tool definitions overhead in the token budget
-    const toolOverhead = opts.toolDefinitions
-      ? Math.ceil(JSON.stringify(opts.toolDefinitions).length / 2.5)
-      : 5000; // conservative default for tool defs
-
-    const effectiveBudget = this.config.maxContextTokens - toolOverhead;
-
-    // Estimate token count and further trim if needed
-    let estimatedTokens = this.estimateTokens(opts.systemPrompt, recentMessages);
-    if (estimatedTokens > effectiveBudget) {
-      const ratio = effectiveBudget / estimatedTokens;
-      const targetMessages = Math.max(4, Math.floor(recentMessages.length * ratio));
-      recentMessages = recentMessages.slice(-targetMessages);
-      log.info('Trimmed messages to fit token budget', {
-        originalTokens: estimatedTokens,
-        effectiveBudget,
-        targetMessages,
-      });
-
-      // Re-estimate after trimming — if still over, aggressively trim tool results
-      estimatedTokens = this.estimateTokens(opts.systemPrompt, recentMessages);
-      if (estimatedTokens > effectiveBudget) {
-        recentMessages = this.truncateLargeToolResults(recentMessages, 500);
-        log.warn('Still over budget after trimming messages, aggressively truncating tool results', {
-          tokens: estimatedTokens, budget: effectiveBudget,
-        });
-      }
-    }
-
-    // Sanitize: ensure no orphaned tool messages appear without their preceding tool_calls
-    recentMessages = this.sanitizeMessageSequence(recentMessages);
+    log.debug('Context assembled', {
+      contextWindow, messageBudget, messageTokens: totalTokens,
+      systemTokens, toolDefTokens, messageCount: messages.length,
+    });
 
     return [
       { role: 'system', content: opts.systemPrompt },
-      ...recentMessages,
+      ...messages,
     ];
   }
 
-  private truncateLargeToolResults(messages: LLMMessage[], maxChars = 3000): LLMMessage[] {
+  /**
+   * Shrink any individual message whose content exceeds `maxChars`.
+   * Tool results get a short preview; user/assistant messages get tail-trimmed.
+   */
+  private shrinkOversizedMessages(messages: LLMMessage[], maxChars: number): LLMMessage[] {
     return messages.map(m => {
-      if (m.role === 'tool' && m.content.length > maxChars) {
-        return { ...m, content: m.content.slice(0, maxChars) + `\n\n... [truncated from ${m.content.length} chars]` };
+      if (m.content.length <= maxChars) return m;
+      if (m.role === 'tool') {
+        const preview = m.content.slice(0, 300);
+        return { ...m, content: `[Compacted tool result: ${m.content.length} chars]\n${preview}...` };
       }
-      return m;
+      // For user/assistant, keep the beginning (context is usually front-loaded)
+      return { ...m, content: m.content.slice(0, maxChars) + `\n\n[... content trimmed from ${m.content.length} chars]` };
     });
   }
 
   /**
+   * Find where the current turn begins (last user message index).
+   * Everything from here to the end is the "active" turn and should not be compacted.
+   */
+  private findCurrentTurnStart(messages: LLMMessage[]): number {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === 'user') return i;
+    }
+    return 0;
+  }
+
+  /**
+   * Compact historical tool-call blocks (before currentTurnStart) into summaries.
+   * Each block = assistant(toolCalls) + tool results → replaced with a single
+   * assistant message summarizing what happened.
+   */
+  private compactOldTurns(
+    messages: LLMMessage[],
+    currentTurnStart: number,
+    budget: number,
+  ): LLMMessage[] {
+    const history = messages.slice(0, currentTurnStart);
+    const currentTurn = messages.slice(currentTurnStart);
+
+    const currentTurnTokens = this.sumTokens(currentTurn);
+    let historyBudget = budget - currentTurnTokens;
+
+    // Parse history into "blocks": a tool-call block is [assistant+toolCalls, tool, tool, ...]
+    // Everything else is a standalone message.
+    const blocks = this.parseIntoBlocks(history);
+
+    // Process from oldest to newest: compact the oldest blocks first
+    const compactedBlocks: LLMMessage[][] = [];
+    let usedTokens = 0;
+
+    // First pass: estimate what fits without compaction
+    for (const block of blocks) {
+      const blockTokens = this.sumTokens(block);
+      if (usedTokens + blockTokens <= historyBudget) {
+        compactedBlocks.push(block);
+        usedTokens += blockTokens;
+      } else {
+        // This block doesn't fit; compact it
+        const summary = this.summarizeToolBlock(block);
+        const summaryTokens = estimateMessageTokens(summary);
+        if (usedTokens + summaryTokens <= historyBudget) {
+          compactedBlocks.push([summary]);
+          usedTokens += summaryTokens;
+        }
+        // If even the summary doesn't fit, drop the block entirely
+      }
+    }
+
+    return [...compactedBlocks.flat(), ...currentTurn];
+  }
+
+  /**
+   * Parse messages into logical blocks:
+   * - A tool-call block: [assistant(with toolCalls), tool, tool, ...]
+   * - A standalone message: [user] or [assistant(no toolCalls)]
+   */
+  private parseIntoBlocks(messages: LLMMessage[]): LLMMessage[][] {
+    const blocks: LLMMessage[][] = [];
+    let i = 0;
+    while (i < messages.length) {
+      const msg = messages[i]!;
+      if (msg.role === 'assistant' && msg.toolCalls?.length) {
+        // Collect the entire tool-call block
+        const block: LLMMessage[] = [msg];
+        i++;
+        while (i < messages.length && messages[i]!.role === 'tool') {
+          block.push(messages[i]!);
+          i++;
+        }
+        blocks.push(block);
+      } else {
+        blocks.push([msg]);
+        i++;
+      }
+    }
+    return blocks;
+  }
+
+  /**
+   * Compress a tool-call block into a single assistant summary message.
+   * Preserves the intent (what tool was called and why) without the raw output.
+   */
+  private summarizeToolBlock(block: LLMMessage[]): LLMMessage {
+    const assistant = block[0]!;
+    const toolCalls = assistant.toolCalls ?? [];
+    const toolResults = block.slice(1);
+
+    const summaryParts: string[] = [];
+    if (assistant.content?.trim()) {
+      summaryParts.push(assistant.content.trim());
+    }
+
+    for (let i = 0; i < toolCalls.length; i++) {
+      const tc = toolCalls[i]!;
+      const result = toolResults[i];
+      const argsStr = JSON.stringify(tc.arguments).slice(0, 100);
+      let resultSummary = '';
+      if (result) {
+        const content = result.content;
+        if (content.startsWith('Error:') || content.startsWith('{') && content.includes('"status":"error"')) {
+          resultSummary = ' → error';
+        } else if (content.length <= 120) {
+          resultSummary = ` → ${content}`;
+        } else {
+          resultSummary = ` → (${content.length} chars result)`;
+        }
+      }
+      summaryParts.push(`[Used ${tc.name}(${argsStr})${resultSummary}]`);
+    }
+
+    return {
+      role: 'assistant',
+      content: `[Previous action summary] ${summaryParts.join(' ')}`,
+    };
+  }
+
+  /**
+   * Last-resort trimming: drop oldest messages to fit the budget.
+   * Keeps at least the last 4 messages.
+   */
+  private trimToFitBudget(messages: LLMMessage[], budget: number): LLMMessage[] {
+    let result = messages;
+    while (result.length > 4 && this.sumTokens(result) > budget) {
+      result = result.slice(1);
+    }
+    return result;
+  }
+
+  private sumTokens(messages: LLMMessage[]): number {
+    let total = 0;
+    for (const m of messages) total += estimateMessageTokens(m);
+    return total;
+  }
+
+  /**
    * Ensures every assistant+toolCalls message is followed by ALL its tool_result messages.
-   * - Orphaned tool_result messages (no preceding toolCalls) are dropped.
-   * - Incomplete assistant+toolCalls blocks (some tool_results trimmed away) are also dropped
-   *   entirely — sending a partial sequence causes LLM API 400 errors.
+   * Orphaned or incomplete blocks are dropped to prevent LLM API errors.
    */
   private sanitizeMessageSequence(messages: LLMMessage[]): LLMMessage[] {
     const result: LLMMessage[] = [];
 
-    // Buffer for an in-progress assistant+toolCalls block
     let pendingAssistant: LLMMessage | null = null;
     const pendingIds = new Set<string>();
     const collectedResults: LLMMessage[] = [];
@@ -313,12 +465,9 @@ export class ContextEngine {
     const flushPending = (drop = false) => {
       if (!pendingAssistant) return;
       if (!drop && pendingIds.size === 0) {
-        // All tool_results arrived — safe to commit
         result.push(pendingAssistant, ...collectedResults);
       } else {
-        log.debug('Dropping incomplete assistant toolCalls block', {
-          missing: [...pendingIds],
-        });
+        log.debug('Dropping incomplete assistant toolCalls block', { missing: [...pendingIds] });
       }
       pendingAssistant = null;
       pendingIds.clear();
@@ -327,7 +476,6 @@ export class ContextEngine {
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.toolCalls?.length) {
-        // A new toolCalls block starts — flush any previous incomplete one first
         flushPending(true);
         pendingAssistant = msg;
         for (const tc of msg.toolCalls) pendingIds.add(tc.id);
@@ -335,25 +483,21 @@ export class ContextEngine {
         if (pendingAssistant && msg.toolCallId && pendingIds.has(msg.toolCallId)) {
           pendingIds.delete(msg.toolCallId);
           collectedResults.push(msg);
-          if (pendingIds.size === 0) flushPending(); // Complete — commit now
+          if (pendingIds.size === 0) flushPending();
         } else {
           log.debug('Dropping orphaned tool message', { toolCallId: msg.toolCallId });
         }
       } else {
-        // Any non-tool message while waiting for tool_results → block is incomplete
         flushPending(pendingIds.size > 0);
         result.push(msg);
       }
     }
 
-    // End of messages — flush whatever remains
     flushPending(pendingIds.size > 0);
-
     return result;
   }
 
   private buildOrgContextSection(orgContext?: OrgContext, contextMdPath?: string): string | null {
-    // Try loading CONTEXT.md file first
     if (contextMdPath && existsSync(contextMdPath)) {
       try {
         const content = readFileSync(contextMdPath, 'utf-8');
@@ -391,10 +535,8 @@ export class ContextEngine {
   }
 
   private retrieveRelevantMemories(memory: IMemoryStore, query?: string): MemoryEntry[] {
-    // Get recent facts
     const facts = memory.getEntries('fact', this.config.memorySearchTopK);
 
-    // If there's a query, also search for relevant memories
     if (query) {
       const searchResults = memory.search(query);
       const searchIds = new Set(searchResults.map((m) => m.id));
@@ -403,22 +545,5 @@ export class ContextEngine {
     }
 
     return facts;
-  }
-
-  /**
-   * Rough token estimation: ~4 chars per token for English, ~2 chars per token for CJK.
-   * This is intentionally conservative to avoid overflowing the context window.
-   */
-  private estimateTokens(systemPrompt: string, messages: LLMMessage[]): number {
-    let totalChars = systemPrompt.length;
-    for (const msg of messages) {
-      totalChars += msg.content.length + 20;
-      if (msg.toolCalls) {
-        totalChars += JSON.stringify(msg.toolCalls).length;
-      }
-    }
-    // Use 2.5 chars/token (more conservative — accounts for JSON encoding,
-    // tool definitions overhead, and structured content that tokenizes denser)
-    return Math.ceil(totalChars / 2.5);
   }
 }

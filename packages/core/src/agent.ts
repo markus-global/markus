@@ -17,6 +17,7 @@ import type { IMemoryStore } from './memory/types.js';
 import { EnhancedMemorySystem } from './enhanced-memory-system.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext } from './context-engine.js';
+import { ToolSelector } from './tool-selector.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskType, TaskStatus } from './concurrent/task-queue.js';
 
@@ -72,6 +73,9 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
+  private toolSelector: ToolSelector;
+  private recentToolNames: string[] = [];
+  private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private currentSessionId?: string;
   private sandbox?: SandboxHandle;
   private orgContext?: OrgContext;
@@ -123,6 +127,7 @@ export class Agent {
     );
 
     this.tools = new Map();
+    this.toolSelector = new ToolSelector();
     if (options.tools) {
       for (const tool of options.tools) {
         this.tools.set(tool.name, tool);
@@ -428,7 +433,7 @@ export class Agent {
     }
 
     const isEphemeral = options?.ephemeral ?? false;
-    const maxHistory = options?.maxHistory ?? 30;
+    const maxHistory = options?.maxHistory ?? 200; // load generously; context engine will trim intelligently
 
     // Ephemeral mode: don't pollute the agent's main session with channel messages.
     // Use a minimal context with only channel history provided by the caller.
@@ -458,7 +463,7 @@ export class Agent {
       knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(userMessage),
     });
 
-    const llmTools = this.buildToolDefinitions();
+    const llmTools = this.buildToolDefinitions({ userMessage });
 
     let messages: LLMMessage[];
     if (isEphemeral) {
@@ -478,6 +483,8 @@ export class Agent {
         sessionMessages,
         memory: this.memory,
         sessionId,
+        modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+        modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
         toolDefinitions: llmTools,
       });
     }
@@ -535,6 +542,8 @@ export class Agent {
             sessionMessages: updatedSessionMessages,
             memory: this.memory,
             sessionId,
+            modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+            modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
             toolDefinitions: llmTools,
           });
         }
@@ -609,15 +618,16 @@ export class Agent {
       knowledgeContext: this.getKnowledgeContext(userMessage),
     });
 
-    const llmTools = this.buildToolDefinitions();
-    const maxHistory = 30;
+    const llmTools = this.buildToolDefinitions({ userMessage });
 
-    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, maxHistory);
+    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
     const messages = this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
       sessionId: this.currentSessionId,
+      modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+      modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
       toolDefinitions: llmTools,
     });
 
@@ -662,12 +672,14 @@ export class Agent {
           }
         }
 
-        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, maxHistory);
+        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
         const updatedMessages = this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
           memory: this.memory,
           sessionId: this.currentSessionId,
+          modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+          modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
           toolDefinitions: llmTools,
         });
 
@@ -812,7 +824,7 @@ export class Agent {
       knowledgeContext: this.getKnowledgeContext(taskPrompt),
     });
 
-    const llmTools = this.buildToolDefinitions();
+    const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
     let textBuffer = '';
 
     const flushText = () => {
@@ -822,14 +834,14 @@ export class Agent {
       }
     };
 
-    const taskMaxHistory = 30;
-
     try {
       const messages = this.contextEngine.prepareMessages({
         systemPrompt,
-        sessionMessages: this.memory.getRecentMessages(sessionId, taskMaxHistory),
+        sessionMessages: this.memory.getRecentMessages(sessionId, 200),
         memory: this.memory,
         sessionId,
+        modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+        modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
         toolDefinitions: llmTools,
       });
 
@@ -889,9 +901,11 @@ export class Agent {
           {
             messages: this.contextEngine.prepareMessages({
               systemPrompt,
-              sessionMessages: this.memory.getRecentMessages(sessionId, taskMaxHistory),
+              sessionMessages: this.memory.getRecentMessages(sessionId, 200),
               memory: this.memory,
               sessionId,
+              modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
+              modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
               toolDefinitions: llmTools,
             }),
             tools: llmTools.length > 0 ? llmTools : undefined,
@@ -1047,20 +1061,57 @@ export class Agent {
     log.info(`Sandboxed tools registered for agent ${this.id}`);
   }
 
-  private buildToolDefinitions(): LLMTool[] {
-    return [...this.tools.values()].map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    }));
+  private buildToolDefinitions(context?: {
+    userMessage?: string;
+    isTaskExecution?: boolean;
+  }): LLMTool[] {
+    const isManager = this.config.agentRole === 'manager';
+
+    // Include tools the agent explicitly requested via discover_tools
+    const recentPlusActivated = [
+      ...this.recentToolNames,
+      ...this.activatedExtraTools,
+    ];
+
+    return this.toolSelector.selectTools({
+      allTools: this.tools,
+      userMessage: context?.userMessage ?? '',
+      recentToolNames: recentPlusActivated,
+      isManager,
+      isTaskExecution: context?.isTaskExecution,
+    });
   }
 
   private async executeTool(toolCall: LLMToolCall): Promise<string> {
+    // Handle the discover_tools meta-tool: activate requested tools
+    if (toolCall.name === 'discover_tools') {
+      const requested = (toolCall.arguments.tool_names as string[]) ?? [];
+      for (const name of requested) {
+        if (this.tools.has(name)) {
+          this.activatedExtraTools.add(name);
+        }
+      }
+      const activated = requested.filter(n => this.tools.has(n));
+      const unknown = requested.filter(n => !this.tools.has(n));
+      return JSON.stringify({
+        status: 'ok',
+        activated,
+        unknown,
+        message: `${activated.length} tools activated. They are now available for your next response.`,
+      });
+    }
+
     const handler = this.tools.get(toolCall.name);
     if (!handler) {
       this.recordToolUsage(toolCall.name, false);
       this.handleFailure(`Unknown tool: ${toolCall.name}`);
       return JSON.stringify({ error: `Unknown tool: ${toolCall.name}` });
+    }
+
+    // Track recently used tools so they stay active in subsequent turns
+    if (!this.recentToolNames.includes(toolCall.name)) {
+      this.recentToolNames.push(toolCall.name);
+      if (this.recentToolNames.length > 10) this.recentToolNames.shift();
     }
 
     let lastError: unknown;

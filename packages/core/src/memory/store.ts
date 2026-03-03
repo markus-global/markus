@@ -213,11 +213,28 @@ export class MemoryStore implements IMemoryStore {
   // --- Disk persistence ---
 
   private checkAndCompact(session: ConversationSession): void {
-    const estimatedTokens = session.messages.reduce((acc, m) => acc + Math.ceil(m.content.length / 3), 0);
-    // Compact at ~80% of typical context window (keep things manageable)
-    if (estimatedTokens > 50_000) {
-      log.info('Auto-compacting session due to size', { sessionId: session.id, estimatedTokens });
-      this.compactSession(session.id, 30);
+    if (session.messages.length <= 40) return; // nothing to compact yet
+
+    // Shrink oversized tool results in-place: any tool message > 4KB
+    // gets replaced with a short summary. This prevents individual messages
+    // from accumulating unbounded content in the session history.
+    let shrunk = 0;
+    for (const m of session.messages) {
+      if (m.role === 'tool' && m.content.length > 4000) {
+        const origLen = m.content.length;
+        const preview = m.content.slice(0, 200);
+        m.content = `[Tool result compacted: ${origLen} chars] ${preview}...`;
+        shrunk++;
+      }
+    }
+
+    if (session.messages.length > 80) {
+      log.info('Auto-compacting session by count', {
+        sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
+      });
+      this.compactSession(session.id, 40);
+    } else if (shrunk > 0) {
+      this.debouncedSaveSession(session);
     }
   }
 
