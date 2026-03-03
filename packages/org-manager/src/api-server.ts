@@ -1165,6 +1165,7 @@ export class APIServer {
       const name = body['name'] as string;
       const orgId = (body['orgId'] as string) ?? 'default';
       const teamId = body['teamId'] as string | undefined;
+      const agentRole = body['agentRole'] as 'manager' | 'worker' | undefined;
       if (!templateId || !name) { this.json(res, 400, { error: 'templateId and name are required' }); return; }
       try {
         const agentManager = this.orgService.getAgentManager();
@@ -1172,6 +1173,10 @@ export class APIServer {
           templateId, name, orgId, teamId,
           overrides: body['overrides'] as Record<string, unknown> | undefined,
         });
+        if (agentRole) agent.config.agentRole = agentRole;
+        if (teamId) {
+          this.orgService.addMemberToTeam(teamId, agent.id, 'agent');
+        }
         await agentManager.startAgent(agent.id);
         this.json(res, 201, {
           agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status },

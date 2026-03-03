@@ -107,7 +107,6 @@ function AgentTemplatesTab() {
     try {
       const params = new URLSearchParams();
       if (filter !== 'all') params.set('source', filter);
-      if (categoryFilter) params.set('category', categoryFilter);
       if (search) params.set('q', search);
 
       const [registryRes, marketplaceRes] = await Promise.all([
@@ -132,11 +131,12 @@ function AgentTemplatesTab() {
     } finally {
       setLoading(false);
     }
-  }, [filter, categoryFilter, search]);
+  }, [filter, search]);
 
   useEffect(() => { loadTemplates(); }, [loadTemplates]);
 
   const categories = [...new Set(templates.map(t => t.category))].sort();
+  const filtered = categoryFilter ? templates.filter(t => t.category === categoryFilter) : templates;
 
   const handleInstantiate = async (templateId: string, name: string, teamId?: string) => {
     try {
@@ -203,11 +203,11 @@ function AgentTemplatesTab() {
       <div className="flex-1 overflow-y-auto p-7">
         {loading ? (
           <div className="text-center text-gray-500 py-20 animate-pulse">Loading templates...</div>
-        ) : templates.length === 0 ? (
+        ) : filtered.length === 0 ? (
           <EmptyState filter={filter} search={search} />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {templates.map(tpl => (
+            {filtered.map(tpl => (
               <TemplateCard
                 key={tpl.id}
                 template={tpl}
@@ -342,13 +342,15 @@ function TeamTemplatesTab() {
     try {
       const teamRes = await api.teams.create(tpl.name, tpl.description);
       const teamId = teamRes.team.id;
+      let managerId: string | undefined;
+      let deployed = 0;
 
       for (const member of tpl.members) {
         const count = member.count ?? 1;
         for (let i = 0; i < count; i++) {
           const name = member.name ?? `${tpl.name} Agent ${i + 1}`;
           try {
-            await fetch('/api/templates/instantiate', {
+            const res = await fetch('/api/templates/instantiate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               credentials: 'include',
@@ -360,13 +362,24 @@ function TeamTemplatesTab() {
                 agentRole: member.role,
               }),
             });
+            if (res.ok) {
+              deployed++;
+              if (member.role === 'manager' && !managerId) {
+                const data = await res.json();
+                managerId = data.agent?.id;
+              }
+            }
           } catch {
             // continue deploying remaining members
           }
         }
       }
 
-      setDeployResult({ ok: true, message: `Team "${tpl.name}" deployed with ${tpl.members.length} member role(s)` });
+      if (managerId) {
+        await api.teams.update(teamId, { managerId, managerType: 'agent' }).catch(() => {});
+      }
+
+      setDeployResult({ ok: true, message: `Team "${tpl.name}" deployed with ${deployed} agent(s)` });
     } catch (err) {
       setDeployResult({ ok: false, message: `Failed: ${err}` });
     } finally {
