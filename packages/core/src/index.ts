@@ -57,3 +57,20 @@ export {
   type PipelineStage, type FanOutConfig,
   type TeamTemplate, type TeamMemberSpec, type TeamInstantiateRequest, type TeamInstantiateResult,
 } from './workflow/index.js';
+export {
+  FederationManager, DEFAULT_SANDBOX,
+  type FederationAgentProvider, type FederationEventHandler,
+  type FederationLink, type FederationStatus, type TrustLevel,
+  type FederatedAgent, type CrossOrgMessage, type SandboxPolicy,
+  type FederationPolicy, type FederationEvent,
+} from './federation/index.js';
+export {
+  AgentSnapshotManager,
+  type AgentSnapshot, type MemorySnapshot, type MigrationResult,
+  type AgentDataProvider, type AgentDataRestorer,
+} from './agent-snapshot.js';
+export {
+  PromptStudio,
+  type PromptTemplate, type PromptVersion, type ABTestConfig, type ABTestMetrics,
+  type EvaluationResult, type PromptExecutor,
+} from './prompt-studio.js';
