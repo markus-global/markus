@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
+import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
 import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, createDefaultTemplateRegistry, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
@@ -869,22 +871,246 @@ export class APIServer {
       return;
     }
 
-    // Agent status
+    // Agent config update (PATCH)
+    if (path.match(/^\/api\/agents\/[^/]+\/config$/) && req.method === 'PATCH') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const cfg = agent.config as unknown as Record<string, unknown>;
+        if (body['name'] !== undefined) cfg.name = body['name'];
+        if (body['agentRole'] !== undefined) cfg.agentRole = body['agentRole'];
+        if (body['skills'] !== undefined) cfg.skills = body['skills'];
+        if (body['llmConfig'] !== undefined) {
+          const lc = body['llmConfig'] as Record<string, unknown>;
+          cfg.llmConfig = { ...(cfg.llmConfig as Record<string, unknown>), ...lc };
+        }
+        if (body['heartbeatIntervalMs'] !== undefined) cfg.heartbeatIntervalMs = body['heartbeatIntervalMs'];
+        this.json(res, 200, { ok: true, config: agent.config });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent memory summary
+    if (path.match(/^\/api\/agents\/[^/]+\/memory$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const mem = agent.getMemory();
+        const entries = mem.getEntries(undefined, 50);
+        const sessions = mem.listSessions(agentId);
+        const dailyLog = mem.getDailyLog();
+        const recentDailyLogs = mem.getRecentDailyLogs(7);
+        const longTermMemory = mem.getLongTermMemory();
+        this.json(res, 200, {
+          entries: entries.map(e => ({ type: e.type, content: e.content.slice(0, 500), timestamp: e.timestamp, importance: (e as unknown as Record<string, unknown>).importance })),
+          sessions: sessions.map(s => ({ id: s.id, agentId: s.agentId, messageCount: s.messages.length, createdAt: (s as unknown as Record<string, unknown>).createdAt as string ?? new Date().toISOString(), updatedAt: (s as unknown as Record<string, unknown>).updatedAt as string ?? new Date().toISOString() })),
+          dailyLog: dailyLog?.slice(0, 2000) ?? null,
+          recentDailyLogs: recentDailyLogs?.slice(0, 5000) ?? null,
+          longTermMemory: longTermMemory?.slice(0, 3000) ?? null,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent memory: update daily log
+    if (path.match(/^\/api\/agents\/[^/]+\/memory\/daily$/) && req.method === 'PUT') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const content = body['content'] as string ?? '';
+        agent.getMemory().writeDailyLog(agentId, content);
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent memory: update long-term memory
+    if (path.match(/^\/api\/agents\/[^/]+\/memory\/longterm$/) && req.method === 'PUT') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const key = body['key'] as string ?? '';
+        const content = body['content'] as string ?? '';
+        agent.getMemory().addLongTermMemory(key, content);
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent role/prompt files: list
+    if (path.match(/^\/api\/agents\/[^/]+\/files$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const roleDir = this.resolveAgentRoleDir(agent);
+        if (!roleDir) {
+          this.json(res, 404, { error: `Role directory not found for agent: ${agent.role.name}` });
+          return;
+        }
+        const allowedNames = ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
+        const files: Array<{ name: string; content: string }> = [];
+        for (const name of allowedNames) {
+          const filePath = join(roleDir, name);
+          if (existsSync(filePath)) {
+            files.push({ name, content: readFileSync(filePath, 'utf-8') });
+          }
+        }
+        this.json(res, 200, { files });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent role/prompt files: update
+    if (path.match(/^\/api\/agents\/[^/]+\/files\/[^/]+$/) && req.method === 'PUT') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const filename = decodeURIComponent(parts[5]!);
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const roleDir = this.resolveAgentRoleDir(agent);
+        if (!roleDir) {
+          this.json(res, 404, { error: `Role directory not found for agent: ${agent.role.name}` });
+          return;
+        }
+        const allowedNames = ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
+        if (!allowedNames.includes(filename)) {
+          this.json(res, 400, { error: `Invalid filename. Allowed: ${allowedNames.join(', ')}` });
+          return;
+        }
+        const body = await this.readBody(req);
+        const content = body['content'] as string ?? '';
+        writeFileSync(join(roleDir, filename), content, 'utf-8');
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent system prompt: update (runtime only)
+    if (path.match(/^\/api\/agents\/[^/]+\/system-prompt$/) && req.method === 'PUT') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const systemPrompt = body['systemPrompt'] as string ?? '';
+        (agent.role as { systemPrompt: string }).systemPrompt = systemPrompt;
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent skills: add
+    if (path.match(/^\/api\/agents\/[^/]+\/skills$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const skillName = body['skillName'] as string ?? '';
+        if (skillName && !agent.config.skills.includes(skillName)) {
+          agent.config.skills.push(skillName);
+        }
+        this.json(res, 200, { ok: true, skills: agent.config.skills });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent skills: remove
+    if (path.match(/^\/api\/agents\/[^/]+\/skills\/[^/]+$/) && req.method === 'DELETE') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const skillName = decodeURIComponent(parts[5]!);
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        agent.config.skills = agent.config.skills.filter(s => s !== skillName);
+        this.json(res, 200, { ok: true, skills: agent.config.skills });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent tools: toggle enable/disable (skeleton - tools can't easily be toggled at runtime)
+    if (path.match(/^\/api\/agents\/[^/]+\/tools\/[^/]+\/toggle$/) && req.method === 'POST') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const toolName = decodeURIComponent(parts[5]!);
+      try {
+        this.orgService.getAgentManager().getAgent(agentId);
+        const body = await this.readBody(req);
+        const enabled = body['enabled'] as boolean ?? true;
+        void toolName;
+        void enabled;
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent heartbeat info
+    if (path.match(/^\/api\/agents\/[^/]+\/heartbeat$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const hb = (agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }).heartbeat;
+        this.json(res, 200, { running: hb.isRunning(), ...(hb.getHealthMetrics() as Record<string, unknown>) });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent detail (GET) — enriched with config, tools, heartbeat summary
     if (path.startsWith('/api/agents/') && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const state = agent.getState();
+        const tools = (agent as unknown as { tools: Map<string, { name: string; description: string }> }).tools;
+        const toolList = [...tools.values()].map(t => ({ name: t.name, description: t.description }));
+        const hb = (agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }).heartbeat;
+        let heartbeatSummary: Record<string, unknown> = {};
+        try { heartbeatSummary = { running: hb.isRunning(), ...(hb.getHealthMetrics() as Record<string, unknown>) }; } catch { /* ok */ }
         this.json(res, 200, {
           id: agent.id,
           name: agent.config.name,
           role: agent.role.name,
+          roleDescription: agent.role.description,
           agentRole: agent.config.agentRole,
           state,
           activeTaskCount: state.activeTaskCount,
           activeTaskIds: state.activeTaskIds,
           skills: agent.config.skills,
           proficiency: agent.getSkillProficiency(),
+          config: {
+            llmConfig: agent.config.llmConfig,
+            computeConfig: agent.config.computeConfig,
+            channels: agent.config.channels,
+            heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+            orgId: agent.config.orgId,
+            teamId: agent.config.teamId,
+            createdAt: agent.config.createdAt,
+          },
+          tools: toolList,
+          heartbeat: heartbeatSummary,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -1189,6 +1415,42 @@ export class APIServer {
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
+      return;
+    }
+
+    // ── External Agents ─────────────────────────────────────────────────────
+    if (path === '/api/external-agents' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 200, { agents: [] }); return; }
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      this.json(res, 200, { agents: this.gateway.listRegistrations(orgId) });
+      return;
+    }
+
+    if (path === '/api/external-agents/register' && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'External agent gateway not configured' }); return; }
+      const body = await this.readBody(req);
+      try {
+        const reg = await this.gateway.register({
+          externalAgentId: body['externalAgentId'] as string,
+          agentName: body['agentName'] as string,
+          orgId: (body['orgId'] as string) ?? 'default',
+          capabilities: body['capabilities'] as string[] | undefined,
+          openClawConfig: body['openClawConfig'] as string | undefined,
+        });
+        this.json(res, 201, { registration: reg });
+      } catch (err) {
+        const code = (err as { statusCode?: number }).statusCode ?? 400;
+        this.json(res, code, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/external-agents\/[^/]+$/) && req.method === 'DELETE') {
+      if (!this.gateway) { this.json(res, 503, { error: 'External agent gateway not configured' }); return; }
+      const externalId = path.split('/')[3]!;
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const deleted = this.gateway.unregister(externalId, orgId);
+      this.json(res, deleted ? 200 : 404, deleted ? { deleted: true } : { error: 'Not found' });
       return;
     }
 
@@ -1854,5 +2116,42 @@ export class APIServer {
       });
       req.on('error', reject);
     });
+  }
+
+  /** Resolve the role directory path for an agent. Uses roleId, normalized role name, or matching by display name. */
+  private resolveAgentRoleDir(agent: { config: { roleId?: string }; role: { name: string } }): string | null {
+    const base = join(process.cwd(), 'templates', 'roles');
+    if (!existsSync(base)) return null;
+
+    const tryDir = (dirName: string): string | null => {
+      const p = join(base, dirName, 'ROLE.md');
+      return existsSync(p) ? join(base, dirName) : null;
+    };
+
+    if (agent.config.roleId) {
+      const d = tryDir(agent.config.roleId);
+      if (d) return d;
+    }
+
+    const normalized = agent.role.name.toLowerCase().replace(/\s+/g, '-');
+    const d = tryDir(normalized);
+    if (d) return d;
+
+    for (const entry of readdirSync(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const rolePath = join(base, entry.name, 'ROLE.md');
+      if (!existsSync(rolePath)) continue;
+      try {
+        const content = readFileSync(rolePath, 'utf-8');
+        const match = content.match(/^#\s+(.+)$/m);
+        const displayName = match?.[1]?.trim();
+        if (displayName && displayName.toLowerCase() === agent.role.name.toLowerCase()) {
+          return join(base, entry.name);
+        }
+      } catch {
+        /* skip */
+      }
+    }
+    return null;
   }
 }

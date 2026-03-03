@@ -133,14 +133,62 @@ export interface TaskLogEntry {
   createdAt: string;
 }
 
+export interface AgentToolInfo {
+  name: string;
+  description: string;
+}
+
+export interface HeartbeatTaskStat {
+  name: string;
+  lastRun?: string;
+  nextRun?: string;
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  avgDurationMs?: number;
+}
+
+export interface AgentHeartbeatInfo {
+  running: boolean;
+  uptime: number;
+  taskCount: number;
+  activeTasks: number;
+  failedTasks: number;
+  lastHeartbeat?: string;
+  taskStats: HeartbeatTaskStat[];
+}
+
+export interface AgentConfigInfo {
+  llmConfig: { primary: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
+  computeConfig: { type: string; image?: string; cpu?: number; memoryMb?: number };
+  channels: Array<{ platform: string; channelId: string; role: string }>;
+  heartbeatIntervalMs: number;
+  orgId: string;
+  teamId?: string;
+  createdAt: string;
+}
+
+export interface AgentMemorySummary {
+  entries: Array<{ type: string; content: string; timestamp: string; importance?: number }>;
+  sessions: Array<{ id: string; agentId: string; messageCount: number; createdAt: string; updatedAt: string }>;
+  dailyLog: string | null;
+  recentDailyLogs: string | null;
+  longTermMemory: string | null;
+}
+
 export interface AgentDetail {
   id: string;
   name: string;
   role: string;
+  roleDescription?: string;
   agentRole: string;
   skills: string[];
   activeTaskCount?: number;
   activeTaskIds?: string[];
+  proficiency?: Record<string, { uses: number; successes: number; lastUsed?: string }>;
+  config?: AgentConfigInfo;
+  tools?: AgentToolInfo[];
+  heartbeat?: AgentHeartbeatInfo;
   state: {
     status: string;
     tokensUsedToday: number;
@@ -215,6 +263,23 @@ export const api = {
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     remove: (id: string) => request(`/agents/${id}`, { method: 'DELETE' }),
+    updateConfig: (id: string, patch: Record<string, unknown>) =>
+      request<{ ok: boolean; config: AgentConfigInfo }>(`/agents/${id}/config`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    getMemory: (id: string) => request<AgentMemorySummary>(`/agents/${id}/memory`),
+    updateDailyMemory: (id: string, content: string) =>
+      request<{ ok: boolean }>(`/agents/${id}/memory/daily`, { method: 'PUT', body: JSON.stringify({ content }) }),
+    updateLongTermMemory: (id: string, key: string, content: string) =>
+      request<{ ok: boolean }>(`/agents/${id}/memory/longterm`, { method: 'PUT', body: JSON.stringify({ key, content }) }),
+    getFiles: (id: string) => request<{ files: Array<{ name: string; content: string }> }>(`/agents/${id}/files`),
+    updateFile: (id: string, filename: string, content: string) =>
+      request<{ ok: boolean }>(`/agents/${id}/files/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+    updateSystemPrompt: (id: string, systemPrompt: string) =>
+      request<{ ok: boolean }>(`/agents/${id}/system-prompt`, { method: 'PUT', body: JSON.stringify({ systemPrompt }) }),
+    addSkill: (id: string, skillName: string) =>
+      request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills`, { method: 'POST', body: JSON.stringify({ skillName }) }),
+    removeSkill: (id: string, skillName: string) =>
+      request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
+    getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     message: (id: string, text: string) =>
       request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal): Promise<string> => {
@@ -394,6 +459,12 @@ export const api = {
   agentMetrics: (id: string, period: '1h' | '24h' | '7d' = '24h') =>
     request<AgentMetrics>(`/agents/${id}/metrics?period=${period}`),
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
+  settings: {
+    getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
+  },
+  skills: {
+    list: () => request<{ skills: Array<{ name: string; version: string; description?: string; tools?: string[] }> }>('/skills'),
+  },
   auth: {
     login: (email: string, password: string) =>
       request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),

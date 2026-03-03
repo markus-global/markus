@@ -38,6 +38,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [addMemberMenuTeam, setAddMemberMenuTeam] = useState<string | null>(null);
+  const [showConnectExternal, setShowConnectExternal] = useState(false);
 
   const [pendingConfirm, setPendingConfirm] = useState<{
     title: string; message: string; confirmLabel?: string; onConfirm: () => void;
@@ -158,6 +159,12 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
           </div>
           {isAdmin && (
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowConnectExternal(true)}
+                className="px-3 py-1.5 text-sm border border-gray-700 hover:border-purple-500 text-gray-300 hover:text-purple-300 rounded-lg transition-colors"
+              >
+                ↗ Connect External
+              </button>
               <button
                 onClick={() => setShowHire({})}
                 className="px-3 py-1.5 text-sm border border-gray-700 hover:border-indigo-500 text-gray-300 hover:text-indigo-300 rounded-lg transition-colors"
@@ -304,6 +311,13 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
           confirmLabel={pendingConfirm.confirmLabel}
           onConfirm={() => { pendingConfirm.onConfirm(); setPendingConfirm(null); }}
           onCancel={() => setPendingConfirm(null)}
+        />
+      )}
+
+      {showConnectExternal && (
+        <ConnectExternalModal
+          onClose={() => setShowConnectExternal(false)}
+          onConnected={() => { setShowConnectExternal(false); refresh(); }}
         />
       )}
     </div>
@@ -456,6 +470,8 @@ function MemberCard({
 
   return (
     <div
+      role="button"
+      aria-label={`${member.name} - ${member.role}`}
       onClick={onClick}
       className={`relative group w-44 border rounded-xl p-3.5 transition-all cursor-pointer ${
         isSelected
@@ -600,6 +616,8 @@ function UngroupedMemberCard({
 
   return (
     <div
+      role="button"
+      aria-label={`${member.name} - ${member.role}`}
       onClick={onClick}
       className={`relative group w-44 border rounded-xl p-3.5 transition-all cursor-pointer ${
         isSelected
@@ -903,6 +921,156 @@ function AddExistingModal({
           <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Close</button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+// ─── Connect External Agent Modal ─────────────────────────────────────────────
+
+type ExternalProvider = { id: string; name: string; description: string; icon: string; fields: Array<{ key: string; label: string; placeholder: string; required?: boolean }> };
+
+const EXTERNAL_PROVIDERS: ExternalProvider[] = [
+  {
+    id: 'openclaw', name: 'OpenClaw', description: 'Connect an OpenClaw agent by URL', icon: '🐾',
+    fields: [
+      { key: 'name', label: 'Display Name', placeholder: 'e.g. Alice (OpenClaw)', required: true },
+      { key: 'endpoint', label: 'Agent Endpoint URL', placeholder: 'https://openclaw.example.com/agents/abc', required: true },
+      { key: 'apiKey', label: 'API Key / Token', placeholder: 'sk-...', required: false },
+    ],
+  },
+  {
+    id: 'a2a', name: 'A2A Protocol', description: 'Connect any Agent-to-Agent compatible service', icon: '🔗',
+    fields: [
+      { key: 'name', label: 'Display Name', placeholder: 'e.g. External Agent', required: true },
+      { key: 'endpoint', label: 'A2A Endpoint URL', placeholder: 'https://agent.example.com/a2a', required: true },
+      { key: 'apiKey', label: 'API Key', placeholder: 'Optional auth token', required: false },
+    ],
+  },
+  {
+    id: 'custom', name: 'Custom Webhook', description: 'Connect via HTTP webhook', icon: '⚙',
+    fields: [
+      { key: 'name', label: 'Agent Name', placeholder: 'e.g. My Custom Agent', required: true },
+      { key: 'endpoint', label: 'Webhook URL', placeholder: 'https://example.com/webhook', required: true },
+      { key: 'apiKey', label: 'Auth Header', placeholder: 'Bearer token', required: false },
+      { key: 'capabilities', label: 'Capabilities (comma separated)', placeholder: 'coding, review, testing', required: false },
+    ],
+  },
+];
+
+function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+
+  const provider = EXTERNAL_PROVIDERS.find(p => p.id === selectedProvider);
+
+  const handleSubmit = async () => {
+    if (!provider) return;
+    const missing = provider.fields.filter(f => f.required && !formData[f.key]?.trim());
+    if (missing.length > 0) {
+      setError(`Required: ${missing.map(f => f.label).join(', ')}`);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const capabilities = formData['capabilities']
+        ? formData['capabilities'].split(',').map(c => c.trim()).filter(Boolean)
+        : ['general'];
+
+      const body = {
+        name: formData['name'],
+        endpoint: formData['endpoint'],
+        protocol: provider.id === 'a2a' ? 'a2a' : 'http',
+        capabilities,
+        metadata: {
+          provider: provider.id,
+          apiKey: formData['apiKey'] || undefined,
+        },
+      };
+
+      const res = await fetch('/api/external-agents/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setSuccess(true);
+      setTimeout(onConnected, 1000);
+    } catch (e) {
+      setError(String(e));
+    }
+    setLoading(false);
+  };
+
+  return (
+    <Modal onClose={onClose} title="Connect External Agent" width="w-[520px]">
+      {success ? (
+        <div className="text-center py-8">
+          <div className="text-3xl mb-3">✓</div>
+          <div className="text-sm text-green-400 font-medium">Agent connected successfully!</div>
+          <div className="text-xs text-gray-500 mt-1">It will appear in your team shortly.</div>
+        </div>
+      ) : !selectedProvider ? (
+        <div className="space-y-3">
+          <div className="text-xs text-gray-500 mb-4">Choose how to connect an external agent to your organization.</div>
+          {EXTERNAL_PROVIDERS.map(p => (
+            <button
+              key={p.id}
+              onClick={() => { setSelectedProvider(p.id); setFormData({}); setError(''); }}
+              className="w-full flex items-center gap-4 px-4 py-4 rounded-xl border border-gray-700 hover:border-purple-500 hover:bg-purple-900/10 text-left transition-all"
+            >
+              <span className="text-2xl w-10 text-center">{p.icon}</span>
+              <div className="flex-1">
+                <div className="font-medium text-sm">{p.name}</div>
+                <div className="text-xs text-gray-500">{p.description}</div>
+              </div>
+              <span className="text-gray-600">→</span>
+            </button>
+          ))}
+          <div className="flex justify-end pt-3">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <button onClick={() => setSelectedProvider(null)} className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1">
+            ← Back to providers
+          </button>
+          <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-gray-800/40 border border-gray-700/40">
+            <span className="text-xl">{provider!.icon}</span>
+            <div>
+              <div className="text-sm font-medium">{provider!.name}</div>
+              <div className="text-[10px] text-gray-500">{provider!.description}</div>
+            </div>
+          </div>
+
+          {provider!.fields.map(f => (
+            <Field key={f.key} label={`${f.label}${f.required ? ' *' : ''}`}>
+              <input
+                className="input"
+                placeholder={f.placeholder}
+                value={formData[f.key] ?? ''}
+                onChange={e => setFormData(prev => ({ ...prev, [f.key]: e.target.value }))}
+              />
+            </Field>
+          ))}
+
+          {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">{error}</div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+            <button onClick={handleSubmit} disabled={loading} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white disabled:opacity-50">
+              {loading ? 'Connecting...' : 'Connect Agent'}
+            </button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
