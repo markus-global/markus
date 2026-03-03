@@ -428,7 +428,7 @@ export class Agent {
     }
 
     const isEphemeral = options?.ephemeral ?? false;
-    const maxHistory = options?.maxHistory ?? 40;
+    const maxHistory = options?.maxHistory ?? 30;
 
     // Ephemeral mode: don't pollute the agent's main session with channel messages.
     // Use a minimal context with only channel history provided by the caller.
@@ -458,6 +458,8 @@ export class Agent {
       knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(userMessage),
     });
 
+    const llmTools = this.buildToolDefinitions();
+
     let messages: LLMMessage[];
     if (isEphemeral) {
       const channelMsgs = (options?.channelContext ?? []).map(m => ({
@@ -476,10 +478,9 @@ export class Agent {
         sessionMessages,
         memory: this.memory,
         sessionId,
+        toolDefinitions: llmTools,
       });
     }
-
-    const llmTools = this.buildToolDefinitions();
 
     try {
       const llmStart = Date.now();
@@ -534,6 +535,7 @@ export class Agent {
             sessionMessages: updatedSessionMessages,
             memory: this.memory,
             sessionId,
+            toolDefinitions: llmTools,
           });
         }
 
@@ -607,15 +609,17 @@ export class Agent {
       knowledgeContext: this.getKnowledgeContext(userMessage),
     });
 
-    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+    const llmTools = this.buildToolDefinitions();
+    const maxHistory = 30;
+
+    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, maxHistory);
     const messages = this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
       sessionId: this.currentSessionId,
+      toolDefinitions: llmTools,
     });
-
-    const llmTools = this.buildToolDefinitions();
 
     try {
       const llmStart = Date.now();
@@ -658,12 +662,13 @@ export class Agent {
           }
         }
 
-        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
+        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, maxHistory);
         const updatedMessages = this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
           memory: this.memory,
           sessionId: this.currentSessionId,
+          toolDefinitions: llmTools,
         });
 
         const llmStart2 = Date.now();
@@ -817,12 +822,15 @@ export class Agent {
       }
     };
 
+    const taskMaxHistory = 30;
+
     try {
       const messages = this.contextEngine.prepareMessages({
         systemPrompt,
-        sessionMessages: this.memory.getRecentMessages(sessionId, 100),
+        sessionMessages: this.memory.getRecentMessages(sessionId, taskMaxHistory),
         memory: this.memory,
         sessionId,
+        toolDefinitions: llmTools,
       });
 
       let response = await this.llmRouter.chatStream(
@@ -837,7 +845,6 @@ export class Agent {
       this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-        // Check for external cancellation (e.g., task paused or status changed away from in_progress)
         if (cancelToken?.cancelled) {
           flushText();
           emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
@@ -882,9 +889,10 @@ export class Agent {
           {
             messages: this.contextEngine.prepareMessages({
               systemPrompt,
-              sessionMessages: this.memory.getRecentMessages(sessionId, 100),
+              sessionMessages: this.memory.getRecentMessages(sessionId, taskMaxHistory),
               memory: this.memory,
               sessionId,
+              toolDefinitions: llmTools,
             }),
             tools: llmTools.length > 0 ? llmTools : undefined,
           },

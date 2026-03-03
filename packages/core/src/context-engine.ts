@@ -14,9 +14,9 @@ export interface ContextConfig {
 }
 
 const DEFAULT_CONFIG: ContextConfig = {
-  maxContextTokens: 80_000,
-  maxRecentMessages: 40,
-  summarizeThreshold: 60,
+  maxContextTokens: 50_000,
+  maxRecentMessages: 30,
+  summarizeThreshold: 40,
   memorySearchTopK: 5,
 };
 
@@ -225,6 +225,7 @@ export class ContextEngine {
     sessionMessages: LLMMessage[];
     memory: IMemoryStore;
     sessionId: string;
+    toolDefinitions?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
   }): LLMMessage[] {
     let recentMessages = opts.sessionMessages;
 
@@ -245,16 +246,36 @@ export class ContextEngine {
       recentMessages = recentMessages.slice(-this.config.maxRecentMessages);
     }
 
+    // Truncate oversized tool results in history to prevent context explosion
+    recentMessages = this.truncateLargeToolResults(recentMessages);
+
+    // Account for tool definitions overhead in the token budget
+    const toolOverhead = opts.toolDefinitions
+      ? Math.ceil(JSON.stringify(opts.toolDefinitions).length / 2.5)
+      : 5000; // conservative default for tool defs
+
+    const effectiveBudget = this.config.maxContextTokens - toolOverhead;
+
     // Estimate token count and further trim if needed
-    const estimatedTokens = this.estimateTokens(opts.systemPrompt, recentMessages);
-    if (estimatedTokens > this.config.maxContextTokens) {
-      const ratio = this.config.maxContextTokens / estimatedTokens;
+    let estimatedTokens = this.estimateTokens(opts.systemPrompt, recentMessages);
+    if (estimatedTokens > effectiveBudget) {
+      const ratio = effectiveBudget / estimatedTokens;
       const targetMessages = Math.max(4, Math.floor(recentMessages.length * ratio));
       recentMessages = recentMessages.slice(-targetMessages);
       log.info('Trimmed messages to fit token budget', {
         originalTokens: estimatedTokens,
+        effectiveBudget,
         targetMessages,
       });
+
+      // Re-estimate after trimming — if still over, aggressively trim tool results
+      estimatedTokens = this.estimateTokens(opts.systemPrompt, recentMessages);
+      if (estimatedTokens > effectiveBudget) {
+        recentMessages = this.truncateLargeToolResults(recentMessages, 500);
+        log.warn('Still over budget after trimming messages, aggressively truncating tool results', {
+          tokens: estimatedTokens, budget: effectiveBudget,
+        });
+      }
     }
 
     // Sanitize: ensure no orphaned tool messages appear without their preceding tool_calls
@@ -264,6 +285,15 @@ export class ContextEngine {
       { role: 'system', content: opts.systemPrompt },
       ...recentMessages,
     ];
+  }
+
+  private truncateLargeToolResults(messages: LLMMessage[], maxChars = 3000): LLMMessage[] {
+    return messages.map(m => {
+      if (m.role === 'tool' && m.content.length > maxChars) {
+        return { ...m, content: m.content.slice(0, maxChars) + `\n\n... [truncated from ${m.content.length} chars]` };
+      }
+      return m;
+    });
   }
 
   /**
