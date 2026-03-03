@@ -765,8 +765,6 @@ export function TaskBoard() {
     const i = setInterval(refresh, 15000);
     const unsub = wsClient.on('task:update', (event) => {
       refresh();
-      // If the updated task is currently open in the modal, sync its status immediately
-      // without waiting for the next refresh so the modal doesn't show stale data.
       const p = event?.payload as { taskId?: string; status?: string; title?: string } | undefined;
       if (p?.taskId && p.status) {
         setSelectedTask(prev =>
@@ -776,6 +774,31 @@ export function TaskBoard() {
     });
     return () => { clearInterval(i); unsub(); };
   }, [refresh]);
+
+  // Open task detail from navigation params (e.g., from Dashboard)
+  useEffect(() => {
+    const tryOpenTask = (taskId: string) => {
+      const allTasks = Object.values(board).flat();
+      const task = allTasks.find(t => t.id === taskId);
+      if (task) {
+        setSelectedTask(task);
+        localStorage.removeItem('markus_nav_openTask');
+      }
+    };
+
+    const navTaskId = localStorage.getItem('markus_nav_openTask');
+    if (navTaskId) tryOpenTask(navTaskId);
+
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
+      if (detail.page === 'tasks' && detail.params?.openTask) {
+        tryOpenTask(detail.params.openTask);
+      }
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [board]);
 
   const createTask = async () => {
     if (!title) return;

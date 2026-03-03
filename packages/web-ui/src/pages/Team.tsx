@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
-import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser } from '../api.ts';
+import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser, type TaskLogEntry } from '../api.ts';
 import { AgentProfile } from './AgentProfile.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { navBus } from '../navBus.ts';
 
 const ROLE_ICONS: Record<string, string> = {
   'developer': '💻', 'software-engineer': '💻',
@@ -39,6 +40,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [addMemberMenuTeam, setAddMemberMenuTeam] = useState<string | null>(null);
   const [showConnectExternal, setShowConnectExternal] = useState(false);
+  const [busyAgent, setBusyAgent] = useState<{ id: string; name: string; taskId: string } | null>(null);
 
   const [pendingConfirm, setPendingConfirm] = useState<{
     title: string; message: string; confirmLabel?: string; onConfirm: () => void;
@@ -65,11 +67,17 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
       localStorage.removeItem('markus_nav_openHire');
       setShowHire({});
     }
+    const selectAgent = localStorage.getItem('markus_nav_selectAgent');
+    if (selectAgent) {
+      localStorage.removeItem('markus_nav_selectAgent');
+      setSelectedAgentId(selectAgent);
+    }
 
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.page === 'team' && detail.params?.openHire === 'true') {
-        setShowHire({});
+      if (detail.page === 'team') {
+        if (detail.params?.openHire === 'true') setShowHire({});
+        if (detail.params?.selectAgent) setSelectedAgentId(detail.params.selectAgent);
       }
     };
     window.addEventListener('markus:navigate', handler);
@@ -140,6 +148,12 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     }
   };
 
+  const handleBusyClick = (member: TeamMemberInfo) => {
+    if (member.type === 'agent' && member.status === 'working' && member.currentTaskId) {
+      setBusyAgent({ id: member.id, name: member.name, taskId: member.currentTaskId });
+    }
+  };
+
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left panel: team list */}
@@ -197,6 +211,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               onRemoveAgent={handleRemoveAgent}
               onRemoveHuman={handleRemoveHuman}
               onMemberClick={handleMemberClick}
+              onBusyClick={handleBusyClick}
               onOpenAddMenu={(e) => { e.stopPropagation(); setAddMemberMenuTeam(prev => prev === team.id ? null : team.id); }}
               onHireAgent={() => { setAddMemberMenuTeam(null); setShowHire({ teamId: team.id }); }}
               onAddHuman={() => { setAddMemberMenuTeam(null); setShowAddHuman({ teamId: team.id }); }}
@@ -216,6 +231,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               onRemoveAgent={handleRemoveAgent}
               onRemoveHuman={handleRemoveHuman}
               onMemberClick={handleMemberClick}
+              onBusyClick={handleBusyClick}
               onMoveToTeam={async (memberId, memberType, teamId) => {
                 await api.teams.addMember(teamId, memberId, memberType);
                 refresh();
@@ -320,6 +336,18 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
           onConnected={() => { setShowConnectExternal(false); refresh(); }}
         />
       )}
+
+      {busyAgent && (
+        <BusyAgentModal
+          agentName={busyAgent.name}
+          taskId={busyAgent.taskId}
+          onClose={() => setBusyAgent(null)}
+          onGoToTask={() => {
+            setBusyAgent(null);
+            navBus.navigate('tasks', { openTask: busyAgent.taskId });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -329,7 +357,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
 function TeamCard({
   team, isAdmin, authUserId, selectedAgentId, addMemberMenuOpen,
   onSetManager, onRemoveFromTeam, onDeleteTeam,
-  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick,
+  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick,
   onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped,
 }: {
   team: TeamInfo;
@@ -345,6 +373,7 @@ function TeamCard({
   onRemoveAgent: (agentId: string, agentName: string) => void;
   onRemoveHuman: (userId: string, userName: string) => void;
   onMemberClick: (member: TeamMemberInfo) => void;
+  onBusyClick: (member: TeamMemberInfo) => void;
   onOpenAddMenu: (e: React.MouseEvent) => void;
   onHireAgent: () => void;
   onAddHuman: () => void;
@@ -421,6 +450,7 @@ function TeamCard({
                 isSelected={selectedAgentId === member.id}
                 isSelf={member.id === authUserId}
                 onClick={() => onMemberClick(member)}
+                onBusyClick={() => onBusyClick(member)}
                 onSetManager={() => onSetManager(team.id, member.id, member.type)}
                 onRemoveFromTeam={() => onRemoveFromTeam(team.id, member.id)}
                 onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
@@ -438,7 +468,7 @@ function TeamCard({
 
 function MemberCard({
   member, teamId, isManager, isAdmin, isSelected, isSelf,
-  onClick, onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
+  onClick, onBusyClick, onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
 }: {
   member: TeamMemberInfo;
   teamId: string;
@@ -447,6 +477,7 @@ function MemberCard({
   isSelected: boolean;
   isSelf: boolean;
   onClick: () => void;
+  onBusyClick: () => void;
   onSetManager: () => void;
   onRemoveFromTeam: () => void;
   onStartStop: () => void;
@@ -500,10 +531,22 @@ function MemberCard({
           {isAI ? 'AI' : 'Human'}
         </span>
         {isAI && member.status && (
-          <div className="flex items-center gap-1 ml-auto">
-            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
-            <span className="text-gray-500">{member.status}</span>
-          </div>
+          member.status === 'working' && member.currentTaskId ? (
+            <button
+              onClick={e => { e.stopPropagation(); onBusyClick(); }}
+              className="flex items-center gap-1 ml-auto px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 transition-colors"
+              title="View execution log"
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+              <span className="text-indigo-400 text-[10px]">working</span>
+              <span className="text-indigo-400 text-[10px]">⟩</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1 ml-auto">
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+              <span className="text-gray-500">{member.status}</span>
+            </div>
+          )
         )}
       </div>
 
@@ -547,7 +590,7 @@ function MemberCard({
 
 function UngroupedSection({
   members, isAdmin, authUserId, selectedAgentId, teams,
-  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onMoveToTeam,
+  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick, onMoveToTeam,
 }: {
   members: TeamMemberInfo[];
   isAdmin: boolean;
@@ -558,6 +601,7 @@ function UngroupedSection({
   onRemoveAgent: (agentId: string, agentName: string) => void;
   onRemoveHuman: (userId: string, userName: string) => void;
   onMemberClick: (member: TeamMemberInfo) => void;
+  onBusyClick: (member: TeamMemberInfo) => void;
   onMoveToTeam: (memberId: string, memberType: 'human' | 'agent', teamId: string) => void;
 }) {
   return (
@@ -576,6 +620,7 @@ function UngroupedSection({
             isSelf={member.id === authUserId}
             teams={teams}
             onClick={() => onMemberClick(member)}
+            onBusyClick={() => onBusyClick(member)}
             onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
             onRemove={() => member.type === 'agent' ? onRemoveAgent(member.id, member.name) : onRemoveHuman(member.id, member.name)}
             onMoveToTeam={(teamId) => onMoveToTeam(member.id, member.type, teamId)}
@@ -587,7 +632,7 @@ function UngroupedSection({
 }
 
 function UngroupedMemberCard({
-  member, isAdmin, isSelected, isSelf, teams, onClick, onStartStop, onRemove, onMoveToTeam,
+  member, isAdmin, isSelected, isSelf, teams, onClick, onBusyClick, onStartStop, onRemove, onMoveToTeam,
 }: {
   member: TeamMemberInfo;
   isAdmin: boolean;
@@ -595,6 +640,7 @@ function UngroupedMemberCard({
   isSelf: boolean;
   teams: TeamInfo[];
   onClick: () => void;
+  onBusyClick: () => void;
   onStartStop: () => void;
   onRemove: () => void;
   onMoveToTeam: (teamId: string) => void;
@@ -639,10 +685,22 @@ function UngroupedMemberCard({
           {isAI ? 'AI' : 'Human'}
         </span>
         {isAI && member.status && (
-          <div className="flex items-center gap-1 ml-auto">
-            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
-            <span className="text-gray-600">{member.status}</span>
-          </div>
+          member.status === 'working' && member.currentTaskId ? (
+            <button
+              onClick={e => { e.stopPropagation(); onBusyClick(); }}
+              className="flex items-center gap-1 ml-auto px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 transition-colors"
+              title="View execution log"
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+              <span className="text-indigo-400 text-[10px]">working</span>
+              <span className="text-indigo-400 text-[10px]">⟩</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1 ml-auto">
+              <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+              <span className="text-gray-600">{member.status}</span>
+            </div>
+          )
         )}
       </div>
 
@@ -1072,6 +1130,114 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
         </div>
       )}
     </Modal>
+  );
+}
+
+// ─── Busy Agent Modal ─────────────────────────────────────────────────────────
+
+function BusyAgentModal({ agentName, taskId, onClose, onGoToTask }: {
+  agentName: string; taskId: string; onClose: () => void; onGoToTask: () => void;
+}) {
+  const [logs, setLogs] = useState<TaskLogEntry[]>([]);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [loading, setLoading] = useState(true);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.tasks.getLogs(taskId).then(d => { setLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    api.tasks.board().then(d => {
+      const all = Object.values(d.board).flat();
+      const t = all.find(x => x.id === taskId);
+      if (t) setTaskTitle(t.title);
+    }).catch(() => {});
+  }, [taskId]);
+
+  useEffect(() => {
+    const unsub = wsClient.on('task:log', (event) => {
+      const p = event.payload;
+      if (p.taskId !== taskId) return;
+      const entry: TaskLogEntry = {
+        id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
+        seq: p.seq as number, type: p.logType as string, content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined, createdAt: p.createdAt as string,
+      };
+      setLogs(prev => {
+        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
+        return [...prev, entry];
+      });
+    });
+    return unsub;
+  }, [taskId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  const renderLogEntry = (entry: TaskLogEntry) => {
+    if (entry.type === 'status') {
+      const color = entry.content === 'completed' ? 'text-green-400' : entry.content === 'started' ? 'text-blue-400' : 'text-gray-500';
+      return <div className={`text-xs ${color} capitalize`}>● {entry.content}</div>;
+    }
+    if (entry.type === 'text') {
+      return <div className="text-xs text-gray-300 whitespace-pre-wrap bg-gray-800/50 rounded px-2.5 py-2 leading-relaxed">{entry.content}</div>;
+    }
+    if (entry.type === 'tool_start') {
+      return <div className="text-xs text-indigo-300 flex items-center gap-1.5"><span className="animate-spin">⟳</span> {entry.content}</div>;
+    }
+    if (entry.type === 'tool_end') {
+      const ok = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
+      return <div className={`text-xs ${ok ? 'text-green-400' : 'text-red-400'}`}>{ok ? '✓' : '✗'} {entry.content}</div>;
+    }
+    if (entry.type === 'error') {
+      return <div className="text-xs text-red-400 bg-red-500/10 rounded px-2 py-1.5">Error: {entry.content}</div>;
+    }
+    return null;
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[540px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+            <div className="min-w-0">
+              <span className="text-sm font-medium">{agentName}</span>
+              <span className="text-xs text-gray-500 ml-2">is working on</span>
+              {taskTitle && <div className="text-xs text-indigo-300 truncate">{taskTitle}</div>}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
+              Go to Task →
+            </button>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">×</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
+          {loading ? (
+            <div className="text-center py-8 text-xs text-gray-600">Loading logs…</div>
+          ) : logs.length === 0 ? (
+            <div className="text-center py-8 text-xs text-gray-600">No execution logs yet.</div>
+          ) : (
+            <>
+              {logs.slice(-50).map((entry, i) => (
+                <div key={`${entry.seq}-${i}`}>{renderLogEntry(entry)}</div>
+              ))}
+              <div className="flex items-center gap-2 px-2 py-1 text-xs text-gray-500">
+                <span className="flex gap-0.5">
+                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                </span>
+                Working…
+              </div>
+            </>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
+    </div>
   );
 }
 

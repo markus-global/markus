@@ -158,6 +158,19 @@ export class TaskService {
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
+    // Enforce single-task constraint: one task at a time per agent
+    const agentState = agent.getState();
+    if (agentState.status === 'working' && agentState.activeTaskIds?.length) {
+      const otherTaskId = agentState.activeTaskIds.find(id => id !== taskId);
+      if (otherTaskId) {
+        const otherTask = this.tasks.get(otherTaskId);
+        throw new Error(
+          `Agent "${agent.config.name}" is already working on "${otherTask?.title ?? otherTaskId}". ` +
+          `An agent can only execute one task at a time.`
+        );
+      }
+    }
+
     // Cancel any currently running execution for this task before starting a new one
     const existing = this.taskCancelTokens.get(taskId);
     if (existing) existing.cancelled = true;

@@ -292,6 +292,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [showSessions, setShowSessions] = useState(false);
   const oldestMsgId = useRef<string | null>(null);
 
+  // Group chats
+  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number }>>([]);
+
   // Task context
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [linkedTaskId, setLinkedTaskId] = useState<string | null>(null);
@@ -346,11 +349,16 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     refreshAgents();
     api.users.list().then(d => setHumans(d.users)).catch(() => {});
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
+    fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
 
     // Keep agent list in sync — poll every 8s and react to WS events
     const timer = setInterval(refreshAgents, 8000);
     const unsub = wsClient.on('agent:update', refreshAgents);
-    return () => { clearInterval(timer); unsub(); };
+    const unsubGroup = wsClient.on('chat:group_created', () => {
+      fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
+    });
+    return () => { clearInterval(timer); unsub(); unsubGroup(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Check for nav params (e.g., navigated here from AgentProfile)
@@ -511,14 +519,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // WS live updates for channel mode
   useEffect(() => {
     if (chatMode !== 'channel') return;
-    const unsub = wsClient.on('chat', (event) => {
+    const unsub = wsClient.on('chat:message', (event) => {
       const p = event.payload;
+      const msgChannel = (p['channel'] as string) ?? '';
+      // Only handle messages for the current active channel
+      if (msgChannel && msgChannel !== activeChannel) return;
+      const senderType = (p['senderType'] as string) ?? 'agent';
       const newMsg: ChatMsg = {
         id: `ws_${Date.now()}`,
-        sender: 'agent',
-        text: (p['text'] as string) ?? '',
+        sender: senderType === 'human' ? 'user' : 'agent',
+        text: (p['text'] as string) ?? (p['message'] as string) ?? '',
         time: new Date().toLocaleTimeString(),
-        agentName: (p['agentId'] as string) ?? 'Agent',
+        agentName: senderType === 'agent' ? ((p['senderName'] as string) ?? (p['agentId'] as string) ?? 'Agent') : undefined,
       };
       setMessages(prev => [...prev, newMsg]);
     });
@@ -811,14 +823,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const activeDmUser = humans.find(h => h.id === activeDmUserId);
   const isSelfDm = activeDmUserId === authUser?.id || !activeDmUserId;
 
+  const activeGroupChat = groupChats.find(gc => gc.channelKey === activeChannel);
   const modeTitle =
-    chatMode === 'channel' ? activeChannel :
+    chatMode === 'channel' ? (activeGroupChat ? `👥 ${activeGroupChat.name}` : activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? 'Select Agent') :
     chatMode === 'dm'      ? (isSelfDm ? '📝 My Notes' : `💬 ${activeDmUser?.name ?? 'Direct Message'}`) :
     'Smart Route';
 
   const placeholder =
-    chatMode === 'channel' ? `Message ${activeChannel}… (use @name to mention)` :
+    chatMode === 'channel' ? (activeGroupChat ? `Message ${activeGroupChat.name}…` : `Message ${activeChannel}… (use @name to mention)`) :
     chatMode === 'smart'   ? 'Message anyone — auto-routed to the right agent…' :
     chatMode === 'dm'      ? (isSelfDm ? 'Write a note to yourself…' : `Message ${activeDmUser?.name ?? ''}…`) :
     selectedAgent ? 'Type a message…' : 'Select an agent to start chatting';
@@ -858,6 +871,30 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             </button>
           ))}
         </div>
+
+        {/* Group Chats */}
+        {groupChats.length > 0 && (
+          <div className="px-3 py-2 border-b border-gray-800">
+            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Group Chats</p>
+            {groupChats.map(gc => (
+              <button
+                key={gc.id}
+                onClick={() => { setChatMode('channel'); setActiveChannel(gc.channelKey); }}
+                className={`w-full text-left px-3 py-1.5 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
+                  chatMode === 'channel' && activeChannel === gc.channelKey
+                    ? 'bg-indigo-600/20 text-indigo-300'
+                    : 'text-gray-400 hover:bg-gray-800'
+                }`}
+              >
+                <span className="text-[10px]">{gc.type === 'team' ? '👥' : '💬'}</span>
+                <span className="truncate flex-1">{gc.name}</span>
+                {gc.memberCount !== undefined && gc.memberCount > 0 && (
+                  <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Agents (Direct) */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
@@ -1085,7 +1122,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <div className="text-4xl opacity-20">
                 {chatMode === 'channel' ? '✉' : chatMode === 'smart' ? '✦' : '💬'}
               </div>
-              {chatMode === 'channel' && <div>No messages in {activeChannel} yet.</div>}
+              {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
               {chatMode === 'smart' && <div>Send a message — it will be routed to the right agent.</div>}
               {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
               {chatMode === 'direct' && selectedAgent && <div>Start a new conversation with {currentAgent?.name}.</div>}

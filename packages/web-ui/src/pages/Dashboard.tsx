@@ -77,14 +77,17 @@ export function Dashboard() {
             )}
 
             {/* Agent Status Overview */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors" onClick={() => navBus.navigate('team')}>
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Team Status</h3>
               {agents.length === 0 ? (
-                <div className="text-sm text-gray-600 py-4 text-center">No agents yet. Hire your first agent to get started.</div>
+                <div className="text-sm text-gray-600 py-4 text-center cursor-pointer" onClick={() => navBus.navigate('team')}>No agents yet. Hire your first agent to get started.</div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {agents.map(a => (
-                    <div key={a.id} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/40 border border-gray-700/30 hover:border-indigo-500/30 transition-colors">
+                    <div key={a.id}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/40 border border-gray-700/30 hover:border-indigo-500/30 transition-colors cursor-pointer"
+                      onClick={() => navBus.navigate('team', { selectAgent: a.id })}
+                    >
                       <div className="w-8 h-8 rounded-lg bg-indigo-700 flex items-center justify-center text-xs font-bold shrink-0">{a.name.charAt(0)}</div>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium truncate">{a.name}</div>
@@ -115,7 +118,7 @@ export function Dashboard() {
                       <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                       Needs attention:
                       {ops.systemHealth.criticalAgents.map(a => (
-                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded text-red-400 cursor-pointer hover:bg-red-500/20" onClick={() => navBus.navigate('team')}>{a.name} ({a.score}%)</span>
+                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded text-red-400 cursor-pointer hover:bg-red-500/20" onClick={() => navBus.navigate('team', { selectAgent: a.id })}>{a.name} ({a.score}%)</span>
                       ))}
                     </div>
                   </div>
@@ -149,7 +152,7 @@ export function Dashboard() {
                 </div>
                 <div className="space-y-1.5">
                   {ops.taskKPI.recentActivity.slice(0, 8).map(act => (
-                    <div key={act.taskId} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/40 transition-colors cursor-pointer" onClick={() => navBus.navigate('tasks')}>
+                    <div key={act.taskId} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/40 transition-colors cursor-pointer" onClick={() => navBus.navigate('tasks', { openTask: act.taskId })}>
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[act.status] ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-gray-400 truncate flex-1">{act.title}</span>
                       <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>

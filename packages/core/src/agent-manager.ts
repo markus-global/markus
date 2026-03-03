@@ -81,6 +81,11 @@ export class AgentManager {
   private escalationHandler?: (agentId: string, reason: string) => void;
   private a2aBus: A2ABus;
   private templateRegistry?: TemplateRegistry;
+  private groupChatHandlers?: {
+    sendGroupMessage: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
+    createGroupChat: (name: string, creatorId: string, creatorName: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
+    listGroupChats: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
+  };
 
   constructor(options: {
     llmRouter: LLMRouter;
@@ -164,7 +169,7 @@ export class AgentManager {
     }
 
     // A2A tools — every agent can message colleagues
-    const a2aContext = {
+    const a2aContext: import('./tools/a2a.js').A2AContext = {
       selfId: id,
       selfName: config.name,
       listColleagues: () => this.listAgents().map(a => {
@@ -177,6 +182,11 @@ export class AgentManager {
         const target = this.getAgent(targetId);
         return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
       },
+      ...(this.groupChatHandlers ? {
+        sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
+        createGroupChat: (name: string, memberIds: string[]) => this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
+        listGroupChats: this.groupChatHandlers.listGroupChats,
+      } : {}),
     };
     for (const tool of createA2ATools(a2aContext)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aContext)) agent.registerTool(tool);
@@ -576,6 +586,14 @@ export class AgentManager {
 
   getTemplateRegistry(): TemplateRegistry | undefined {
     return this.templateRegistry;
+  }
+
+  setGroupChatHandlers(handlers: {
+    sendGroupMessage: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
+    createGroupChat: (name: string, creatorId: string, creatorName: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
+    listGroupChats: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
+  }): void {
+    this.groupChatHandlers = handlers;
   }
 
   /**

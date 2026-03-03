@@ -351,11 +351,22 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
 
 // ─── Skills Tab ──────────────────────────────────────────────────────────────
 
+interface SkillDetail {
+  name: string; version: string; description: string; author: string;
+  category: string; tags?: string[];
+  tools: Array<{ name: string; description: string }>;
+  toolDetails?: Array<{ name: string; description: string; inputSchema?: unknown }>;
+  requiredPermissions?: string[];
+}
+
 function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
   const proficiency = agent.proficiency ?? {};
   const [availableSkills, setAvailableSkills] = useState<Array<{ name: string; version: string; description?: string }>>([]);
   const [showImport, setShowImport] = useState(false);
   const [search, setSearch] = useState('');
+  const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
+  const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     api.skills.list().then(d => setAvailableSkills(d.skills)).catch(() => {});
@@ -371,7 +382,30 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
     onUpdate();
   };
 
+  const toggleDetail = async (skillName: string) => {
+    if (expandedSkill === skillName) { setExpandedSkill(null); setSkillDetail(null); return; }
+    setExpandedSkill(skillName);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSkillDetail(data.skill);
+      } else {
+        setSkillDetail(null);
+      }
+    } catch { setSkillDetail(null); }
+    setDetailLoading(false);
+  };
+
   const importable = availableSkills.filter(s => !agent.skills.includes(s.name) && s.name.toLowerCase().includes(search.toLowerCase()));
+
+  const CATEGORY_COLORS: Record<string, string> = {
+    development: 'bg-blue-500/15 text-blue-400', devops: 'bg-orange-500/15 text-orange-400',
+    communication: 'bg-green-500/15 text-green-400', data: 'bg-purple-500/15 text-purple-400',
+    productivity: 'bg-amber-500/15 text-amber-400', browser: 'bg-cyan-500/15 text-cyan-400',
+    custom: 'bg-gray-500/15 text-gray-400',
+  };
 
   return (
     <div className="space-y-4">
@@ -398,22 +432,80 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
             {agent.skills.map(skill => {
               const prof = proficiency[skill];
               const rate = prof && prof.uses > 0 ? Math.round(prof.successes / prof.uses * 100) : null;
+              const isExpanded = expandedSkill === skill;
               return (
-                <div key={skill} className="flex items-center gap-3 px-4 py-2.5 rounded-lg bg-gray-800/30 border border-gray-700/30">
-                  <span className="text-indigo-400 text-sm">◆</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{skill}</div>
-                    {prof && <div className="text-[10px] text-gray-500 mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
-                  </div>
-                  {rate !== null && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
+                <div key={skill}>
+                  <div
+                    className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border cursor-pointer transition-all ${
+                      isExpanded ? 'bg-indigo-900/15 border-indigo-500/40' : 'bg-gray-800/30 border-gray-700/30 hover:border-gray-600/50'
+                    }`}
+                    onClick={() => toggleDetail(skill)}
+                  >
+                    <span className={`text-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">{skill}</div>
+                      {prof && <div className="text-[10px] text-gray-500 mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
+                    </div>
+                    {rate !== null && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
+                        </div>
+                        <span className="text-[10px] text-gray-500 w-8 text-right">{rate}%</span>
                       </div>
-                      <span className="text-[10px] text-gray-500 w-8 text-right">{rate}%</span>
+                    )}
+                    <button onClick={e => { e.stopPropagation(); removeSkill(skill); }} className="text-gray-600 hover:text-red-400 text-xs transition-colors" title="Remove skill">✕</button>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="ml-6 mt-1 mb-2 p-4 bg-gray-800/30 rounded-lg border border-gray-700/20 space-y-3">
+                      {detailLoading ? (
+                        <div className="text-[10px] text-gray-600 py-3 text-center">Loading skill details…</div>
+                      ) : skillDetail ? (
+                        <>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${CATEGORY_COLORS[skillDetail.category] ?? CATEGORY_COLORS['custom']}`}>
+                              {skillDetail.category}
+                            </span>
+                            <span className="text-[10px] text-gray-500">v{skillDetail.version}</span>
+                            {skillDetail.author && <span className="text-[10px] text-gray-500">by {skillDetail.author}</span>}
+                            {skillDetail.requiredPermissions?.map(p => (
+                              <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-400 text-[10px] rounded">{p}</span>
+                            ))}
+                          </div>
+                          {skillDetail.description && (
+                            <p className="text-xs text-gray-400 leading-relaxed">{skillDetail.description}</p>
+                          )}
+                          {skillDetail.tags && skillDetail.tags.length > 0 && (
+                            <div className="flex gap-1 flex-wrap">
+                              {skillDetail.tags.map(tag => (
+                                <span key={tag} className="px-1.5 py-0.5 bg-gray-700/40 text-gray-500 text-[10px] rounded">#{tag}</span>
+                              ))}
+                            </div>
+                          )}
+                          {(skillDetail.toolDetails ?? skillDetail.tools).length > 0 && (
+                            <div>
+                              <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-2">
+                                Tools ({(skillDetail.toolDetails ?? skillDetail.tools).length})
+                              </div>
+                              <div className="space-y-1.5">
+                                {(skillDetail.toolDetails ?? skillDetail.tools).map(tool => (
+                                  <div key={tool.name} className="px-3 py-2 bg-gray-900/50 rounded border border-gray-700/20">
+                                    <div className="text-xs font-medium text-indigo-300">{tool.name}</div>
+                                    {tool.description && <div className="text-[10px] text-gray-500 mt-0.5">{tool.description}</div>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="text-[10px] text-gray-600 py-3 text-center">
+                          Skill details not available (skill may not be registered in the store)
+                        </div>
+                      )}
                     </div>
                   )}
-                  <button onClick={() => removeSkill(skill)} className="text-gray-600 hover:text-red-400 text-xs transition-colors" title="Remove skill">✕</button>
                 </div>
               );
             })}

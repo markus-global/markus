@@ -106,6 +106,7 @@ export class APIServer {
   private templateRegistry?: TemplateRegistry;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
+  private customGroupChats: Array<{ id: string; name: string; orgId: string; creatorId: string; creatorName: string; memberIds: string[]; createdAt: string }> = [];
 
   constructor(
     private orgService: OrganizationService,
@@ -120,6 +121,40 @@ export class APIServer {
     if (this.templateRegistry && !am.getTemplateRegistry()) {
       am.setTemplateRegistry(this.templateRegistry);
     }
+
+    // Wire up group chat handlers for agent communication tools
+    am.setGroupChatHandlers({
+      sendGroupMessage: async (channelKey: string, message: string, senderId: string, senderName: string) => {
+        if (this.storage) {
+          await this.storage.channelMessageRepo.append({
+            orgId: 'default', channel: channelKey,
+            senderId, senderType: 'agent', senderName, text: message,
+          });
+        }
+        this.ws.broadcast({
+          type: 'chat:message',
+          payload: { channel: channelKey, senderId, senderType: 'agent', senderName, text: message },
+          timestamp: new Date().toISOString(),
+        });
+        return 'Message sent to group chat';
+      },
+      createGroupChat: async (name: string, creatorId: string, creatorName: string, memberIds: string[]) => {
+        const chatId = `group:custom:${Date.now().toString(36)}`;
+        this.customGroupChats.push({ id: chatId, name, orgId: 'default', creatorId, creatorName, memberIds, createdAt: new Date().toISOString() });
+        this.ws.broadcast({
+          type: 'chat:group_created',
+          payload: { chatId, name, creatorId, creatorName },
+          timestamp: new Date().toISOString(),
+        });
+        return { id: chatId, name };
+      },
+      listGroupChats: async () => {
+        const teams = this.orgService.listTeamsWithMembers('default');
+        const teamChats = teams.map(t => ({ id: `group:${t.id}`, name: t.name, type: 'team', channelKey: `group:${t.id}` }));
+        const customChats = this.customGroupChats.map(c => ({ id: c.id, name: c.name, type: 'custom', channelKey: c.id }));
+        return [...teamChats, ...customChats];
+      },
+    });
   }
 
   setSkillRegistry(registry: SkillRegistry): void {
@@ -588,6 +623,54 @@ export class APIServer {
       const agentId = path.split('/')[3]!;
       await this.orgService.fireAgent(agentId);
       this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    // ── Group Chats ──────────────────────────────────────────────────────────────
+    if (path === '/api/group-chats' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const teams = this.orgService.listTeamsWithMembers(orgId);
+      const groupChats = teams.map(t => ({
+        id: `group:${t.id}`,
+        name: t.name,
+        type: 'team' as const,
+        teamId: t.id,
+        memberCount: t.members.length,
+        channelKey: `group:${t.id}`,
+      }));
+      // Also include custom group chats stored in localStorage-style metadata
+      const customChats = this.customGroupChats.filter(c => c.orgId === orgId);
+      this.json(res, 200, {
+        chats: [...groupChats, ...customChats.map(c => ({
+          id: c.id,
+          name: c.name,
+          type: 'custom' as const,
+          creatorId: c.creatorId,
+          creatorName: c.creatorName,
+          memberCount: c.memberIds?.length ?? 0,
+          channelKey: c.id,
+        }))],
+      });
+      return;
+    }
+
+    if (path === '/api/group-chats' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const name = body['name'] as string;
+      const orgId = (body['orgId'] as string) ?? 'default';
+      const creatorId = body['creatorId'] as string;
+      const creatorName = body['creatorName'] as string;
+      const memberIds = body['memberIds'] as string[] | undefined;
+      if (!name) { this.json(res, 400, { error: 'name is required' }); return; }
+      const chatId = `group:custom:${Date.now().toString(36)}`;
+      const chat = { id: chatId, name, orgId, creatorId, creatorName, memberIds: memberIds ?? [], createdAt: new Date().toISOString() };
+      this.customGroupChats.push(chat);
+      this.ws?.broadcast({
+        type: 'chat:group_created',
+        payload: { chatId, name, creatorId, creatorName },
+        timestamp: new Date().toISOString(),
+      });
+      this.json(res, 201, { chat: { id: chatId, name, type: 'custom', creatorId, creatorName, channelKey: chatId } });
       return;
     }
 
@@ -1368,6 +1451,20 @@ export class APIServer {
       return;
     }
 
+    if (path.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
+      const skillName = decodeURIComponent(path.split('/')[3]!);
+      if (!this.skillRegistry) { this.json(res, 404, { error: 'Skill registry not configured' }); return; }
+      const skill = this.skillRegistry.get(skillName);
+      if (!skill) { this.json(res, 404, { error: `Skill not found: ${skillName}` }); return; }
+      const manifest = skill.manifest;
+      const toolDetails = skill.tools.map(t => ({
+        name: t.name, description: t.description,
+        inputSchema: (t as unknown as { inputSchema?: unknown }).inputSchema,
+      }));
+      this.json(res, 200, { skill: { ...manifest, toolDetails } });
+      return;
+    }
+
     // Agent Templates
     if (path === '/api/templates' && req.method === 'GET') {
       if (!this.templateRegistry) { this.json(res, 200, { templates: [] }); return; }
@@ -1408,6 +1505,28 @@ export class APIServer {
         if (teamId) {
           this.orgService.addMemberToTeam(teamId, agent.id, 'agent');
         }
+
+        // Persist to DB so agents survive restarts
+        if (this.storage) {
+          try {
+            await this.storage.agentRepo.create({
+              id: agent.id,
+              name: agent.config.name,
+              orgId,
+              teamId,
+              roleId: agent.config.roleId,
+              roleName: agent.role.name,
+              agentRole: agent.config.agentRole ?? 'worker',
+              skills: agent.config.skills,
+              llmConfig: agent.config.llmConfig,
+              computeConfig: agent.config.computeConfig,
+              heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+            });
+          } catch (persistErr) {
+            log.warn('Failed to persist instantiated agent to DB', { error: String(persistErr) });
+          }
+        }
+
         await agentManager.startAgent(agent.id);
         this.json(res, 201, {
           agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status },

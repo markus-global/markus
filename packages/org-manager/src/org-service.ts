@@ -283,6 +283,7 @@ export class OrganizationService {
             agentRole: agent.config.agentRole ?? 'worker',
             status: state.status,
             teamId: team.id,
+            currentTaskId: state.activeTaskIds?.[0],
           });
         } catch { /* skip removed agents */ }
       }
@@ -340,6 +341,7 @@ export class OrganizationService {
             id: a.id, name: a.name, type: 'agent',
             role: agent.role.name, agentRole: agent.config.agentRole ?? 'worker',
             status: state.status,
+            currentTaskId: state.activeTaskIds?.[0],
           });
         }
       } catch { /* ok */ }

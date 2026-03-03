@@ -94,6 +94,7 @@ export interface TeamMemberInfo {
   agentRole?: 'manager' | 'worker';
   status?: string;
   teamId?: string;
+  currentTaskId?: string;
 }
 
 export interface TeamInfo {
