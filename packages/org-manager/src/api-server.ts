@@ -505,8 +505,29 @@ export class APIServer {
       // DM / personal-notepad channels never route to agents
       const humanOnly = (body['humanOnly'] as boolean) === true;
       const isHumanChannel = humanOnly || channel.startsWith('notes:') || channel.startsWith('dm:');
-      // Route to agent
-      const routedAgentId = isHumanChannel ? null : (targetAgentId ?? this.orgService.routeMessage(orgId, { text }));
+
+      // Route to agent — for group chats, pick a team member (manager first)
+      let routedAgentId: string | null | undefined = null;
+      if (!isHumanChannel) {
+        if (targetAgentId) {
+          routedAgentId = targetAgentId;
+        } else if (channel.startsWith('group:')) {
+          // Extract teamId from channel key (e.g. "group:team_xxx" or "group:custom:xxx")
+          const teamId = channel.replace(/^group:/, '');
+          const team = this.orgService.getTeam(teamId);
+          if (team) {
+            // Prefer team lead/manager, then first available agent member
+            const candidateId = team.leadAgentId
+              ?? (team.managerType === 'agent' ? team.managerId : undefined)
+              ?? team.memberAgentIds[0];
+            if (candidateId) routedAgentId = candidateId;
+          }
+          // Fallback to org-wide routing if no team member found
+          if (!routedAgentId) routedAgentId = this.orgService.routeMessage(orgId, { text });
+        } else {
+          routedAgentId = this.orgService.routeMessage(orgId, { text });
+        }
+      }
       if (!routedAgentId) {
         this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
         return;
@@ -2046,7 +2067,7 @@ export class APIServer {
         this.json(res, 200, { defaultProvider: 'unknown', providers: {} });
         return;
       }
-      this.json(res, 200, this.llmRouter.getSettings());
+      this.json(res, 200, this.llmRouter.getEnhancedSettings());
       return;
     }
 
@@ -2059,9 +2080,173 @@ export class APIServer {
       if (!defaultProvider) { this.json(res, 400, { error: 'defaultProvider is required' }); return; }
       try {
         this.llmRouter.setDefaultProvider(defaultProvider);
-        this.json(res, 200, this.llmRouter.getSettings());
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/llm/models' && req.method === 'GET') {
+      if (!this.llmRouter) { this.json(res, 200, { models: [] }); return; }
+      this.json(res, 200, { models: this.llmRouter.getModelCatalog() });
+      return;
+    }
+
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+$/) && req.method === 'PATCH') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) { this.json(res, 503, { error: 'LLM router not available' }); return; }
+      const providerName = path.split('/')[5]!;
+      const body = await this.readBody(req);
+      try {
+        this.llmRouter.updateProviderModelConfig(providerName, body as { contextWindow?: number; maxOutputTokens?: number; cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number } });
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Config Export
+    if (path === '/api/settings/export' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const sections = (body.sections as string[]) ?? ['llm', 'teams', 'agents', 'templates'];
+      const exportData: Record<string, unknown> = { version: '1.0', exportedAt: new Date().toISOString(), sections: {} };
+      const sectionData = exportData.sections as Record<string, unknown>;
+      if (sections.includes('llm') && this.llmRouter) {
+        sectionData.llm = this.llmRouter.getEnhancedSettings();
+      }
+      if (sections.includes('teams')) {
+        const teams = this.orgService.listTeams(auth.orgId);
+        sectionData.teams = teams;
+      }
+      if (sections.includes('agents')) {
+        const agents = this.orgService.getAgentManager().listAgents();
+        sectionData.agents = agents.map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
+      }
+      this.json(res, 200, exportData);
+      return;
+    }
+
+    // Settings — Config Import (preview and apply)
+    if (path === '/api/settings/import' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { data, preview } = body as { data: Record<string, unknown>; preview?: boolean };
+      if (!data || !data.sections) { this.json(res, 400, { error: 'Invalid import data: missing sections' }); return; }
+      const sections = data.sections as Record<string, unknown>;
+      const available = Object.keys(sections);
+      if (preview) {
+        const summary: Record<string, { count: number; items: string[] }> = {};
+        if (sections.llm) {
+          const llm = sections.llm as Record<string, unknown>;
+          const provCount = llm.providers ? Object.keys(llm.providers as object).length : 0;
+          summary.llm = { count: provCount, items: llm.providers ? Object.keys(llm.providers as object) : [] };
+        }
+        if (sections.teams) {
+          const teams = sections.teams as Array<{ name: string }>;
+          summary.teams = { count: teams.length, items: teams.map(t => t.name) };
+        }
+        if (sections.agents) {
+          const agents = sections.agents as Array<{ name: string }>;
+          summary.agents = { count: agents.length, items: agents.map(a => a.name) };
+        }
+        this.json(res, 200, { available, summary });
+        return;
+      }
+      // Apply import
+      const applied: string[] = [];
+      if (sections.llm && this.llmRouter) {
+        const llm = sections.llm as { defaultProvider?: string; providers?: Record<string, { cost?: { input: number; output: number }; contextWindow?: number; maxOutputTokens?: number }> };
+        if (llm.providers) {
+          for (const [name, cfg] of Object.entries(llm.providers)) {
+            if (cfg.cost || cfg.contextWindow || cfg.maxOutputTokens) {
+              this.llmRouter.updateProviderModelConfig(name, { cost: cfg.cost, contextWindow: cfg.contextWindow, maxOutputTokens: cfg.maxOutputTokens });
+            }
+          }
+        }
+        if (llm.defaultProvider && this.llmRouter.listProviders().includes(llm.defaultProvider)) {
+          this.llmRouter.setDefaultProvider(llm.defaultProvider);
+        }
+        applied.push('llm');
+      }
+      this.json(res, 200, { applied, message: `Imported ${applied.length} sections` });
+      return;
+    }
+
+    // Settings — Import from OpenClaw config
+    if (path === '/api/settings/import/openclaw' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { configPath, preview } = body as { configPath?: string; preview?: boolean };
+
+      const { existsSync: fsExists, readFileSync: fsRead } = await import('node:fs');
+      const { join: pathJoin } = await import('node:path');
+      const { homedir } = await import('node:os');
+
+      const possiblePaths = [
+        configPath,
+        pathJoin(homedir(), '.openclaw', 'openclaw.json'),
+        pathJoin(homedir(), '.openclaw', 'openclaw.json5'),
+      ].filter(Boolean) as string[];
+
+      let found = '';
+      let rawContent = '';
+      for (const p of possiblePaths) {
+        if (fsExists(p)) { found = p; rawContent = fsRead(p, 'utf-8'); break; }
+      }
+
+      if (!found) {
+        this.json(res, 404, { error: 'No OpenClaw config found', searchedPaths: possiblePaths });
+        return;
+      }
+
+      try {
+        const cleaned = rawContent.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*([\]}])/g, '$1');
+        const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+
+        const modelsSection = parsed.models as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id: string; name: string; cost?: { input: number; output: number }; contextWindow?: number; maxTokens?: number }> }> } | undefined;
+        const channelsSection = parsed.channels as Record<string, unknown> | undefined;
+
+        if (preview) {
+          const summary: Record<string, unknown> = { configPath: found };
+          if (modelsSection?.providers) {
+            const provs = Object.entries(modelsSection.providers).map(([name, cfg]) => ({
+              name, modelCount: cfg.models?.length ?? 0, baseUrl: cfg.baseUrl,
+            }));
+            summary.models = { providerCount: provs.length, providers: provs };
+          }
+          if (channelsSection) {
+            summary.channels = Object.keys(channelsSection).filter(k => k !== 'defaults' && k !== 'modelByChannel');
+          }
+          this.json(res, 200, { found: true, summary });
+          return;
+        }
+
+        // Apply model configs
+        let appliedModels = 0;
+        if (modelsSection?.providers && this.llmRouter) {
+          for (const [name, cfg] of Object.entries(modelsSection.providers)) {
+            if (cfg.models) {
+              for (const m of cfg.models) {
+                if (m.cost || m.contextWindow || m.maxTokens) {
+                  this.llmRouter.updateProviderModelConfig(name, {
+                    cost: m.cost, contextWindow: m.contextWindow, maxOutputTokens: m.maxTokens,
+                  });
+                  appliedModels++;
+                }
+              }
+            }
+          }
+        }
+        this.json(res, 200, { applied: true, appliedModels, configPath: found });
+      } catch (err) {
+        this.json(res, 400, { error: `Failed to parse OpenClaw config: ${String(err)}` });
       }
       return;
     }

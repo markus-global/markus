@@ -1,4 +1,4 @@
-import { createLogger, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig } from '@markus/shared';
+import { createLogger, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
@@ -60,6 +60,7 @@ export class LLMRouter {
   private providerTiers: ProviderTier[] = [];
   private fallbackOrder: string[] = [];
   private health = new Map<string, ProviderHealth>();
+  private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
 
   // After this many consecutive failures, mark provider as degraded and skip it
   private readonly CIRCUIT_OPEN_AFTER = 2;
@@ -362,7 +363,6 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    // Show known providers that aren't configured too
     for (const name of ['anthropic', 'openai', 'google', 'ollama', 'deepseek', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
@@ -371,7 +371,76 @@ export class LLMRouter {
     return { defaultProvider: this.defaultProvider, providers };
   }
 
+  getEnhancedSettings(): EnhancedLLMSettings {
+    const providers: Record<string, EnhancedProviderSettings> = {};
+
+    for (const [name, p] of this.providers.entries()) {
+      const modelDef = BUILTIN_MODEL_CATALOG.find(m => m.id === p.model || m.provider === name);
+      const customModels = this.customModelConfigs.get(name);
+      providers[name] = {
+        name,
+        displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
+        model: p.model,
+        configured: true,
+        contextWindow: customModels?.contextWindow ?? modelDef?.contextWindow,
+        maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
+        cost: customModels?.cost ?? modelDef?.cost,
+        models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+      };
+    }
+
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'deepseek', 'siliconflow', 'openrouter']) {
+      if (!providers[name]) {
+        providers[name] = {
+          name,
+          displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
+          model: '',
+          configured: false,
+          models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+        };
+      }
+    }
+
+    return { defaultProvider: this.defaultProvider, providers };
+  }
+
+  updateProviderModelConfig(providerName: string, config: { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }): void {
+    this.customModelConfigs.set(providerName, {
+      ...(this.customModelConfigs.get(providerName) ?? {}),
+      ...config,
+    });
+    log.info(`Updated model config for ${providerName}`, config);
+  }
+
+  getModelCatalog(): ModelDefinition[] {
+    return [...BUILTIN_MODEL_CATALOG];
+  }
+
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
   }
 }
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  google: 'Google Gemini',
+  ollama: 'Ollama (Local)',
+  deepseek: 'DeepSeek',
+  siliconflow: 'SiliconFlow',
+  openrouter: 'OpenRouter',
+};
+
+const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
+  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 32000, cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 8192, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0.15, output: 0.6 }, reasoning: false, inputTypes: ['text', 'image'] },
+  { id: 'o3', name: 'o3', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 10, output: 40 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 1.25, output: 10 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.27, output: 1.1, cacheRead: 0.07 }, reasoning: false, inputTypes: ['text'] },
+  { id: 'deepseek-reasoner', name: 'DeepSeek R1', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+];

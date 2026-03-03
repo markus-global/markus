@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react';
-import { api, type AgentInfo, type TaskInfo, type OpsDashboard } from '../api.ts';
+import { useEffect, useState, useMemo } from 'react';
+import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 
 export function Dashboard() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [ops, setOps] = useState<OpsDashboard | null>(null);
   const [opsPeriod, setOpsPeriod] = useState<'1h' | '24h' | '7d'>('24h');
 
   const refresh = () => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
+    api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
   };
@@ -29,6 +31,19 @@ export function Dashboard() {
 
   const activeAgents = agents.filter(a => a.status === 'idle' || a.status === 'working').length;
   const workingAgents = agents.filter(a => a.status === 'working').length;
+
+  const teamSummaries = useMemo(() => {
+    const agentMap = new Map(agents.map(a => [a.id, a]));
+    return teams.map(t => {
+      const memberAgents = t.members
+        .filter(m => m.type === 'agent')
+        .map(m => agentMap.get(m.id))
+        .filter((a): a is AgentInfo => !!a);
+      const working = memberAgents.filter(a => a.status === 'working').length;
+      const active = memberAgents.filter(a => a.status === 'idle' || a.status === 'working').length;
+      return { team: t, agents: memberAgents, working, active, total: memberAgents.length };
+    });
+  }, [teams, agents]);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -76,26 +91,66 @@ export function Dashboard() {
               </div>
             )}
 
-            {/* Agent Status Overview */}
+            {/* Team Status — grouped by team */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Team Status</h3>
-              {agents.length === 0 ? (
-                <div className="text-sm text-gray-600 py-4 text-center cursor-pointer" onClick={() => navBus.navigate('team')}>No agents yet. Hire your first agent to get started.</div>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Team Status</h3>
+                <button onClick={() => navBus.navigate('team')} className="text-[10px] text-gray-600 hover:text-gray-400">View all →</button>
+              </div>
+              {teamSummaries.length === 0 && agents.length === 0 ? (
+                <div className="text-sm text-gray-600 py-4 text-center cursor-pointer" onClick={() => navBus.navigate('team')}>No teams yet. Create a team or hire agents to get started.</div>
               ) : (
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {agents.map(a => (
-                    <div key={a.id}
-                      className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/40 border border-gray-700/30 hover:border-indigo-500/30 transition-colors cursor-pointer"
-                      onClick={() => navBus.navigate('team', { selectAgent: a.id })}
-                    >
-                      <div className="w-8 h-8 rounded-lg bg-indigo-700 flex items-center justify-center text-xs font-bold shrink-0">{a.name.charAt(0)}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium truncate">{a.name}</div>
-                        <div className="text-[10px] text-gray-500 truncate">{a.role}</div>
+                <div className="space-y-4">
+                  {teamSummaries.map(ts => (
+                    <div key={ts.team.id} className="bg-gray-800/30 border border-gray-700/30 rounded-lg p-4 hover:border-indigo-500/20 transition-colors cursor-pointer" onClick={() => navBus.navigate('team')}>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-lg bg-indigo-600/30 flex items-center justify-center text-xs font-bold text-indigo-400">{ts.team.name.charAt(0)}</div>
+                          <div>
+                            <div className="text-sm font-medium">{ts.team.name}</div>
+                            {ts.team.description && <div className="text-[10px] text-gray-500 truncate max-w-[200px]">{ts.team.description}</div>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                          <span>{ts.total} members</span>
+                          {ts.working > 0 && <span className="text-indigo-400">{ts.working} working</span>}
+                          <span className={ts.active === ts.total ? 'text-green-400' : ''}>{ts.active} active</span>
+                        </div>
                       </div>
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600'}`} />
+                      <div className="flex gap-2 flex-wrap">
+                        {ts.agents.slice(0, 6).map(a => (
+                          <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-700/30" onClick={e => { e.stopPropagation(); navBus.navigate('team', { selectAgent: a.id }); }}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600'}`} />
+                            <span className="text-[11px] text-gray-300">{a.name}</span>
+                          </div>
+                        ))}
+                        {ts.agents.length > 6 && <span className="text-[10px] text-gray-500 self-center">+{ts.agents.length - 6} more</span>}
+                      </div>
                     </div>
                   ))}
+                  {/* Ungrouped agents */}
+                  {(() => {
+                    const teamAgentIds = new Set(teams.flatMap(t => t.members.filter(m => m.type === 'agent').map(m => m.id)));
+                    const ungrouped = agents.filter(a => !teamAgentIds.has(a.id));
+                    if (ungrouped.length === 0) return null;
+                    return (
+                      <div className="bg-gray-800/20 border border-gray-700/20 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-xs text-gray-500 font-medium">Unassigned Agents</div>
+                          <span className="text-[10px] text-gray-600">{ungrouped.length} agents</span>
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                          {ungrouped.slice(0, 6).map(a => (
+                            <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-gray-700/30 cursor-pointer" onClick={() => navBus.navigate('team', { selectAgent: a.id })}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600'}`} />
+                              <span className="text-[11px] text-gray-300">{a.name}</span>
+                            </div>
+                          ))}
+                          {ungrouped.length > 6 && <span className="text-[10px] text-gray-500 self-center">+{ungrouped.length - 6} more</span>}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

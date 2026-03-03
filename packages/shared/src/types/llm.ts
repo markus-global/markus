@@ -9,6 +9,42 @@ export interface LLMProviderConfig {
   temperature?: number;
 }
 
+export interface ModelCostConfig {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface ModelDefinition {
+  id: string;
+  name: string;
+  provider: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  cost: ModelCostConfig;
+  reasoning?: boolean;
+  inputTypes?: Array<'text' | 'image'>;
+  description?: string;
+}
+
+export interface EnhancedProviderSettings {
+  name: string;
+  displayName?: string;
+  model: string;
+  baseUrl?: string;
+  configured: boolean;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  cost?: ModelCostConfig;
+  models?: ModelDefinition[];
+}
+
+export interface EnhancedLLMSettings {
+  defaultProvider: string;
+  providers: Record<string, EnhancedProviderSettings>;
+}
+
 export interface LLMRequest {
   messages: LLMMessage[];
   tools?: LLMTool[];
