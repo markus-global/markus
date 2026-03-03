@@ -56,7 +56,14 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     ...opts,
     body: opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined,
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json() as { error?: string; message?: string };
+      detail = body.error ?? body.message ?? '';
+    } catch { /* ignore parse failures */ }
+    throw new Error(detail || `API error: ${res.status}`);
+  }
   return res.json() as Promise<T>;
 }
 

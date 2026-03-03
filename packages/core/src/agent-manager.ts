@@ -10,6 +10,7 @@ import { createManagerTools } from './tools/manager.js';
 import { createA2ATools } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
+import { createMemoryTools } from './tools/memory.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { A2ABus } from '@markus/a2a';
@@ -180,7 +181,10 @@ export class AgentManager {
       }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
-        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
+        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' }, {
+          ephemeral: true,
+          maxHistory: 15,
+        });
       },
       ...(this.groupChatHandlers ? {
         sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
@@ -191,10 +195,18 @@ export class AgentManager {
     for (const tool of createA2ATools(a2aContext)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aContext)) agent.registerTool(tool);
 
+    // Memory tools — every agent can save/search/list memories
+    for (const tool of createMemoryTools({ agentId: id, agentName: config.name, memory: agent.getMemory() })) {
+      agent.registerTool(tool);
+    }
+
     // Register agent on A2A bus for structured message delivery
     this.a2aBus.registerAgent(id, async (envelope) => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' });
+      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' }, {
+        ephemeral: true,
+        maxHistory: 10,
+      });
     });
 
     // Task tools — every agent can create/list/update tasks
@@ -403,15 +415,25 @@ export class AgentManager {
       }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
-        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' });
+        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' }, {
+          ephemeral: true,
+          maxHistory: 15,
+        });
       },
     };
     for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
 
+    for (const tool of createMemoryTools({ agentId: id, agentName: config.name, memory: agent.getMemory() })) {
+      agent.registerTool(tool);
+    }
+
     this.a2aBus.registerAgent(id, async (envelope) => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' });
+      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' }, {
+        ephemeral: true,
+        maxHistory: 10,
+      });
     });
 
     if (this.taskService) {

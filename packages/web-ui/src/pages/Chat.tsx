@@ -633,8 +633,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
+        const friendly = friendlyAgentError(e) || `Error: ${String(e)}`;
         updateConvMsgs(sendKey, prev => [...prev, {
-          id: `err_${Date.now()}`, sender: 'agent', text: `Error: ${String(e)}`,
+          id: `err_${Date.now()}`, sender: 'agent', text: friendly,
           time: new Date().toLocaleTimeString(), agentName: 'System',
         }]);
       }

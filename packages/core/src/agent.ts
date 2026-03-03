@@ -88,10 +88,12 @@ export class Agent {
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
   private stateManager?: AgentStateManager;
+  private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
+  private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
@@ -184,12 +186,22 @@ export class Agent {
     }
 
     this.heartbeat.start(this.role.defaultHeartbeatTasks);
+
+    // Periodic memory consolidation: compact sessions and generate daily insights
+    this.memoryConsolidationTimer = setInterval(() => {
+      this.consolidateMemory();
+    }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+
     this.eventBus.emit('agent:started', { agentId: this.id });
     log.info(`Agent started: ${this.config.name}`);
   }
 
   async stop(): Promise<void> {
     this.heartbeat.stop();
+    if (this.memoryConsolidationTimer) {
+      clearInterval(this.memoryConsolidationTimer);
+      this.memoryConsolidationTimer = undefined;
+    }
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name }`);
@@ -389,7 +401,10 @@ export class Agent {
     ].join('\n');
 
     try {
-      const report = await this.handleMessage(prompt, undefined, undefined);
+      const report = await this.handleMessage(prompt, undefined, undefined, {
+        ephemeral: true,
+        maxHistory: 5,
+      });
       this.memory.addLongTermMemory(`daily-report-${new Date().toISOString().split('T')[0]}`, report);
       return report;
     } catch (error) {
@@ -402,17 +417,32 @@ export class Agent {
     return this.state.status !== 'offline' ? Date.now() - new Date(this.config.createdAt).getTime() : 0;
   }
 
-  async handleMessage(userMessage: string, senderId?: string, senderInfo?: { name: string; role: string }): Promise<string> {
+  async handleMessage(
+    userMessage: string,
+    senderId?: string,
+    senderInfo?: { name: string; role: string },
+    options?: { ephemeral?: boolean; maxHistory?: number; channelContext?: Array<{ role: string; content: string }> },
+  ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
     }
 
-    if (!this.currentSessionId) {
-      const session = this.memory.createSession(this.id);
-      this.currentSessionId = session.id;
-    }
+    const isEphemeral = options?.ephemeral ?? false;
+    const maxHistory = options?.maxHistory ?? 40;
 
-    this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userMessage });
+    // Ephemeral mode: don't pollute the agent's main session with channel messages.
+    // Use a minimal context with only channel history provided by the caller.
+    let sessionId: string;
+    if (isEphemeral) {
+      sessionId = `ephemeral_${Date.now()}`;
+    } else {
+      if (!this.currentSessionId) {
+        const session = this.memory.createSession(this.id);
+        this.currentSessionId = session.id;
+      }
+      sessionId = this.currentSessionId;
+      this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
+    }
 
     const systemPrompt = this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -424,17 +454,30 @@ export class Agent {
       currentQuery: userMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
-      assignedTasks: this.tasksFetcher?.(),
-      knowledgeContext: this.getKnowledgeContext(userMessage),
+      assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
+      knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(userMessage),
     });
 
-    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
-    const messages = this.contextEngine.prepareMessages({
-      systemPrompt,
-      sessionMessages,
-      memory: this.memory,
-      sessionId: this.currentSessionId,
-    });
+    let messages: LLMMessage[];
+    if (isEphemeral) {
+      const channelMsgs = (options?.channelContext ?? []).map(m => ({
+        role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
+        content: m.content,
+      }));
+      messages = [
+        { role: 'system' as const, content: systemPrompt },
+        ...channelMsgs.slice(-(maxHistory)),
+        { role: 'user' as const, content: userMessage },
+      ];
+    } else {
+      const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+      messages = this.contextEngine.prepareMessages({
+        systemPrompt,
+        sessionMessages,
+        memory: this.memory,
+        sessionId,
+      });
+    }
 
     const llmTools = this.buildToolDefinitions();
 
@@ -450,11 +493,15 @@ export class Agent {
       this.emitAudit({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-        this.memory.appendMessage(this.currentSessionId, {
-          role: 'assistant',
-          content: response.content,
-          toolCalls: response.toolCalls,
-        });
+        if (!isEphemeral) {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
+        } else {
+          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
+        }
 
         for (const tc of response.toolCalls) {
           const toolStart = Date.now();
@@ -462,28 +509,33 @@ export class Agent {
             const result = await this.executeTool(tc);
             const isToolError = isErrorResult(result);
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
-            this.memory.appendMessage(this.currentSessionId, {
-              role: 'tool',
-              content: result,
-              toolCallId: tc.id,
-            });
+            if (!isEphemeral) {
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } else {
+              messages.push({ role: 'tool', content: result, toolCallId: tc.id });
+            }
           } catch (toolErr) {
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
-            this.memory.appendMessage(this.currentSessionId, {
-              role: 'tool',
-              content: `Error: ${String(toolErr)}`,
-              toolCallId: tc.id,
-            });
+            if (!isEphemeral) {
+              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            } else {
+              messages.push({ role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            }
           }
         }
 
-        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 100);
-        const updatedMessages = this.contextEngine.prepareMessages({
-          systemPrompt,
-          sessionMessages: updatedSessionMessages,
-          memory: this.memory,
-          sessionId: this.currentSessionId,
-        });
+        let updatedMessages: typeof messages;
+        if (isEphemeral) {
+          updatedMessages = messages;
+        } else {
+          const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          updatedMessages = this.contextEngine.prepareMessages({
+            systemPrompt,
+            sessionMessages: updatedSessionMessages,
+            memory: this.memory,
+            sessionId,
+          });
+        }
 
         const llmStart2 = Date.now();
         response = await this.llmRouter.chat({
@@ -497,9 +549,14 @@ export class Agent {
       }
 
       const reply = response.content;
-      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
-      // Only go idle if no tasks are concurrently executing
-      // 注意：聊天任务不会添加到activeTasks中，所以这里只检查activeTasks
+      if (!isEphemeral) {
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
+        // Post-interaction: write to daily log for medium-term memory
+        if (reply.length > 50 && senderId) {
+          this.memory.writeDailyLog(this.id,
+            `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`);
+        }
+      }
       if (this.activeTasks.size === 0) this.setStatus('idle');
 
       this.eventBus.emit('agent:message', {
@@ -1055,15 +1112,62 @@ export class Agent {
       '4. **Orphaned Work**: If there is work you are doing with no corresponding task, call `task_create` to register it.',
       '',
       'IMPORTANT: Do NOT try to directly execute task work in this heartbeat. Your role here is only to review task statuses and trigger execution via `task_update(in_progress)`. Actual work happens in a separate dedicated session.',
+      '',
+      'After completing your review, if you discovered anything noteworthy (status changes, blockers, new tasks created), call `memory_save` with a brief summary so you remember it in future sessions.',
     ].join('\n');
 
     try {
-      await this.handleMessage(prompt);
+      const reply = await this.handleMessage(prompt, undefined, undefined, {
+        ephemeral: true,
+        maxHistory: 10,
+      });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true);
+
+      // Write heartbeat activity to daily log for medium-term recall
+      if (reply && reply.length > 20) {
+        this.memory.writeDailyLog(this.id, `[Heartbeat: ${ctx.task.name}] ${reply.slice(0, 500)}`);
+      }
     } catch (error) {
       this.metricsCollector.recordHeartbeat(false);
       log.error('Heartbeat task failed', { task: ctx.task.name, error: String(error) });
+    }
+  }
+
+  /**
+   * Periodic memory consolidation:
+   * 1. Compact main session if it has grown large
+   * 2. Generate daily report (writes to MEMORY.md long-term store)
+   * 3. Log the consolidation activity
+   */
+  private consolidateMemory(): void {
+    try {
+      // 1. Compact main session if it exists and is large
+      if (this.currentSessionId) {
+        const session = this.memory.getSession(this.currentSessionId);
+        if (session && session.messages.length > 30) {
+          const { flushedCount } = this.memory.compactSession(this.currentSessionId, 15);
+          if (flushedCount > 0) {
+            log.info('Memory consolidation: compacted main session', {
+              agentId: this.id, flushedCount,
+              remaining: session.messages.length,
+            });
+          }
+        }
+      }
+
+      // 2. Auto-generate daily report once per day
+      const today = new Date().toISOString().slice(0, 10);
+      const existingLongTerm = this.memory.getLongTermMemory();
+      if (!existingLongTerm.includes(`daily-report-${today}`)) {
+        this.generateDailyReport().catch(e =>
+          log.warn('Auto daily report generation failed', { error: String(e) }),
+        );
+      }
+
+      log.debug('Memory consolidation completed', { agentId: this.id });
+    } catch (error) {
+      log.warn('Memory consolidation failed', { agentId: this.id, error: String(error) });
     }
   }
 }

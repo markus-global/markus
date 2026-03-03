@@ -14,7 +14,7 @@ export interface ContextConfig {
 }
 
 const DEFAULT_CONFIG: ContextConfig = {
-  maxContextTokens: 100_000,
+  maxContextTokens: 80_000,
   maxRecentMessages: 40,
   summarizeThreshold: 60,
   memorySearchTopK: 5,
@@ -133,6 +133,16 @@ export class ContextEngine {
       parts.push('- When complete, call `task_update` to mark the task `completed`.');
       parts.push('- Never do meaningful work without a corresponding task entry.');
     }
+
+    // 9.5. Memory management guidance
+    parts.push('\n## Memory Management');
+    parts.push('You have access to persistent memory tools:');
+    parts.push('- `memory_save` — Save important facts, decisions, or observations for future recall');
+    parts.push('- `memory_search` — Search your memories for relevant past information');
+    parts.push('- `memory_list` — List your recent memories');
+    parts.push('- `memory_update_longterm` — Update persistent knowledge base sections');
+    parts.push('');
+    parts.push('**When to save memories:** After learning something important (user preferences, project decisions, key outcomes, blockers discovered). Do NOT save trivial or redundant information.');
 
     // 10. Current conversation context
     if (opts.senderIdentity) {
@@ -372,12 +382,13 @@ export class ContextEngine {
   private estimateTokens(systemPrompt: string, messages: LLMMessage[]): number {
     let totalChars = systemPrompt.length;
     for (const msg of messages) {
-      totalChars += msg.content.length + 20; // overhead per message
+      totalChars += msg.content.length + 20;
       if (msg.toolCalls) {
         totalChars += JSON.stringify(msg.toolCalls).length;
       }
     }
-    // Use 3 chars per token as a middle ground
-    return Math.ceil(totalChars / 3);
+    // Use 2.5 chars/token (more conservative — accounts for JSON encoding,
+    // tool definitions overhead, and structured content that tokenizes denser)
+    return Math.ceil(totalChars / 2.5);
   }
 }

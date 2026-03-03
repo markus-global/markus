@@ -201,7 +201,10 @@ export class APIServer {
     const executor: WorkflowExecutor = {
       executeStep: async (agentId: string, taskDescription: string, input: Record<string, unknown>) => {
         const agent = agentManager.getAgent(agentId);
-        const reply = await agent.handleMessage(taskDescription, 'workflow-engine', { name: 'workflow', role: 'system' });
+        const reply = await agent.handleMessage(taskDescription, 'workflow-engine', { name: 'workflow', role: 'system' }, {
+          ephemeral: true,
+          maxHistory: 15,
+        });
         return { reply, input };
       },
       findAgent: (skills: string[]) => {
@@ -510,7 +513,43 @@ export class APIServer {
       }
       const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
-      const reply = await agent.handleMessage(text, senderId, senderInfo);
+
+      // Build lightweight channel context (last 20 messages, not the agent's full session)
+      let channelContext: Array<{ role: string; content: string }> = [];
+      if (this.storage) {
+        try {
+          const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
+          channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
+            role: m.senderType === 'agent' ? 'assistant' : 'user',
+            content: m.senderType === 'agent'
+              ? m.text
+              : `[${m.senderName}]: ${m.text}`,
+          }));
+        } catch { /* ok */ }
+      }
+
+      let reply: string;
+      try {
+        reply = await agent.handleMessage(text, senderId, senderInfo, {
+          ephemeral: true,
+          maxHistory: 20,
+          channelContext,
+        });
+      } catch (err) {
+        const raw = String(err);
+        // Extract a meaningful message from LLM errors (e.g., 402 Insufficient Balance)
+        let detail = raw;
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
+            detail = parsed.error?.message ?? parsed.message ?? raw;
+          } catch { /* keep raw */ }
+        }
+        const statusCode = raw.includes('402') ? 402 : raw.includes('401') ? 401 : raw.includes('429') ? 429 : 502;
+        this.json(res, statusCode, { userMessage: userMsg ?? null, agentMessage: null, error: detail });
+        return;
+      }
 
       // Persist agent reply
       let agentMsg: ChannelMsg | undefined;
