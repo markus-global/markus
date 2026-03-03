@@ -63,7 +63,7 @@ export function Onboarding({ onComplete }: Props) {
               <option value="content-writer">Content Writer</option>
             </select>
           </div>
-          <p className="text-xs text-gray-500">You can hire more agents later from the Agents page or by telling the Manager.</p>
+          <p className="text-xs text-gray-500">You can hire more agents later from the Team page or by telling the Manager.</p>
         </div>
       ),
     },

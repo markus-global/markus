@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { PageId } from './types.ts';
 import { Dashboard } from './pages/Dashboard.tsx';
-import { Agents } from './pages/Agents.tsx';
 import { TaskBoard } from './pages/TaskBoard.tsx';
 import { Chat } from './pages/Chat.tsx';
 import { TeamPage } from './pages/Team.tsx';
@@ -16,10 +15,11 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 
-const validPages: PageId[] = ['dashboard', 'agents', 'tasks', 'chat', 'team', 'skills', 'templates', 'builder', 'settings'];
+const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'skills', 'templates', 'builder', 'settings'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
+  if (hash === 'agents') return 'team';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -27,7 +27,6 @@ export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  // Track which pages have been visited — once mounted, never unmount
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [mustChangePassword, setMustChangePassword] = useState(false);
@@ -38,13 +37,11 @@ export function App() {
     window.location.hash = p;
   }, []);
 
-  // Register nav bus so deep components can navigate
   useEffect(() => {
     navBus.setHandler((p) => navigate(p as PageId));
   }, [navigate]);
 
   useEffect(() => {
-    // Check auth status on mount
     api.auth.me()
       .then(({ user }) => setAuthUser(user))
       .catch(() => setAuthUser(null));
@@ -59,11 +56,9 @@ export function App() {
     return () => { wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
   }, []);
 
-  // Stable page elements — created once, never recreated
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
   const pageElements = useMemo<Record<PageId, React.JSX.Element>>(() => ({
     dashboard: <Dashboard />,
-    agents: <Agents />,
     tasks: <TaskBoard />,
     chat: <Chat authUser={currentUser} />,
     team: <TeamPage authUser={currentUser} />,
@@ -102,7 +97,6 @@ export function App() {
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100">
-      {/* Mobile menu button */}
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
         className="md:hidden fixed top-3 left-3 z-50 p-2 bg-gray-800 rounded-lg text-gray-300"
@@ -110,7 +104,6 @@ export function App() {
         {sidebarOpen ? '✕' : '☰'}
       </button>
 
-      {/* Sidebar overlay on mobile */}
       {sidebarOpen && (
         <div className="md:hidden fixed inset-0 bg-black/50 z-30" onClick={() => setSidebarOpen(false)} />
       )}

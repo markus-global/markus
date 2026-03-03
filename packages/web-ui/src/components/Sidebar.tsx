@@ -8,16 +8,20 @@ interface Props {
   onLogout?: () => void;
 }
 
-const navItems: Array<{ id: PageId; label: string; icon: string; section?: string }> = [
-  { id: 'dashboard', label: 'Overview', icon: '▦', section: 'team' },
-  { id: 'chat', label: 'Chat', icon: '◈', section: 'team' },
-  { id: 'tasks', label: 'Tasks', icon: '☑', section: 'team' },
-  { id: 'team', label: 'Team', icon: '◎', section: 'members' },
-  { id: 'agents', label: 'Agents', icon: '⊕', section: 'members' },
-  { id: 'skills', label: 'Skill Store', icon: '◆', section: 'tools' },
-  { id: 'templates', label: 'Templates', icon: '⧉', section: 'tools' },
-  { id: 'builder', label: 'Builder', icon: '⊞', section: 'tools' },
-  { id: 'settings', label: 'Settings', icon: '⚙', section: 'tools' },
+const navItems: Array<{ id: PageId; label: string; icon: string; section: string }> = [
+  { id: 'dashboard', label: 'Overview', icon: '▦', section: 'workspace' },
+  { id: 'team', label: 'Team', icon: '◎', section: 'workspace' },
+  { id: 'chat', label: 'Chat', icon: '◈', section: 'workspace' },
+  { id: 'tasks', label: 'Tasks', icon: '☑', section: 'workspace' },
+  { id: 'templates', label: 'Templates', icon: '⧉', section: 'explore' },
+  { id: 'builder', label: 'Builder', icon: '⊞', section: 'explore' },
+  { id: 'skills', label: 'Skill Store', icon: '◆', section: 'explore' },
+  { id: 'settings', label: 'Settings', icon: '⚙', section: 'explore' },
+];
+
+const sections = [
+  { key: 'workspace', label: 'WORKSPACE' },
+  { key: 'explore', label: 'EXPLORE' },
 ];
 
 export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) {
@@ -25,11 +29,6 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
     try { await api.auth.logout(); } catch { /* ignore */ }
     onLogout?.();
   };
-  const sections = [
-    { key: 'team', label: 'WORKSPACE' },
-    { key: 'members', label: 'ORGANIZATION' },
-    { key: 'tools', label: 'TOOLS & SETTINGS' },
-  ];
 
   return (
     <aside className="w-60 h-screen bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">

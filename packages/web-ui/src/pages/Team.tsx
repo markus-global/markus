@@ -1,8 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser } from '../api.ts';
+import { AgentProfile } from './AgentProfile.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-
-// ─── Role display config ───────────────────────────────────────────────────────
 
 const ROLE_ICONS: Record<string, string> = {
   'developer': '💻', 'software-engineer': '💻',
@@ -32,15 +31,14 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
-  // Modal state
   const [showNewTeam, setShowNewTeam] = useState(false);
   const [showHire, setShowHire] = useState<{ teamId?: string } | null>(null);
   const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
-  const [showAddExisting, setShowAddExisting] = useState<string | null>(null); // teamId
+  const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [addMemberMenuTeam, setAddMemberMenuTeam] = useState<string | null>(null);
 
-  // Confirm dialog state
   const [pendingConfirm, setPendingConfirm] = useState<{
     title: string; message: string; confirmLabel?: string; onConfirm: () => void;
   } | null>(null);
@@ -60,7 +58,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     return () => { clearInterval(i); unsub(); };
   }, []);
 
-  // Handle navigation from Dashboard "Hire Agent" button
   useEffect(() => {
     const openHire = localStorage.getItem('markus_nav_openHire');
     if (openHire === 'true') {
@@ -78,7 +75,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
 
-  // Close add-member menu on outside click
   useEffect(() => {
     if (!addMemberMenuTeam) return;
     const handler = () => setAddMemberMenuTeam(null);
@@ -119,7 +115,11 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     askConfirm(
       `Remove "${agentName}"?`,
       'This agent will be permanently removed from the organization.',
-      async () => { await api.agents.remove(agentId); refresh(); },
+      async () => {
+        await api.agents.remove(agentId);
+        if (selectedAgentId === agentId) setSelectedAgentId(null);
+        refresh();
+      },
       'Remove Agent',
     );
   };
@@ -133,88 +133,119 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     );
   };
 
+  const handleMemberClick = (member: TeamMemberInfo) => {
+    if (member.type === 'agent') {
+      setSelectedAgentId(prev => prev === member.id ? null : member.id);
+    }
+  };
+
   return (
-    <div className="flex-1 overflow-y-auto" onClick={() => setAddMemberMenuTeam(null)}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-7 h-14 border-b border-gray-800 bg-gray-900 sticky top-0 z-20">
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-semibold">Teams</h2>
-          {authUser && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-700/40 text-indigo-300 capitalize">
-              {authUser.role}
-            </span>
-          )}
-          <span className="text-xs text-gray-500">{teams.length} team{teams.length !== 1 ? 's' : ''}</span>
-        </div>
-        {isAdmin && (
-          <button
-            onClick={() => setShowNewTeam(true)}
-            className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
-          >
-            + New Team
-          </button>
-        )}
-      </div>
-
-      <div className="p-6 space-y-4">
-        {/* Teams */}
-        {teams.map(team => (
-          <TeamCard
-            key={team.id}
-            team={team}
-            isAdmin={isAdmin}
-            authUserId={authUser?.id}
-            addMemberMenuOpen={addMemberMenuTeam === team.id}
-            onSetManager={handleSetManager}
-            onRemoveFromTeam={handleRemoveFromTeam}
-            onDeleteTeam={handleDeleteTeam}
-            onStartStop={handleStartStop}
-            onRemoveAgent={handleRemoveAgent}
-            onRemoveHuman={handleRemoveHuman}
-            onOpenAddMenu={(e) => { e.stopPropagation(); setAddMemberMenuTeam(prev => prev === team.id ? null : team.id); }}
-            onHireAgent={() => { setAddMemberMenuTeam(null); setShowHire({ teamId: team.id }); }}
-            onAddHuman={() => { setAddMemberMenuTeam(null); setShowAddHuman({ teamId: team.id }); }}
-            onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
-            ungrouped={ungrouped}
-          />
-        ))}
-
-        {/* Ungrouped */}
-        {ungrouped.length > 0 && (
-          <UngroupedSection
-            members={ungrouped}
-            isAdmin={isAdmin}
-            authUserId={authUser?.id}
-            teams={teams}
-            onStartStop={handleStartStop}
-            onRemoveAgent={handleRemoveAgent}
-            onRemoveHuman={handleRemoveHuman}
-            onMoveToTeam={async (memberId, memberType, teamId) => {
-              await api.teams.addMember(teamId, memberId, memberType);
-              refresh();
-            }}
-          />
-        )}
-
-        {/* Empty state */}
-        {teams.length === 0 && ungrouped.length === 0 && (
-          <div className="text-center py-20 text-gray-500">
-            <div className="text-4xl mb-3">👥</div>
-            <div className="text-sm font-medium mb-1">No teams yet</div>
-            <div className="text-xs text-gray-600">
-              {isAdmin ? 'Create a team to organize your human and AI employees.' : 'No teams have been created yet.'}
+    <div className="flex-1 overflow-hidden flex">
+      {/* Left panel: team list */}
+      <div className={`overflow-y-auto ${selectedAgentId ? 'w-[55%] border-r border-gray-800' : 'flex-1'} transition-all`}
+        onClick={() => setAddMemberMenuTeam(null)}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-7 h-14 border-b border-gray-800 bg-gray-900 sticky top-0 z-20">
+          <div className="flex items-center gap-3">
+            <h2 className="text-base font-semibold">Team</h2>
+            {authUser && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-700/40 text-indigo-300 capitalize">
+                {authUser.role}
+              </span>
+            )}
+            <span className="text-xs text-gray-500">{teams.length} team{teams.length !== 1 ? 's' : ''}</span>
+          </div>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowHire({})}
+                className="px-3 py-1.5 text-sm border border-gray-700 hover:border-indigo-500 text-gray-300 hover:text-indigo-300 rounded-lg transition-colors"
+              >
+                + Hire Agent
+              </button>
+              <button
+                onClick={() => setShowNewTeam(true)}
+                className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+              >
+                + New Team
+              </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {teams.length === 0 && ungrouped.length > 0 && isAdmin && (
-          <div className="text-center py-4 text-xs text-gray-600">
-            Create a team above to organize these members.
-          </div>
-        )}
+        <div className="p-6 space-y-4">
+          {teams.map(team => (
+            <TeamCard
+              key={team.id}
+              team={team}
+              isAdmin={isAdmin}
+              authUserId={authUser?.id}
+              selectedAgentId={selectedAgentId}
+              addMemberMenuOpen={addMemberMenuTeam === team.id}
+              onSetManager={handleSetManager}
+              onRemoveFromTeam={handleRemoveFromTeam}
+              onDeleteTeam={handleDeleteTeam}
+              onStartStop={handleStartStop}
+              onRemoveAgent={handleRemoveAgent}
+              onRemoveHuman={handleRemoveHuman}
+              onMemberClick={handleMemberClick}
+              onOpenAddMenu={(e) => { e.stopPropagation(); setAddMemberMenuTeam(prev => prev === team.id ? null : team.id); }}
+              onHireAgent={() => { setAddMemberMenuTeam(null); setShowHire({ teamId: team.id }); }}
+              onAddHuman={() => { setAddMemberMenuTeam(null); setShowAddHuman({ teamId: team.id }); }}
+              onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
+              ungrouped={ungrouped}
+            />
+          ))}
+
+          {ungrouped.length > 0 && (
+            <UngroupedSection
+              members={ungrouped}
+              isAdmin={isAdmin}
+              authUserId={authUser?.id}
+              selectedAgentId={selectedAgentId}
+              teams={teams}
+              onStartStop={handleStartStop}
+              onRemoveAgent={handleRemoveAgent}
+              onRemoveHuman={handleRemoveHuman}
+              onMemberClick={handleMemberClick}
+              onMoveToTeam={async (memberId, memberType, teamId) => {
+                await api.teams.addMember(teamId, memberId, memberType);
+                refresh();
+              }}
+            />
+          )}
+
+          {teams.length === 0 && ungrouped.length === 0 && (
+            <div className="text-center py-20 text-gray-500">
+              <div className="text-4xl mb-3">👥</div>
+              <div className="text-sm font-medium mb-1">No teams yet</div>
+              <div className="text-xs text-gray-600">
+                {isAdmin ? 'Create a team or hire agents to get started.' : 'No teams have been created yet.'}
+              </div>
+            </div>
+          )}
+
+          {teams.length === 0 && ungrouped.length > 0 && isAdmin && (
+            <div className="text-center py-4 text-xs text-gray-600">
+              Create a team above to organize these members.
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* New Team Modal */}
+      {/* Right panel: agent profile */}
+      {selectedAgentId && (
+        <div className="w-[45%] overflow-y-auto bg-gray-950">
+          <AgentProfile
+            agentId={selectedAgentId}
+            onBack={() => setSelectedAgentId(null)}
+            inline
+          />
+        </div>
+      )}
+
+      {/* Modals */}
       {showNewTeam && (
         <NewTeamModal
           onClose={() => setShowNewTeam(false)}
@@ -226,7 +257,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
         />
       )}
 
-      {/* Hire Agent Modal */}
       {showHire !== null && (
         <HireAgentModal
           roles={roles}
@@ -241,7 +271,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
         />
       )}
 
-      {/* Add Human Modal */}
       {showAddHuman !== null && (
         <AddHumanModal
           teamId={showAddHuman.teamId}
@@ -255,7 +284,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
         />
       )}
 
-      {/* Add Existing Member Modal */}
       {showAddExisting !== null && (
         <AddExistingModal
           teamId={showAddExisting}
@@ -285,14 +313,15 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
 // ─── Team Card ────────────────────────────────────────────────────────────────
 
 function TeamCard({
-  team, isAdmin, authUserId, addMemberMenuOpen,
+  team, isAdmin, authUserId, selectedAgentId, addMemberMenuOpen,
   onSetManager, onRemoveFromTeam, onDeleteTeam,
-  onStartStop, onRemoveAgent, onRemoveHuman,
+  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick,
   onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped,
 }: {
   team: TeamInfo;
   isAdmin: boolean;
   authUserId?: string;
+  selectedAgentId: string | null;
   addMemberMenuOpen: boolean;
   ungrouped: TeamMemberInfo[];
   onSetManager: (teamId: string, memberId: string, memberType: 'human' | 'agent') => void;
@@ -301,6 +330,7 @@ function TeamCard({
   onStartStop: (agentId: string, status: string) => void;
   onRemoveAgent: (agentId: string, agentName: string) => void;
   onRemoveHuman: (userId: string, userName: string) => void;
+  onMemberClick: (member: TeamMemberInfo) => void;
   onOpenAddMenu: (e: React.MouseEvent) => void;
   onHireAgent: () => void;
   onAddHuman: () => void;
@@ -374,7 +404,9 @@ function TeamCard({
                 teamId={team.id}
                 isManager={team.managerId === member.id}
                 isAdmin={isAdmin}
+                isSelected={selectedAgentId === member.id}
                 isSelf={member.id === authUserId}
+                onClick={() => onMemberClick(member)}
                 onSetManager={() => onSetManager(team.id, member.id, member.type)}
                 onRemoveFromTeam={() => onRemoveFromTeam(team.id, member.id)}
                 onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
@@ -391,14 +423,16 @@ function TeamCard({
 // ─── Member Card ──────────────────────────────────────────────────────────────
 
 function MemberCard({
-  member, teamId, isManager, isAdmin, isSelf,
-  onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
+  member, teamId, isManager, isAdmin, isSelected, isSelf,
+  onClick, onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
 }: {
   member: TeamMemberInfo;
   teamId: string;
   isManager: boolean;
   isAdmin: boolean;
+  isSelected: boolean;
   isSelf: boolean;
+  onClick: () => void;
   onSetManager: () => void;
   onRemoveFromTeam: () => void;
   onStartStop: () => void;
@@ -421,13 +455,20 @@ function MemberCard({
   const statusColor = member.status === 'idle' ? 'bg-green-400' : member.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600';
 
   return (
-    <div className={`relative group w-44 bg-gray-800/50 border rounded-xl p-3.5 transition-all ${isManager ? 'border-amber-500/40 bg-amber-500/5' : 'border-gray-700/60 hover:border-gray-600'}`}>
-      {/* Manager star */}
+    <div
+      onClick={onClick}
+      className={`relative group w-44 border rounded-xl p-3.5 transition-all cursor-pointer ${
+        isSelected
+          ? 'border-indigo-500 bg-indigo-900/20 ring-1 ring-indigo-500/30'
+          : isManager
+            ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400/60'
+            : 'border-gray-700/60 bg-gray-800/50 hover:border-gray-500'
+      }`}
+    >
       {isManager && (
         <div className="absolute -top-2 -right-2 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center text-[10px] text-gray-900 font-bold shadow">★</div>
       )}
 
-      {/* Avatar + status */}
       <div className="flex items-center gap-2.5 mb-2.5">
         <div className={`w-9 h-9 ${avatarColor} rounded-lg flex items-center justify-center text-sm font-bold shrink-0 text-white`}>
           {member.name.charAt(0).toUpperCase()}
@@ -438,7 +479,6 @@ function MemberCard({
         </div>
       </div>
 
-      {/* Type + status row */}
       <div className="flex items-center gap-1.5 text-[11px]">
         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isAI ? 'bg-indigo-900/60 text-indigo-400' : 'bg-emerald-900/40 text-emerald-400'}`}>
           {isAI ? 'AI' : 'Human'}
@@ -451,7 +491,6 @@ function MemberCard({
         )}
       </div>
 
-      {/* Actions menu (admin only, on hover) */}
       {isAdmin && (
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity" ref={menuRef}>
           <button
@@ -491,16 +530,18 @@ function MemberCard({
 // ─── Ungrouped Section ────────────────────────────────────────────────────────
 
 function UngroupedSection({
-  members, isAdmin, authUserId, teams,
-  onStartStop, onRemoveAgent, onRemoveHuman, onMoveToTeam,
+  members, isAdmin, authUserId, selectedAgentId, teams,
+  onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onMoveToTeam,
 }: {
   members: TeamMemberInfo[];
   isAdmin: boolean;
   authUserId?: string;
+  selectedAgentId: string | null;
   teams: TeamInfo[];
   onStartStop: (agentId: string, status: string) => void;
   onRemoveAgent: (agentId: string, agentName: string) => void;
   onRemoveHuman: (userId: string, userName: string) => void;
+  onMemberClick: (member: TeamMemberInfo) => void;
   onMoveToTeam: (memberId: string, memberType: 'human' | 'agent', teamId: string) => void;
 }) {
   return (
@@ -515,8 +556,10 @@ function UngroupedSection({
             key={member.id}
             member={member}
             isAdmin={isAdmin}
+            isSelected={selectedAgentId === member.id}
             isSelf={member.id === authUserId}
             teams={teams}
+            onClick={() => onMemberClick(member)}
             onStartStop={() => onStartStop(member.id, member.status ?? 'offline')}
             onRemove={() => member.type === 'agent' ? onRemoveAgent(member.id, member.name) : onRemoveHuman(member.id, member.name)}
             onMoveToTeam={(teamId) => onMoveToTeam(member.id, member.type, teamId)}
@@ -528,12 +571,14 @@ function UngroupedSection({
 }
 
 function UngroupedMemberCard({
-  member, isAdmin, isSelf, teams, onStartStop, onRemove, onMoveToTeam,
+  member, isAdmin, isSelected, isSelf, teams, onClick, onStartStop, onRemove, onMoveToTeam,
 }: {
   member: TeamMemberInfo;
   isAdmin: boolean;
+  isSelected: boolean;
   isSelf: boolean;
   teams: TeamInfo[];
+  onClick: () => void;
   onStartStop: () => void;
   onRemove: () => void;
   onMoveToTeam: (teamId: string) => void;
@@ -554,7 +599,14 @@ function UngroupedMemberCard({
   const statusColor = member.status === 'idle' ? 'bg-green-400' : member.status === 'working' ? 'bg-indigo-400 animate-pulse' : 'bg-gray-600';
 
   return (
-    <div className="relative group w-44 bg-gray-800/30 border border-gray-700/40 rounded-xl p-3.5 hover:border-gray-600 transition-all">
+    <div
+      onClick={onClick}
+      className={`relative group w-44 border rounded-xl p-3.5 transition-all cursor-pointer ${
+        isSelected
+          ? 'border-indigo-500 bg-indigo-900/20 ring-1 ring-indigo-500/30'
+          : 'border-gray-700/40 bg-gray-800/30 hover:border-gray-500'
+      }`}
+    >
       <div className="flex items-center gap-2.5 mb-2">
         <div className={`w-9 h-9 ${isAI ? 'bg-indigo-800/60' : 'bg-emerald-900/60'} rounded-lg flex items-center justify-center text-sm font-bold shrink-0`}>
           {member.name.charAt(0).toUpperCase()}
