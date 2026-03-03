@@ -3,7 +3,7 @@ import { api, type PromptTemplateInfo, type PromptVersionInfo, type EvaluationRe
 
 type Tab = 'editor' | 'versions' | 'evaluate' | 'ab-tests';
 
-export function PromptStudioPage() {
+export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
   const [prompts, setPrompts] = useState<PromptTemplateInfo[]>([]);
   const [selected, setSelected] = useState<PromptTemplateInfo | null>(null);
   const [tab, setTab] = useState<Tab>('editor');
@@ -41,7 +41,8 @@ export function PromptStudioPage() {
       <div className="w-72 border-r border-gray-800 flex flex-col bg-gray-900/50 shrink-0">
         <div className="p-4 border-b border-gray-800 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-100">Prompt Studio</h2>
+            {!embedded && <h2 className="text-lg font-semibold text-gray-100">Prompt Studio</h2>}
+            {embedded && <h3 className="text-sm font-semibold text-gray-300">Prompts</h3>}
             <button
               onClick={() => setShowCreate(true)}
               className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white transition-colors"
@@ -57,14 +58,14 @@ export function PromptStudioPage() {
             className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 placeholder-gray-500 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
           />
           {categories.length > 0 && (
-            <select
-              value={filterCategory}
-              onChange={e => setFilterCategory(e.target.value)}
-              className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-xs text-gray-300 outline-none"
-            >
-              <option value="">All categories</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
+            <div className="flex gap-1 flex-wrap">
+              <button onClick={() => setFilterCategory('')}
+                className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors ${!filterCategory ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'}`}>All</button>
+              {categories.map(c => (
+                <button key={c} onClick={() => setFilterCategory(c)}
+                  className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${filterCategory === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'}`}>{c}</button>
+              ))}
+            </div>
           )}
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -805,29 +806,24 @@ function CreatePromptDialog({ onClose, onCreate }: {
             placeholder="Description (optional)"
             className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
           />
-          <div className="grid grid-cols-2 gap-3">
-            <select
-              value={category}
-              onChange={e => setCategory(e.target.value)}
-              className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-300 outline-none"
-            >
-              <option value="general">General</option>
-              <option value="system">System Prompt</option>
-              <option value="agent-role">Agent Role</option>
-              <option value="task">Task Execution</option>
-              <option value="chat">Chat / Conversation</option>
-              <option value="code">Code Generation</option>
-              <option value="analysis">Analysis</option>
-              <option value="creative">Creative Writing</option>
-            </select>
-            <input
-              type="text"
-              value={tags}
-              onChange={e => setTags(e.target.value)}
-              placeholder="Tags (comma-separated)"
-              className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none placeholder-gray-500"
-            />
+          <div className="space-y-2">
+            <label className="text-xs text-gray-400">Category</label>
+            <div className="flex gap-1.5 flex-wrap">
+              {['general', 'system', 'agent-role', 'task', 'chat', 'code', 'analysis', 'creative'].map(c => (
+                <button key={c} onClick={() => setCategory(c)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors capitalize ${
+                    category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
+                  }`}>{c.replace('-', ' ')}</button>
+              ))}
+            </div>
           </div>
+          <input
+            type="text"
+            value={tags}
+            onChange={e => setTags(e.target.value)}
+            placeholder="Tags (comma-separated)"
+            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none placeholder-gray-500"
+          />
           <textarea
             value={content}
             onChange={e => setContent(e.target.value)}

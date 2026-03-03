@@ -8,7 +8,6 @@ import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
-import { PromptStudioPage } from './pages/PromptStudio.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login } from './pages/Login.tsx';
@@ -67,7 +66,7 @@ export function App() {
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,
     builder: <AgentBuilder />,
-    prompts: <PromptStudioPage />,
+    prompts: <AgentBuilder />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [currentUser?.id]);
 

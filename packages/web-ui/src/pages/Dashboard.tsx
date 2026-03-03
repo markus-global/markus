@@ -23,11 +23,12 @@ export function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsPeriod]);
 
-  const pending = (board['pending']?.length ?? 0) + (board['assigned']?.length ?? 0);
-  const inProgress = board['in_progress']?.length ?? 0;
-  const completed = board['completed']?.length ?? 0;
-  const failed = board['failed']?.length ?? 0;
-  const totalTasks = ops?.taskKPI.totalTasks ?? 0;
+  const rootOnly = (tasks: TaskInfo[]) => tasks.filter(t => !t.parentTaskId);
+  const pending = rootOnly(board['pending'] ?? []).length + rootOnly(board['assigned'] ?? []).length;
+  const inProgress = rootOnly(board['in_progress'] ?? []).length;
+  const completed = rootOnly(board['completed'] ?? []).length;
+  const failed = rootOnly(board['failed'] ?? []).length;
+  const totalRootTasks = Object.values(board).reduce((s, ts) => s + rootOnly(ts).length, 0);
 
   const activeAgents = agents.filter(a => a.status === 'idle' || a.status === 'working').length;
   const workingAgents = agents.filter(a => a.status === 'working').length;
@@ -67,10 +68,10 @@ export function Dashboard() {
       <div className="p-7 space-y-6">
         {/* Hero Metrics */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricTile label="Active Agents" value={activeAgents} total={agents.length} icon="◎" color="indigo" onClick={() => navBus.navigate('team')} />
-          <MetricTile label="Tasks In Progress" value={inProgress} icon="⟳" color="blue" onClick={() => navBus.navigate('tasks')} />
-          <MetricTile label="Pending Queue" value={pending} icon="☐" color="amber" onClick={() => navBus.navigate('tasks')} />
-          <MetricTile label="Completed" value={completed} total={totalTasks > 0 ? totalTasks : undefined} icon="✓" color="green" onClick={() => navBus.navigate('tasks')} />
+          <MetricTile label="Active Agents" value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate('team')} />
+          <MetricTile label="Tasks In Progress" value={inProgress} color="blue" onClick={() => navBus.navigate('tasks')} />
+          <MetricTile label="Pending Queue" value={pending} color="amber" onClick={() => navBus.navigate('tasks')} />
+          <MetricTile label="Completed" value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate('tasks')} />
         </div>
 
         {/* Two-column layout */}
@@ -78,10 +79,10 @@ export function Dashboard() {
           {/* Left: Charts */}
           <div className="lg:col-span-2 space-y-6">
             {/* Task Distribution Bar Chart */}
-            {ops && totalTasks > 0 && (
+            {ops && totalRootTasks > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors" onClick={() => navBus.navigate('tasks')}>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Task Distribution</h3>
-                <TaskBar statusCounts={ops.taskKPI.statusCounts} total={totalTasks} />
+                <TaskBar statusCounts={ops.taskKPI.statusCounts} total={totalRootTasks} />
                 {ops.taskKPI.blockedCount > 0 && (
                   <div className="mt-3 text-xs text-amber-400 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
@@ -261,27 +262,24 @@ function TaskBar({ statusCounts, total }: { statusCounts: Record<string, number>
 
 // ─── Components ──────────────────────────────────────────────────────────────
 
-function MetricTile({ label, value, total, icon, color, onClick }: {
-  label: string; value: number; total?: number; icon: string; color: string; onClick: () => void;
+function MetricTile({ label, value, total, color, onClick }: {
+  label: string; value: number; total?: number; color: string; onClick: () => void;
 }) {
-  const colorMap: Record<string, { bg: string; text: string; icon: string }> = {
-    indigo: { bg: 'bg-indigo-500/10 border-indigo-500/20', text: 'text-indigo-400', icon: 'text-indigo-500/40' },
-    blue: { bg: 'bg-blue-500/10 border-blue-500/20', text: 'text-blue-400', icon: 'text-blue-500/40' },
-    amber: { bg: 'bg-amber-500/10 border-amber-500/20', text: 'text-amber-400', icon: 'text-amber-500/40' },
-    green: { bg: 'bg-green-500/10 border-green-500/20', text: 'text-green-400', icon: 'text-green-500/40' },
+  const colorMap: Record<string, { bg: string; text: string; border: string }> = {
+    indigo: { bg: 'bg-indigo-500/10', text: 'text-indigo-400', border: 'border-indigo-500/30' },
+    blue: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
+    amber: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
+    green: { bg: 'bg-green-500/10', text: 'text-green-400', border: 'border-green-500/30' },
   };
   const c = colorMap[color] ?? colorMap['indigo']!;
 
   return (
-    <div onClick={onClick} className={`${c.bg} border rounded-xl p-5 cursor-pointer hover:scale-[1.02] transition-all`}>
-      <div className="flex items-center justify-between mb-2">
-        <span className={`text-3xl ${c.icon}`}>{icon}</span>
-      </div>
+    <div onClick={onClick} className={`${c.bg} ${c.border} border rounded-xl p-5 cursor-pointer hover:scale-[1.02] transition-all`}>
+      <div className="text-xs text-gray-500 mb-2">{label}</div>
       <div className={`text-3xl font-bold ${c.text}`}>
         {value}
         {total !== undefined && <span className="text-base font-normal text-gray-600">/{total}</span>}
       </div>
-      <div className="text-xs text-gray-500 mt-1">{label}</div>
     </div>
   );
 }

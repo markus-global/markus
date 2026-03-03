@@ -863,24 +863,75 @@ export function TaskBoard() {
     } catch { /* ok */ }
   };
 
+  const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
+  const toggleAgentFilter = (id: string) => {
+    setAgentFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const isArchived = (t: TaskInfo) =>
+    t.status === 'completed' && t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
+
+  const filterTasks = (tasks: TaskInfo[]) => {
+    let result = tasks.filter(t => !t.parentTaskId && !isArchived(t));
+    if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
+    return result;
+  };
+
   const visibleColumns = ALL_STATUSES.filter(col => {
-    const tasks = board[col] ?? [];
-    const hasRootTasks = tasks.some(t => !t.parentTaskId);
-    if (col === 'failed' || col === 'cancelled') return hasRootTasks;
+    const tasks = filterTasks(board[col] ?? []);
+    if (col === 'failed' || col === 'cancelled') return tasks.length > 0;
     return true;
   });
+
+  const archivedCount = Object.values(board).flat().filter(t => !t.parentTaskId && isArchived(t)).length;
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <div className="flex items-center justify-between px-7 h-15 border-b border-gray-800 bg-gray-900 shrink-0">
-        <h2 className="text-lg font-semibold">Task Board</h2>
+        <div className="flex items-center gap-4">
+          <h2 className="text-lg font-semibold">Task Board</h2>
+          {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
+        </div>
         <button onClick={() => setShowCreate(true)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">+ New Task</button>
       </div>
+
+      {/* Agent filter bar */}
+      {agents.length > 0 && (
+        <div className="px-7 py-2.5 border-b border-gray-800 bg-gray-900/60 flex items-center gap-2 overflow-x-auto shrink-0">
+          <span className="text-[10px] text-gray-600 uppercase tracking-wider shrink-0 mr-1">Filter</span>
+          {agentFilter.size > 0 && (
+            <button onClick={() => setAgentFilter(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 shrink-0">Clear</button>
+          )}
+          {agents.map(a => {
+            const selected = agentFilter.has(a.id);
+            return (
+              <button
+                key={a.id}
+                onClick={() => toggleAgentFilter(a.id)}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-all shrink-0 ${
+                  selected ? 'bg-indigo-600/30 text-indigo-300 ring-1 ring-indigo-500/50' : 'bg-gray-800/60 text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                }`}
+              >
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  selected ? 'bg-indigo-600' : 'bg-gray-700'
+                }`}>{a.name[0]?.toUpperCase()}</span>
+                {a.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex-1 overflow-x-auto p-7">
         <div className="flex gap-4 min-h-full">
           {visibleColumns.map((col) => {
-            const colTasks = (board[col] ?? []).filter(t => !t.parentTaskId);
+            const colTasks = filterTasks(board[col] ?? []);
             const isOver = dragOverCol === col;
             return (
               <div

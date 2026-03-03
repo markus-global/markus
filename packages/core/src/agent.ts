@@ -1,17 +1,18 @@
-import type {
-  AgentConfig,
-  AgentState,
-  RoleTemplate,
-  LLMMessage,
-  LLMTool,
-  LLMToolCall,
-  LLMStreamEvent,
-  IdentityContext,
+import {
+  createLogger,
+  agentId as genAgentId,
+  type AgentConfig,
+  type AgentState,
+  type RoleTemplate,
+  type LLMMessage,
+  type LLMTool,
+  type LLMToolCall,
+  type LLMStreamEvent,
+  type IdentityContext,
 } from '@markus/shared';
-import { createLogger, agentId as genAgentId } from '@markus/shared';
 import { EventBus } from './events.js';
 import { HeartbeatScheduler } from './heartbeat.js';
-import { LLMRouter } from './llm/router.js';
+import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
 import type { IMemoryStore } from './memory/types.js';
 import { EnhancedMemorySystem } from './enhanced-memory-system.js';
@@ -19,7 +20,7 @@ import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metric
 import { ContextEngine, type OrgContext } from './context-engine.js';
 import { ToolSelector } from './tool-selector.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
-import { TaskPriority, TaskType, TaskStatus } from './concurrent/task-queue.js';
+import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 
 const log = createLogger('agent');
 
@@ -41,7 +42,10 @@ export interface AgentToolHandler {
 }
 
 export interface SandboxHandle {
-  exec(command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<{ exitCode?: number; stdout: string; stderr: string }>;
+  exec(
+    command: string,
+    options?: { cwd?: string; timeoutMs?: number }
+  ): Promise<{ exitCode?: number; stdout: string; stderr: string }>;
   writeFile(path: string, content: string): Promise<void>;
   readFile(path: string): Promise<string>;
   stop(): Promise<void>;
@@ -81,9 +85,22 @@ export class Agent {
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private identityContext?: IdentityContext;
-  private auditCallback?: (event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
+  private auditCallback?: (event: {
+    type: string;
+    action: string;
+    tokensUsed?: number;
+    durationMs?: number;
+    success: boolean;
+    detail?: string;
+  }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
-  private tasksFetcher?: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>;
+  private tasksFetcher?: () => Array<{
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+  }>;
   private consecutiveFailures = 0;
   private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
@@ -119,11 +136,11 @@ export class Agent {
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
-    this.metricsCollector = new AgentMetricsCollector(this.id);
+    this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     this.heartbeat = new HeartbeatScheduler(
       this.id,
       this.eventBus,
-      this.config.heartbeatIntervalMs,
+      this.config.heartbeatIntervalMs
     );
 
     this.tools = new Map();
@@ -149,10 +166,10 @@ export class Agent {
       this.registerSandboxedTools(this.sandbox);
     }
 
-    this.eventBus.on('heartbeat:trigger', (ctx) => {
-      this.handleHeartbeat(ctx as { agentId: string; task: { name: string; description: string }; triggeredAt: string }).catch((e) =>
-        log.error('Heartbeat handler failed', { error: String(e) }),
-      );
+    this.eventBus.on('heartbeat:trigger', ctx => {
+      this.handleHeartbeat(
+        ctx as { agentId: string; task: { name: string; description: string }; triggeredAt: string }
+      ).catch(e => log.error('Heartbeat handler failed', { error: String(e) }));
     });
 
     log.info(`Agent created: ${this.id}`, { name: this.config.name, role: this.role.name });
@@ -164,14 +181,14 @@ export class Agent {
   private setStatus(status: AgentState['status']): void {
     const oldStatus = this.state.status;
     if (oldStatus === status) return;
-    
+
     this.state.status = status;
-    
+
     // 同步状态到stateManager
     if (this.stateManager) {
       this.stateManager.updateState({ status });
     }
-    
+
     this.eventBus.emit('agent:status-changed', {
       agentId: this.id,
       oldStatus,
@@ -187,7 +204,9 @@ export class Agent {
     const latestSession = this.memory.getLatestSession(this.id);
     if (latestSession && latestSession.messages.length > 0) {
       this.currentSessionId = latestSession.id;
-      log.info(`Resumed session ${latestSession.id} with ${latestSession.messages.length} messages`);
+      log.info(
+        `Resumed session ${latestSession.id} with ${latestSession.messages.length} messages`
+      );
     }
 
     this.heartbeat.start(this.role.defaultHeartbeatTasks);
@@ -209,7 +228,7 @@ export class Agent {
     }
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
-    log.info(`Agent stopped: ${this.config.name }`);
+    log.info(`Agent stopped: ${this.config.name}`);
   }
 
   /**
@@ -218,8 +237,14 @@ export class Agent {
   async executeChatTask(
     taskId: string,
     description: string,
-    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
-    cancelToken?: { cancelled: boolean },
+    onLog: (entry: {
+      seq: number;
+      type: string;
+      content: string;
+      metadata?: unknown;
+      persist: boolean;
+    }) => void,
+    cancelToken?: { cancelled: boolean }
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -233,7 +258,12 @@ export class Agent {
       {
         priority: TaskPriority.HIGH,
         onProgress: (progress: number, currentStep?: string) => {
-          onLog({ seq: -1, type: 'progress', content: JSON.stringify({ progress, currentStep }), persist: false });
+          onLog({
+            seq: -1,
+            type: 'progress',
+            content: JSON.stringify({ progress, currentStep }),
+            persist: false,
+          });
         },
         cancelToken,
       }
@@ -367,7 +397,16 @@ export class Agent {
     this.identityContext = ctx;
   }
 
-  setAuditCallback(cb: (event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void): void {
+  setAuditCallback(
+    cb: (event: {
+      type: string;
+      action: string;
+      tokensUsed?: number;
+      durationMs?: number;
+      success: boolean;
+      detail?: string;
+    }) => void
+  ): void {
     this.auditCallback = cb;
   }
 
@@ -375,7 +414,14 @@ export class Agent {
     return this.metricsCollector.getMetrics(period);
   }
 
-  private emitAudit(event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }): void {
+  private emitAudit(event: {
+    type: string;
+    action: string;
+    tokensUsed?: number;
+    durationMs?: number;
+    success: boolean;
+    detail?: string;
+  }): void {
     this.metricsCollector.recordAudit(event);
     this.auditCallback?.(event);
   }
@@ -385,7 +431,15 @@ export class Agent {
   }
 
   /** Inject a function that returns this agent's currently assigned tasks for system prompt context */
-  setTasksFetcher(fetcher: () => Array<{ id: string; title: string; description: string; status: string; priority: string }>): void {
+  setTasksFetcher(
+    fetcher: () => Array<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+    }>
+  ): void {
     this.tasksFetcher = fetcher;
   }
 
@@ -410,7 +464,10 @@ export class Agent {
         ephemeral: true,
         maxHistory: 5,
       });
-      this.memory.addLongTermMemory(`daily-report-${new Date().toISOString().split('T')[0]}`, report);
+      this.memory.addLongTermMemory(
+        `daily-report-${new Date().toISOString().split('T')[0]}`,
+        report
+      );
       return report;
     } catch (error) {
       log.error('Failed to generate daily report', { error: String(error) });
@@ -419,14 +476,20 @@ export class Agent {
   }
 
   getUptime(): number {
-    return this.state.status !== 'offline' ? Date.now() - new Date(this.config.createdAt).getTime() : 0;
+    return this.state.status !== 'offline'
+      ? Date.now() - new Date(this.config.createdAt).getTime()
+      : 0;
   }
 
   async handleMessage(
     userMessage: string,
     senderId?: string,
     senderInfo?: { name: string; role: string },
-    options?: { ephemeral?: boolean; maxHistory?: number; channelContext?: Array<{ role: string; content: string }> },
+    options?: {
+      ephemeral?: boolean;
+      maxHistory?: number;
+      channelContext?: Array<{ role: string; content: string }>;
+    }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -473,7 +536,7 @@ export class Agent {
       }));
       messages = [
         { role: 'system' as const, content: systemPrompt },
-        ...channelMsgs.slice(-(maxHistory)),
+        ...channelMsgs.slice(-maxHistory),
         { role: 'user' as const, content: userMessage },
       ];
     } else {
@@ -498,7 +561,13 @@ export class Agent {
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.emitAudit({ type: 'llm_request', action: 'chat', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
+      this.emitAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: tokensThisCall,
+        durationMs: Date.now() - llmStart,
+        success: true,
+      });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         if (!isEphemeral) {
@@ -508,7 +577,11 @@ export class Agent {
             toolCalls: response.toolCalls,
           });
         } else {
-          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
+          messages.push({
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
         }
 
         for (const tc of response.toolCalls) {
@@ -516,18 +589,42 @@ export class Agent {
           try {
             const result = await this.executeTool(tc);
             const isToolError = isErrorResult(result);
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.emitAudit({
+              type: 'tool_call',
+              action: tc.name,
+              durationMs: Date.now() - toolStart,
+              success: !isToolError,
+              detail: JSON.stringify(tc.arguments).slice(0, 200),
+            });
             if (!isEphemeral) {
-              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: result,
+                toolCallId: tc.id,
+              });
             } else {
               messages.push({ role: 'tool', content: result, toolCallId: tc.id });
             }
           } catch (toolErr) {
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.emitAudit({
+              type: 'tool_call',
+              action: tc.name,
+              durationMs: Date.now() - toolStart,
+              success: false,
+              detail: String(toolErr).slice(0, 200),
+            });
             if (!isEphemeral) {
-              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: `Error: ${String(toolErr)}`,
+                toolCallId: tc.id,
+              });
             } else {
-              messages.push({ role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+              messages.push({
+                role: 'tool',
+                content: `Error: ${String(toolErr)}`,
+                toolCallId: tc.id,
+              });
             }
           }
         }
@@ -556,7 +653,13 @@ export class Agent {
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.emitAudit({ type: 'llm_request', action: 'chat', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
+        this.emitAudit({
+          type: 'llm_request',
+          action: 'chat',
+          tokensUsed: tokens2,
+          durationMs: Date.now() - llmStart2,
+          success: true,
+        });
       }
 
       const reply = response.content;
@@ -564,8 +667,10 @@ export class Agent {
         this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
         // Post-interaction: write to daily log for medium-term memory
         if (reply.length > 50 && senderId) {
-          this.memory.writeDailyLog(this.id,
-            `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`);
+          this.memory.writeDailyLog(
+            this.id,
+            `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`
+          );
         }
       }
       if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -581,7 +686,12 @@ export class Agent {
       return reply;
     } catch (error) {
       if (this.activeTasks.size === 0) this.setStatus('error');
-      this.emitAudit({ type: 'error', action: 'handle_message', success: false, detail: String(error).slice(0, 200) });
+      this.emitAudit({
+        type: 'error',
+        action: 'handle_message',
+        success: false,
+        detail: String(error).slice(0, 200),
+      });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     }
@@ -591,7 +701,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -635,11 +745,17 @@ export class Agent {
       const llmStart = Date.now();
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined },
-        onEvent,
+        onEvent
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.emitAudit({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokensThisCall, durationMs: Date.now() - llmStart, success: true });
+      this.emitAudit({
+        type: 'llm_request',
+        action: 'chat_stream',
+        tokensUsed: tokensThisCall,
+        durationMs: Date.now() - llmStart,
+        success: true,
+      });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         this.memory.appendMessage(this.currentSessionId, {
@@ -654,7 +770,13 @@ export class Agent {
           try {
             const result = await this.executeTool(tc);
             const isToolError = isErrorResult(result);
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: !isToolError, detail: JSON.stringify(tc.arguments).slice(0, 200) });
+            this.emitAudit({
+              type: 'tool_call',
+              action: tc.name,
+              durationMs: Date.now() - toolStart,
+              success: !isToolError,
+              detail: JSON.stringify(tc.arguments).slice(0, 200),
+            });
             onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
@@ -662,7 +784,13 @@ export class Agent {
               toolCallId: tc.id,
             });
           } catch (toolErr) {
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs: Date.now() - toolStart, success: false, detail: String(toolErr).slice(0, 200) });
+            this.emitAudit({
+              type: 'tool_call',
+              action: tc.name,
+              durationMs: Date.now() - toolStart,
+              success: false,
+              detail: String(toolErr).slice(0, 200),
+            });
             onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
@@ -686,11 +814,17 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.llmRouter.chatStream(
           { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
-          onEvent,
+          onEvent
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.emitAudit({ type: 'llm_request', action: 'chat_stream', tokensUsed: tokens2, durationMs: Date.now() - llmStart2, success: true });
+        this.emitAudit({
+          type: 'llm_request',
+          action: 'chat_stream',
+          tokensUsed: tokens2,
+          durationMs: Date.now() - llmStart2,
+          success: true,
+        });
       }
 
       const reply = response.content;
@@ -708,7 +842,12 @@ export class Agent {
       return reply;
     } catch (error) {
       if (this.activeTasks.size === 0) this.setStatus('error');
-      this.emitAudit({ type: 'error', action: 'handle_message_stream', success: false, detail: String(error).slice(0, 200) });
+      this.emitAudit({
+        type: 'error',
+        action: 'handle_message_stream',
+        success: false,
+        detail: String(error).slice(0, 200),
+      });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
     }
@@ -728,8 +867,14 @@ export class Agent {
   async executeTask(
     taskId: string,
     description: string,
-    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
-    cancelToken?: { cancelled: boolean },
+    onLog: (entry: {
+      seq: number;
+      type: string;
+      content: string;
+      metadata?: unknown;
+      persist: boolean;
+    }) => void,
+    cancelToken?: { cancelled: boolean }
   ): Promise<void> {
     return this.executeTaskConcurrent(taskId, description, onLog, cancelToken);
   }
@@ -740,9 +885,15 @@ export class Agent {
   async executeTaskConcurrent(
     taskId: string,
     description: string,
-    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    onLog: (entry: {
+      seq: number;
+      type: string;
+      content: string;
+      metadata?: unknown;
+      persist: boolean;
+    }) => void,
     cancelToken?: { cancelled: boolean },
-    priority: TaskPriority = TaskPriority.MEDIUM,
+    priority: TaskPriority = TaskPriority.MEDIUM
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -758,7 +909,12 @@ export class Agent {
         priority,
         onProgress: (progress: number, currentStep?: string) => {
           // 发送进度更新
-          onLog({ seq: -1, type: 'progress', content: JSON.stringify({ progress, currentStep }), persist: false });
+          onLog({
+            seq: -1,
+            type: 'progress',
+            content: JSON.stringify({ progress, currentStep }),
+            persist: false,
+          });
         },
         cancelToken,
       }
@@ -776,8 +932,14 @@ export class Agent {
   private async _executeTaskInternal(
     taskId: string,
     description: string,
-    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
-    cancelToken?: { cancelled: boolean },
+    onLog: (entry: {
+      seq: number;
+      type: string;
+      content: string;
+      metadata?: unknown;
+      persist: boolean;
+    }) => void,
+    cancelToken?: { cancelled: boolean }
   ): Promise<void> {
     this.setStatus('working');
     this.activeTasks.add(taskId);
@@ -847,12 +1009,12 @@ export class Agent {
 
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined },
-        (event) => {
+        event => {
           if (event.type === 'text_delta' && event.text) {
             textBuffer += event.text;
             emitDelta(event.text);
           }
-        },
+        }
       );
       this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
 
@@ -880,14 +1042,26 @@ export class Agent {
             const result = await this.executeTool(tc);
             const isErr = isErrorResult(result);
             const durationMs = Date.now() - toolStart;
-            emit('tool_end', tc.name, { success: !isErr, durationMs, result: result.slice(0, 500) });
+            emit('tool_end', tc.name, {
+              success: !isErr,
+              durationMs,
+              result: result.slice(0, 500),
+            });
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
-            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            this.memory.appendMessage(sessionId, {
+              role: 'tool',
+              content: result,
+              toolCallId: tc.id,
+            });
           } catch (toolErr) {
             const durationMs = Date.now() - toolStart;
             emit('tool_end', tc.name, { success: false, durationMs, error: String(toolErr) });
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
-            this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            this.memory.appendMessage(sessionId, {
+              role: 'tool',
+              content: `Error: ${String(toolErr)}`,
+              toolCallId: tc.id,
+            });
           }
         }
 
@@ -910,12 +1084,12 @@ export class Agent {
             }),
             tools: llmTools.length > 0 ? llmTools : undefined,
           },
-          (event) => {
+          event => {
             if (event.type === 'text_delta' && event.text) {
               textBuffer += event.text;
               emitDelta(event.text);
             }
-          },
+          }
         );
         this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
       }
@@ -931,14 +1105,19 @@ export class Agent {
       flushText();
       emit('error', String(error));
       this.metricsCollector.recordTaskCompletion(taskId, 'failed', Date.now() - taskStartMs);
-      this.emitAudit({ type: 'error', action: 'execute_task', success: false, detail: String(error).slice(0, 200) });
+      this.emitAudit({
+        type: 'error',
+        action: 'execute_task',
+        success: false,
+        detail: String(error).slice(0, 200),
+      });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
       throw error; // 重新抛出错误，让TaskExecutor处理
     } finally {
       // 从活动任务中移除
       this.activeTasks.delete(taskId);
-      
+
       // 如果没有活动任务，设置状态为idle
       if (this.activeTasks.size === 0) {
         this.setStatus('idle');
@@ -946,7 +1125,10 @@ export class Agent {
     }
   }
 
-  private skillProficiency = new Map<string, { uses: number; successes: number; lastUsed: string }>();
+  private skillProficiency = new Map<
+    string,
+    { uses: number; successes: number; lastUsed: string }
+  >();
 
   getSkillProficiency(): Record<string, { uses: number; successes: number; lastUsed: string }> {
     return Object.fromEntries(this.skillProficiency);
@@ -995,7 +1177,7 @@ export class Agent {
   private registerSandboxedTools(sandbox: SandboxHandle): void {
     this.tools.set('shell_execute', {
       name: 'shell_execute',
-      description: 'Execute a shell command inside the agent\'s isolated sandbox container.',
+      description: "Execute a shell command inside the agent's isolated sandbox container.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1005,11 +1187,11 @@ export class Agent {
         },
         required: ['command'],
       },
-      execute: async (args) => {
-        const result = await sandbox.exec(
-          args['command'] as string,
-          { cwd: args['cwd'] as string | undefined, timeoutMs: (args['timeout_ms'] as number) ?? 60_000 },
-        );
+      execute: async args => {
+        const result = await sandbox.exec(args['command'] as string, {
+          cwd: args['cwd'] as string | undefined,
+          timeoutMs: (args['timeout_ms'] as number) ?? 60_000,
+        });
         const parts: string[] = [];
         if (result.stdout?.trim()) parts.push(result.stdout.trim());
         if (result.stderr?.trim()) parts.push(`[stderr] ${result.stderr.trim()}`);
@@ -1022,13 +1204,13 @@ export class Agent {
 
     this.tools.set('file_read', {
       name: 'file_read',
-      description: 'Read a file from the agent\'s sandbox container.',
+      description: "Read a file from the agent's sandbox container.",
       inputSchema: {
         type: 'object',
         properties: { path: { type: 'string', description: 'File path to read' } },
         required: ['path'],
       },
-      execute: async (args) => {
+      execute: async args => {
         try {
           return await sandbox.readFile(args['path'] as string);
         } catch (e) {
@@ -1039,7 +1221,7 @@ export class Agent {
 
     this.tools.set('file_write', {
       name: 'file_write',
-      description: 'Write content to a file in the agent\'s sandbox container.',
+      description: "Write content to a file in the agent's sandbox container.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1048,7 +1230,7 @@ export class Agent {
         },
         required: ['path', 'content'],
       },
-      execute: async (args) => {
+      execute: async args => {
         try {
           await sandbox.writeFile(args['path'] as string, args['content'] as string);
           return JSON.stringify({ success: true, path: args['path'] });
@@ -1068,10 +1250,7 @@ export class Agent {
     const isManager = this.config.agentRole === 'manager';
 
     // Include tools the agent explicitly requested via discover_tools
-    const recentPlusActivated = [
-      ...this.recentToolNames,
-      ...this.activatedExtraTools,
-    ];
+    const recentPlusActivated = [...this.recentToolNames, ...this.activatedExtraTools];
 
     return this.toolSelector.selectTools({
       allTools: this.tools,
@@ -1129,20 +1308,30 @@ export class Agent {
         return result;
       } catch (error) {
         lastError = error;
-        log.error(`Tool execution failed: ${toolCall.name} (attempt ${attempt + 1})`, { error: String(error) });
+        log.error(`Tool execution failed: ${toolCall.name} (attempt ${attempt + 1})`, {
+          error: String(error),
+        });
       }
     }
 
     this.recordToolUsage(toolCall.name, false);
-    this.handleFailure(`Tool ${toolCall.name} failed after ${Agent.TOOL_RETRY_MAX + 1} attempts: ${String(lastError)}`);
+    this.handleFailure(
+      `Tool ${toolCall.name} failed after ${Agent.TOOL_RETRY_MAX + 1} attempts: ${String(lastError)}`
+    );
     return JSON.stringify({ error: String(lastError) });
   }
 
   private handleFailure(reason: string): void {
     this.consecutiveFailures++;
     if (this.consecutiveFailures >= Agent.MAX_CONSECUTIVE_FAILURES) {
-      log.warn('Consecutive failure threshold reached, escalating to human', { agentId: this.id, failures: this.consecutiveFailures });
-      this.escalationCallback?.(this.id, `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`);
+      log.warn('Consecutive failure threshold reached, escalating to human', {
+        agentId: this.id,
+        failures: this.consecutiveFailures,
+      });
+      this.escalationCallback?.(
+        this.id,
+        `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`
+      );
       this.consecutiveFailures = 0;
     }
   }
@@ -1153,7 +1342,10 @@ export class Agent {
     triggeredAt: string;
   }): Promise<void> {
     if (this.state.status === 'working' || this.activeTasks.size > 0) {
-      log.debug('Skipping heartbeat — agent is busy', { task: ctx.task.name, activeTasks: this.activeTasks.size });
+      log.debug('Skipping heartbeat — agent is busy', {
+        task: ctx.task.name,
+        activeTasks: this.activeTasks.size,
+      });
       return;
     }
 
@@ -1208,7 +1400,8 @@ export class Agent {
           const { flushedCount } = this.memory.compactSession(this.currentSessionId, 15);
           if (flushedCount > 0) {
             log.info('Memory consolidation: compacted main session', {
-              agentId: this.id, flushedCount,
+              agentId: this.id,
+              flushedCount,
               remaining: session.messages.length,
             });
           }
@@ -1220,7 +1413,7 @@ export class Agent {
       const existingLongTerm = this.memory.getLongTermMemory();
       if (!existingLongTerm.includes(`daily-report-${today}`)) {
         this.generateDailyReport().catch(e =>
-          log.warn('Auto daily report generation failed', { error: String(e) }),
+          log.warn('Auto daily report generation failed', { error: String(e) })
         );
       }
 

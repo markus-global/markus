@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { api, type AgentInfo } from '../api.ts';
+import { PromptStudioPage } from './PromptStudio.tsx';
 
-type BuilderTab = 'template' | 'workflow' | 'team';
+type BuilderTab = 'template' | 'workflow' | 'team' | 'prompts';
 
 interface TemplateForm {
   name: string;
@@ -66,6 +67,7 @@ const TAB_CONFIG = [
   { key: 'template' as const, label: 'Agent Template', icon: '⊕', desc: 'Create reusable agent blueprints' },
   { key: 'workflow' as const, label: 'Workflow', icon: '⇢', desc: 'Build multi-step pipelines' },
   { key: 'team' as const, label: 'Team', icon: '◎', desc: 'Compose agent teams' },
+  { key: 'prompts' as const, label: 'Prompt Studio', icon: '✎', desc: 'Design, version, and test prompts' },
 ];
 
 function emptyStep(index: number): WorkflowStepForm {
@@ -304,12 +306,17 @@ export function AgentBuilder() {
               <FormRow label="Description" required>
                 <textarea className="input-field min-h-[70px]" value={tplForm.description} onChange={e => setTplForm(f => ({ ...f, description: e.target.value }))} placeholder="What does this agent specialize in? Describe its expertise and responsibilities..." />
               </FormRow>
-              <div className="grid grid-cols-3 gap-4">
-                <FormRow label="Category">
-                  <select className="input-field" value={tplForm.category} onChange={e => setTplForm(f => ({ ...f, category: e.target.value }))}>
-                    {CATEGORIES.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-                  </select>
-                </FormRow>
+              <FormRow label="Category">
+                <div className="flex gap-1.5 flex-wrap">
+                  {CATEGORIES.map(c => (
+                    <button key={c} onClick={() => setTplForm(f => ({ ...f, category: c }))}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize ${
+                        tplForm.category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
+                      }`}>{c}</button>
+                  ))}
+                </div>
+              </FormRow>
+              <div className="grid grid-cols-2 gap-4">
                 <FormRow label="Skills" hint="comma-separated">
                   <input className="input-field" value={tplForm.skills} onChange={e => setTplForm(f => ({ ...f, skills: e.target.value }))} placeholder="git, code-analysis" />
                 </FormRow>
@@ -336,15 +343,19 @@ export function AgentBuilder() {
                     tasks[i] = { ...tasks[i]!, title: e.target.value };
                     setTplForm(f => ({ ...f, starterTasks: tasks }));
                   }} />
-                  <select className="input-field w-24" value={task.priority} onChange={e => {
-                    const tasks = [...tplForm.starterTasks];
-                    tasks[i] = { ...tasks[i]!, priority: e.target.value as 'low' | 'medium' | 'high' };
-                    setTplForm(f => ({ ...f, starterTasks: tasks }));
-                  }}>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                  </select>
+                  <div className="flex gap-1">
+                    {(['low', 'medium', 'high'] as const).map(p => (
+                      <button key={p} onClick={() => {
+                        const tasks = [...tplForm.starterTasks];
+                        tasks[i] = { ...tasks[i]!, priority: p };
+                        setTplForm(f => ({ ...f, starterTasks: tasks }));
+                      }} className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${
+                        task.priority === p
+                          ? p === 'high' ? 'bg-red-500/15 text-red-400 border-red-500/30' : p === 'medium' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-gray-700/50 text-gray-400 border-gray-600'
+                          : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600'
+                      }`}>{p}</button>
+                    ))}
+                  </div>
                   <button onClick={() => setTplForm(f => ({ ...f, starterTasks: f.starterTasks.filter((_, j) => j !== i) }))} className="text-red-400 hover:text-red-300 px-1.5 text-lg">&times;</button>
                 </div>
               ))}
@@ -529,16 +540,19 @@ export function AgentBuilder() {
         {tab === 'team' && (
           <div className="space-y-5">
             <Card title="Team Definition">
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="Team Name" required>
-                  <input className="input-field" value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Marketing Department" />
-                </FormRow>
-                <FormRow label="Category">
-                  <select className="input-field" value={teamForm.category} onChange={e => setTeamForm(f => ({ ...f, category: e.target.value }))}>
-                    {CATEGORIES.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-                  </select>
-                </FormRow>
-              </div>
+              <FormRow label="Team Name" required>
+                <input className="input-field" value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Marketing Department" />
+              </FormRow>
+              <FormRow label="Category">
+                <div className="flex gap-1.5 flex-wrap">
+                  {CATEGORIES.map(c => (
+                    <button key={c} onClick={() => setTeamForm(f => ({ ...f, category: c }))}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize ${
+                        teamForm.category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
+                      }`}>{c}</button>
+                  ))}
+                </div>
+              </FormRow>
               <FormRow label="Description">
                 <textarea className="input-field min-h-[60px]" value={teamForm.description} onChange={e => setTeamForm(f => ({ ...f, description: e.target.value }))} placeholder="What is this team responsible for?" />
               </FormRow>
@@ -685,6 +699,13 @@ export function AgentBuilder() {
                 {saving ? 'Creating...' : 'Create Team Template'}
               </button>
             </ActionBar>
+          </div>
+        )}
+
+        {/* ── PROMPT STUDIO ─────────────────────────────────────────────── */}
+        {tab === 'prompts' && (
+          <div className="-mx-6 -mb-6">
+            <PromptStudioPage embedded />
           </div>
         )}
       </div>

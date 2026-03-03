@@ -7,6 +7,7 @@ import {
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
+import { navBus } from '../navBus.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1027,69 +1028,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           )}
           {chatMode === 'direct' && currentAgent && (
             <>
-              <span className={`w-2 h-2 rounded-full ${
-                currentAgent.status === 'idle' ? 'bg-green-400' : currentAgent.status === 'working' ? 'bg-yellow-400' : 'bg-gray-500'
-              }`} />
-              <span className="text-xs text-gray-500">{currentAgent.status}</span>
-
-              {/* Task context */}
-              <div className="relative ml-1">
-                {linkedTask ? (
-                  <button
-                    onClick={() => setShowTaskPicker(v => !v)}
-                    className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded bg-indigo-900/40 border border-indigo-700/50 text-indigo-300 hover:bg-indigo-900/60 transition-colors"
-                  >
-                    <span>📌</span>
-                    <span className="max-w-32 truncate">{linkedTask.title}</span>
-                    <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${
-                      linkedTask.status === 'done' ? 'bg-green-800 text-green-300' :
-                      linkedTask.status === 'in_progress' ? 'bg-yellow-800 text-yellow-300' :
-                      'bg-gray-700 text-gray-400'
-                    }`}>{linkedTask.status}</span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => setShowTaskPicker(v => !v)}
-                    className="text-xs text-gray-600 hover:text-gray-400 px-2 py-0.5 rounded hover:bg-gray-800 transition-colors flex items-center gap-1"
-                  >
-                    <span>📌</span> Link task
-                  </button>
-                )}
-                {showTaskPicker && (
-                  <div className="absolute top-full left-0 mt-1 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-20 w-72 p-3">
-                    <p className="text-[10px] text-gray-500 uppercase font-semibold mb-2">Task Context</p>
-                    {linkedTask && (
-                      <button onClick={() => { setLinkedTaskId(null); setShowTaskPicker(false); }}
-                        className="w-full text-left text-xs text-red-400 hover:bg-red-900/20 px-2 py-1.5 rounded mb-2">
-                        ✕ Unlink current task
-                      </button>
-                    )}
-                    <div className="space-y-1 max-h-40 overflow-y-auto mb-2">
-                      {tasks.filter(t => !selectedAgent || !t.assignedAgentId || t.assignedAgentId === selectedAgent).map(t => (
-                        <button key={t.id} onClick={() => { setLinkedTaskId(t.id); setShowTaskPicker(false); }}
-                          className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
-                            t.id === linkedTaskId ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
-                          }`}>
-                          <span className={`mr-1.5 ${t.status === 'done' ? 'text-green-400' : t.status === 'in_progress' ? 'text-yellow-400' : 'text-gray-500'}`}>●</span>
-                          {t.title}
-                        </button>
-                      ))}
-                      {tasks.length === 0 && <div className="text-xs text-gray-600 px-2">No tasks yet</div>}
-                    </div>
-                    <div className="border-t border-gray-800 pt-2">
-                      <div className="flex gap-1.5">
-                        <input value={newTaskTitle} onChange={e => setNewTaskTitle(e.target.value)}
-                          placeholder="New task title…"
-                          className="flex-1 px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs focus:border-indigo-500 outline-none" />
-                        <button onClick={() => void createAndLinkTask()}
-                          className="px-2 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded">
-                          ＋
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <AgentStatusBadge agent={currentAgent} tasks={tasks} />
 
               <button
                 onClick={() => setShowSessions(!showSessions)}
@@ -1238,6 +1177,51 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[] }) {
+  const [hover, setHover] = useState(false);
+  const isWorking = agent.status === 'working';
+  const isError = agent.status === 'error';
+  const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
+
+  const dotColor = isError ? 'bg-red-400' : isWorking ? 'bg-yellow-400 animate-pulse' : 'bg-green-400';
+  const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
+
+  return (
+    <div className="relative" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full ${isWorking ? 'bg-yellow-500/10 border border-yellow-500/20' : isError ? 'bg-red-500/10 border border-red-500/20' : 'bg-green-500/10 border border-green-500/20'} cursor-default`}>
+        <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+        <span className={`text-xs ${isError ? 'text-red-400' : isWorking ? 'text-yellow-400' : 'text-green-400'}`}>{label}</span>
+      </div>
+      {hover && isWorking && (
+        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-30 w-72 p-3">
+          <p className="text-[10px] text-gray-500 uppercase font-semibold mb-2">Current Activity</p>
+          {currentTask ? (
+            <div
+              className="flex items-center gap-2 p-2 rounded-lg bg-indigo-900/20 border border-indigo-700/30 cursor-pointer hover:bg-indigo-900/30 transition-colors"
+              onClick={() => navBus.navigate('tasks', { openTask: currentTask.id })}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-indigo-300 truncate">{currentTask.title}</div>
+                <div className="text-[10px] text-gray-500">Working on task · Click to view</div>
+              </div>
+              <span className="text-[10px] text-gray-600">→</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-gray-800/50">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-gray-300">Processing...</div>
+                <div className="text-[10px] text-gray-500">Agent is thinking or communicating</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,3 +1,6 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 export interface TokenUsage {
   input: number;
   output: number;
@@ -59,22 +62,43 @@ export class AgentMetricsCollector {
   private heartbeatEvents: HeartbeatEvent[] = [];
   private startTime = Date.now();
   private static readonly MAX_EVENTS = 10_000;
+  private dataDir?: string;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(readonly agentId: string) {}
-
-  recordAudit(event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean }): void {
-    this.auditEvents.push({ ...event, timestamp: Date.now() });
-    this.trimEvents(this.auditEvents);
+  constructor(
+    readonly agentId: string,
+    dataDir?: string
+  ) {
+    this.dataDir = dataDir;
+    if (dataDir) this.loadFromDisk();
   }
 
-  recordTaskCompletion(taskId: string, status: 'completed' | 'failed' | 'cancelled', durationMs?: number): void {
+  recordAudit(event: {
+    type: string;
+    action: string;
+    tokensUsed?: number;
+    durationMs?: number;
+    success: boolean;
+  }): void {
+    this.auditEvents.push({ ...event, timestamp: Date.now() });
+    this.trimEvents(this.auditEvents);
+    this.scheduleSave();
+  }
+
+  recordTaskCompletion(
+    taskId: string,
+    status: 'completed' | 'failed' | 'cancelled',
+    durationMs?: number
+  ): void {
     this.taskEvents.push({ taskId, status, durationMs, timestamp: Date.now() });
     this.trimEvents(this.taskEvents);
+    this.scheduleSave();
   }
 
   recordHeartbeat(success: boolean): void {
     this.heartbeatEvents.push({ success, timestamp: Date.now() });
     this.trimEvents(this.heartbeatEvents);
+    this.scheduleSave();
   }
 
   getMetrics(period: '1h' | '24h' | '7d' = '24h'): AgentMetricsSnapshot {
@@ -116,7 +140,7 @@ export class AgentMetricsCollector {
   computeHealthScore(
     heartbeatSuccessRate: number,
     taskMetrics: TaskMetrics,
-    errorRate: number,
+    errorRate: number
   ): number {
     const heartbeatComponent = heartbeatSuccessRate * 40;
 
@@ -127,13 +151,13 @@ export class AgentMetricsCollector {
     const errorComponent = (1 - errorRate) * 20;
 
     const now = Date.now();
-    const lastSuccessfulAudit = [...this.auditEvents]
-      .reverse()
-      .find(e => e.success);
+    const lastSuccessfulAudit = [...this.auditEvents].reverse().find(e => e.success);
     const recencyMs = lastSuccessfulAudit ? now - lastSuccessfulAudit.timestamp : Infinity;
     const recencyComponent = recencyMs < 3600_000 ? 10 : recencyMs < 86400_000 ? 5 : 0;
 
-    return Math.round(Math.min(100, heartbeatComponent + taskComponent + errorComponent + recencyComponent));
+    return Math.round(
+      Math.min(100, heartbeatComponent + taskComponent + errorComponent + recencyComponent)
+    );
   }
 
   private computeTokenUsage(audits: AuditEvent[]): TokenUsage {
@@ -156,9 +180,11 @@ export class AgentMetricsCollector {
     const cancelled = tasks.filter(t => t.status === 'cancelled').length;
 
     const completedWithDuration = tasks.filter(t => t.status === 'completed' && t.durationMs);
-    const avgTime = completedWithDuration.length > 0
-      ? completedWithDuration.reduce((sum, t) => sum + (t.durationMs ?? 0), 0) / completedWithDuration.length
-      : 0;
+    const avgTime =
+      completedWithDuration.length > 0
+        ? completedWithDuration.reduce((sum, t) => sum + (t.durationMs ?? 0), 0) /
+          completedWithDuration.length
+        : 0;
 
     return {
       completed,
@@ -190,15 +216,58 @@ export class AgentMetricsCollector {
   private periodCutoff(period: '1h' | '24h' | '7d'): number {
     const now = Date.now();
     switch (period) {
-      case '1h': return now - 3600_000;
-      case '24h': return now - 86400_000;
-      case '7d': return now - 7 * 86400_000;
+      case '1h':
+        return now - 3600_000;
+      case '24h':
+        return now - 86400_000;
+      case '7d':
+        return now - 7 * 86400_000;
     }
   }
 
   private trimEvents<T extends { timestamp: number }>(events: T[]): void {
     if (events.length > AgentMetricsCollector.MAX_EVENTS) {
       events.splice(0, events.length - AgentMetricsCollector.MAX_EVENTS);
+    }
+  }
+
+  private scheduleSave(): void {
+    if (!this.dataDir || this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.saveToDisk();
+    }, 5_000);
+  }
+
+  private saveToDisk(): void {
+    if (!this.dataDir) return;
+    try {
+      mkdirSync(this.dataDir, { recursive: true });
+      const file = join(this.dataDir, 'metrics.json');
+      const data = {
+        startTime: this.startTime,
+        auditEvents: this.auditEvents.slice(-2000),
+        taskEvents: this.taskEvents.slice(-2000),
+        heartbeatEvents: this.heartbeatEvents.slice(-2000),
+      };
+      writeFileSync(file, JSON.stringify(data));
+    } catch {
+      /* best effort */
+    }
+  }
+
+  private loadFromDisk(): void {
+    if (!this.dataDir) return;
+    try {
+      const file = join(this.dataDir, 'metrics.json');
+      if (!existsSync(file)) return;
+      const raw = JSON.parse(readFileSync(file, 'utf-8'));
+      if (raw.startTime) this.startTime = raw.startTime;
+      if (Array.isArray(raw.auditEvents)) this.auditEvents = raw.auditEvents;
+      if (Array.isArray(raw.taskEvents)) this.taskEvents = raw.taskEvents;
+      if (Array.isArray(raw.heartbeatEvents)) this.heartbeatEvents = raw.heartbeatEvents;
+    } catch {
+      /* best effort */
     }
   }
 }
