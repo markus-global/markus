@@ -8,6 +8,7 @@ import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
+import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login } from './pages/Login.tsx';
@@ -15,7 +16,7 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 
-const validPages: PageId[] = ['dashboard', 'agents', 'tasks', 'chat', 'team', 'skills', 'templates', 'settings'];
+const validPages: PageId[] = ['dashboard', 'agents', 'tasks', 'chat', 'team', 'skills', 'templates', 'builder', 'settings'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
@@ -69,6 +70,7 @@ export function App() {
     settings: <Settings />,
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,
+    builder: <AgentBuilder />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [currentUser?.id]);
 

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
-import { GatewayError, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry } from '@markus/core';
+import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
@@ -102,6 +102,8 @@ export class APIServer {
   private gateway?: ExternalAgentGateway;
   private reviewService?: ReviewService;
   private templateRegistry?: TemplateRegistry;
+  private workflowEngine?: WorkflowEngine;
+  private teamTemplateRegistry: TeamTemplateRegistry;
 
   constructor(
     private orgService: OrganizationService,
@@ -109,6 +111,7 @@ export class APIServer {
     private port: number = 3001,
   ) {
     this.ws = new WSBroadcaster();
+    this.teamTemplateRegistry = createDefaultTeamTemplates();
   }
 
   setSkillRegistry(registry: SkillRegistry): void {
@@ -148,6 +151,30 @@ export class APIServer {
 
   setLLMRouter(router: LLMRouter): void {
     this.llmRouter = router;
+  }
+
+  initWorkflowEngine(): WorkflowEngine {
+    const agentManager = this.orgService.getAgentManager();
+    const executor: WorkflowExecutor = {
+      executeStep: async (agentId: string, taskDescription: string, input: Record<string, unknown>) => {
+        const agent = agentManager.getAgent(agentId);
+        const reply = await agent.handleMessage(taskDescription, 'workflow-engine', { name: 'workflow', role: 'system' });
+        return { reply, input };
+      },
+      findAgent: (skills: string[]) => {
+        const agents = agentManager.listAgents();
+        const found = agents.find(a =>
+          skills.some(s => a.role?.toLowerCase().includes(s.toLowerCase()) || a.agentRole?.toLowerCase().includes(s.toLowerCase()))
+        );
+        return found?.id;
+      },
+    };
+    this.workflowEngine = new WorkflowEngine(executor);
+    return this.workflowEngine;
+  }
+
+  getTeamTemplateRegistry(): TeamTemplateRegistry {
+    return this.teamTemplateRegistry;
   }
 
   /** Ensure at least one admin user exists; called once after storage init */
@@ -1605,6 +1632,105 @@ export class APIServer {
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
+      return;
+    }
+
+    // ── Workflow Engine ────────────────────────────────────────────────────
+    if (path === '/api/workflows' && req.method === 'GET') {
+      if (!this.workflowEngine) { this.json(res, 200, { executions: [] }); return; }
+      const executions = this.workflowEngine.listExecutions().map(e => ({
+        id: e.id, workflowId: e.workflowId, status: e.status,
+        startedAt: e.startedAt, completedAt: e.completedAt, error: e.error,
+        stepCount: e.steps.size,
+      }));
+      this.json(res, 200, { executions });
+      return;
+    }
+
+    if (path === '/api/workflows' && req.method === 'POST') {
+      if (!this.workflowEngine) this.initWorkflowEngine();
+      const body = await this.readBody(req);
+      const action = body['action'] as string;
+      if (action === 'validate') {
+        const errors = this.workflowEngine!.validate(body['workflow'] as WorkflowDefinition);
+        this.json(res, 200, { valid: errors.length === 0, errors });
+        return;
+      }
+      try {
+        const execution = await this.workflowEngine!.start(
+          body['workflow'] as WorkflowDefinition,
+          (body['inputs'] as Record<string, unknown>) ?? {},
+        );
+        this.json(res, 201, {
+          executionId: execution.id, status: execution.status,
+          outputs: execution.outputs, error: execution.error,
+        });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.startsWith('/api/workflows/') && req.method === 'GET') {
+      if (!this.workflowEngine) { this.json(res, 404, { error: 'No workflow engine' }); return; }
+      const executionId = path.split('/')[3]!;
+      const execution = this.workflowEngine.getExecution(executionId);
+      if (!execution) { this.json(res, 404, { error: 'Execution not found' }); return; }
+      const steps = [...execution.steps.entries()].map(([id, s]) => ({
+        id, status: s.status, agentId: s.agentId,
+        startedAt: s.startedAt, completedAt: s.completedAt,
+        error: s.error, retryCount: s.retryCount,
+        output: s.output,
+      }));
+      this.json(res, 200, { execution: { ...execution, steps } });
+      return;
+    }
+
+    if (path.startsWith('/api/workflows/') && req.method === 'DELETE') {
+      if (!this.workflowEngine) { this.json(res, 404, { error: 'No workflow engine' }); return; }
+      const executionId = path.split('/')[3]!;
+      const cancelled = this.workflowEngine.cancel(executionId);
+      this.json(res, 200, { cancelled });
+      return;
+    }
+
+    // ── Team Templates ───────────────────────────────────────────────────
+    if (path === '/api/team-templates' && req.method === 'GET') {
+      const query = url.searchParams.get('q');
+      const templates = query
+        ? this.teamTemplateRegistry.search(query)
+        : this.teamTemplateRegistry.list();
+      this.json(res, 200, { templates });
+      return;
+    }
+
+    if (path === '/api/team-templates' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const tpl = body as unknown as { id: string; name: string; description: string; version: string; author: string; members: Array<{ templateId: string; name?: string; count?: number; role?: 'manager' | 'worker' }>; tags?: string[]; category?: string };
+      if (!tpl.name || !tpl.members?.length) {
+        this.json(res, 400, { error: 'name and members are required' });
+        return;
+      }
+      tpl.id = tpl.id || generateId('team');
+      tpl.version = tpl.version || '1.0.0';
+      tpl.author = tpl.author || 'user';
+      this.teamTemplateRegistry.register(tpl);
+      this.json(res, 201, { template: tpl });
+      return;
+    }
+
+    if (path.startsWith('/api/team-templates/') && req.method === 'GET') {
+      const id = path.split('/')[3]!;
+      const tpl = this.teamTemplateRegistry.get(id);
+      if (!tpl) { this.json(res, 404, { error: 'Team template not found' }); return; }
+      this.json(res, 200, { template: tpl });
+      return;
+    }
+
+    if (path.startsWith('/api/team-templates/') && req.method === 'DELETE') {
+      const id = path.split('/')[3]!;
+      this.teamTemplateRegistry.unregister(id);
+      this.json(res, 200, { deleted: true });
       return;
     }
 

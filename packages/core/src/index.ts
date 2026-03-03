@@ -43,6 +43,17 @@ export {
 export { SkillLoader, type SkillPackage, type SkillSearchResult, type SkillLoadResult } from './skills/loader.js';
 export {
   TemplateRegistry, createDefaultTemplateRegistry,
+  type TemplatePersistenceAdapter,
   type AgentTemplate, type TemplateSource, type TemplateSearchQuery,
   type TemplateSearchResult, type TemplateInstantiateRequest,
 } from './templates/index.js';
+export {
+  WorkflowEngine,
+  createPipeline, createFanOut, createReviewChain, createParallelConsensus,
+  TeamTemplateRegistry, createDefaultTeamTemplates,
+  type WorkflowDefinition, type StepDefinition, type WorkflowExecution,
+  type StepExecution, type WorkflowEvent, type WorkflowExecutor, type WorkflowEventHandler,
+  type WorkflowStatus, type StepStatus, type StepType,
+  type PipelineStage, type FanOutConfig,
+  type TeamTemplate, type TeamMemberSpec, type TeamInstantiateRequest, type TeamInstantiateResult,
+} from './workflow/index.js';
