@@ -16,6 +16,7 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section: string
   { id: 'templates', label: 'Templates', icon: '⧉', section: 'explore' },
   { id: 'builder', label: 'Builder', icon: '⊞', section: 'explore' },
   { id: 'skills', label: 'Skill Store', icon: '◆', section: 'explore' },
+  { id: 'prompts', label: 'Prompt Studio', icon: '✎', section: 'explore' },
   { id: 'settings', label: 'Settings', icon: '⚙', section: 'explore' },
 ];
 

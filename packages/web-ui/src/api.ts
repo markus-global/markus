@@ -49,6 +49,61 @@ export interface ChannelMessageInfo {
   createdAt: string;
 }
 
+export interface PromptVersionInfo {
+  id: string;
+  promptId: string;
+  version: number;
+  content: string;
+  variables: string[];
+  author: string;
+  createdAt: string;
+  changelog?: string;
+}
+
+export interface PromptTemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  currentVersion: number;
+  versions: PromptVersionInfo[];
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvaluationResultInfo {
+  id: string;
+  promptId: string;
+  version: number;
+  testInput: string;
+  output: string;
+  score: number;
+  latencyMs: number;
+  tokenCount: number;
+  evaluatedAt: string;
+  evaluator?: string;
+  notes?: string;
+}
+
+export interface ABTestInfo {
+  id: string;
+  name: string;
+  promptId: string;
+  variantA: number;
+  variantB: number;
+  splitRatio: number;
+  status: 'draft' | 'running' | 'completed';
+  metrics: {
+    variantATrials: number;
+    variantBTrials: number;
+    variantAScores: number[];
+    variantBScores: number[];
+  };
+  createdAt: string;
+  completedAt?: string;
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -499,6 +554,61 @@ export const api = {
       request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
+      ),
+  },
+  promptStudio: {
+    list: (category?: string, q?: string) => {
+      const params = new URLSearchParams();
+      if (category) params.set('category', category);
+      if (q) params.set('q', q);
+      const qs = params.toString();
+      return request<{ prompts: PromptTemplateInfo[] }>(`/prompts${qs ? `?${qs}` : ''}`);
+    },
+    get: (id: string) => request<{ prompt: PromptTemplateInfo }>(`/prompts/${id}`),
+    create: (data: { name: string; description: string; category: string; content: string; tags?: string[] }) =>
+      request<{ prompt: PromptTemplateInfo }>('/prompts', { method: 'POST', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/prompts/${id}`, { method: 'DELETE' }),
+    addVersion: (promptId: string, content: string, changelog?: string) =>
+      request<{ version: PromptVersionInfo }>(`/prompts/${promptId}/versions`, {
+        method: 'POST', body: JSON.stringify({ content, changelog }),
+      }),
+    render: (promptId: string, variables?: Record<string, string>, version?: number) =>
+      request<{ rendered: string }>(`/prompts/${promptId}/render`, {
+        method: 'POST', body: JSON.stringify({ variables, version }),
+      }),
+    evaluate: (promptId: string, version: number, testInput: string, variables?: Record<string, string>) =>
+      request<{ evaluation: EvaluationResultInfo }>(`/prompts/${promptId}/evaluate`, {
+        method: 'POST', body: JSON.stringify({ version, testInput, variables }),
+      }),
+    getEvaluations: (promptId: string, version?: number) => {
+      const qs = version !== undefined ? `?version=${version}` : '';
+      return request<{ evaluations: EvaluationResultInfo[] }>(`/prompts/${promptId}/evaluations${qs}`);
+    },
+    getEvaluationSummary: (promptId: string, version: number) =>
+      request<{ summary: { avgScore: number; avgLatencyMs: number; avgTokenCount: number; count: number } }>(
+        `/prompts/${promptId}/evaluation-summary?version=${version}`
+      ),
+    scoreEvaluation: (evaluationId: string, score: number, notes?: string) =>
+      request<{ updated: boolean }>(`/prompts/evaluations/${evaluationId}/score`, {
+        method: 'POST', body: JSON.stringify({ score, notes }),
+      }),
+    listABTests: (promptId?: string) => {
+      const qs = promptId ? `?promptId=${promptId}` : '';
+      return request<{ tests: ABTestInfo[] }>(`/prompts/ab-tests${qs}`);
+    },
+    createABTest: (data: { name: string; promptId: string; variantA: number; variantB: number; splitRatio?: number }) =>
+      request<{ test: ABTestInfo }>('/prompts/ab-tests', { method: 'POST', body: JSON.stringify(data) }),
+    startABTest: (testId: string) =>
+      request<{ started: boolean }>(`/prompts/ab-tests/${testId}/start`, { method: 'POST' }),
+    completeABTest: (testId: string) =>
+      request<{ test: ABTestInfo }>(`/prompts/ab-tests/${testId}/complete`, { method: 'POST' }),
+    recordABResult: (testId: string, variant: 'A' | 'B', score: number) =>
+      request<{ ok: boolean }>(`/prompts/ab-tests/${testId}/record`, {
+        method: 'POST', body: JSON.stringify({ variant, score }),
+      }),
+    getABTestResults: (testId: string) =>
+      request<{ test: ABTestInfo; variantAAvg: number; variantBAvg: number; winner: 'A' | 'B' | 'tie'; confidence: number }>(
+        `/prompts/ab-tests/${testId}/results`
       ),
   },
 };

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
-import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, createDefaultTemplateRegistry, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
+import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, createDefaultTemplateRegistry, PromptStudio, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
@@ -106,6 +106,7 @@ export class APIServer {
   private templateRegistry?: TemplateRegistry;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
+  private promptStudio: PromptStudio;
   private customGroupChats: Array<{ id: string; name: string; orgId: string; creatorId: string; creatorName: string; memberIds: string[]; createdAt: string }> = [];
 
   constructor(
@@ -116,6 +117,7 @@ export class APIServer {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
     this.templateRegistry = createDefaultTemplateRegistry();
+    this.promptStudio = new PromptStudio();
     // Propagate template registry to AgentManager so createAgentFromTemplate works
     const am = this.orgService.getAgentManager();
     if (this.templateRegistry && !am.getTemplateRegistry()) {
@@ -2347,6 +2349,203 @@ export class APIServer {
       const id = path.split('/')[3]!;
       this.teamTemplateRegistry.unregister(id);
       this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    // ── Prompt Studio ──────────────────────────────────────────────────
+
+    if (path === '/api/prompts' && req.method === 'GET') {
+      const category = url.searchParams.get('category') ?? undefined;
+      const q = url.searchParams.get('q');
+      const prompts = q ? this.promptStudio.searchPrompts(q) : this.promptStudio.listPrompts(category);
+      this.json(res, 200, { prompts });
+      return;
+    }
+
+    if (path === '/api/prompts' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { name, description, category, content, tags } = body as {
+        name: string; description: string; category: string; content: string; tags?: string[];
+      };
+      if (!name || !content) { this.json(res, 400, { error: 'name and content are required' }); return; }
+      const prompt = this.promptStudio.createPrompt({
+        name, description: description ?? '', category: category ?? 'general',
+        content, author: auth.userId ?? 'user', tags,
+      });
+      this.json(res, 201, { prompt });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+$/) && req.method === 'GET') {
+      const promptId = path.split('/')[3]!;
+      const prompt = this.promptStudio.getPrompt(promptId);
+      if (!prompt) { this.json(res, 404, { error: 'Prompt not found' }); return; }
+      this.json(res, 200, { prompt });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+$/) && req.method === 'DELETE') {
+      const promptId = path.split('/')[3]!;
+      this.promptStudio.deletePrompt(promptId);
+      this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+\/versions$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const promptId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const { content, changelog } = body as { content: string; changelog?: string };
+      if (!content) { this.json(res, 400, { error: 'content is required' }); return; }
+      try {
+        const version = this.promptStudio.updatePrompt(promptId, content, auth.userId ?? 'user', changelog);
+        this.json(res, 201, { version });
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+\/render$/) && req.method === 'POST') {
+      const promptId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const { variables, version } = body as { variables?: Record<string, string>; version?: number };
+      try {
+        const rendered = this.promptStudio.renderPrompt(promptId, variables ?? {}, version);
+        this.json(res, 200, { rendered });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // A/B Tests
+    if (path === '/api/prompts/ab-tests' && req.method === 'GET') {
+      const promptId = url.searchParams.get('promptId') ?? undefined;
+      const tests = this.promptStudio.listABTests(promptId);
+      this.json(res, 200, { tests });
+      return;
+    }
+
+    if (path === '/api/prompts/ab-tests' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { name, promptId, variantA, variantB, splitRatio } = body as {
+        name: string; promptId: string; variantA: number; variantB: number; splitRatio?: number;
+      };
+      try {
+        const test = this.promptStudio.createABTest({ name, promptId, variantA, variantB, splitRatio });
+        this.json(res, 201, { test });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/start$/) && req.method === 'POST') {
+      const testId = path.split('/')[4]!;
+      const started = this.promptStudio.startABTest(testId);
+      this.json(res, 200, { started });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/complete$/) && req.method === 'POST') {
+      const testId = path.split('/')[4]!;
+      const result = this.promptStudio.completeABTest(testId);
+      if (!result) { this.json(res, 404, { error: 'Test not found or not running' }); return; }
+      this.json(res, 200, { test: result });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/record$/) && req.method === 'POST') {
+      const testId = path.split('/')[4]!;
+      const body = await this.readBody(req);
+      const { variant, score } = body as { variant: 'A' | 'B'; score: number };
+      this.promptStudio.recordABResult(testId, variant, score);
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/results$/) && req.method === 'GET') {
+      const testId = path.split('/')[4]!;
+      const results = this.promptStudio.getABTestResults(testId);
+      if (!results) { this.json(res, 404, { error: 'Test not found' }); return; }
+      this.json(res, 200, results);
+      return;
+    }
+
+    // Evaluations
+    if (path.match(/^\/api\/prompts\/[^/]+\/evaluations$/) && req.method === 'GET') {
+      const promptId = path.split('/')[3]!;
+      const version = url.searchParams.get('version') ? parseInt(url.searchParams.get('version')!, 10) : undefined;
+      const evaluations = this.promptStudio.getEvaluations(promptId, version);
+      this.json(res, 200, { evaluations });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+\/evaluate$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const promptId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const { version, testInput, variables } = body as {
+        version: number; testInput: string; variables?: Record<string, string>;
+      };
+      if (!testInput || version === undefined) {
+        this.json(res, 400, { error: 'version and testInput are required' });
+        return;
+      }
+
+      // Wire up LLM as executor if available
+      if (this.llmRouter && !this.promptStudio['executor']) {
+        this.promptStudio.setExecutor({
+          execute: async (prompt: string) => {
+            const startMs = Date.now();
+            const response = await this.llmRouter!.chat({
+              messages: [
+                { role: 'system', content: 'You are a helpful assistant. Respond to the prompt accurately and concisely.' },
+                { role: 'user', content: prompt },
+              ],
+            });
+            return {
+              output: response.content,
+              latencyMs: Date.now() - startMs,
+              tokenCount: (response.usage?.inputTokens ?? 0) + (response.usage?.outputTokens ?? 0),
+            };
+          },
+        });
+      }
+
+      try {
+        const result = await this.promptStudio.evaluate(
+          promptId, version, testInput, variables ?? {}, auth.userId ?? 'user',
+        );
+        this.json(res, 200, { evaluation: result });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/evaluations\/[^/]+\/score$/) && req.method === 'POST') {
+      const evaluationId = path.split('/')[4]!;
+      const body = await this.readBody(req);
+      const { score, notes } = body as { score: number; notes?: string };
+      const updated = this.promptStudio.scoreEvaluation(evaluationId, score, notes);
+      this.json(res, 200, { updated });
+      return;
+    }
+
+    if (path.match(/^\/api\/prompts\/[^/]+\/evaluation-summary$/) && req.method === 'GET') {
+      const promptId = path.split('/')[3]!;
+      const version = url.searchParams.get('version') ? parseInt(url.searchParams.get('version')!, 10) : undefined;
+      if (version === undefined) { this.json(res, 400, { error: 'version query param is required' }); return; }
+      const summary = this.promptStudio.getEvaluationSummary(promptId, version);
+      this.json(res, 200, { summary });
       return;
     }
 
