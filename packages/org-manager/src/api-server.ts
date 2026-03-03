@@ -113,6 +113,11 @@ export class APIServer {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
     this.templateRegistry = createDefaultTemplateRegistry();
+    // Propagate template registry to AgentManager so createAgentFromTemplate works
+    const am = this.orgService.getAgentManager();
+    if (this.templateRegistry && !am.getTemplateRegistry()) {
+      am.setTemplateRegistry(this.templateRegistry);
+    }
   }
 
   setSkillRegistry(registry: SkillRegistry): void {

@@ -345,6 +345,7 @@ function TeamTemplatesTab() {
       let managerId: string | undefined;
       let deployed = 0;
 
+      const errors: string[] = [];
       for (const member of tpl.members) {
         const count = member.count ?? 1;
         for (let i = 0; i < count; i++) {
@@ -364,13 +365,16 @@ function TeamTemplatesTab() {
             });
             if (res.ok) {
               deployed++;
+              const data = await res.json();
               if (member.role === 'manager' && !managerId) {
-                const data = await res.json();
                 managerId = data.agent?.id;
               }
+            } else {
+              const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+              errors.push(`${member.templateId}: ${data.error ?? res.statusText}`);
             }
-          } catch {
-            // continue deploying remaining members
+          } catch (err) {
+            errors.push(`${member.templateId}: ${String(err)}`);
           }
         }
       }
@@ -379,7 +383,8 @@ function TeamTemplatesTab() {
         await api.teams.update(teamId, { managerId, managerType: 'agent' }).catch(() => {});
       }
 
-      setDeployResult({ ok: true, message: `Team "${tpl.name}" deployed with ${deployed} agent(s)` });
+      const errMsg = errors.length > 0 ? ` (${errors.length} failed: ${errors[0]})` : '';
+      setDeployResult({ ok: deployed > 0, message: `Team "${tpl.name}" deployed with ${deployed} agent(s)${errMsg}` });
     } catch (err) {
       setDeployResult({ ok: false, message: `Failed: ${err}` });
     } finally {
