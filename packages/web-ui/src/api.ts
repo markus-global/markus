@@ -152,6 +152,60 @@ export interface AgentDetail {
   };
 }
 
+export interface TeamTemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  members: Array<{ templateId: string; name?: string; count?: number; role?: 'manager' | 'worker' }>;
+  tags?: string[];
+  category?: string;
+}
+
+export interface OpsDashboard {
+  period: string;
+  generatedAt: string;
+  systemHealth: {
+    overallScore: number;
+    activeAgents: number;
+    totalAgents: number;
+    criticalAgents: Array<{ id: string; name: string; score: number }>;
+    totalTokenCost: number;
+    totalInteractions: number;
+  };
+  taskKPI: {
+    totalTasks: number;
+    statusCounts: Record<string, number>;
+    successRate: number;
+    blockedCount: number;
+    averageCompletionTimeMs: number;
+    recentActivity: Array<{ taskId: string; title: string; status: string; updatedAt: string }>;
+  };
+  agentEfficiency: Array<{
+    agentId: string;
+    agentName: string;
+    role: string;
+    agentRole: string;
+    status: string;
+    healthScore: number;
+    tokenUsage: { input: number; output: number; cost: number };
+    taskMetrics: { completed: number; failed: number; cancelled: number; averageCompletionTimeMs: number };
+    averageResponseTimeMs: number;
+    errorRate: number;
+    totalInteractions: number;
+  }>;
+}
+
+export interface AgentMetrics {
+  healthScore: number;
+  tokenUsage: { input: number; output: number; cost: number };
+  taskMetrics: { completed: number; failed: number; cancelled: number; averageCompletionTimeMs: number };
+  averageResponseTimeMs: number;
+  errorRate: number;
+  totalInteractions: number;
+}
+
 export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents'),
@@ -326,6 +380,19 @@ export const api = {
       });
     },
   },
+  teamTemplates: {
+    list: (q?: string) => {
+      const params = q ? `?q=${encodeURIComponent(q)}` : '';
+      return request<{ templates: TeamTemplateInfo[] }>(`/team-templates${params}`);
+    },
+    get: (id: string) => request<{ template: TeamTemplateInfo }>(`/team-templates/${id}`),
+  },
+  ops: {
+    dashboard: (period: '1h' | '24h' | '7d' = '24h') =>
+      request<OpsDashboard>(`/ops/dashboard?period=${period}`),
+  },
+  agentMetrics: (id: string, period: '1h' | '24h' | '7d' = '24h') =>
+    request<AgentMetrics>(`/agents/${id}/metrics?period=${period}`),
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
   auth: {
     login: (email: string, password: string) =>

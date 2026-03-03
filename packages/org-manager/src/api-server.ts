@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
-import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
+import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, createDefaultTemplateRegistry, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
@@ -112,6 +112,7 @@ export class APIServer {
   ) {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
+    this.templateRegistry = createDefaultTemplateRegistry();
   }
 
   setSkillRegistry(registry: SkillRegistry): void {
@@ -699,6 +700,13 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/tasks/dashboard' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? undefined;
+      const dashboard = this.taskService.getDashboard(orgId);
+      this.json(res, 200, dashboard);
+      return;
+    }
+
     if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
       const task = this.taskService.getTask(taskId);
@@ -791,13 +799,6 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const board = this.taskService.getTaskBoard(orgId);
       this.json(res, 200, { board });
-      return;
-    }
-
-    if (path === '/api/tasks/dashboard' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? undefined;
-      const dashboard = this.taskService.getDashboard(orgId);
-      this.json(res, 200, dashboard);
       return;
     }
 
