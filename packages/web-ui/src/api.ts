@@ -104,6 +104,118 @@ export interface ABTestInfo {
   completedAt?: string;
 }
 
+// ─── Governance types ────────────────────────────────────────────────
+
+export interface AnnouncementInfo {
+  id: string;
+  type: string;
+  title: string;
+  message?: string;
+  priority: string;
+  createdBy: string;
+  createdAt: string;
+  targetScope: string;
+  acknowledged: string[];
+}
+
+export interface GovernancePolicyInfo {
+  defaultApprovalTier: string;
+  maxTasksPerAgent?: number;
+  rules?: Array<{ condition: string; approvalTier: string }>;
+}
+
+export interface ProjectInfo {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  status: string;
+  iterationModel: string;
+  repositories?: Array<{ url: string; defaultBranch: string; localPath?: string }>;
+  teamIds: string[];
+  governancePolicy?: GovernancePolicyInfo;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IterationInfo {
+  id: string;
+  projectId: string;
+  name: string;
+  status: string;
+  goal?: string;
+  startDate?: string;
+  endDate?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeEntryInfo {
+  id: string;
+  scope: string;
+  category: string;
+  title: string;
+  content: string;
+  tags: string[];
+  source: string;
+  projectId?: string;
+  importance: number;
+  status: string;
+  accessCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportMetricsInfo {
+  tasksCompleted: number;
+  tasksFailed: number;
+  tasksCreated: number;
+  tasksInProgress: number;
+  tasksBlocked: number;
+  avgCompletionTimeMs: number;
+  totalTokensUsed: number;
+  estimatedCost: number;
+  knowledgeContributions: number;
+}
+
+export interface ReportInfo {
+  id: string;
+  type: string;
+  scope: string;
+  scopeId?: string;
+  periodStart: string;
+  periodEnd: string;
+  status: string;
+  metrics?: ReportMetricsInfo;
+  taskSummary?: {
+    completed: Array<{ id: string; title: string; agent: string; durationMs: number }>;
+    inProgress: Array<{ id: string; title: string; agent: string; startedAt: string }>;
+    blocked: Array<{ id: string; title: string; agent: string; reason?: string }>;
+  };
+  costSummary?: {
+    totalTokens: number;
+    totalEstimatedCost: number;
+    byAgent: Array<{ agentId: string; tokens: number; cost: number }>;
+    trend: string;
+  };
+  plan?: { status: string; items?: Array<{ title: string; priority: string; assignee?: string }> } | null;
+  generatedAt: string;
+  generatedBy: string;
+}
+
+export interface ReportFeedbackInfo {
+  id: string;
+  reportId: string;
+  authorId: string;
+  authorName: string;
+  type: string;
+  content: string;
+  priority: string;
+  disclosure?: { scope: string };
+  actions?: Array<{ type: string; [key: string]: unknown }>;
+  createdAt: string;
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -454,6 +566,9 @@ export const api = {
       request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
     getLogs: (id: string) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs`),
+    accept: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: 'human' }) }),
+    revision: (id: string, reason: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: 'human' }) }),
+    archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),
@@ -637,6 +752,81 @@ export const api = {
       request<{ test: ABTestInfo; variantAAvg: number; variantBAvg: number; winner: 'A' | 'B' | 'tie'; confidence: number }>(
         `/prompts/ab-tests/${testId}/results`
       ),
+  },
+
+  // ─── Governance ────────────────────────────────────────────────────
+  governance: {
+    getSystemStatus: () =>
+      request<{ globalPaused: boolean; emergencyMode: boolean }>('/system/status'),
+    pauseAll: (reason?: string) =>
+      request<{ status: string; message: string }>('/system/pause-all', { method: 'POST', body: JSON.stringify({ reason }) }),
+    resumeAll: () =>
+      request<{ status: string; message: string }>('/system/resume-all', { method: 'POST' }),
+    emergencyStop: (reason?: string) =>
+      request<{ status: string; message: string }>('/system/emergency-stop', { method: 'POST', body: JSON.stringify({ reason }) }),
+
+    getAnnouncements: () =>
+      request<{ announcements: AnnouncementInfo[] }>('/system/announcements'),
+    createAnnouncement: (data: { title: string; message: string; priority: string; scope: string }) =>
+      request<{ announcement: AnnouncementInfo }>('/system/announcements', { method: 'POST', body: JSON.stringify(data) }),
+
+    getPolicy: () =>
+      request<{ policy: GovernancePolicyInfo | null }>('/governance/policy'),
+    setPolicy: (policy: GovernancePolicyInfo) =>
+      request<{ policy: GovernancePolicyInfo }>('/governance/policy', { method: 'PUT', body: JSON.stringify(policy) }),
+  },
+
+  // ─── Projects ──────────────────────────────────────────────────────
+  projects: {
+    list: (orgId?: string) => {
+      const qs = orgId ? `?orgId=${orgId}` : '';
+      return request<{ projects: ProjectInfo[] }>(`/projects${qs}`);
+    },
+    get: (id: string) => request<{ project: ProjectInfo }>(`/projects/${id}`),
+    create: (data: Partial<ProjectInfo>) =>
+      request<{ project: ProjectInfo }>('/projects', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<ProjectInfo>) =>
+      request<{ project: ProjectInfo }>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request<{ deleted: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+
+    listIterations: (projectId: string) =>
+      request<{ iterations: IterationInfo[] }>(`/projects/${projectId}/iterations`),
+    createIteration: (projectId: string, data: Partial<IterationInfo>) =>
+      request<{ iteration: IterationInfo }>(`/projects/${projectId}/iterations`, { method: 'POST', body: JSON.stringify(data) }),
+    updateIterationStatus: (iterationId: string, status: string) =>
+      request<{ iteration: IterationInfo }>(`/iterations/${iterationId}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
+  },
+
+  // ─── Knowledge ─────────────────────────────────────────────────────
+  knowledge: {
+    search: (query: string, scope?: string) => {
+      const params = new URLSearchParams({ query });
+      if (scope) params.set('scope', scope);
+      return request<{ results: KnowledgeEntryInfo[] }>(`/knowledge/search?${params}`);
+    },
+    list: (scope?: string) => {
+      const params = scope ? `?scope=${scope}` : '';
+      return request<{ entries: KnowledgeEntryInfo[] }>(`/knowledge${params}`);
+    },
+    contribute: (data: Partial<KnowledgeEntryInfo>) =>
+      request<{ entry: KnowledgeEntryInfo }>('/knowledge', { method: 'POST', body: JSON.stringify(data) }),
+  },
+
+  // ─── Reports ───────────────────────────────────────────────────────
+  reports: {
+    list: () => request<{ reports: ReportInfo[] }>('/reports'),
+    get: (id: string) => request<{ report: ReportInfo }>(`/reports/${id}`),
+    generate: (data: { period: string; scope: string; orgId?: string; projectId?: string }) =>
+      request<{ report: ReportInfo }>('/reports/generate', { method: 'POST', body: JSON.stringify(data) }),
+    approvePlan: (reportId: string, data: { approvedBy: string; comments?: string }) =>
+      request<{ report: ReportInfo }>(`/reports/${reportId}/plan/approve`, { method: 'POST', body: JSON.stringify(data) }),
+    rejectPlan: (reportId: string, data: { rejectedBy: string; reason: string }) =>
+      request<{ report: ReportInfo }>(`/reports/${reportId}/plan/reject`, { method: 'POST', body: JSON.stringify(data) }),
+    addFeedback: (reportId: string, data: { author: string; type: string; content: string; targetAgentIds?: string[]; actions?: Record<string, unknown>[] }) =>
+      request<{ feedback: ReportFeedbackInfo }>(`/reports/${reportId}/feedback`, { method: 'POST', body: JSON.stringify(data) }),
+    getFeedback: (reportId: string) =>
+      request<{ feedback: ReportFeedbackInfo[] }>(`/reports/${reportId}/feedback`),
   },
 };
 

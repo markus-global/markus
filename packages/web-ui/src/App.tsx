@@ -9,6 +9,10 @@ import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { Usage } from './pages/Usage.tsx';
+import { GovernancePage } from './pages/Governance.tsx';
+import { ProjectsPage } from './pages/Projects.tsx';
+import { KnowledgePage } from './pages/Knowledge.tsx';
+import { ReportsPage } from './pages/Reports.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login } from './pages/Login.tsx';
@@ -16,7 +20,7 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 
-const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'templates', 'builder', 'prompts', 'settings'];
+const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'templates', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
@@ -69,6 +73,10 @@ export function App() {
     templates: <TemplateMarketplace />,
     builder: <AgentBuilder />,
     prompts: <AgentBuilder initialTab="prompts" />,
+    governance: <GovernancePage />,
+    projects: <ProjectsPage />,
+    knowledge: <KnowledgePage />,
+    reports: <ReportsPage />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [currentUser?.id]);
 

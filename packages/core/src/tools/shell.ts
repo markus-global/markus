@@ -6,7 +6,35 @@ import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
 const execFileAsync = promisify(execFile);
 
-export function createShellTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
+export interface ShellAgentMeta {
+  agentId: string;
+  agentName: string;
+  teamName?: string;
+  orgId?: string;
+  currentTaskId?: string;
+  currentTaskTitle?: string;
+}
+
+function injectGitCommitMeta(command: string, meta?: ShellAgentMeta): string {
+  if (!meta) return command;
+  const gitCommitRe = /git\s+commit\s/;
+  if (!gitCommitRe.test(command)) return command;
+
+  const trailerLines = [
+    `Agent-Id: ${meta.agentId}`,
+    `Agent-Name: ${meta.agentName}`,
+  ];
+  if (meta.teamName) trailerLines.push(`Team: ${meta.teamName}`);
+  if (meta.orgId) trailerLines.push(`Org-Id: ${meta.orgId}`);
+  if (meta.currentTaskId) trailerLines.push(`Task-Id: ${meta.currentTaskId}`);
+  if (meta.currentTaskTitle) trailerLines.push(`Task-Title: ${meta.currentTaskTitle}`);
+
+  const authorFlag = ` --author="${meta.agentName} <${meta.agentId}@markus.agent>"`;
+  const trailerFlags = trailerLines.map(t => ` --trailer "${t}"`).join('');
+  return command + authorFlag + trailerFlags;
+}
+
+export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -62,8 +90,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         });
       }
 
+      const finalCommand = injectGitCommitMeta(command, agentMeta);
+
       try {
-        const { stdout, stderr } = await execFileAsync('sh', ['-c', command], {
+        const { stdout, stderr } = await execFileAsync('sh', ['-c', finalCommand], {
           cwd: effectiveCwd,
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024,

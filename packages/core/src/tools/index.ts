@@ -1,4 +1,4 @@
-export { ShellTool, createShellTool } from './shell.js';
+export { ShellTool, createShellTool, type ShellAgentMeta } from './shell.js';
 export { FileReadTool, FileWriteTool, FileEditTool, createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 export { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 export { createPatchTool } from './patch.js';

@@ -138,6 +138,21 @@ export class ContextEngine {
       parts.push('- IMPORTANT: All file operations are restricted to this directory');
     }
 
+    // ── Governance: Trust Level (P2 priority) ──────────────────────────
+    if (opts.trustLevel) {
+      parts.push('\n## Your Trust Level');
+      parts.push(`- Level: **${opts.trustLevel.level}** (score: ${opts.trustLevel.score})`);
+      if (opts.trustLevel.level === 'probation') {
+        parts.push('- You are on probation. All your task creations require human approval. Focus on quality to build trust.');
+      } else if (opts.trustLevel.level === 'junior') {
+        parts.push('- You are a junior agent. Most task creations require manager approval.');
+      } else if (opts.trustLevel.level === 'standard') {
+        parts.push('- You are a standard-level agent. Routine tasks may auto-approve; significant tasks need manager approval.');
+      } else if (opts.trustLevel.level === 'senior') {
+        parts.push('- You are a senior agent. You have higher autonomy. Routine tasks auto-approve.');
+      }
+    }
+
     // ── Governance: System Announcements (P1 urgent, P2 others) ──────────
     if (opts.announcements?.length) {
       parts.push('\n## System Announcements');

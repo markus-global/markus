@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createShellTool } from './shell.js';
+import { createShellTool, type ShellAgentMeta } from './shell.js';
 import { createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 import { WebFetchTool } from './web-fetch.js';
 import { WebSearchTool } from './web-search.js';
@@ -11,6 +11,7 @@ import type { SecurityGuard } from '../security.js';
 
 export interface BuiltinToolsOptions {
   agentId?: string;
+  agentMeta?: ShellAgentMeta;
   security?: SecurityGuard;
   workspacePath?: string;
   enableGUI?: boolean;
@@ -24,7 +25,7 @@ export interface BuiltinToolsOptions {
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
   const tools: AgentToolHandler[] = [
-    createShellTool(opts?.security, opts?.workspacePath),
+    createShellTool(opts?.security, opts?.workspacePath, opts?.agentMeta),
     createFileReadTool(opts?.security, opts?.workspacePath),
     createFileWriteTool(opts?.security, opts?.workspacePath),
     createFileEditTool(opts?.security, opts?.workspacePath),

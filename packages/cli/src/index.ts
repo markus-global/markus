@@ -12,6 +12,10 @@ import {
   HITLService,
   BillingService,
   AuditService,
+  ProjectService,
+  KnowledgeService,
+  ReportService,
+  TrustService,
   initStorage,
   runMigrations,
   type AuditEventType,
@@ -366,6 +370,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setBillingService(billingService);
   apiServer.setAuditService(auditService);
 
+  const projectService = new ProjectService();
+  const knowledgeService = new KnowledgeService();
+  const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
+  const _trustService = new TrustService();
+  apiServer.setProjectService(projectService);
+  apiServer.setReportService(reportService);
+  apiServer.setKnowledgeService(knowledgeService);
+
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
 
@@ -383,10 +395,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, 'default');
 
-  // Resume any tasks that were in_progress when the server last stopped.
-  // Must be called AFTER agents are loaded (orgService.loadFromDB) so their
-  // AgentManager entries exist and are started.
-  await taskService.resumeInProgressTasks();
+  // Do NOT auto-resume in_progress tasks on startup.
+  // Previous behavior called taskService.resumeInProgressTasks() here,
+  // which caused all agents to immediately start working without approval.
+  // With the governance framework, tasks should only resume via explicit
+  // human action through the UI or API (/api/system/resume-all).
+  log.info('Skipping auto-resume of in-progress tasks (governance mode)');
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());

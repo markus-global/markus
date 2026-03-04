@@ -2,24 +2,32 @@ import { useEffect, useState, useCallback, useRef, type DragEvent } from 'react'
 import { api, wsClient, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
-const ALL_STATUSES = ['pending', 'assigned', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'] as const;
+const ALL_STATUSES = ['pending', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
 const COLUMN_LABELS: Record<string, string> = {
   pending: 'Pending',
   assigned: 'Assigned',
   in_progress: 'In Progress',
   blocked: 'Blocked',
+  review: 'In Review',
+  revision: 'Needs Revision',
+  accepted: 'Accepted',
   completed: 'Completed',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  archived: 'Archived',
 };
 const COLUMN_ACCENT: Record<string, string> = {
   pending: 'border-t-gray-500',
   assigned: 'border-t-blue-500',
   in_progress: 'border-t-indigo-500',
   blocked: 'border-t-amber-500',
+  review: 'border-t-purple-500',
+  revision: 'border-t-orange-500',
+  accepted: 'border-t-teal-500',
   completed: 'border-t-green-500',
   failed: 'border-t-red-500',
   cancelled: 'border-t-gray-600',
+  archived: 'border-t-gray-700',
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500',
@@ -32,9 +40,13 @@ const STATUS_DOT: Record<string, string> = {
   assigned: 'bg-blue-400',
   in_progress: 'bg-indigo-400',
   blocked: 'bg-amber-400',
+  review: 'bg-purple-400',
+  revision: 'bg-orange-400',
+  accepted: 'bg-teal-400',
   completed: 'bg-green-400',
   failed: 'bg-red-400',
   cancelled: 'bg-gray-600',
+  archived: 'bg-gray-700',
 };
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
@@ -369,7 +381,9 @@ function TaskDetailModal({
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isCancelled = task.status === 'cancelled';
-  const isTerminal = isCompleted || isFailed || isCancelled;
+  const isArchived = task.status === 'archived';
+  const isTerminal = isCompleted || isFailed || isCancelled || isArchived;
+  void isBlocked;
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
@@ -672,6 +686,51 @@ function TaskDetailModal({
                   <path d="M10.33 1v2.5H7.83M1.67 11V8.5H4.17" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 Run Again
+              </button>
+            )}
+
+            {/* ── review: Accept / Request Revision */}
+            {task.status === 'review' && (
+              <>
+                <button
+                  onClick={() => doUpdate(() => api.tasks.accept(task.id))}
+                  disabled={busy}
+                  className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 rounded-lg text-white disabled:opacity-50"
+                >
+                  ✓ Accept
+                </button>
+                <button
+                  onClick={() => {
+                    const reason = prompt('Reason for requesting revision:');
+                    if (reason) doUpdate(() => api.tasks.revision(task.id, reason));
+                  }}
+                  disabled={busy}
+                  className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50"
+                >
+                  ↻ Request Revision
+                </button>
+              </>
+            )}
+
+            {/* ── completed/accepted: Archive */}
+            {(task.status === 'completed' || task.status === 'accepted') && (
+              <button
+                onClick={() => doUpdate(() => api.tasks.archive(task.id))}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-gray-200 disabled:opacity-50"
+              >
+                Archive
+              </button>
+            )}
+
+            {/* ── in_progress: Submit for Review */}
+            {task.status === 'in_progress' && (
+              <button
+                onClick={() => void updateStatus(task.id, 'review')}
+                disabled={busy}
+                className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50"
+              >
+                Submit for Review
               </button>
             )}
 

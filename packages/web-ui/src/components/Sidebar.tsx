@@ -13,7 +13,11 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section: string
   { id: 'team', label: 'Team', icon: '◎', section: 'workspace' },
   { id: 'chat', label: 'Chat', icon: '◈', section: 'workspace' },
   { id: 'tasks', label: 'Tasks', icon: '☑', section: 'workspace' },
+  { id: 'projects', label: 'Projects', icon: '◫', section: 'workspace' },
   { id: 'usage', label: 'Usage & Costs', icon: '◇', section: 'workspace' },
+  { id: 'governance', label: 'Governance', icon: '⛨', section: 'govern' },
+  { id: 'reports', label: 'Reports', icon: '▤', section: 'govern' },
+  { id: 'knowledge', label: 'Knowledge', icon: '◉', section: 'govern' },
   { id: 'templates', label: 'Templates', icon: '⧉', section: 'explore' },
   { id: 'builder', label: 'Builder', icon: '⊞', section: 'explore' },
   { id: 'skills', label: 'Skill Store', icon: '◆', section: 'explore' },
@@ -22,6 +26,7 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section: string
 
 const sections = [
   { key: 'workspace', label: 'WORKSPACE' },
+  { key: 'govern', label: 'GOVERNANCE' },
   { key: 'explore', label: 'EXPLORE' },
 ];
 

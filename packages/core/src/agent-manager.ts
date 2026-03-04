@@ -241,7 +241,13 @@ export class AgentManager {
         ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
         : basePolicy?.pathAllowlist,
     });
-    const tools = request.tools ?? createBuiltinTools({ agentId: id, security, workspacePath });
+    const agentMeta = {
+      agentId: id,
+      agentName: request.name,
+      teamName: request.teamId,
+      orgId: request.orgId ?? 'default',
+    };
+    const tools = request.tools ?? createBuiltinTools({ agentId: id, agentMeta, security, workspacePath });
 
     const agentOpts: AgentOptions = {
       config,
@@ -567,7 +573,13 @@ export class AgentManager {
         ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
         : basePolicy?.pathAllowlist,
     });
-    const tools = createBuiltinTools({ agentId: id, security, workspacePath });
+    const agentMeta = {
+      agentId: id,
+      agentName: row.name ?? 'unknown',
+      teamName: row.teamId as string | undefined,
+      orgId: (row.orgId as string) ?? 'default',
+    };
+    const tools = createBuiltinTools({ agentId: id, agentMeta, security, workspacePath });
 
     const agent = new Agent({
       config,
@@ -1019,6 +1031,7 @@ export class AgentManager {
       }
     }
     this.globalPaused = false;
+    this.emergencyMode = false;
     this.eventBus.emit('system:resume-all', {});
     log.info('All agents resumed');
   }
