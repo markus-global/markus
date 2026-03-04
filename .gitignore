@@ -9,3 +9,7 @@ dist/
 coverage/
 .turbo/
 .markus/
+
+# Auto-generated API docs (regenerate via typedoc)
+docs/api/
+docs/api-test/
