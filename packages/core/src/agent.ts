@@ -689,62 +689,92 @@ export class Agent {
         success: true,
       });
 
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-        if (!isEphemeral) {
-          this.memory.appendMessage(sessionId, {
-            role: 'assistant',
-            content: response.content,
-            toolCalls: response.toolCalls,
-          });
-        } else {
-          messages.push({
-            role: 'assistant',
-            content: response.content,
-            toolCalls: response.toolCalls,
-          });
+      const MAX_TOOL_ITERATIONS = 25;
+      const TOOL_RESULT_MAX_CHARS = 30_000;
+      let toolIterations = 0;
+
+      while (
+        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
+        response.finishReason === 'max_tokens'
+      ) {
+        if (++toolIterations > MAX_TOOL_ITERATIONS) {
+          log.warn('Tool loop hit max iterations', { agentId: this.id, iterations: toolIterations });
+          break;
         }
 
-        for (const tc of response.toolCalls) {
-          const toolStart = Date.now();
-          try {
-            const result = await this.executeTool(tc);
-            const isToolError = isErrorResult(result);
-            this.emitAudit({
-              type: 'tool_call',
-              action: tc.name,
-              durationMs: Date.now() - toolStart,
-              success: !isToolError,
-              detail: JSON.stringify(tc.arguments).slice(0, 200),
+        // Handle max_tokens continuation (model was cut off mid-response)
+        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+          if (!isEphemeral) {
+            this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          } else {
+            messages.push({ role: 'assistant', content: response.content });
+          }
+          // Continue generation from where it left off
+          const contMsg: LLMMessage = { role: 'user', content: '[Continue from where you left off. Do not repeat what you already said.]' };
+          if (!isEphemeral) {
+            this.memory.appendMessage(sessionId, contMsg);
+          } else {
+            messages.push(contMsg);
+          }
+        } else {
+          // Normal tool_use flow
+          if (!isEphemeral) {
+            this.memory.appendMessage(sessionId, {
+              role: 'assistant',
+              content: response.content,
+              toolCalls: response.toolCalls,
             });
+          } else {
+            messages.push({
+              role: 'assistant',
+              content: response.content,
+              toolCalls: response.toolCalls,
+            });
+          }
+
+          // Execute all tool calls in parallel
+          const toolResults = await Promise.all(
+            response.toolCalls!.map(async (tc) => {
+              const toolStart = Date.now();
+              try {
+                let result = await this.executeTool(tc);
+                // Auto-truncate oversized tool results
+                if (result.length > TOOL_RESULT_MAX_CHARS) {
+                  const preview = result.slice(0, 2000);
+                  const tail = result.slice(-500);
+                  result = `${preview}\n\n[... truncated ${result.length} chars total ...]\n\n${tail}`;
+                }
+                const isToolError = isErrorResult(result);
+                this.emitAudit({
+                  type: 'tool_call',
+                  action: tc.name,
+                  durationMs: Date.now() - toolStart,
+                  success: !isToolError,
+                  detail: JSON.stringify(tc.arguments).slice(0, 200),
+                });
+                return { toolCallId: tc.id, content: result, error: false };
+              } catch (toolErr) {
+                this.emitAudit({
+                  type: 'tool_call',
+                  action: tc.name,
+                  durationMs: Date.now() - toolStart,
+                  success: false,
+                  detail: String(toolErr).slice(0, 200),
+                });
+                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
+              }
+            }),
+          );
+
+          for (const tr of toolResults) {
             if (!isEphemeral) {
               this.memory.appendMessage(sessionId, {
                 role: 'tool',
-                content: result,
-                toolCallId: tc.id,
+                content: tr.content,
+                toolCallId: tr.toolCallId,
               });
             } else {
-              messages.push({ role: 'tool', content: result, toolCallId: tc.id });
-            }
-          } catch (toolErr) {
-            this.emitAudit({
-              type: 'tool_call',
-              action: tc.name,
-              durationMs: Date.now() - toolStart,
-              success: false,
-              detail: String(toolErr).slice(0, 200),
-            });
-            if (!isEphemeral) {
-              this.memory.appendMessage(sessionId, {
-                role: 'tool',
-                content: `Error: ${String(toolErr)}`,
-                toolCallId: tc.id,
-              });
-            } else {
-              messages.push({
-                role: 'tool',
-                content: `Error: ${String(toolErr)}`,
-                toolCallId: tc.id,
-              });
+              messages.push({ role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
             }
           }
         }
@@ -894,56 +924,77 @@ export class Agent {
         success: true,
       });
 
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+      const MAX_STREAM_TOOL_ITERATIONS = 25;
+      const STREAM_RESULT_MAX_CHARS = 30_000;
+      let streamToolIterations = 0;
+
+      while (
+        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
+        response.finishReason === 'max_tokens'
+      ) {
+        if (++streamToolIterations > MAX_STREAM_TOOL_ITERATIONS) {
+          log.warn('Stream tool loop hit max iterations', { agentId: this.id, iterations: streamToolIterations });
+          break;
+        }
+
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
           if (this.activeTasks.size === 0) this.setStatus('idle');
           return response.content || '[Stream cancelled]';
         }
 
-        this.memory.appendMessage(this.currentSessionId, {
-          role: 'assistant',
-          content: response.content,
-          toolCalls: response.toolCalls,
-        });
+        // Handle max_tokens continuation
+        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+          this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(this.currentSessionId, { role: 'user', content: '[Continue from where you left off. Do not repeat what you already said.]' });
+        } else {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
 
-        for (const tc of response.toolCalls) {
-          if (cancelToken?.cancelled) {
-            log.info('Stream cancelled before tool execution', { agentId: this.id, tool: tc.name });
-            if (this.activeTasks.size === 0) this.setStatus('idle');
-            return response.content || '[Stream cancelled]';
-          }
-          const toolStart = Date.now();
-          onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
-          try {
-            const result = await this.executeTool(tc);
-            const isToolError = isErrorResult(result);
-            this.emitAudit({
-              type: 'tool_call',
-              action: tc.name,
-              durationMs: Date.now() - toolStart,
-              success: !isToolError,
-              detail: JSON.stringify(tc.arguments).slice(0, 200),
-            });
-            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
+          // Execute all tool calls in parallel
+          const toolResults = await Promise.all(
+            response.toolCalls!.map(async (tc) => {
+              const toolStart = Date.now();
+              onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
+              try {
+                let result = await this.executeTool(tc);
+                if (result.length > STREAM_RESULT_MAX_CHARS) {
+                  const preview = result.slice(0, 2000);
+                  const tail = result.slice(-500);
+                  result = `${preview}\n\n[... truncated ${result.length} chars total ...]\n\n${tail}`;
+                }
+                const isToolError = isErrorResult(result);
+                this.emitAudit({
+                  type: 'tool_call',
+                  action: tc.name,
+                  durationMs: Date.now() - toolStart,
+                  success: !isToolError,
+                  detail: JSON.stringify(tc.arguments).slice(0, 200),
+                });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
+                return { toolCallId: tc.id, content: result };
+              } catch (toolErr) {
+                this.emitAudit({
+                  type: 'tool_call',
+                  action: tc.name,
+                  durationMs: Date.now() - toolStart,
+                  success: false,
+                  detail: String(toolErr).slice(0, 200),
+                });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
+                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
+              }
+            }),
+          );
+
+          for (const tr of toolResults) {
             this.memory.appendMessage(this.currentSessionId, {
               role: 'tool',
-              content: result,
-              toolCallId: tc.id,
-            });
-          } catch (toolErr) {
-            this.emitAudit({
-              type: 'tool_call',
-              action: tc.name,
-              durationMs: Date.now() - toolStart,
-              success: false,
-              detail: String(toolErr).slice(0, 200),
-            });
-            onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
-            this.memory.appendMessage(this.currentSessionId, {
-              role: 'tool',
-              content: `Error: ${String(toolErr)}`,
-              toolCallId: tc.id,
+              content: tr.content,
+              toolCallId: tr.toolCallId,
             });
           }
         }

@@ -1,5 +1,6 @@
 export { ShellTool, createShellTool } from './shell.js';
 export { FileReadTool, FileWriteTool, FileEditTool, createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
+export { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 export { WebFetchTool } from './web-fetch.js';
 export { WebSearchTool } from './web-search.js';
 export { MCPClientManager } from './mcp-client.js';

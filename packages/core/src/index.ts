@@ -43,6 +43,7 @@ export {
   ShellTool, FileReadTool, FileWriteTool, FileEditTool,
   WebFetchTool, WebSearchTool,
   createShellTool, createFileReadTool, createFileWriteTool, createFileEditTool,
+  createGrepTool, createGlobTool, createListDirectoryTool,
   MCPClientManager, createBuiltinTools,
   createManagerTools, type ManagerToolsContext,
   createA2ATools, type A2AContext,
