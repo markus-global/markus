@@ -24,11 +24,16 @@ export function Dashboard() {
   }, [opsPeriod]);
 
   const rootOnly = (tasks: TaskInfo[]) => tasks.filter(t => !t.parentTaskId);
-  const pending = rootOnly(board['pending'] ?? []).length + rootOnly(board['assigned'] ?? []).length;
-  const inProgress = rootOnly(board['in_progress'] ?? []).length;
-  const completed = rootOnly(board['completed'] ?? []).length;
-  const failed = rootOnly(board['failed'] ?? []).length;
-  const totalRootTasks = Object.values(board).reduce((s, ts) => s + rootOnly(ts).length, 0);
+  const rootStatusCounts: Record<string, number> = {};
+  for (const [status, tasks] of Object.entries(board)) {
+    const count = rootOnly(tasks).length;
+    if (count > 0) rootStatusCounts[status] = count;
+  }
+  const pending = (rootStatusCounts['pending'] ?? 0) + (rootStatusCounts['assigned'] ?? 0);
+  const inProgress = rootStatusCounts['in_progress'] ?? 0;
+  const completed = rootStatusCounts['completed'] ?? 0;
+  const failed = rootStatusCounts['failed'] ?? 0;
+  const totalRootTasks = Object.values(rootStatusCounts).reduce((s, c) => s + c, 0);
 
   const activeAgents = agents.filter(a => a.status === 'idle' || a.status === 'working').length;
   const workingAgents = agents.filter(a => a.status === 'working').length;
@@ -79,14 +84,14 @@ export function Dashboard() {
           {/* Left: Charts */}
           <div className="lg:col-span-2 space-y-6">
             {/* Task Distribution Bar Chart */}
-            {ops && totalRootTasks > 0 && (
+            {totalRootTasks > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors" onClick={() => navBus.navigate('tasks')}>
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">Task Distribution</h3>
-                <TaskBar statusCounts={ops.taskKPI.statusCounts} total={totalRootTasks} />
-                {ops.taskKPI.blockedCount > 0 && (
+                <TaskBar statusCounts={rootStatusCounts} total={totalRootTasks} />
+                {(rootStatusCounts['blocked'] ?? 0) > 0 && (
                   <div className="mt-3 text-xs text-amber-400 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
-                    {ops.taskKPI.blockedCount} blocked — needs attention
+                    {rootStatusCounts['blocked']} blocked — needs attention
                   </div>
                 )}
               </div>
@@ -185,20 +190,6 @@ export function Dashboard() {
 
           {/* Right: Activity Feed */}
           <div className="space-y-6">
-            {/* Quick Stats */}
-            {ops && (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Performance</h3>
-                <div className="space-y-3">
-                  <StatRow label="Total Interactions" value={ops.systemHealth.totalInteractions} />
-                  <StatRow label="Token Cost" value={`$${ops.systemHealth.totalTokenCost.toFixed(4)}`} />
-                  <StatRow label="Tasks Completed" value={completed} />
-                  <StatRow label="Tasks Failed" value={failed} color={failed > 0 ? 'red' : undefined} />
-                  <StatRow label="Success Rate" value={`${ops.taskKPI.successRate}%`} color={ops.taskKPI.successRate >= 80 ? 'green' : 'amber'} />
-                </div>
-              </div>
-            )}
-
             {/* Recent Activity */}
             {ops && ops.taskKPI.recentActivity.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -306,12 +297,3 @@ function HealthGauge({ label, value, max, unit, color, raw }: {
   );
 }
 
-function StatRow({ label, value, color }: { label: string; value: string | number; color?: string }) {
-  const textColor = color === 'red' ? 'text-red-400' : color === 'green' ? 'text-green-400' : color === 'amber' ? 'text-amber-400' : 'text-gray-200';
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-gray-500">{label}</span>
-      <span className={`text-xs font-semibold ${textColor}`}>{value}</span>
-    </div>
-  );
-}
