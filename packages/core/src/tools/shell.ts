@@ -1,16 +1,19 @@
 import { execFile } from 'node:child_process';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
 const execFileAsync = promisify(execFile);
 
-export function createShellTool(security?: SecurityGuard): AgentToolHandler {
+export function createShellTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
     name: 'shell_execute',
-    description: 'Execute a shell command and return its output. Use this for running CLI tools, scripts, git operations, etc.',
+    description: workspacePath
+      ? `Execute a shell command within workspace ${workspacePath}. Commands run in this directory by default.`
+      : 'Execute a shell command and return its output. Use this for running CLI tools, scripts, git operations, etc.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -32,8 +35,20 @@ export function createShellTool(security?: SecurityGuard): AgentToolHandler {
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const command = args['command'] as string;
-      const cwd = args['cwd'] as string | undefined;
+      const requestedCwd = args['cwd'] as string | undefined;
       const timeoutMs = (args['timeout_ms'] as number) ?? 60_000;
+
+      // Enforce workspace isolation
+      let effectiveCwd = workspacePath;
+      if (requestedCwd && workspacePath) {
+        const resolved = resolve(workspacePath, requestedCwd);
+        if (!resolved.startsWith(resolve(workspacePath))) {
+          return JSON.stringify({ status: 'denied', error: `Working directory must be within workspace: ${workspacePath}` });
+        }
+        effectiveCwd = resolved;
+      } else if (requestedCwd) {
+        effectiveCwd = requestedCwd;
+      }
 
       const check = guard.validateShellCommand(command);
       if (!check.allowed) {
@@ -49,7 +64,7 @@ export function createShellTool(security?: SecurityGuard): AgentToolHandler {
 
       try {
         const { stdout, stderr } = await execFileAsync('sh', ['-c', command], {
-          cwd,
+          cwd: effectiveCwd,
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024,
         });

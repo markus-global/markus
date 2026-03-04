@@ -13,6 +13,7 @@ import {
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { GuardrailPipeline } from './guardrails.js';
+import { ToolHookRegistry, generateIdempotencyKey } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
@@ -73,6 +74,8 @@ export interface AgentOptions {
   contextMdPath?: string;
   /** Optional custom memory implementation. Defaults to MemoryStore. */
   memory?: IMemoryStore;
+  /** Restored state from DB (used during server restart recovery) */
+  restoredState?: { tokensUsedToday?: number };
 }
 
 export class Agent {
@@ -89,6 +92,7 @@ export class Agent {
   private tools: Map<string, AgentToolHandler>;
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
+  private toolHooks: ToolHookRegistry;
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private currentSessionId?: string;
@@ -144,13 +148,14 @@ export class Agent {
       status: 'idle',
       activeTaskCount: 0,
       activeTaskIds: [],
-      tokensUsedToday: 0,
+      tokensUsedToday: options.restoredState?.tokensUsedToday ?? 0,
     };
 
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
     this.guardrails = new GuardrailPipeline();
+    this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     this.heartbeat = new HeartbeatScheduler(
       this.id,
@@ -382,6 +387,16 @@ export class Agent {
   /** Access the guardrail pipeline to add/remove guardrails */
   getGuardrails(): GuardrailPipeline {
     return this.guardrails;
+  }
+
+  /** Register a tool execution hook for before/after processing */
+  addToolHook(hook: import('./tool-hooks.js').ToolHook): void {
+    this.toolHooks.register(hook);
+  }
+
+  /** Access the tool hook registry */
+  getToolHooks(): ToolHookRegistry {
+    return this.toolHooks;
   }
 
   /**
@@ -1446,6 +1461,19 @@ export class Agent {
       if (this.recentToolNames.length > 10) this.recentToolNames.shift();
     }
 
+    // Run before-hooks (outside retry loop — hooks decide once)
+    const idempotencyKey = generateIdempotencyKey(toolCall.name, toolCall.arguments);
+    const hookCtx = { agentId: this.id, toolName: toolCall.name, arguments: toolCall.arguments, attempt: 0, idempotencyKey };
+    const beforeResult = await this.toolHooks.runBefore(hookCtx);
+    if (!beforeResult.proceed) {
+      // Check for idempotency cache hit
+      if (beforeResult.reason?.startsWith('__idempotent__:')) {
+        return beforeResult.reason.slice('__idempotent__:'.length);
+      }
+      return JSON.stringify({ status: 'denied', error: beforeResult.reason ?? 'Blocked by tool hook' });
+    }
+    const effectiveArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
+
     let lastError: unknown;
     for (let attempt = 0; attempt <= Agent.TOOL_RETRY_MAX; attempt++) {
       try {
@@ -1454,14 +1482,18 @@ export class Agent {
           log.info(`Retrying tool ${toolCall.name} (attempt ${attempt + 1})`, { delay });
           await new Promise(r => setTimeout(r, delay));
         }
-        log.debug(`Executing tool: ${toolCall.name}`, { args: toolCall.arguments, attempt });
+        log.debug(`Executing tool: ${toolCall.name}`, { args: effectiveArgs, attempt });
         const span = startSpan('agent.tool', { tool: toolCall.name, attempt });
         try {
-          const result = await handler.execute(toolCall.arguments);
+          const result = await handler.execute(effectiveArgs);
           this.recordToolUsage(toolCall.name, true);
           this.consecutiveFailures = 0;
+          const toolDurationMs = Date.now() - span.startTime;
           span.end({ success: true });
-          return result;
+          const finalResult = await this.toolHooks.runAfter({
+            ...hookCtx, attempt, result, durationMs: toolDurationMs, success: true,
+          });
+          return finalResult;
         } catch (error) {
           span.setError(error instanceof Error ? error : String(error));
           span.end({ success: false });
@@ -1626,3 +1658,4 @@ export class Agent {
     }
   }
 }
+

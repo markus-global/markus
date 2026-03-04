@@ -1668,3 +1668,77 @@ Phase 2 聚焦于四个维度：结构化记忆增强、安全护栏、流式中
 - 提供 `trace<T>(name, fn)` 便捷函数用于包裹异步操作
 
 **涉及文件**：`packages/core/src/tracing.ts`（新）, `packages/core/src/llm/router.ts`, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
+
+## 11. Phase 3 实施记录（2026-03-04）
+
+Phase 3 聚焦于四个遗留的 P0/P1 问题：工作区隔离、Profile 持久化、工具钩子、状态恢复。
+
+### 11.1 工作区隔离（修复根因 2：工具系统不成熟）
+
+**问题**：`AgentProfile.workspacePath` 已定义但从未实施。Shell/File 工具在宿主文件系统上无边界运行。
+
+**改进**：
+- `createShellTool(security, workspacePath)` 新增 `workspacePath` 参数
+  - 当指定时，强制 `cwd` 默认为 workspace 目录
+  - Agent 请求的 `cwd` 必须在 workspace 内部（`resolve` + `startsWith` 校验）
+  - 超出边界立即返回 `denied`
+- `createFileReadTool`、`createFileWriteTool`、`createFileEditTool` 同样新增 `workspacePath`
+  - 相对路径自动解析为 workspace 内路径
+  - 绝对路径必须在 workspace 内，否则拒绝
+- `createBuiltinTools` 接口新增 `workspacePath` 字段，透传到所有工具
+- `AgentManager.createAgent`：
+  - workspace 路径 = `profile.workspacePath` 或默认 `<dataDir>/<agentId>/workspace/`
+  - 自动 `mkdirSync` 创建目录
+  - `SecurityGuard` 的 `pathAllowlist` 自动包含 workspace 路径
+- `AgentManager.restoreAgent`：同上逻辑
+
+**涉及文件**：`packages/core/src/tools/shell.ts`, `packages/core/src/tools/file.ts`, `packages/core/src/tools/builtin.ts`, `packages/core/src/agent-manager.ts`
+
+### 11.2 Profile 持久化（修复根因 1：状态不持久化）
+
+**问题**：`restoreAgent` 不恢复 `profile`，所有 Phase 1 的 Profile 约束（工具白名单、日 token 预算、并发限制）在进程重启后丢失。
+
+**改进**：
+- DB Schema `agents` 表新增 `profile jsonb` 列
+- SQL 迁移文件：`0007_add_agent_profile.sql`
+- `restoreAgent` 入参新增 `profile?: unknown`，恢复到 `AgentConfig.profile`
+- workspace 路径从恢复的 profile 中读取并重建
+
+**涉及文件**：`packages/storage/src/schema.ts`, `packages/storage/drizzle/0007_add_agent_profile.sql`, `packages/core/src/agent-manager.ts`
+
+### 11.3 工具执行钩子 + 幂等性（修复根因 2：工具系统不成熟）
+
+**问题**：工具执行无 before/after 钩子，无法做验证、审计、幂等重试。
+
+**改进**：
+- 新增 `ToolHookRegistry` 类（`packages/core/src/tool-hooks.ts`）：
+  - `register(hook)` / `unregister(name)`：注册/注销钩子
+  - `runBefore(ctx)`：执行所有 before 钩子，支持阻止执行和参数转换
+  - `runAfter(ctx)`：执行所有 after 钩子，支持结果修改
+  - 内置幂等缓存（5 分钟 TTL），相同 tool + args 不重复执行
+- `ToolHook` 接口：`before(ctx) → BeforeToolResult`, `after(ctx) → AfterToolResult | void`
+- 内置钩子 `auditLogHook`：记录副作用工具（shell、file_write、file_edit）的执行审计
+- `generateIdempotencyKey(toolName, args)`：为副作用工具生成幂等键
+- `Agent.executeTool` 集成：
+  - retry 循环前调用 `runBefore`，命中幂等缓存直接返回
+  - before 钩子可阻止执行或修改参数
+  - 执行成功后调用 `runAfter`，钩子可修改结果
+- `Agent.addToolHook(hook)` 和 `Agent.getToolHooks()` 暴露给外部
+
+**涉及文件**：`packages/core/src/tool-hooks.ts`（新）, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
+
+### 11.4 状态恢复完善（修复根因 1：状态不持久化）
+
+**问题**：`tokensUsedToday` 和 `activeTaskIds` 存在于 DB 但 Agent 重启后不恢复。
+
+**改进**：
+- `AgentOptions` 新增 `restoredState?: { tokensUsedToday?: number }`
+- Agent 构造函数中 `state.tokensUsedToday` 从 `restoredState` 恢复（而非始终为 0）
+- `restoreAgent` 入参新增 `tokensUsedToday?: number` 和 `activeTaskIds?: unknown`
+- 恢复时将 `tokensUsedToday` 传入 `Agent` 构造
+- `stateChangeHandler` 在 `restoreAgent` 中也正确接线
+- 新增 `rehydrateAgentTasks(agentId, activeTaskIds)`：
+  - 遍历每个 taskId，检查任务是否仍需执行（排除 completed/cancelled/failed）
+  - 重新分配给 agent，由 TaskService 恢复执行
+
+**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`

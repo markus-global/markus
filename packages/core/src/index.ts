@@ -1,5 +1,7 @@
 export { Agent } from './agent.js';
 export type { AgentToolHandler, SandboxHandle, ApprovalCallback } from './agent.js';
+export { ToolHookRegistry, auditLogHook, generateIdempotencyKey } from './tool-hooks.js';
+export type { ToolHook, ToolHookContext, BeforeToolResult, AfterToolResult } from './tool-hooks.js';
 export { startSpan, trace, setTracingProvider } from './tracing.js';
 export type { Span, SpanAttributes, TracingProvider } from './tracing.js';
 export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './agent-manager.js';

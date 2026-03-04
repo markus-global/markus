@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
-export function createFileReadTool(security?: SecurityGuard): AgentToolHandler {
+export function createFileReadTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -20,7 +20,13 @@ export function createFileReadTool(security?: SecurityGuard): AgentToolHandler {
     },
 
     async execute(args: Record<string, unknown>): Promise<string> {
-      const path = resolve(args['path'] as string);
+      const rawPath = args['path'] as string;
+      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+
+      // Enforce workspace isolation
+      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
+        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      }
       const offset = (args['offset'] as number | undefined) ?? 1;
       const limit = args['limit'] as number | undefined;
 
@@ -58,7 +64,7 @@ export function createFileReadTool(security?: SecurityGuard): AgentToolHandler {
   };
 }
 
-export function createFileWriteTool(security?: SecurityGuard): AgentToolHandler {
+export function createFileWriteTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -74,7 +80,13 @@ export function createFileWriteTool(security?: SecurityGuard): AgentToolHandler 
     },
 
     async execute(args: Record<string, unknown>): Promise<string> {
-      const path = resolve(args['path'] as string);
+      const rawPath = args['path'] as string;
+      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+
+      // Enforce workspace isolation
+      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
+        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      }
       const content = args['content'] as string;
 
       const check = guard.validateFilePath(path);
@@ -93,7 +105,7 @@ export function createFileWriteTool(security?: SecurityGuard): AgentToolHandler 
   };
 }
 
-export function createFileEditTool(security?: SecurityGuard): AgentToolHandler {
+export function createFileEditTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -110,7 +122,13 @@ export function createFileEditTool(security?: SecurityGuard): AgentToolHandler {
     },
 
     async execute(args: Record<string, unknown>): Promise<string> {
-      const path = resolve(args['path'] as string);
+      const rawPath = args['path'] as string;
+      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+
+      // Enforce workspace isolation
+      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
+        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      }
       const oldStr = args['old_string'] as string;
       const newStr = args['new_string'] as string;
 

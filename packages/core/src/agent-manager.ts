@@ -174,10 +174,18 @@ export class AgentManager {
       updatedAt: new Date().toISOString(),
     };
 
-    const security = new SecurityGuard(request.securityPolicy ?? this.globalSecurityPolicy);
+    // Determine workspace: profile.workspacePath or default per-agent directory
+    const workspacePath = request.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
 
-    // Always inject builtin tools — this is the #1 requirement for agents to actually work
-    const tools = request.tools ?? createBuiltinTools({ agentId: id, security });
+    const basePolicy = request.securityPolicy ?? this.globalSecurityPolicy;
+    const security = new SecurityGuard({
+      ...basePolicy,
+      pathAllowlist: workspacePath
+        ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
+        : basePolicy?.pathAllowlist,
+    });
+    const tools = request.tools ?? createBuiltinTools({ agentId: id, security, workspacePath });
 
     const agentOpts: AgentOptions = {
       config,
@@ -404,6 +412,9 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
+    profile?: unknown;
+    tokensUsedToday?: number;
+    activeTaskIds?: unknown;
   }): Promise<Agent> {
     const id = row.id;
     // Try loading role by: 1) roleId (template folder name for new agents),
@@ -434,6 +445,7 @@ export class AgentManager {
       teamId: row.teamId ?? undefined,
       agentRole: (row.agentRole as 'manager' | 'worker') ?? 'worker',
       skills: Array.isArray(row.skills) ? (row.skills as string[]) : role.defaultSkills,
+      profile: row.profile as AgentProfile | undefined,
       llmConfig: (row.llmConfig as AgentConfig['llmConfig']) ?? { primary: 'anthropic' },
       computeConfig: { type: 'docker' },
       channels: [],
@@ -442,10 +454,22 @@ export class AgentManager {
       updatedAt: new Date().toISOString(),
     };
 
-    const security = new SecurityGuard(this.globalSecurityPolicy);
-    const tools = createBuiltinTools({ agentId: id, security });
+    const workspacePath = config.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
 
-    const agent = new Agent({ config, role, llmRouter: this.llmRouter, dataDir: agentDataDir, tools });
+    const basePolicy = this.globalSecurityPolicy;
+    const security = new SecurityGuard({
+      ...basePolicy,
+      pathAllowlist: workspacePath
+        ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
+        : basePolicy?.pathAllowlist,
+    });
+    const tools = createBuiltinTools({ agentId: id, security, workspacePath });
+
+    const agent = new Agent({
+      config, role, llmRouter: this.llmRouter, dataDir: agentDataDir, tools,
+      restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
+    });
 
     if (this.skillRegistry && config.skills.length > 0) {
       for (const tool of this.skillRegistry.getToolsForSkills(config.skills)) {
@@ -548,6 +572,9 @@ export class AgentManager {
       const ah = this.approvalHandler;
       agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => ah(id, req));
     }
+    if (this.stateChangeHandler) {
+      agent.setStateChangeCallback(this.stateChangeHandler);
+    }
 
     this.agents.set(id, agent);
     this.delegationManager.registerAgentCard({
@@ -559,8 +586,42 @@ export class AgentManager {
       status: 'idle',
     });
     this.eventBus.emit('agent:created', { agentId: id, name: row.name });
-    log.info(`Agent restored: ${row.name} (${id})`);
+    log.info(`Agent restored: ${row.name} (${id})`, {
+      profile: config.profile ? 'yes' : 'no',
+      tokensUsedToday: row.tokensUsedToday ?? 0,
+      activeTaskIds: Array.isArray(row.activeTaskIds) ? (row.activeTaskIds as string[]).length : 0,
+    });
     return agent;
+  }
+
+  /**
+   * Re-queue interrupted tasks for a restored agent.
+   * Called after all agents are restored and started.
+   */
+  async rehydrateAgentTasks(agentId: string, activeTaskIds: string[]): Promise<void> {
+    if (!this.taskService || activeTaskIds.length === 0) return;
+
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+
+    for (const taskId of activeTaskIds) {
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) {
+          log.warn('Task not found during rehydration, skipping', { agentId, taskId });
+          continue;
+        }
+        if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+          log.debug('Task already terminal, skipping rehydration', { agentId, taskId, status: task.status });
+          continue;
+        }
+        // Re-assign and the task service will handle execution
+        log.info('Re-queuing interrupted task', { agentId, taskId, title: task.title });
+        this.taskService.assignTask(taskId, agentId);
+      } catch (error) {
+        log.warn('Failed to rehydrate task', { agentId, taskId, error: String(error) });
+      }
+    }
   }
 
   async startAgent(agentId: string): Promise<void> {

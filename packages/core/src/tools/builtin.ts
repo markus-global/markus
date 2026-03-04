@@ -9,6 +9,7 @@ import type { SecurityGuard } from '../security.js';
 export interface BuiltinToolsOptions {
   agentId?: string;
   security?: SecurityGuard;
+  workspacePath?: string;
   enableGUI?: boolean;
   guiConfig?: {
     containerId?: string;
@@ -19,10 +20,10 @@ export interface BuiltinToolsOptions {
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
   const tools: AgentToolHandler[] = [
-    createShellTool(opts?.security),
-    createFileReadTool(opts?.security),
-    createFileWriteTool(opts?.security),
-    createFileEditTool(opts?.security),
+    createShellTool(opts?.security, opts?.workspacePath),
+    createFileReadTool(opts?.security, opts?.workspacePath),
+    createFileWriteTool(opts?.security, opts?.workspacePath),
+    createFileEditTool(opts?.security, opts?.workspacePath),
     WebFetchTool,
     WebSearchTool,
   ];

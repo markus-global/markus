@@ -45,6 +45,7 @@ export const agents = pgTable('agents', {
   containerId: varchar('container_id', { length: 128 }),
   tokensUsedToday: integer('tokens_used_today').notNull().default(0),
   activeTaskIds: jsonb('active_task_ids').default([]),
+  profile: jsonb('profile'),
   lastHeartbeat: timestamp('last_heartbeat'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
