@@ -4,6 +4,8 @@ import { createFileReadTool, createFileWriteTool, createFileEditTool } from './f
 import { WebFetchTool } from './web-fetch.js';
 import { WebSearchTool } from './web-search.js';
 import { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
+import { createPatchTool } from './patch.js';
+import { createBackgroundExecTool, createProcessTool } from './process-manager.js';
 import { createGUITool } from './gui.js';
 import type { SecurityGuard } from '../security.js';
 
@@ -12,6 +14,7 @@ export interface BuiltinToolsOptions {
   security?: SecurityGuard;
   workspacePath?: string;
   enableGUI?: boolean;
+  enableBackgroundExec?: boolean;
   guiConfig?: {
     containerId?: string;
     display?: string;
@@ -25,12 +28,18 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
     createFileReadTool(opts?.security, opts?.workspacePath),
     createFileWriteTool(opts?.security, opts?.workspacePath),
     createFileEditTool(opts?.security, opts?.workspacePath),
+    createPatchTool(opts?.security, opts?.workspacePath),
     createGrepTool(opts?.workspacePath),
     createGlobTool(opts?.workspacePath),
     createListDirectoryTool(opts?.workspacePath),
     WebFetchTool,
     WebSearchTool,
   ];
+
+  if (opts?.enableBackgroundExec !== false) {
+    tools.push(createBackgroundExecTool(opts?.workspacePath));
+    tools.push(createProcessTool());
+  }
 
   if (opts?.enableGUI !== false) {
     const guiTool = createGUITool(opts?.guiConfig);

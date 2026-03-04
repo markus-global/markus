@@ -44,11 +44,14 @@ export {
   WebFetchTool, WebSearchTool,
   createShellTool, createFileReadTool, createFileWriteTool, createFileEditTool,
   createGrepTool, createGlobTool, createListDirectoryTool,
+  createPatchTool, createBackgroundExecTool, createProcessTool,
   MCPClientManager, createBuiltinTools,
   createManagerTools, type ManagerToolsContext,
   createA2ATools, type A2AContext,
   createStructuredA2ATools, type StructuredA2AContext,
 } from './tools/index.js';
+export { ToolLoopDetector, type ToolCallRecord, type LoopDetectionConfig, type LoopDetectionResult } from './tool-loop-detector.js';
+export { applyToolPolicy, getToolGroups, getAvailableProfiles, type ToolProfile, type ToolPolicyConfig } from './tool-profiles.js';
 export {
   type SkillManifest, type SkillInstance, type SkillRegistry, type SkillCategory,
   InMemorySkillRegistry, createDefaultSkillRegistry,

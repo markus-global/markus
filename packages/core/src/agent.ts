@@ -25,6 +25,7 @@ import { detectEnvironment, type EnvironmentProfile } from './environment-profil
 import { ToolSelector } from './tool-selector.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
+import { ToolLoopDetector } from './tool-loop-detector.js';
 
 const log = createLogger('agent');
 
@@ -130,6 +131,7 @@ export class Agent {
   private stateManager?: AgentStateManager;
   private stateChangeCallback?: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
+  private loopDetector = new ToolLoopDetector();
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
@@ -775,6 +777,25 @@ export class Agent {
               });
             } else {
               messages.push({ role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
+            }
+          }
+
+          // Record calls for loop detection
+          for (let i = 0; i < response.toolCalls!.length; i++) {
+            const tc = response.toolCalls![i]!;
+            this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
+          }
+          const loopCheck = this.loopDetector.check();
+          if (loopCheck.detected) {
+            if (loopCheck.severity === 'critical') {
+              log.warn('Loop detector: critical pattern — breaking', { agentId: this.id, pattern: loopCheck.pattern });
+              // Inject a warning message so the model can self-correct
+              const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
+              if (!isEphemeral) {
+                this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
+              } else {
+                messages.push({ role: 'user', content: warningMsg });
+              }
             }
           }
         }
