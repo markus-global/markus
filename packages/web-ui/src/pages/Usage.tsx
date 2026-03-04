@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { api, type AgentUsageInfo } from '../api.ts';
+import { navBus } from '../navBus.ts';
 
 interface UsageSummary {
   orgId: string;
@@ -98,12 +99,13 @@ function AgentUsageRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens:
     agent.status === 'error' ? 'bg-red-500' : 'bg-gray-600';
 
   return (
-    <tr className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
+    <tr className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer"
+        onClick={() => navBus.navigate('team', { selectAgent: agent.agentId })}>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
           <div>
-            <div className="text-sm font-medium text-gray-200">{agent.agentName}</div>
+            <div className="text-sm font-medium text-gray-200 hover:text-indigo-300 transition-colors">{agent.agentName}</div>
             <div className="text-xs text-gray-500">{agent.role}</div>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
@@ -21,6 +21,12 @@ const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-indigo-400 animate-pulse',
   paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
 };
+
+function fmtNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
 
 export function AgentProfile({ agentId, onBack, inline }: Props) {
   const [agent, setAgent] = useState<AgentDetail | null>(null);
@@ -94,10 +100,16 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
   const [saving, setSaving] = useState(false);
   const [providers, setProviders] = useState<Record<string, { model: string; configured: boolean }>>({});
   const [recentTasks, setRecentTasks] = useState<TaskInfo[]>([]);
+  const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     api.settings.getLlm().then(d => setProviders(d.providers)).catch(() => {});
     api.tasks.list({ assignedAgentId: agent.id }).then(d => setRecentTasks(d.tasks.slice(0, 5))).catch(() => {});
+    api.usage.agents().then(d => {
+      const info = d.agents.find(a => a.agentId === agent.id);
+      if (info) setUsageInfo(info);
+    }).catch(() => {});
   }, [agent.id]);
 
   const configuredModels = Object.entries(providers).filter(([, v]) => v.configured).map(([k]) => k);
@@ -162,6 +174,19 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
         </div>
       </Card>
 
+      {usageInfo && (
+        <Card title="Usage">
+          <div className="grid grid-cols-3 gap-4">
+            <StatBox label="Total Tokens" value={fmtNum(usageInfo.totalTokens)} />
+            <StatBox label="Requests" value={String(usageInfo.requestCount)} />
+            <StatBox label="Tool Calls" value={String(usageInfo.toolCalls)} />
+            <StatBox label="Prompt Tokens" value={fmtNum(usageInfo.promptTokens)} />
+            <StatBox label="Completion Tokens" value={fmtNum(usageInfo.completionTokens)} />
+            <StatBox label="Est. Cost" value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
+          </div>
+        </Card>
+      )}
+
       {/* LLM Config */}
       <Card title="LLM Configuration">
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
@@ -188,15 +213,30 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (
-        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('tasks')} className="text-xs text-gray-600 hover:text-gray-400">View all →</button>}>
-          <div className="space-y-1.5">
-            {recentTasks.map(t => (
-              <div key={t.id} className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-gray-800/20 hover:bg-gray-800/40 transition-colors">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
-                <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
-                <span className="text-[10px] text-gray-600 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
-              </div>
-            ))}
+        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-gray-600 hover:text-gray-400">View all →</button>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {recentTasks.map(t => {
+              const isExpanded = expandedTaskId === t.id;
+              const hasLogs = ['in_progress', 'failed', 'completed', 'review', 'accepted'].includes(t.status);
+              return (
+                <div key={t.id}>
+                  <button
+                    onClick={() => hasLogs ? setExpandedTaskId(isExpanded ? null : t.id) : undefined}
+                    className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-gray-800/40 cursor-pointer' : 'cursor-default'}`}
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
+                    <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
+                    <span className="text-[10px] text-gray-600 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                    {hasLogs && <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
+                  </button>
+                  {isExpanded && (
+                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                      <TaskLog taskId={t.id} isLive={t.status === 'in_progress'} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </Card>
       )}

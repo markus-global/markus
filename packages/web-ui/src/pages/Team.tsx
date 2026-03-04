@@ -40,7 +40,18 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [addMemberMenuTeam, setAddMemberMenuTeam] = useState<string | null>(null);
   const [showConnectExternal, setShowConnectExternal] = useState(false);
+  const [headerMenu, setHeaderMenu] = useState<'agent' | 'team' | null>(null);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
   const [busyAgent, setBusyAgent] = useState<{ id: string; name: string; taskId: string } | null>(null);
+
+  useEffect(() => {
+    if (!headerMenu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) setHeaderMenu(null);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [headerMenu]);
 
   const [pendingConfirm, setPendingConfirm] = useState<{
     title: string; message: string; confirmLabel?: string;
@@ -182,25 +193,53 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
             <span className="text-xs text-gray-500">{teams.length} team{teams.length !== 1 ? 's' : ''}</span>
           </div>
           {isAdmin && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2" ref={headerMenuRef}>
               <button
                 onClick={() => setShowConnectExternal(true)}
                 className="px-3 py-1.5 text-sm border border-gray-700 hover:border-purple-500 text-gray-300 hover:text-purple-300 rounded-lg transition-colors"
               >
-                ↗ Connect External
+                ↗ Connect
               </button>
-              <button
-                onClick={() => setShowHire({})}
-                className="px-3 py-1.5 text-sm border border-gray-700 hover:border-indigo-500 text-gray-300 hover:text-indigo-300 rounded-lg transition-colors"
-              >
-                + Hire Agent
-              </button>
-              <button
-                onClick={() => setShowNewTeam(true)}
-                className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
-              >
-                + New Team
-              </button>
+              <div className="relative">
+                <button onClick={() => setHeaderMenu(headerMenu === 'agent' ? null : 'agent')}
+                  className="px-3 py-1.5 text-sm border border-gray-700 hover:border-indigo-500 text-gray-300 hover:text-indigo-300 rounded-lg transition-colors">
+                  + Agent
+                </button>
+                {headerMenu === 'agent' && (
+                  <div className="absolute right-0 top-full mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
+                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates'); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors">
+                      <div className="font-medium">Hire from Templates</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Browse pre-built agent roles</div>
+                    </button>
+                    <button onClick={() => { setHeaderMenu(null); setShowHire({}); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
+                      <div className="font-medium">New Agent</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Create a custom agent</div>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <button onClick={() => setHeaderMenu(headerMenu === 'team' ? null : 'team')}
+                  className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
+                  + Team
+                </button>
+                {headerMenu === 'team' && (
+                  <div className="absolute right-0 top-full mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
+                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates'); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors">
+                      <div className="font-medium">Hire Team</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Deploy from team templates</div>
+                    </button>
+                    <button onClick={() => { setHeaderMenu(null); setShowNewTeam(true); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
+                      <div className="font-medium">New Team</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Create an empty team</div>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -417,16 +456,20 @@ function TeamCard({
                 + Add Member
               </button>
               {addMemberMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-30 w-44">
-                  <button onClick={onHireAgent} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300">
-                    🤖 Hire AI Agent
+                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-30 w-48">
+                  <button onClick={() => navBus.navigate('templates')} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300">
+                    Hire from Templates
                   </button>
+                  <button onClick={onHireAgent} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300/70">
+                    New Custom Agent
+                  </button>
+                  <div className="border-t border-gray-700 my-1" />
                   <button onClick={onAddHuman} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-emerald-300">
-                    👤 Add Human
+                    Add Human
                   </button>
                   {ungrouped.length > 0 && (
                     <button onClick={onAddExisting} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-gray-300">
-                      ↗ Add Existing
+                      Add Existing Member
                     </button>
                   )}
                 </div>
