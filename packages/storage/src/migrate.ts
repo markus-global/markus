@@ -128,6 +128,32 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
       updated_at timestamp NOT NULL DEFAULT now()
     )`,
     `CREATE INDEX IF NOT EXISTS idx_mkt_ratings_target ON marketplace_ratings(target_type, target_id)`,
+
+    // memory_embeddings: vector store for semantic memory search (pgvector)
+    // pgvector extension is optional — if not available, table is created without vector column
+    `CREATE TABLE IF NOT EXISTS memory_embeddings (
+      id varchar(64) PRIMARY KEY,
+      agent_id varchar(64) NOT NULL,
+      content text NOT NULL,
+      type varchar(32) NOT NULL,
+      embedding bytea,
+      created_at timestamptz DEFAULT NOW(),
+      updated_at timestamptz DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id)`,
+
+    // marketplace_templates: community features (visibility, fork, versioning)
+    `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS visibility varchar(16) NOT NULL DEFAULT 'public'`,
+    `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS forked_from varchar(64)`,
+    `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS fork_count integer DEFAULT 0`,
+    `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS version_history jsonb DEFAULT '[]'`,
+    `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS org_id varchar(64)`,
+    // marketplace_skills: same community features
+    `ALTER TABLE marketplace_skills ADD COLUMN IF NOT EXISTS visibility varchar(16) NOT NULL DEFAULT 'public'`,
+    `ALTER TABLE marketplace_skills ADD COLUMN IF NOT EXISTS forked_from varchar(64)`,
+    `ALTER TABLE marketplace_skills ADD COLUMN IF NOT EXISTS fork_count integer DEFAULT 0`,
+    `ALTER TABLE marketplace_skills ADD COLUMN IF NOT EXISTS version_history jsonb DEFAULT '[]'`,
+    `ALTER TABLE marketplace_skills ADD COLUMN IF NOT EXISTS org_id varchar(64)`,
   ];
   for (const stmt of statements) {
     try {

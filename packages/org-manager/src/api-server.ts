@@ -1755,6 +1755,45 @@ export class APIServer {
       return;
     }
 
+    // ── Marketplace: Template Fork ──────────────────────────────────────────
+    if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/fork$/) && req.method === 'POST') {
+      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      const templateId = path.split('/')[4]!;
+      const original = await this.storage.marketplaceTemplateRepo.findById(templateId);
+      if (!original) { this.json(res, 404, { error: 'Template not found' }); return; }
+      const body = await this.readBody(req);
+      const forkId = generateId('mkt-tpl');
+      const forked = await this.storage.marketplaceTemplateRepo.create({
+        id: forkId,
+        name: (body['name'] as string) ?? `${original.name} (fork)`,
+        description: original.description,
+        source: 'custom',
+        status: 'draft',
+        version: '1.0.0',
+        authorId: body['authorId'] as string | undefined,
+        authorName: (body['authorName'] as string) ?? 'anonymous',
+        roleId: original.roleId,
+        agentRole: original.agentRole,
+        skills: original.skills,
+        llmProvider: original.llmProvider ?? undefined,
+        tags: original.tags,
+        category: original.category,
+        icon: original.icon ?? undefined,
+        heartbeatIntervalMs: original.heartbeatIntervalMs ?? undefined,
+        starterTasks: original.starterTasks as Array<{ title: string; description: string; priority: string }> | undefined,
+        config: { ...((original.config ?? {}) as Record<string, unknown>), forkedFrom: templateId },
+      });
+      // Increment fork count on original (best-effort via raw SQL)
+      try {
+        const db = (this.storage as unknown as { db: { execute: (q: unknown) => Promise<unknown> } }).db;
+        if (db?.execute) {
+          await db.execute({ sql: `UPDATE marketplace_templates SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = $1`, params: [templateId] });
+        }
+      } catch { /* ignore */ }
+      this.json(res, 201, { template: forked, forkedFrom: templateId });
+      return;
+    }
+
     // ── Marketplace: Skills ──────────────────────────────────────────────────
     if (path === '/api/marketplace/skills' && req.method === 'GET') {
       if (!this.storage) { this.json(res, 200, { skills: [], total: 0 }); return; }

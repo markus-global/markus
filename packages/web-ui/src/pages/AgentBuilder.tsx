@@ -14,6 +14,12 @@ interface TemplateForm {
   category: string;
   systemPrompt: string;
   starterTasks: Array<{ title: string; description: string; priority: 'low' | 'medium' | 'high' }>;
+  llmProvider: string;
+  llmModel: string;
+  temperature: number;
+  maxTokensPerDay: number;
+  toolWhitelist: string[];
+  requiredEnv: string[];
 }
 
 interface WorkflowStepForm {
@@ -56,6 +62,33 @@ interface AvailableTemplate {
 
 const CATEGORIES = ['development', 'devops', 'management', 'productivity', 'general'];
 
+const AVAILABLE_TOOLS = [
+  { group: 'File & Shell', tools: ['shell_execute', 'file_read', 'file_write', 'file_edit'] },
+  { group: 'Web', tools: ['web_fetch', 'web_search'] },
+  { group: 'Git', tools: ['git_status', 'git_diff', 'git_commit', 'git_log'] },
+  { group: 'Collaboration', tools: ['a2a_send', 'a2a_list_colleagues', 'task_create', 'task_update', 'task_list'] },
+  { group: 'Memory', tools: ['memory_save', 'memory_search', 'memory_list'] },
+  { group: 'MCP', tools: ['mcp_call'] },
+];
+
+const ENV_OPTIONS = [
+  { id: 'git', label: 'Git', icon: '⌥' },
+  { id: 'node', label: 'Node.js', icon: '⬢' },
+  { id: 'python3', label: 'Python', icon: '⬡' },
+  { id: 'docker', label: 'Docker', icon: '▣' },
+  { id: 'browser', label: 'Browser', icon: '◉' },
+  { id: 'pnpm', label: 'pnpm', icon: '▪' },
+  { id: 'java', label: 'Java', icon: '♦' },
+  { id: 'go', label: 'Go', icon: '▸' },
+];
+
+const LLM_PROVIDERS = [
+  { id: 'anthropic', label: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'] },
+  { id: 'openai', label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'] },
+  { id: 'google', label: 'Google', models: ['gemini-2.0-flash', 'gemini-2.5-pro'] },
+  { id: 'ollama', label: 'Ollama (local)', models: ['llama3', 'codellama', 'deepseek-coder'] },
+];
+
 const STEP_TYPES: Record<string, { label: string; icon: string; hint: string; color: string }> = {
   agent_task: { label: 'Agent Task', icon: '⊕', hint: 'An agent executes a task', color: 'bg-blue-500/15 text-blue-400 border-blue-500/20' },
   condition: { label: 'Condition', icon: '◇', hint: 'Branch based on a condition', color: 'bg-amber-500/15 text-amber-400 border-amber-500/20' },
@@ -85,6 +118,8 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
     name: '', description: '', roleId: '', agentRole: 'worker',
     skills: '', tags: '', category: 'development', systemPrompt: '',
     starterTasks: [],
+    llmProvider: '', llmModel: '', temperature: 0.7, maxTokensPerDay: 100000,
+    toolWhitelist: [], requiredEnv: [],
   });
 
   const [wfForm, setWfForm] = useState<WorkflowForm>({
@@ -128,6 +163,14 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
         source: 'custom',
         systemPrompt: tplForm.systemPrompt,
         starterTasks: tplForm.starterTasks,
+        llmProvider: tplForm.llmProvider || undefined,
+        config: {
+          llmModel: tplForm.llmModel || undefined,
+          temperature: tplForm.temperature,
+          maxTokensPerDay: tplForm.maxTokensPerDay,
+          toolWhitelist: tplForm.toolWhitelist.length > 0 ? tplForm.toolWhitelist : undefined,
+          requiredEnv: tplForm.requiredEnv.length > 0 ? tplForm.requiredEnv : undefined,
+        },
       };
       const resp = await fetch('/api/marketplace/templates', {
         method: 'POST',
@@ -136,7 +179,7 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
       });
       if (resp.ok) {
         showResult(true, 'Template created! Find it in the Template Marketplace.');
-        setTplForm({ name: '', description: '', roleId: '', agentRole: 'worker', skills: '', tags: '', category: 'development', systemPrompt: '', starterTasks: [] });
+        setTplForm({ name: '', description: '', roleId: '', agentRole: 'worker', skills: '', tags: '', category: 'development', systemPrompt: '', starterTasks: [], llmProvider: '', llmModel: '', temperature: 0.7, maxTokensPerDay: 100000, toolWhitelist: [], requiredEnv: [] });
       } else {
         const data = await resp.json() as { error?: string };
         showResult(false, data.error ?? 'Failed to create template');
@@ -335,6 +378,87 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
               />
             </Card>
 
+            <Card title="LLM Configuration" hint="Model selection and parameters">
+              <div className="grid grid-cols-2 gap-4">
+                <FormRow label="LLM Provider">
+                  <select className="input-field" value={tplForm.llmProvider} onChange={e => {
+                    const provider = LLM_PROVIDERS.find(p => p.id === e.target.value);
+                    setTplForm(f => ({ ...f, llmProvider: e.target.value, llmModel: provider?.models[0] ?? '' }));
+                  }}>
+                    <option value="">Default (system)</option>
+                    {LLM_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
+                </FormRow>
+                <FormRow label="Model">
+                  <select className="input-field" value={tplForm.llmModel} onChange={e => setTplForm(f => ({ ...f, llmModel: e.target.value }))}>
+                    <option value="">Default</option>
+                    {(LLM_PROVIDERS.find(p => p.id === tplForm.llmProvider)?.models ?? []).map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </FormRow>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <FormRow label="Temperature" hint={tplForm.temperature.toFixed(1)}>
+                  <input type="range" min="0" max="1" step="0.1" className="w-full accent-indigo-500" value={tplForm.temperature} onChange={e => setTplForm(f => ({ ...f, temperature: parseFloat(e.target.value) }))} />
+                </FormRow>
+                <FormRow label="Daily Token Budget">
+                  <div className="flex items-center gap-2">
+                    <input type="number" min={1000} step={10000} className="input-field flex-1" value={tplForm.maxTokensPerDay} onChange={e => setTplForm(f => ({ ...f, maxTokensPerDay: parseInt(e.target.value) || 100000 }))} />
+                    <span className="text-xs text-gray-500 whitespace-nowrap">~${(tplForm.maxTokensPerDay * 0.000003 * 30).toFixed(2)}/mo</span>
+                  </div>
+                </FormRow>
+              </div>
+            </Card>
+
+            <Card title="Tool Access" hint="Select which tools this agent can use">
+              <div className="space-y-3">
+                {AVAILABLE_TOOLS.map(group => (
+                  <div key={group.group}>
+                    <div className="text-[11px] text-gray-500 mb-1.5 font-medium uppercase tracking-wider">{group.group}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.tools.map(tool => {
+                        const selected = tplForm.toolWhitelist.includes(tool);
+                        return (
+                          <button key={tool} onClick={() => setTplForm(f => ({
+                            ...f,
+                            toolWhitelist: selected ? f.toolWhitelist.filter(t => t !== tool) : [...f.toolWhitelist, tool],
+                          }))} className={`px-2.5 py-1 rounded-lg text-xs font-mono border transition-colors ${
+                            selected ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600'
+                          }`}>
+                            {selected ? '✓ ' : ''}{tool}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {tplForm.toolWhitelist.length === 0 && (
+                  <div className="text-xs text-gray-600">No tools selected = all tools available (default)</div>
+                )}
+              </div>
+            </Card>
+
+            <Card title="Environment Requirements" hint="What tools must be installed on the host machine">
+              <div className="flex flex-wrap gap-2">
+                {ENV_OPTIONS.map(env => {
+                  const selected = tplForm.requiredEnv.includes(env.id);
+                  return (
+                    <button key={env.id} onClick={() => setTplForm(f => ({
+                      ...f,
+                      requiredEnv: selected ? f.requiredEnv.filter(e => e !== env.id) : [...f.requiredEnv, env.id],
+                    }))} className={`px-3 py-2 rounded-xl text-xs font-medium border transition-all flex items-center gap-1.5 ${
+                      selected ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
+                    }`}>
+                      <span>{env.icon}</span>
+                      <span>{env.label}</span>
+                      {selected && <span className="text-emerald-400">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+
             <Card title="Starter Tasks" hint="Pre-defined tasks for onboarding — shown when the agent is first hired">
               {tplForm.starterTasks.map((task, i) => (
                 <div key={i} className="flex gap-2 mb-2 items-center">
@@ -368,6 +492,33 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
             </Card>
 
             <ActionBar>
+              <button onClick={() => {
+                const json = JSON.stringify(tplForm, null, 2);
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${tplForm.name || 'template'}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }} className="btn-secondary">Export JSON</button>
+              <label className="btn-secondary cursor-pointer inline-flex items-center">
+                Import JSON
+                <input type="file" accept=".json" className="hidden" onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => {
+                    try {
+                      const data = JSON.parse(ev.target?.result as string);
+                      setTplForm(f => ({ ...f, ...data }));
+                      showResult(true, 'Template imported!');
+                    } catch { showResult(false, 'Invalid JSON file'); }
+                  };
+                  reader.readAsText(file);
+                  e.target.value = '';
+                }} />
+              </label>
               <button onClick={saveTemplate} disabled={saving} className="btn-primary">
                 {saving ? 'Creating...' : 'Create Template'}
               </button>

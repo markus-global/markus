@@ -1,13 +1,14 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import type { LLMMessage, RoleTemplate, IdentityContext } from '@markus/shared';
-import { createLogger } from '@markus/shared';
+import { createLogger, type LLMMessage, type RoleTemplate, type IdentityContext } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
+import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
+import type { EnvironmentProfile } from './environment-profile.js';
 
 const log = createLogger('context-engine');
 
 export interface ContextConfig {
   memorySearchTopK: number;
+  tokenCounter?: TokenCounter;
 }
 
 const DEFAULT_CONFIG: ContextConfig = {
@@ -22,25 +23,24 @@ export interface OrgContext {
   customContext?: string;
 }
 
-/**
- * Estimates tokens from a string. Uses a conservative 2.5 chars/token
- * which accounts for CJK, JSON encoding overhead, and structured content.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 2.5);
+function estimateTokens(text: string, counter?: TokenCounter): number {
+  return (counter ?? getDefaultTokenCounter()).countTokens(text);
 }
 
-function estimateMessageTokens(msg: LLMMessage): number {
-  let chars = msg.content.length + 20; // role overhead
-  if (msg.toolCalls) chars += JSON.stringify(msg.toolCalls).length;
-  return Math.ceil(chars / 2.5);
+function estimateMessageTokens(msg: LLMMessage, counter?: TokenCounter): number {
+  const tc = counter ?? getDefaultTokenCounter();
+  let tokens = tc.countMessageTokens(msg.content, msg.role);
+  if (msg.toolCalls) tokens += tc.countTokens(JSON.stringify(msg.toolCalls));
+  return tokens;
 }
 
 export class ContextEngine {
   private config: ContextConfig;
+  private tokenCounter: TokenCounter;
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.tokenCounter = config?.tokenCounter ?? getDefaultTokenCounter();
   }
 
   buildSystemPrompt(opts: {
@@ -55,6 +55,7 @@ export class ContextEngine {
     senderIdentity?: { id: string; name: string; role: string };
     assignedTasks?: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
     knowledgeContext?: string;
+    environment?: EnvironmentProfile;
   }): string {
     const parts: string[] = [];
 
@@ -114,31 +115,21 @@ export class ContextEngine {
       if (doneTasks.length > 0) {
         parts.push(`### Completed/Closed (${doneTasks.length} tasks)`);
       }
-      parts.push('');
-      parts.push('**MANDATORY RULE: Every piece of work you perform MUST be linked to a task.**');
-      parts.push('- Before starting any work, check if an existing task covers it. If not, call `task_create` first.');
-      parts.push('- Immediately after creating or identifying the relevant task, call `task_update` to set its status to `in_progress`.');
-      parts.push('- When the work is complete, call `task_update` to mark it `completed`.');
-      parts.push('- Never do meaningful work without a corresponding task entry.');
     } else {
-      parts.push('\n## Task Management');
-      parts.push('You have no tasks currently assigned.');
-      parts.push('');
-      parts.push('**MANDATORY RULE: Every piece of work you perform MUST be linked to a task.**');
-      parts.push('- Before starting any work, call `task_create` to register the task, then immediately set it to `in_progress`.');
-      parts.push('- Use `task_list` to check whether a relevant task already exists on the team board before creating a duplicate.');
-      parts.push('- When complete, call `task_update` to mark the task `completed`.');
-      parts.push('- Never do meaningful work without a corresponding task entry.');
+      parts.push('\n## Task Board');
+      parts.push('No tasks currently assigned.');
     }
 
-    parts.push('\n## Memory Management');
-    parts.push('You have access to persistent memory tools:');
-    parts.push('- `memory_save` — Save important facts, decisions, or observations for future recall');
-    parts.push('- `memory_search` — Search your memories for relevant past information');
-    parts.push('- `memory_list` — List your recent memories');
-    parts.push('- `memory_update_longterm` — Update persistent knowledge base sections');
     parts.push('');
-    parts.push('**When to save memories:** After learning something important (user preferences, project decisions, key outcomes, blockers discovered). Do NOT save trivial or redundant information.');
+    parts.push('**Task Rule:** All work must be linked to a task. Use `task_create` → `task_update(in_progress)` → `task_update(completed)`. Check `task_list` before creating duplicates.');
+
+    parts.push('\n## Memory & Tools');
+    parts.push('- `memory_save` — Persist important facts/decisions. `memory_search` — Recall past context.');
+    parts.push('- Save only meaningful information (preferences, decisions, outcomes). Skip trivial data.');
+
+    if (opts.environment) {
+      parts.push(this.buildEnvironmentSection(opts.environment));
+    }
 
     if (opts.senderIdentity) {
       parts.push(`\n## Current Conversation`);
@@ -234,9 +225,9 @@ export class ContextEngine {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const maxOutput = opts.modelMaxOutput ?? 4096;
 
-    const systemTokens = estimateTokens(opts.systemPrompt);
+    const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions
-      ? estimateTokens(JSON.stringify(opts.toolDefinitions))
+      ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
     // Budget = contextWindow - system - tools - reply - safety margin (10%)
     const safetyMargin = Math.ceil(contextWindow * 0.10);
@@ -356,7 +347,7 @@ export class ContextEngine {
       } else {
         // This block doesn't fit; compact it
         const summary = this.summarizeToolBlock(block);
-        const summaryTokens = estimateMessageTokens(summary);
+        const summaryTokens = estimateMessageTokens(summary, this.tokenCounter);
         if (usedTokens + summaryTokens <= historyBudget) {
           compactedBlocks.push([summary]);
           usedTokens += summaryTokens;
@@ -447,7 +438,7 @@ export class ContextEngine {
 
   private sumTokens(messages: LLMMessage[]): number {
     let total = 0;
-    for (const m of messages) total += estimateMessageTokens(m);
+    for (const m of messages) total += estimateMessageTokens(m, this.tokenCounter);
     return total;
   }
 
@@ -532,6 +523,42 @@ export class ContextEngine {
     }
 
     return parts.join('\n');
+  }
+
+  private buildEnvironmentSection(env: EnvironmentProfile): string {
+    const lines: string[] = ['\n## Your Environment'];
+    lines.push(`- OS: ${env.os.platform} ${env.os.release} (${env.os.arch})`);
+    lines.push(`- Shell: ${env.shell}`);
+    lines.push(`- Working Directory: ${env.workdir}`);
+
+    if (env.tools.length > 0) {
+      const toolList = env.tools.map(t => `${t.name} ${t.version}`).join(', ');
+      lines.push(`- Available Tools: ${toolList}`);
+    }
+
+    if (env.browsers.length > 0) {
+      lines.push(`- Browsers: ${env.browsers.map(b => b.name).join(', ')}`);
+    }
+
+    if (env.runtimes.length > 0) {
+      const rtList = env.runtimes.map(r => `${r.name} ${r.version}`).join(', ');
+      lines.push(`- Runtimes: ${rtList}`);
+    }
+
+    if (env.packageManagers.length > 0) {
+      lines.push(`- Package Managers: ${env.packageManagers.join(', ')}`);
+    }
+
+    lines.push(`- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ${env.resources.diskFreeMB} MB free disk`);
+
+    const missing = ['git', 'node', 'docker', 'python3', 'java'].filter(
+      name => !env.tools.some(t => t.name === name) && !env.runtimes.some(r => r.name === name),
+    );
+    if (missing.length > 0) {
+      lines.push(`- NOT available: ${missing.join(', ')}. Do not attempt commands that require these.`);
+    }
+
+    return lines.join('\n');
   }
 
   private retrieveRelevantMemories(memory: IMemoryStore, query?: string): MemoryEntry[] {

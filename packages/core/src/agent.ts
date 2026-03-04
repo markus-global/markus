@@ -21,6 +21,7 @@ import type { IMemoryStore } from './memory/types.js';
 import { EnhancedMemorySystem } from './enhanced-memory-system.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext } from './context-engine.js';
+import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
@@ -100,6 +101,7 @@ export class Agent {
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private identityContext?: IdentityContext;
+  private environmentProfile?: EnvironmentProfile;
   private auditCallback?: (event: {
     type: string;
     action: string;
@@ -221,6 +223,13 @@ export class Agent {
 
   async start(): Promise<void> {
     this.setStatus('idle');
+
+    // Detect runtime environment (cached for 5 minutes)
+    try {
+      this.environmentProfile = await detectEnvironment();
+    } catch (e) {
+      log.warn('Environment detection failed', { error: String(e) });
+    }
 
     // Resume latest conversation session if available
     const latestSession = this.memory.getLatestSession(this.id);
@@ -634,6 +643,7 @@ export class Agent {
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
       knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(effectiveMessage),
+      environment: this.environmentProfile,
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -852,6 +862,7 @@ export class Agent {
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: this.tasksFetcher?.(),
       knowledgeContext: this.getKnowledgeContext(effectiveMessage),
+      environment: this.environmentProfile,
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1137,6 +1148,7 @@ export class Agent {
       identity: this.identityContext,
       assignedTasks: this.tasksFetcher?.(),
       knowledgeContext: this.getKnowledgeContext(taskPrompt),
+      environment: this.environmentProfile,
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });

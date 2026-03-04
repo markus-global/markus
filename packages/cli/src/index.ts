@@ -33,6 +33,7 @@ Usage:
   markus <command> [options]
 
 Commands:
+  init            Quick setup: configure LLM keys, DB, and create default agents
   start           Start the Markus server (API + Web UI + Comms)
   agent:list      List all agents
   agent:create    Create a new agent
@@ -114,6 +115,9 @@ async function main() {
   const config = loadConfig(values['config'] as string | undefined);
 
   switch (command) {
+    case 'init':
+      await quickInit();
+      break;
     case 'start':
       await startServer(config, values);
       break;
@@ -1072,6 +1076,86 @@ async function showAuditSummary(config: ReturnType<typeof loadConfig>) {
       console.log(`    ${a.agentId.padEnd(20)} events=${a.events}  tokens=${a.tokens}`);
     }
   }
+}
+
+async function quickInit() {
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const readline = await import('node:readline');
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string, def?: string): Promise<string> =>
+    new Promise(r => rl.question(`${q}${def ? ` [${def}]` : ''}: `, ans => r(ans.trim() || def || '')));
+
+  console.log('\n  Welcome to Markus Quick Setup\n');
+  console.log('  This will configure your .env file and create default templates.\n');
+
+  const provider = await ask('  LLM Provider (anthropic/openai/google/ollama)', 'anthropic');
+  let envLines = [`LLM_PROVIDER=${provider}`];
+
+  if (provider === 'anthropic') {
+    const key = await ask('  Anthropic API Key');
+    if (key) envLines.push(`ANTHROPIC_API_KEY=${key}`);
+    envLines.push('LLM_MODEL=claude-sonnet-4-20250514');
+  } else if (provider === 'openai') {
+    const key = await ask('  OpenAI API Key');
+    if (key) envLines.push(`OPENAI_API_KEY=${key}`);
+    envLines.push('LLM_MODEL=gpt-4o');
+  } else if (provider === 'google') {
+    const key = await ask('  Google API Key');
+    if (key) envLines.push(`GOOGLE_API_KEY=${key}`);
+    envLines.push('LLM_MODEL=gemini-2.0-flash');
+  } else {
+    envLines.push('OLLAMA_HOST=http://localhost:11434');
+    envLines.push('LLM_MODEL=llama3');
+  }
+
+  const dbUrl = await ask('  PostgreSQL URL', 'postgresql://localhost:5432/markus');
+  envLines.push(`DATABASE_URL=${dbUrl}`);
+
+  const port = await ask('  API Port', '3001');
+  envLines.push(`PORT=${port}`);
+  envLines.push(`WEB_UI_PORT=${parseInt(port) + 1}`);
+
+  rl.close();
+
+  const envFile = join(process.cwd(), '.env');
+  if (existsSync(envFile)) {
+    const existing = readFileSync(envFile, 'utf-8');
+    const newLines = envLines.filter(l => {
+      const key = l.split('=')[0]!;
+      return !existing.includes(`${key}=`);
+    });
+    if (newLines.length > 0) {
+      writeFileSync(envFile, existing.trimEnd() + '\n' + newLines.join('\n') + '\n');
+      console.log(`\n  Updated .env with ${newLines.length} new variables.`);
+    } else {
+      console.log('\n  .env already configured — no changes needed.');
+    }
+  } else {
+    writeFileSync(envFile, envLines.join('\n') + '\n');
+    console.log('\n  Created .env file.');
+  }
+
+  // Ensure templates/roles directory exists with a default developer role
+  const rolesDir = join(process.cwd(), 'templates', 'roles', 'developer');
+  if (!existsSync(rolesDir)) {
+    mkdirSync(rolesDir, { recursive: true });
+    writeFileSync(join(rolesDir, 'ROLE.md'), [
+      '---',
+      'name: Developer',
+      'description: Full-stack software developer',
+      'heartbeatInterval: 600000',
+      '---',
+      '',
+      'You are a skilled software developer. You write clean, maintainable code and follow best practices.',
+      'You can read and edit files, run shell commands, search the web, and collaborate with other agents.',
+      '',
+    ].join('\n'));
+    console.log('  Created default developer role template.');
+  }
+
+  console.log('\n  Setup complete! Run `markus start` to launch.\n');
 }
 
 main().catch((error) => {

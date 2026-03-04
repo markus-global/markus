@@ -1346,45 +1346,509 @@ P4 --> P5
 
 ## 8. 后续路线图
 
-### Phase 5：待实施项目
+### 8.1 第一性原理分析
+
+Agent 的有用性由两个因子决定：
+
+```
+Agent 有用性 = P(正确决策 | 上下文) × P(行动成功 | 决策)
+```
+
+- **P(行动成功 | 决策)**：工具可靠性。经过 4 轮迭代（重试、钩子、幂等、工作区隔离、HITL），**已达到可用水平**。
+- **P(正确决策 | 上下文)**：LLM 看到什么。这完全取决于**上下文窗口的质量**——而这正是当前瓶颈。
+
+**当前瓶颈诊断**：
+
+| 问题 | 影响 | 严重度 |
+|---|---|---|
+| 记忆检索是纯子串匹配 (`content.includes(query)`) | Agent 无法语义召回历史上下文，"我们上周怎么处理的认证问题"找不到答案 | **致命** |
+| Token 估算用固定 `length / 2.5` | 中文场景 ~2x 高估浪费上下文空间；代码场景不准确 | **高** |
+| 无人验证端到端任务完成质量 | 基础设施完善但不知道 Agent 能否真正完成一个编码任务 | **高** |
+| 新用户启动体验差 | 需要配置 LLM 密钥、理解组织模型才能开始 | **中** |
+
+**砍掉的项目及理由**：
+
+| 原计划项目 | 砍掉理由 |
+|---|---|
+| ~~审批请求 UI~~ | 后端审批机制已完整（API + WebSocket + 超时），没有证据表明审批请求频繁发生。为不存在的需求构建 UI |
+| ~~Workflow 持久化~~ | 无人在生产中使用工作流。为没有用户的功能做持久化是过早优化 |
+| ~~多租户与权限~~ | 单组织自部署场景，不存在多租户需求。Cloud 版本时再考虑 |
+| ~~声明式路由规则~~ | 有大量 Agent 和复杂路由需求时才有价值。当前无此场景 |
+| ~~插件/技能市场~~ | 产品策略文档显示 Phase 4 Marketplace 已完成（DB + API + UI），此处重复 |
+| ~~分布式 Agent 运行时~~ | 单进程足够支撑数月的实际使用。过早优化 |
+| ~~语音交互~~ | 与核心价值无关，无用户需求 |
+
+### 8.2 修订后的路线图
 
 ```plantuml
-@startuml future-roadmap
+@startuml revised-roadmap
 !theme plain
 skinparam backgroundColor #FEFEFE
 
-rectangle "短期 (1-2 周)" as Short #BBDEFB {
-  card "RAG / 向量语义记忆\n(pgvector + embedding)" as S1
-  card "审批请求 UI\n(Web UI 审批列表)" as S2
-  card "Workflow 持久化\n(execution → DB)" as S3
+rectangle "P0: Agent 核心能力" as P0 #FFCDD2 {
+  card "记忆向量检索\n(pgvector + embedding)" as P0a
+  card "Token 计量精准化\n(API 实际值 → tiktoken 回退)" as P0b
+  card "运行环境感知\n(OS/工具/浏览器能力探测)" as P0c
 }
 
-rectangle "中期 (1-2 月)" as Mid #F8BBD0 {
-  card "多租户与权限" as M1
-  card "声明式路由规则" as M2
-  card "插件/技能市场" as M3
+rectangle "P1: 创作与体验" as P1 #BBDEFB {
+  card "Builder 重新设计\n(引导式 + 实时预览 + 完整配置)" as P1a
+  card "端到端任务验证\n(标准化场景 + 失败模式修复)" as P1b
+  card "快速启动体验\n(markus init + 零配置)" as P1c
 }
 
-rectangle "远期" as Long #FFE0B2 {
-  card "分布式 Agent 运行时" as L1
-  card "语音交互" as L2
+rectangle "P2: 生态与社区" as P2 #C8E6C9 {
+  card "社区 GitHub 模式\n(公开/私有 + Fork + 版本)" as P2a
+  card "上下文精细化\n(优先级裁剪 + 提示词优化)" as P2b
 }
 
-Short --> Mid
-Mid --> Long
+P0 --> P1
+P1 --> P2
 
 @enduml
 ```
 
-| 优先级 | 项目 | 预期价值 |
-|---|---|---|
-| P1 | RAG / 向量语义记忆 | Agent 能基于语义检索相关知识和历史，大幅提升长期工作能力 |
-| P1 | 审批 UI | 用户可在 Web UI 中查看、批准、拒绝 Agent 的敏感操作请求 |
-| P1 | Workflow 持久化 | DAG 工作流跨重启恢复，支持长周期多 Agent 编排 |
-| P2 | 多租户与权限 | 支持多组织隔离，RBAC 权限模型 |
-| P2 | 声明式路由规则 | 基于 channel/sender/keyword 的精确消息路由配置 |
-| P3 | 插件/技能市场 | 社区贡献的工具和角色模板共享 |
-| P3 | 分布式运行时 | 基于消息队列的 Agent 水平扩展 |
+### 8.3 各项目详解
+
+---
+
+#### P0.1 记忆向量语义检索
+
+**问题**：`memory.search()` 是 `content.toLowerCase().includes(query.toLowerCase())`——纯子串匹配。Agent 搜索 "怎么处理 API 超时" 无法匹配到 "我们给 HTTP 请求加了 30 秒超时"。这是 Agent 长期能力的致命瓶颈。
+
+**设计**：一步到位，直接引入 pgvector 向量语义检索。
+
+**架构**：
+
+```plantuml
+@startuml memory-vector
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+actor Agent
+database "PostgreSQL" as DB {
+  collections "memories\n+ embedding vector(1536)" as Mem
+  collections "agent_knowledge\n+ embedding vector(1536)" as Know
+}
+cloud "Embedding API" as Embed
+
+Agent -> Agent : memory_save(content)
+Agent -> Embed : embed(content)
+Embed --> Agent : vector[1536]
+Agent -> DB : INSERT (content, vector)
+
+Agent -> Agent : memory_search(query)
+Agent -> Embed : embed(query)
+Embed --> Agent : query_vector
+Agent -> DB : SELECT ... ORDER BY\nembedding <=> query_vector\nLIMIT topK
+DB --> Agent : ranked results
+
+@enduml
+```
+
+**数据库变更**：
+
+```sql
+-- 启用 pgvector 扩展
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- memories 表增加向量列
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS embedding vector(1536);
+CREATE INDEX idx_memories_embedding ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- agent_knowledge 表增加向量列
+ALTER TABLE agent_knowledge ADD COLUMN IF NOT EXISTS embedding vector(1536);
+CREATE INDEX idx_knowledge_embedding ON agent_knowledge USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+```
+
+**Embedding 策略**：
+
+| 维度 | 设计决策 | 理由 |
+|------|----------|------|
+| Provider | OpenAI `text-embedding-3-small` (1536 维) | 性价比最优，$0.02/1M tokens；同时支持通过 LLMRouter 抽象切换到其他 embedding 模型 |
+| 写入时 | 同步生成 embedding 并存储 | 保证所有记忆都有向量，不存在"有内容无向量"的脏数据 |
+| 查询时 | 将 query 转为向量，用余弦相似度 (`<=>`) 排序 | pgvector 原生支持，无需额外基础设施 |
+| 降级 | 若 embedding API 不可用，回退到 PostgreSQL `pg_trgm` 三元组相似度 | 保证可用性，`pg_trgm` 无外部依赖 |
+| 批量迁移 | 提供 `markus migrate-embeddings` CLI 命令，为历史记忆批量生成向量 | 平滑升级 |
+
+**接口变更**：
+
+```typescript
+// IMemoryStore 接口扩展
+interface IMemoryStore {
+  // 现有方法保持不变...
+  search(query: string): MemoryEntry[];  // 改为向量检索实现
+
+  // 新增：带相似度分数的检索
+  semanticSearch(query: string, opts?: {
+    topK?: number;           // 默认 5
+    minSimilarity?: number;  // 最低相似度阈值，默认 0.3
+    filter?: { tier?: string; category?: string };
+  }): Promise<Array<MemoryEntry & { similarity: number }>>;
+}
+```
+
+**验收标准**：Agent 搜索 "怎么处理 API 超时" 能匹配到 "我们给 HTTP 请求加了 30 秒 timeout"；搜索 "数据库连接配置" 能匹配到 "PostgreSQL 连接池设为 20"。
+
+---
+
+#### P0.2 Token 计量精准化
+
+**问题**：`context-engine.ts` 中 `Math.ceil(text.length / 2.5)` 用于 pre-flight 预算估算，偏差巨大：
+- 英文文本：实际 ~4 chars/token，高估 ~60%（Agent 少看 38% 的上下文）
+- 中文文本：实际 ~1.5 chars/token，低估 ~40%（可能溢出窗口，导致 API 报错或信息丢失）
+- JSON/代码：变化极大，不可预测
+
+**关键发现**：Anthropic 和 OpenAI 的 API 响应已经返回了精确的 token 用量（`usage.input_tokens`, `usage.output_tokens`）——我们的 `LLMRouter` 已经在记录这些数据。问题出在**请求前的预算估算**，而非请求后的计量。
+
+**三层精准化策略**：
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 第 1 层：API 实际值（最准，事后获取）               │
+│ → Anthropic/OpenAI 响应中的 usage 字段             │
+│ → 用于计费、日 token 预算、成本仪表盘              │
+│ → 已实现 ✅                                        │
+├─────────────────────────────────────────────────────┤
+│ 第 2 层：Anthropic Token Counting API（准确，预飞）  │
+│ → POST /v1/messages/count_tokens                   │
+│ → 请求前精确计算 token 数，指导上下文装配            │
+│ → 仅 Anthropic 支持，其他 Provider 走第 3 层        │
+├─────────────────────────────────────────────────────┤
+│ 第 3 层：本地 tiktoken 计算（近似，通用回退）        │
+│ → 使用 js-tiktoken (纯 JS，短文本 31K ops/sec)     │
+│ → 或 @dqbd/tiktoken (WASM，长文本 2.4x 更快)      │
+│ → 作为 OpenAI/Ollama/其他 Provider 的回退          │
+└─────────────────────────────────────────────────────┘
+```
+
+**实现设计**：
+
+```typescript
+// token-counter.ts — 新模块
+export interface TokenCounter {
+  /** 精确计算 token 数（可能异步调 API） */
+  countTokens(text: string, model?: string): Promise<number>;
+  /** 快速本地估算（同步，用于粗略预算） */
+  estimateTokens(text: string): number;
+}
+
+class SmartTokenCounter implements TokenCounter {
+  private tiktoken: TiktokenEncoder | null = null;  // 延迟加载
+
+  async countTokens(text: string, model?: string): Promise<number> {
+    // 优先使用 Anthropic Token Counting API
+    if (this.anthropicApiKey && model?.startsWith('claude')) {
+      return this.anthropicCountTokens(text, model);
+    }
+    // 回退到本地 tiktoken
+    return this.localCount(text);
+  }
+
+  estimateTokens(text: string): number {
+    // 若 tiktoken 已加载，直接用
+    if (this.tiktoken) return this.tiktoken.encode(text).length;
+    // 否则用改进的启发式：按 CJK 比例动态调整
+    const cjkRatio = countCJKChars(text) / text.length;
+    const charsPerToken = 4 - (cjkRatio * 2.5);  // 纯英文 ~4, 纯中文 ~1.5
+    return Math.ceil(text.length / charsPerToken);
+  }
+}
+```
+
+**LLM Provider 返回的实际 token 数反馈循环**：每次 LLM 请求完成后，将 API 返回的实际 token 数与预估值对比，动态校准 `estimateTokens` 的系数。这让估算越用越准。
+
+**验收标准**：中英文混合文本的 pre-flight 估算误差 < 15%；Anthropic 模型使用精确 API 计数。
+
+---
+
+#### P0.3 Agent 运行环境感知
+
+**问题**：当前 Agent 不知道自己运行在什么环境中——不知道操作系统、不知道有没有安装 Git/Docker/浏览器、不知道 Node.js 版本。这导致 Agent 可能尝试执行不存在的命令，或用错误的路径格式，浪费交互轮次和 token。
+
+**业界参考**：
+- **Cursor/Claude Code**：启动时检测 OS、shell、工作区路径，注入系统提示
+- **Devin**：创建完整的开发环境画像，包括语言运行时、包管理器、已安装工具
+- **OpenAI Agents SDK**：通过 `context` 对象传递运行时环境信息
+
+**设计**：引入 `EnvironmentProfile`，在 Agent 启动时自动探测，注入系统提示。
+
+```typescript
+// environment-profile.ts — 新模块
+export interface EnvironmentProfile {
+  // 系统基础
+  os: { platform: string; arch: string; release: string };  // e.g. darwin, arm64, 24.6.0
+  shell: string;            // e.g. /bin/zsh
+  homedir: string;
+  workdir: string;
+
+  // 开发工具
+  tools: {
+    name: string;           // e.g. 'git', 'docker', 'node', 'python'
+    version: string;        // e.g. '2.43.0'
+    path: string;           // e.g. '/usr/bin/git'
+  }[];
+
+  // 浏览器
+  browsers: {
+    name: string;           // e.g. 'chrome', 'firefox'
+    path: string;
+  }[];
+
+  // 语言运行时
+  runtimes: {
+    name: string;           // e.g. 'node', 'python', 'java'
+    version: string;
+  }[];
+
+  // 包管理器
+  packageManagers: string[];  // e.g. ['npm', 'pnpm', 'pip', 'brew']
+
+  // 资源约束
+  resources: {
+    cpuCores: number;
+    memoryMB: number;
+    diskFreeMB: number;
+  };
+}
+
+// 自动探测实现
+async function detectEnvironment(): Promise<EnvironmentProfile> {
+  const checks = [
+    { name: 'git', cmd: 'git --version' },
+    { name: 'node', cmd: 'node --version' },
+    { name: 'python', cmd: 'python3 --version' },
+    { name: 'docker', cmd: 'docker --version' },
+    { name: 'pnpm', cmd: 'pnpm --version' },
+    { name: 'brew', cmd: 'brew --version' },
+    // ... 更多工具
+  ];
+  // 并行执行所有检测，which/where 定位路径
+  // 解析版本号，聚合为 EnvironmentProfile
+}
+```
+
+**与系统提示集成**：`ContextEngine.buildSystemPrompt()` 新增环境段落：
+
+```
+## Your Environment
+- OS: macOS 14.5 (arm64)
+- Shell: /bin/zsh
+- Working Directory: /Users/dev/project
+- Available Tools: git 2.43.0, node 22.1.0, pnpm 9.1.0, docker 27.0.3, python 3.12
+- Browsers: Chrome (/Applications/Google Chrome.app)
+- Resources: 10 CPU cores, 16384 MB RAM, 52 GB free disk
+- NOTE: Java is NOT available. Do not attempt Java/Maven/Gradle commands.
+```
+
+**影响**：Agent 不再"盲目操作"。知道有 Docker 才会建议容器化方案；知道没有 Python 就不会尝试 `pip install`；知道是 macOS arm64 就不会下载 x86 二进制。每次交互减少 1-2 次无效工具调用。
+
+---
+
+#### P1.1 Builder 重新设计
+
+**当前问题诊断**：
+
+| 问题 | 现状 | 影响 |
+|------|------|------|
+| 无引导流程 | 直接展示空表单，用户不知从何开始 | 新用户放弃率高 |
+| 缺乏实时预览 | 填完表单才能看到效果，无法验证 | 试错成本高 |
+| 模板配置不完整 | 缺少 LLM 配置（模型选择、温度）、工具白名单、token 预算 | 创建的 Agent 不符合预期 |
+| 无环境需求声明 | 不能指定 Agent 需要 Docker/浏览器等环境 | 部署后才发现缺工具 |
+| Workflow 编辑体验差 | 纯表单，无可视化 DAG，步骤关系难以理解 | 复杂工作流无法创建 |
+| 无模板/工作流版本 | 无法回滚到之前的版本 | 改坏后无法恢复 |
+| 无导入/导出 | 不能 JSON 导入/导出模板 | 无法分享或备份 |
+
+**重新设计方案**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Agent Builder v2                          │
+├─────────────────┬───────────────────────────────────────────┤
+│                 │                                           │
+│  创建向导        │   实时预览面板                             │
+│  (左侧)         │   (右侧)                                  │
+│                 │                                           │
+│  Step 1: 角色    │   ┌─────────────────────────────────┐     │
+│  - 选择预设模板  │   │  系统提示词预览                   │     │
+│  - 或从零开始    │   │  (根据左侧配置实时生成)          │     │
+│                 │   └─────────────────────────────────┘     │
+│  Step 2: 能力    │   ┌─────────────────────────────────┐     │
+│  - 工具白名单    │   │  能力雷达图                       │     │
+│  - 技能选择      │   │  编码 ★★★★☆                      │     │
+│  - 环境需求      │   │  协作 ★★★☆☆                      │     │
+│                 │   │  分析 ★★☆☆☆                      │     │
+│  Step 3: 约束    │   └─────────────────────────────────┘     │
+│  - LLM 模型     │   ┌─────────────────────────────────┐     │
+│  - Token 预算   │   │  预估月成本: ~$12.50             │     │
+│  - 审批策略      │   │  建议预算: 50K tokens/day        │     │
+│                 │   └─────────────────────────────────┘     │
+│  Step 4: 部署    │                                           │
+│  - 入职任务      │   [Test Agent]  [Deploy]  [Export JSON]   │
+│  - 团队归属      │                                           │
+│                 │                                           │
+└─────────────────┴───────────────────────────────────────────┘
+```
+
+**核心改进**：
+
+1. **引导式创建流程（Wizard）**：4 个步骤，每步聚焦一个维度，带进度指示
+2. **实时系统提示预览**：右侧面板实时展示根据当前配置生成的完整系统提示词
+3. **完整的 Agent 配置面板**：
+   - LLM 配置：模型选择（按 Provider 分组）、temperature、max tokens
+   - 工具白名单：可视化勾选，分类展示（文件/Shell/Git/Web/MCP/A2A）
+   - Token 预算：日限额设置 + 预估月成本计算
+   - 环境需求声明：勾选所需工具（Git/Docker/Browser/Python 等），部署时自动校验
+4. **模板导入/导出**：JSON 格式，支持一键导入他人分享的模板
+5. **Workflow 可视化编辑器**：
+   - 节点拖拽 + 连线，直观表达 DAG 依赖
+   - 步骤类型可视化区分（颜色/图标）
+   - 执行路径模拟（高亮预期执行顺序）
+6. **"Test Agent" 按钮**：创建前先用一个简单测试任务验证 Agent 能否正常工作
+
+---
+
+#### P1.2 端到端任务完成度验证
+
+**问题**：基础设施完善但从未验证：**一个 Agent 能否独立完成一个真实的编码任务？**
+
+**标准化验证场景**：
+
+| 场景 | 输入 | 期望输出 | 考察能力 |
+|------|------|----------|----------|
+| 创建 REST endpoint | "在 api-server.ts 中添加 GET /api/health 端点" | 可工作的代码 + 测试 | 代码生成、文件操作、工具使用 |
+| 修复 Bug | "Usage 页面进度条颜色不显示" + 相关代码 | 正确的修复 + 原因分析 | 代码理解、调试推理 |
+| 写测试 | "为 billing-service.ts 写单元测试" | 覆盖核心逻辑的 Vitest 测试 | 代码理解、测试设计 |
+| 代码重构 | "将 agent.ts 中的记忆相关方法提取为独立模块" | 功能不变、结构更清晰 | 大文件理解、重构能力 |
+| 文档编写 | "为 Workflow Engine 写 API 文档" | 准确反映接口的 Markdown 文档 | 代码理解、技术写作 |
+
+**执行方法**：
+1. 为每个场景创建标准化 Task，通过 API 分配给 developer 角色 Agent
+2. 记录完整执行轨迹（工具调用序列、token 消耗、时间、成功/失败）
+3. 人工评估输出质量（正确性、完整性、代码风格）
+4. 分析失败模式并分类（上下文不足 / 工具缺失 / LLM 能力限制 / 指令不清）
+
+**验收标准**：5 个场景中 ≥ 3 个 Agent 可独立完成或仅需 1 次人工修正。
+
+---
+
+#### P1.3 快速启动体验
+
+**问题**：新用户从 `git clone` 到"有一个能干活的 Agent"需要：配置数据库、设置 LLM API key、理解组织模型、创建 Agent。步骤多、概念重。
+
+**方案**：
+
+1. **`markus init` CLI 命令**：
+   ```
+   $ markus init
+   Welcome to Markus! Let's set up your AI team.
+
+   ? LLM Provider: (Anthropic / OpenAI / Ollama-local)
+   ? API Key: sk-ant-...
+   ? Database: (Auto-create PostgreSQL / Use existing / SQLite for quick start)
+
+   ✓ Database ready
+   ✓ Default organization "My Team" created
+   ✓ Manager agent "Alice" deployed (role: project-manager)
+   ✓ Developer agent "Bob" deployed (role: developer)
+
+   Open http://localhost:3000 to start chatting with your team!
+   ```
+
+2. **零配置模式**：检测到无 DB 时自动使用 SQLite（通过 `better-sqlite3` + Drizzle 适配）；检测到无 LLM key 时提示并写入 `.env`
+3. **首次引导 UI**：Web UI 检测到无 Agent 时，显示引导而非空白 Dashboard
+
+**验收标准**：新用户 5 分钟内从 clone 到与 Agent 对话。
+
+---
+
+#### P2.1 社区生态 GitHub 模式
+
+**问题**：当前 Marketplace 是扁平列表（`draft → pending_review → published`），缺少：
+- 公开/私有区分
+- Fork（基于别人的模板修改创建自己的版本）
+- 版本历史
+- 上游同步
+
+**参考 GitHub 的核心模式**：
+
+```
+┌──────────────────────────────────────────────────────┐
+│              Markus Community Hub                     │
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  [Explore]  [My Templates]  [My Skills]              │
+│                                                      │
+│  ┌────────────────────────────────────────────┐      │
+│  │  📦 senior-backend-dev          ★★★★☆ (23) │      │
+│  │  by @alice  |  v2.1.0  |  Fork: 15        │      │
+│  │  visibility: 🌐 public                    │      │
+│  │                                            │      │
+│  │  [Use Template]  [Fork]  [View Source]     │      │
+│  └────────────────────────────────────────────┘      │
+│                                                      │
+│  ┌────────────────────────────────────────────┐      │
+│  │  📦 my-custom-reviewer          (forked)   │      │
+│  │  by @me  |  forked from @alice/reviewer    │      │
+│  │  visibility: 🔒 private                   │      │
+│  │  ↑ upstream has 2 new commits              │      │
+│  │                                            │      │
+│  │  [Edit]  [Sync Upstream]  [Make Public]    │      │
+│  └────────────────────────────────────────────┘      │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+**数据库模型扩展**：
+
+```sql
+-- marketplace_templates 新增字段
+ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS
+  visibility varchar(16) NOT NULL DEFAULT 'public';   -- 'public' | 'private' | 'unlisted'
+ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS
+  forked_from varchar(64) REFERENCES marketplace_templates(id);
+ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS
+  fork_count integer DEFAULT 0;
+ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS
+  version_history jsonb DEFAULT '[]';  -- [{version, changelog, createdAt}]
+ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS
+  org_id varchar(64);  -- 归属组织
+
+-- 同样应用于 marketplace_skills
+```
+
+**核心操作**：
+
+| 操作 | 说明 |
+|------|------|
+| **Publish** | 将私有模板公开到社区 |
+| **Fork** | 基于公开模板创建自己的副本，记录 `forked_from` |
+| **Sync upstream** | 将上游模板的更新合并到 Fork 版本 |
+| **Version** | 每次修改自动创建版本快照，支持回滚 |
+| **Transfer** | 将模板所有权转移给另一个用户/组织 |
+
+---
+
+#### P2.2 上下文精细化
+
+**上下文窗口优先级管理**：
+
+系统提示已经很长（角色 + 身份 + 组织 + 策略 + 记忆 + 任务板 + 指令）。需要为各段落标注优先级权重，在 token budget 紧张时按优先级裁剪：
+
+| 优先级 | 上下文段落 | 裁剪策略 |
+|--------|-----------|----------|
+| P0（不可裁剪） | 角色系统提示、当前任务描述 | 始终保留完整 |
+| P1（优先保留） | 最近 3 轮对话、sender 身份、环境信息 | 超长时截断旧轮次 |
+| P2（可压缩） | 任务板、同事列表 | 仅保留活跃任务，同事列表折叠为摘要 |
+| P3（可裁剪） | 长期记忆、活动日志 | token 紧张时截断到最相关的 top-3 |
+| P4（可丢弃） | 管理规则重复段落、通用指令 | 预算不足时完全省略 |
+
+**Agent 角色提示词优化**：
+
+16 个内置 ROLE.md 是理论设计，未经实际使用验证。基于 P1.2 的实测反馈：
+- 改进最常用角色（developer, reviewer, project-manager）的系统提示
+- 加入具体的工作流程指令（而非泛泛的角色描述）
+- 减少 MANDATORY RULE 类指令的冗余（当前系统提示中有 4 段重复的 task management 规则，合并为 1 段）
 
 ---
 
@@ -1433,4 +1897,4 @@ Mid --> Long
 
 ---
 
-> **总结**：Markus v0.7.0 已完成从"玩具"到"工具"的关键转变。经过 4 轮迭代，原始诊断的 6 个根因中 5 个已完全解决（状态持久化、工具可靠性、A2A 连通、HITL 审批、可观测性），1 个部分解决（上下文工程）。系统现在支持：Agent 状态跨重启恢复、工具执行隔离与幂等、真实任务委派、敏感操作审批阻塞、OTel 兼容 Tracing、端到端成本控制与 Dashboard 可视化。下一阶段的重点是 RAG 向量检索、Workflow 持久化和审批 UI，以进一步提升 Agent 的长期工作能力和用户信任。
+> **总结**：Markus v0.7.0 已完成基础设施层面从"玩具"到"工具"的转变——状态持久化、工具可靠性、A2A 连通、HITL 审批、可观测性均已就位。下一阶段分三个层次推进：**P0 Agent 核心能力**（记忆向量检索一步到位 pgvector、Token 计量三层精准化策略、运行环境自动探测），**P1 创作与体验**（Builder 引导式重新设计 + 端到端实战验证 + 快速启动），**P2 生态与社区**（GitHub 模式的公开/私有/Fork 社区体系 + 上下文精细化）。核心原则：只做能让 Agent 更有用的事，拒绝"看起来重要但没人用"的功能。

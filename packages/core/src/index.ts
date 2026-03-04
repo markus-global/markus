@@ -8,6 +8,8 @@ export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './ag
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig } from './context-engine.js';
+export { SmartTokenCounter, getDefaultTokenCounter, initTokenCounter, type TokenCounter } from './token-counter.js';
+export { detectEnvironment, clearEnvironmentCache, type EnvironmentProfile, type ToolInfo, type BrowserInfo, type RuntimeInfo } from './environment-profile.js';
 export { ToolSelector, type ToolGroup } from './tool-selector.js';
 export { LLMRouter } from './llm/router.js';
 export { AnthropicProvider } from './llm/anthropic.js';
@@ -16,6 +18,10 @@ export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
+export {
+  SemanticMemorySearch, OpenAIEmbeddingProvider, PgVectorStore, TrigramFallbackSearch,
+  type EmbeddingProvider, type VectorStore, type SemanticSearchResult,
+} from './memory/semantic-search.js';
 export { AgentMetricsCollector } from './agent-metrics.js';
 export type { AgentMetricsSnapshot, TokenUsage, TaskMetrics } from './agent-metrics.js';
 export { EnhancedMemorySystem } from './enhanced-memory-system.js';
