@@ -1525,3 +1525,74 @@ end note
 ---
 
 > **总结**：Markus 的架构设计展现了对 AI Agent 平台的深入思考——类型系统完善、模块边界清晰、概念模型丰富。但当前的核心矛盾是**架构完整性与实现可靠性之间的断裂**：定义了组织、团队、工作流、A2A 等丰富概念，但在关键的"最后一公里"——状态持久化、工具可靠性、A2A 真正连通、Human-in-the-Loop——都存在明显缺口。要从"玩具"变成"工具"，首要任务不是增加更多功能，而是让现有的单 Agent 执行流程**端到端可靠**。
+
+---
+
+## 9. Phase 1 实施记录（2026-03-04）
+
+以下改进已在本次迭代中完成，解决了第 6 章诊断的四个核心问题。
+
+### 9.1 A2A 委派连通（修复根因 3）
+
+**问题**：`DelegationManager` 的处理器仅记录日志，不触发实际工作。
+
+**改进**：
+- `DelegationManager` 新增 `onDelegationReceived()` 回调机制
+- `AgentManager` 在构造函数中创建 `DelegationManager` 并注册委派处理器
+- 委派处理器接收到 `task_delegate` 消息时，自动通过 `TaskService.createTask()` 创建真实任务并分配给目标 Agent
+- Agent 创建/恢复时自动注册 `AgentCard`，移除时注销
+- `agent_delegate_task` 工具优先使用 `DelegationManager`（创建真实任务），降级为消息发送
+
+**涉及文件**：`packages/a2a/src/delegation.ts`, `packages/core/src/agent-manager.ts`, `packages/core/src/tools/a2a-structured.ts`, `packages/core/src/tools/a2a.ts`
+
+### 9.2 Human-in-the-Loop 审批阻塞（修复根因 4）
+
+**问题**：`SecurityGuard.needsApproval` 返回后不阻塞执行，`pendingApprovals` 未使用。
+
+**改进**：
+- Agent 新增 `ApprovalCallback` 类型和 `setApprovalCallback()` 方法
+- `executeTool()` 中检查 `config.profile.requireApprovalFor`，匹配时调用审批回调并**等待**人类响应
+- `HITLService` 新增 `requestApprovalAndWait()` 方法，创建审批请求后返回 Promise，在人类通过 `/api/approvals/:id` 响应后 resolve
+- 审批超时（默认 5 分钟）自动拒绝
+- CLI 启动时自动连接 `agentManager.setApprovalHandler()` → `hitlService.requestApprovalAndWait()`
+
+**端到端流程**：
+```
+Agent 调用敏感工具 → 检查 requireApprovalFor 匹配 → 调用 approvalCallback
+→ HITLService 创建审批请求 + WebSocket 通知 → 等待人类响应
+→ 人类通过 API approve/reject → Promise resolve → 工具执行或拒绝
+```
+
+**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`, `packages/org-manager/src/hitl-service.ts`, `packages/cli/src/index.ts`
+
+### 9.3 Agent Profile 结构化能力定义（修复根因 6 的一部分）
+
+**问题**：角色系统过于宽泛，Agent 的能力无法验证和约束。
+
+**改进**：
+- 新增 `AgentProfile` 类型，包含：
+  - `toolWhitelist` / `toolBlacklist`：工具白/黑名单
+  - `maxTokensPerTask` / `maxTokensPerDay`：成本预算
+  - `maxConcurrentTasks`：并发限制
+  - `requireApprovalFor`：需要审批的工具列表
+  - `workspacePath`：工作区路径约束
+- `AgentConfig` 新增可选 `profile` 字段
+- `executeTool()` 中强制执行工具白/黑名单
+- `_executeTaskInternal()` 中强制执行并发限制
+- `updateTokensUsed()` 中检查日预算，超出后自动暂停 Agent
+
+**涉及文件**：`packages/shared/src/types/agent.ts`, `packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`
+
+### 9.4 执行状态持久化（修复根因 1 的基础设施）
+
+**问题**：所有运行时状态在内存中，进程重启全部丢失。
+
+**改进**：
+- Agent 新增 `stateChangeCallback`，在状态变更（status、token、activeTasks）时通知外部
+- `AgentManager` 新增 `setStateChangeHandler()`，将回调传递给所有 Agent
+- 数据库 Schema 新增 `active_task_ids` 字段
+- 新增 SQL 迁移 `0006_add_agent_active_tasks.sql`
+
+**接线方式**：服务启动时调用 `agentManager.setStateChangeHandler()` 注册 DB 更新逻辑。
+
+**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`, `packages/storage/src/schema.ts`, `packages/storage/drizzle/0006_add_agent_active_tasks.sql`

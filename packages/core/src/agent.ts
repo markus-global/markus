@@ -41,6 +41,14 @@ export interface AgentToolHandler {
   execute(args: Record<string, unknown>): Promise<string>;
 }
 
+export type ApprovalCallback = (request: {
+  agentId: string;
+  agentName: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  reason: string;
+}) => Promise<boolean>;
+
 export interface SandboxHandle {
   exec(
     command: string,
@@ -94,6 +102,7 @@ export class Agent {
     detail?: string;
   }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
+  private approvalCallback?: ApprovalCallback;
   private tasksFetcher?: () => Array<{
     id: string;
     title: string;
@@ -109,6 +118,7 @@ export class Agent {
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
   private stateManager?: AgentStateManager;
+  private stateChangeCallback?: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
@@ -188,6 +198,8 @@ export class Agent {
     if (this.stateManager) {
       this.stateManager.updateState({ status });
     }
+
+    this.notifyStateChange();
 
     this.eventBus.emit('agent:status-changed', {
       agentId: this.id,
@@ -364,6 +376,17 @@ export class Agent {
     if (this.stateManager) {
       this.stateManager.updateTokensUsed(tokens);
     }
+    this.notifyStateChange();
+    // Enforce daily token budget — pause agent if exceeded
+    const profile = this.config.profile;
+    if (profile?.maxTokensPerDay != null && this.state.tokensUsedToday >= profile.maxTokensPerDay) {
+      this.setStatus('paused');
+      log.warn('Agent paused: daily token budget exceeded', {
+        agentId: this.id,
+        tokensUsedToday: this.state.tokensUsedToday,
+        maxTokensPerDay: profile.maxTokensPerDay,
+      });
+    }
   }
 
   /**
@@ -426,8 +449,26 @@ export class Agent {
     this.auditCallback?.(event);
   }
 
+  setApprovalCallback(cb: ApprovalCallback): void {
+    this.approvalCallback = cb;
+  }
+
   setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
     this.escalationCallback = cb;
+  }
+
+  setStateChangeCallback(cb: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void): void {
+    this.stateChangeCallback = cb;
+  }
+
+  private notifyStateChange(): void {
+    if (this.stateChangeCallback) {
+      this.stateChangeCallback(this.id, {
+        status: this.state.status,
+        tokensUsedToday: this.state.tokensUsedToday,
+        activeTaskIds: [...this.activeTasks],
+      });
+    }
   }
 
   /** Inject a function that returns this agent's currently assigned tasks for system prompt context */
@@ -941,8 +982,12 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean }
   ): Promise<void> {
+    if (this.config.profile?.maxConcurrentTasks != null && this.activeTasks.size >= this.config.profile.maxConcurrentTasks) {
+      throw new Error(`Agent has reached maximum concurrent tasks (${this.config.profile.maxConcurrentTasks})`);
+    }
     this.setStatus('working');
     this.activeTasks.add(taskId);
+    this.notifyStateChange();
     const taskStartMs = Date.now();
 
     let seq = 0;
@@ -1117,6 +1162,7 @@ export class Agent {
     } finally {
       // 从活动任务中移除
       this.activeTasks.delete(taskId);
+      this.notifyStateChange();
 
       // 如果没有活动任务，设置状态为idle
       if (this.activeTasks.size === 0) {
@@ -1278,6 +1324,41 @@ export class Agent {
         unknown,
         message: `${activated.length} tools activated. They are now available for your next response.`,
       });
+    }
+
+    // Enforce agent profile tool restrictions
+    const profile = this.config.profile;
+    if (profile) {
+      if (profile.toolWhitelist && !profile.toolWhitelist.includes(toolCall.name)) {
+        return JSON.stringify({ status: 'denied', error: `Tool '${toolCall.name}' is not in this agent's allowed tool list` });
+      }
+      if (profile.toolBlacklist?.includes(toolCall.name)) {
+        return JSON.stringify({ status: 'denied', error: `Tool '${toolCall.name}' is blocked by agent profile` });
+      }
+    }
+
+    // Check if this tool requires human approval
+    const needsApproval = this.config.profile?.requireApprovalFor?.some(
+      pattern => toolCall.name === pattern || toolCall.name.startsWith(pattern.replace('*', ''))
+    );
+    if (needsApproval) {
+      if (this.approvalCallback) {
+        log.info(`Tool ${toolCall.name} requires approval, requesting...`, { agentId: this.id });
+        const approved = await this.approvalCallback({
+          agentId: this.id,
+          agentName: this.config.name,
+          toolName: toolCall.name,
+          toolArgs: toolCall.arguments,
+          reason: `Agent wants to execute '${toolCall.name}'`,
+        });
+        if (!approved) {
+          log.info(`Tool ${toolCall.name} execution denied by human`, { agentId: this.id });
+          return JSON.stringify({ status: 'denied', error: `Execution of '${toolCall.name}' was denied by human reviewer` });
+        }
+        log.info(`Tool ${toolCall.name} approved by human`, { agentId: this.id });
+      } else {
+        log.warn(`Tool ${toolCall.name} requires approval but no approval callback set`, { agentId: this.id });
+      }
     }
 
     const handler = this.tools.get(toolCall.name);

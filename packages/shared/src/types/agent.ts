@@ -8,6 +8,7 @@ export interface AgentConfig {
   teamId?: string;
   agentRole: 'manager' | 'worker';
   skills: string[];
+  profile?: AgentProfile;
   llmConfig: LLMAssignment;
   computeConfig: ComputeAssignment;
   channels: ChannelBinding[];
@@ -50,4 +51,21 @@ export interface AgentState {
   containerId?: string;
   memoryUsageMb?: number;
   tokensUsedToday: number;
+}
+
+export interface AgentProfile {
+  /** Allowed tool names — if set, agent can ONLY use these tools */
+  toolWhitelist?: string[];
+  /** Denied tool names — if set, these tools are blocked even if otherwise available */
+  toolBlacklist?: string[];
+  /** Maximum tokens this agent can consume per single task */
+  maxTokensPerTask?: number;
+  /** Maximum tokens per day across all interactions */
+  maxTokensPerDay?: number;
+  /** Maximum concurrent tasks */
+  maxConcurrentTasks?: number;
+  /** Operations that require human approval before execution */
+  requireApprovalFor?: string[];
+  /** Working directory constraint — agent tools restricted to this path */
+  workspacePath?: string;
 }

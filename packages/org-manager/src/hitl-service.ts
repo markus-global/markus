@@ -58,6 +58,7 @@ function genId(prefix: string): string {
 
 export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
+  private pendingResolvers = new Map<string, (approved: boolean) => void>();
   private bounties = new Map<string, BountyTask>();
   private notifications = new Map<string, Notification>();
   private notificationHandlers: NotificationHandler[] = [];
@@ -121,6 +122,31 @@ export class HITLService {
     return approval;
   }
 
+  /** Request approval and wait for human response. Resolves when approve/reject is called via API. */
+  async requestApprovalAndWait(opts: {
+    agentId: string;
+    agentName: string;
+    type: ApprovalRequest['type'];
+    title: string;
+    description: string;
+    details?: Record<string, unknown>;
+    targetUserId?: string;
+    expiresInMs?: number;
+  }): Promise<boolean> {
+    const approval = this.requestApproval(opts);
+    return new Promise<boolean>((resolve) => {
+      this.pendingResolvers.set(approval.id, resolve);
+      if (opts.expiresInMs) {
+        setTimeout(() => {
+          if (this.pendingResolvers.has(approval.id)) {
+            this.pendingResolvers.delete(approval.id);
+            resolve(false);
+          }
+        }, opts.expiresInMs);
+      }
+    });
+  }
+
   respondToApproval(id: string, approved: boolean, respondedBy: string): ApprovalRequest | undefined {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
@@ -129,6 +155,12 @@ export class HITLService {
     approval.respondedAt = new Date().toISOString();
     approval.respondedBy = respondedBy;
     log.info(`Approval ${id} ${approval.status} by ${respondedBy}`);
+
+    const resolve = this.pendingResolvers.get(id);
+    if (resolve) {
+      this.pendingResolvers.delete(id);
+      resolve(approved);
+    }
     return approval;
   }
 

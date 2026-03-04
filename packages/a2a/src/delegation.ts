@@ -17,11 +17,17 @@ export interface DelegationResult {
 export class DelegationManager {
   private agentCards = new Map<string, AgentCard>();
   private pendingDelegations = new Map<string, { delegation: TaskDelegation; from: string; resolvers: { resolve: (r: DelegationResult) => void; reject: (e: Error) => void } }>();
+  private delegationHandler?: (envelope: A2AEnvelope, delegation: TaskDelegation) => Promise<void>;
 
   constructor(private bus: A2ABus) {
     bus.on('task_delegate', (env) => this.handleDelegation(env));
     bus.on('task_update', (env) => this.handleUpdate(env));
     bus.on('task_complete', (env) => this.handleComplete(env));
+  }
+
+  /** Set a handler that will be called when a task_delegate message arrives */
+  onDelegationReceived(handler: (envelope: A2AEnvelope, delegation: TaskDelegation) => Promise<void>): void {
+    this.delegationHandler = handler;
   }
 
   registerAgentCard(card: AgentCard): void {
@@ -125,6 +131,9 @@ export class DelegationManager {
       to: envelope.to,
       taskId: delegation.taskId,
     });
+    if (this.delegationHandler) {
+      await this.delegationHandler(envelope, delegation);
+    }
   }
 
   private async handleUpdate(envelope: A2AEnvelope): Promise<void> {

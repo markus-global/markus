@@ -352,6 +352,30 @@ async function startServer(
     });
   });
 
+  agentManager.setApprovalHandler(async (agentId, request) => {
+    const agents = agentManager.listAgents();
+    const agentName = agents.find((a) => a.id === agentId)?.name ?? agentId;
+    const approved = await hitlService.requestApprovalAndWait({
+      agentId,
+      agentName,
+      type: 'action',
+      title: `Tool: ${request.toolName}`,
+      description: request.reason,
+      details: { toolName: request.toolName, toolArgs: request.toolArgs },
+      targetUserId: 'default',
+      expiresInMs: 5 * 60 * 1000, // 5 minutes
+    });
+    auditService.record({
+      orgId: 'default',
+      agentId,
+      type: 'approval_response',
+      action: request.toolName,
+      detail: approved ? 'approved' : 'rejected',
+      success: approved,
+    });
+    return approved;
+  });
+
   agentManager.setAuditCallback((agentId, event) => {
     auditService.record({
       orgId: 'default',

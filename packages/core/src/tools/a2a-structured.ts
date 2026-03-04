@@ -6,7 +6,8 @@ import type {
   ProgressSync,
   CapabilityDiscovery,
   StatusBroadcast,
-  TaskDelegation
+  TaskDelegation,
+  DelegationResult,
 } from '@markus/a2a';
 import crypto from 'crypto';
 
@@ -35,6 +36,8 @@ export interface StructuredA2AContext {
   selfName: string;
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string) => Promise<string>;
+  /** When provided, delegations go through DelegationManager for real task creation */
+  delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
 }
 
 export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHandler[] {
@@ -245,8 +248,16 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
           deadline: args['deadline_ms'] ? new Date(Date.now() + (args['deadline_ms'] as number)).toISOString() : undefined,
           context: args['required_skills'] as string || undefined,
         };
-        
-        return sendStructuredMessage(targetId, 'task_delegation', taskDelegation);
+
+        if (ctx.delegateTask) {
+          const result = await ctx.delegateTask(targetId, taskDelegation);
+          return JSON.stringify({
+            status: result.accepted ? 'delegated' : 'rejected',
+            delegatedTo: result.delegatedTo,
+            reason: result.reason,
+          });
+        }
+        return sendStructuredMessage(targetId, 'task_delegate', taskDelegation);
       },
     },
     {

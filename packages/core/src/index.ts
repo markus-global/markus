@@ -1,5 +1,5 @@
 export { Agent } from './agent.js';
-export type { AgentToolHandler, SandboxHandle } from './agent.js';
+export type { AgentToolHandler, SandboxHandle, ApprovalCallback } from './agent.js';
 export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';

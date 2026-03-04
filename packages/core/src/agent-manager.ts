@@ -1,4 +1,4 @@
-import { createLogger, agentId as genAgentId, type AgentConfig, type IdentityContext, type HumanUser } from '@markus/shared';
+import { createLogger, agentId as genAgentId, type AgentConfig, type AgentProfile, type IdentityContext, type HumanUser } from '@markus/shared';
 import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
@@ -13,7 +13,7 @@ import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.
 import { createMemoryTools } from './tools/memory.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
-import { A2ABus } from '@markus/a2a';
+import { A2ABus, DelegationManager } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
@@ -64,6 +64,7 @@ export interface CreateAgentRequest {
   enableSandbox?: boolean;
   mcpServers?: Record<string, MCPServerConfig>;
   securityPolicy?: SecurityPolicy;
+  profile?: AgentProfile;
 }
 
 export class AgentManager {
@@ -80,7 +81,10 @@ export class AgentManager {
   private taskService?: TaskServiceBridge;
   private agentAuditCallback?: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
   private escalationHandler?: (agentId: string, reason: string) => void;
+  private approvalHandler?: (agentId: string, request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<boolean>;
+  private stateChangeHandler?: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void;
   private a2aBus: A2ABus;
+  private delegationManager: DelegationManager;
   private templateRegistry?: TemplateRegistry;
   private groupChatHandlers?: {
     sendGroupMessage: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
@@ -111,6 +115,33 @@ export class AgentManager {
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
     this.a2aBus = new A2ABus();
+    this.delegationManager = new DelegationManager(this.a2aBus);
+    this.delegationManager.onDelegationReceived(async (envelope, delegation) => {
+      const targetAgent = this.agents.get(envelope.to);
+      if (!targetAgent) {
+        log.warn('Delegation target agent not found', { to: envelope.to });
+        return;
+      }
+
+      if (this.taskService) {
+        const task = this.taskService.createTask({
+          orgId: targetAgent.config.orgId,
+          title: delegation.title,
+          description: delegation.description,
+          priority: delegation.priority ?? 'medium',
+          assignedAgentId: envelope.to,
+        });
+        log.info('Delegation created real task', { taskId: task.id, delegatedTo: envelope.to, from: envelope.from });
+      } else {
+        // No task service — send as a direct message to the agent
+        await targetAgent.handleMessage(
+          `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
+          envelope.from,
+          { name: envelope.from, role: 'manager' },
+          { ephemeral: true }
+        );
+      }
+    });
     this.templateRegistry = options.templateRegistry;
     mkdirSync(this.dataDir, { recursive: true });
   }
@@ -134,6 +165,7 @@ export class AgentManager {
       teamId: request.teamId,
       agentRole: request.agentRole ?? 'worker',
       skills: request.skills ?? role.defaultSkills,
+      profile: request.profile,
       llmConfig: { primary: this.llmRouter.defaultProviderName },
       computeConfig: { type: 'docker' },
       channels: [],
@@ -186,6 +218,8 @@ export class AgentManager {
           maxHistory: 15,
         });
       },
+      delegateTask: async (targetId: string, delegation: import('@markus/a2a').TaskDelegation) =>
+        this.delegationManager.delegateTask(id, delegation, targetId),
       ...(this.groupChatHandlers ? {
         sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
         createGroupChat: (name: string, memberIds: string[]) => this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
@@ -332,8 +366,23 @@ export class AgentManager {
     if (this.escalationHandler) {
       agent.setEscalationCallback(this.escalationHandler);
     }
+    if (this.approvalHandler) {
+      const ah = this.approvalHandler;
+      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => ah(id, req));
+    }
+    if (this.stateChangeHandler) {
+      agent.setStateChangeCallback(this.stateChangeHandler);
+    }
 
     this.agents.set(id, agent);
+    this.delegationManager.registerAgentCard({
+      agentId: id,
+      name: config.name,
+      role: role.name,
+      capabilities: config.skills,
+      skills: config.skills,
+      status: 'idle',
+    });
     this.eventBus.emit('agent:created', { agentId: id, name: request.name });
     log.info(`Agent created: ${request.name} (${id})`);
 
@@ -420,6 +469,8 @@ export class AgentManager {
           maxHistory: 15,
         });
       },
+      delegateTask: async (targetId: string, delegation: import('@markus/a2a').TaskDelegation) =>
+        this.delegationManager.delegateTask(id, delegation, targetId),
     };
     for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
@@ -493,8 +544,20 @@ export class AgentManager {
     if (this.escalationHandler) {
       agent.setEscalationCallback(this.escalationHandler);
     }
+    if (this.approvalHandler) {
+      const ah = this.approvalHandler;
+      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => ah(id, req));
+    }
 
     this.agents.set(id, agent);
+    this.delegationManager.registerAgentCard({
+      agentId: id,
+      name: config.name,
+      role: role.name,
+      capabilities: config.skills,
+      skills: config.skills,
+      status: 'idle',
+    });
     this.eventBus.emit('agent:created', { agentId: id, name: row.name });
     log.info(`Agent restored: ${row.name} (${id})`);
     return agent;
@@ -537,6 +600,7 @@ export class AgentManager {
     if (agent) {
       await agent.stop();
       this.a2aBus.unregisterAgent(agentId);
+      this.delegationManager.unregisterAgentCard(agentId);
       if (this.sandboxFactory) {
         try { await this.sandboxFactory.destroy(agentId); } catch { /* ignore */ }
       }
@@ -570,6 +634,20 @@ export class AgentManager {
     }
   }
 
+  setApprovalHandler(handler: (agentId: string, request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<boolean>): void {
+    this.approvalHandler = handler;
+    for (const [id, agent] of this.agents) {
+      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => handler(id, req));
+    }
+  }
+
+  setStateChangeHandler(handler: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void): void {
+    this.stateChangeHandler = handler;
+    for (const [, agent] of this.agents) {
+      agent.setStateChangeCallback(handler);
+    }
+  }
+
   listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[]; activeTaskCount: number; teamId?: string }> {
     return [...this.agents.values()].map((a) => {
       const state = a.getState();
@@ -600,6 +678,10 @@ export class AgentManager {
 
   getA2ABus(): A2ABus {
     return this.a2aBus;
+  }
+
+  getDelegationManager(): DelegationManager {
+    return this.delegationManager;
   }
 
   setTemplateRegistry(registry: TemplateRegistry): void {
