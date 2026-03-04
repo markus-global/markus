@@ -104,6 +104,8 @@ export const tasks = pgTable('tasks', {
   parentTaskId: varchar('parent_task_id', { length: 64 }),
   result: jsonb('result'),
   notes: jsonb('notes').default([]),
+  projectId: varchar('project_id', { length: 64 }),
+  iterationId: varchar('iteration_id', { length: 64 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
   dueAt: timestamp('due_at'),

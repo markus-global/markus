@@ -292,6 +292,8 @@ export interface TaskInfo {
   parentTaskId?: string;
   subtaskIds?: string[];
   notes?: string[];
+  projectId?: string;
+  iterationId?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -543,16 +545,18 @@ export const api = {
       request(`/teams/${teamId}/members/${memberId}`, { method: 'DELETE' }),
   },
   tasks: {
-    list: (filters?: { assignedAgentId?: string; status?: string }) => {
+    list: (filters?: { assignedAgentId?: string; status?: string; projectId?: string; iterationId?: string }) => {
       const params = new URLSearchParams();
       if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
       if (filters?.status) params.set('status', filters.status);
+      if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
       const qs = params.toString();
       return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
-    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign }) }),
+    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
@@ -560,7 +564,13 @@ export const api = {
     assign: (id: string, agentId: string | null) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     delete: (id: string) => request(`/tasks/${id}`, { method: 'DELETE' }),
-    board: () => request<{ board: Record<string, TaskInfo[]> }>('/taskboard'),
+    board: (filters?: { projectId?: string; iterationId?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
+      const qs = params.toString();
+      return request<{ board: Record<string, TaskInfo[]> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+    },
     listSubtasks: (parentId: string) => request<{ subtasks: TaskInfo[] }>(`/tasks/${parentId}/subtasks`),
     createSubtask: (parentId: string, title: string, description?: string, priority?: string) =>
       request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),

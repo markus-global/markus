@@ -142,6 +142,10 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
     )`,
     `CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id)`,
 
+    // tasks: project/iteration association
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id varchar(64)`,
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_id varchar(64)`,
+
     // marketplace_templates: community features (visibility, fork, versioning)
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS visibility varchar(16) NOT NULL DEFAULT 'public'`,
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS forked_from varchar(64)`,

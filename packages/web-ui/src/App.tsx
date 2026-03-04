@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { PageId } from './types.ts';
 import { Dashboard } from './pages/Dashboard.tsx';
-import { TaskBoard } from './pages/TaskBoard.tsx';
 import { Chat } from './pages/Chat.tsx';
 import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
@@ -25,6 +24,7 @@ const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'sk
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
   if (hash === 'agents') return 'team';
+  if (hash === 'tasks') return 'projects';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -37,9 +37,10 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    setPage(p);
-    setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
-    window.location.hash = p;
+    const normalized: PageId = p === 'tasks' ? 'projects' : p;
+    setPage(normalized);
+    setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
+    window.location.hash = normalized;
   }, []);
 
   useEffect(() => {
@@ -62,9 +63,8 @@ export function App() {
   }, []);
 
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
-  const pageElements = useMemo<Record<PageId, React.JSX.Element>>(() => ({
+  const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => ({
     dashboard: <Dashboard />,
-    tasks: <TaskBoard />,
     chat: <Chat authUser={currentUser} />,
     team: <TeamPage authUser={currentUser} />,
     usage: <Usage />,

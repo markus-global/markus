@@ -407,6 +407,8 @@ export class TaskService {
             row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
           updatedAt:
             row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+          projectId: row.projectId ?? undefined,
+          iterationId: row.iterationId ?? undefined,
           dueAt:
             row.dueAt instanceof Date
               ? row.dueAt.toISOString()
@@ -536,6 +538,8 @@ export class TaskService {
           priority: task.priority,
           assignedAgentId: task.assignedAgentId,
           parentTaskId: task.parentTaskId,
+          projectId: task.projectId,
+          iterationId: task.iterationId,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
         })
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
@@ -705,6 +709,8 @@ export class TaskService {
     status?: TaskStatus;
     assignedAgentId?: string;
     priority?: TaskPriority;
+    projectId?: string;
+    iterationId?: string;
   }): Task[] {
     let result = [...this.tasks.values()];
     if (filters?.orgId) result = result.filter(t => t.orgId === filters.orgId);
@@ -712,6 +718,8 @@ export class TaskService {
     if (filters?.assignedAgentId)
       result = result.filter(t => t.assignedAgentId === filters.assignedAgentId);
     if (filters?.priority) result = result.filter(t => t.priority === filters.priority);
+    if (filters?.projectId) result = result.filter(t => t.projectId === filters.projectId);
+    if (filters?.iterationId) result = result.filter(t => t.iterationId === filters.iterationId);
     return result;
   }
 
@@ -719,7 +727,7 @@ export class TaskService {
     return [...this.tasks.values()].filter(t => t.assignedAgentId === agentId);
   }
 
-  getTaskBoard(orgId: string): Record<TaskStatus, Task[]> {
+  getTaskBoard(orgId: string, filters?: { projectId?: string; iterationId?: string }): Record<TaskStatus, Task[]> {
     const board: Record<TaskStatus, Task[]> = {
       pending: [],
       assigned: [],
@@ -735,9 +743,10 @@ export class TaskService {
     };
 
     for (const task of this.tasks.values()) {
-      if (task.orgId === orgId) {
-        board[task.status].push(task);
-      }
+      if (task.orgId !== orgId) continue;
+      if (filters?.projectId && task.projectId !== filters.projectId) continue;
+      if (filters?.iterationId && task.iterationId !== filters.iterationId) continue;
+      board[task.status].push(task);
     }
 
     return board;

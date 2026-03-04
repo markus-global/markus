@@ -1170,7 +1170,9 @@ export class APIServer {
       const orgId = url.searchParams.get('orgId') ?? undefined;
       const status = url.searchParams.get('status') as TaskStatus | undefined;
       const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
-      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId });
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const iterationId = url.searchParams.get('iterationId') ?? undefined;
+      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId, projectId, iterationId });
       this.json(res, 200, { tasks });
       return;
     }
@@ -1203,6 +1205,8 @@ export class APIServer {
         assignedAgentId: body['assignedAgentId'] as string | undefined,
         requiredSkills: body['requiredSkills'] as string[] | undefined,
         autoAssign: body['autoAssign'] as boolean | undefined,
+        projectId: body['projectId'] as string | undefined,
+        iterationId: body['iterationId'] as string | undefined,
       });
       this.json(res, 201, { task });
       return;
@@ -1282,7 +1286,9 @@ export class APIServer {
 
     if (path === '/api/taskboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
-      const board = this.taskService.getTaskBoard(orgId);
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const iterationId = url.searchParams.get('iterationId') ?? undefined;
+      const board = this.taskService.getTaskBoard(orgId, { projectId, iterationId });
       this.json(res, 200, { board });
       return;
     }

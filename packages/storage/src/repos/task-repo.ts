@@ -27,6 +27,8 @@ export class TaskRepo {
     priority?: TaskPriority;
     assignedAgentId?: string;
     parentTaskId?: string;
+    projectId?: string;
+    iterationId?: string;
     dueAt?: Date;
   }) {
     const [row] = await this.db
@@ -40,6 +42,8 @@ export class TaskRepo {
         status: data.assignedAgentId ? 'assigned' : 'pending',
         assignedAgentId: data.assignedAgentId ?? null,
         parentTaskId: data.parentTaskId ?? null,
+        projectId: data.projectId ?? null,
+        iterationId: data.iterationId ?? null,
         dueAt: data.dueAt ?? null,
       })
       .returning();
@@ -68,13 +72,15 @@ export class TaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[] }
+    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
     if (data.description !== undefined) updates['description'] = data.description;
     if (data.priority !== undefined) updates['priority'] = data.priority;
     if (data.notes !== undefined) updates['notes'] = data.notes;
+    if (data.projectId !== undefined) updates['projectId'] = data.projectId;
+    if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
@@ -82,11 +88,13 @@ export class TaskRepo {
     await this.db.update(tasks).set({ result, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
-  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string }) {
+  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
     const conditions = [eq(tasks.orgId, orgId)];
     if (filters?.status) conditions.push(eq(tasks.status, filters.status));
     if (filters?.assignedAgentId)
       conditions.push(eq(tasks.assignedAgentId, filters.assignedAgentId));
+    if (filters?.projectId) conditions.push(eq(tasks.projectId, filters.projectId));
+    if (filters?.iterationId) conditions.push(eq(tasks.iterationId, filters.iterationId));
     return this.db
       .select()
       .from(tasks)
