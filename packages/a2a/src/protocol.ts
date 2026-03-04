@@ -20,7 +20,10 @@ export type A2AMessageType =
   | 'resource_response'
   | 'progress_sync'
   | 'capability_discovery'
-  | 'status_broadcast';
+  | 'status_broadcast'
+  // Governance messages
+  | 'announcement'
+  | 'feedback_notification';
 
 export interface A2AEnvelope {
   id: string;
@@ -94,7 +97,7 @@ export interface ResourceRequest {
   resourceName: string;
   description: string;
   requirements?: {
-    cpu?: number;  // CPU核心数
+    cpu?: number; // CPU核心数
     memory?: number; // 内存大小（MB）
     timeout?: number; // 超时时间（毫秒）
     [key: string]: unknown;

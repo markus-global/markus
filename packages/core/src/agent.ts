@@ -138,6 +138,7 @@ export class Agent {
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
   private dataDir: string;
+  private pauseReason?: string;
   private toolResultCounter = 0;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
@@ -272,6 +273,26 @@ export class Agent {
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`);
+  }
+
+  pause(reason?: string): void {
+    if (this.state.status === 'offline') return;
+    this.pauseReason = reason;
+    this.setStatus('paused');
+    this.eventBus.emit('agent:paused', { agentId: this.id, reason });
+    log.info(`Agent paused: ${this.config.name}`, { reason });
+  }
+
+  resume(): void {
+    if (this.state.status !== 'paused') return;
+    this.pauseReason = undefined;
+    this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
+    this.eventBus.emit('agent:resumed', { agentId: this.id });
+    log.info(`Agent resumed: ${this.config.name}`);
+  }
+
+  getPauseReason(): string | undefined {
+    return this.pauseReason;
   }
 
   /**

@@ -1,8 +1,16 @@
-import type { Task, TaskStatus, TaskPriority } from '@markus/shared';
-import { createLogger, taskId } from '@markus/shared';
+import {
+  createLogger,
+  taskId,
+  type Task,
+  type TaskStatus,
+  type TaskPriority,
+  type TaskGovernancePolicy,
+  type ApprovalTier,
+  type TaskDeliverable,
+} from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
-import type { TaskRepo, TaskLogRepo } from '@markus/storage';
+import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType } from '@markus/storage';
 
 const log = createLogger('task-service');
 
@@ -18,9 +26,22 @@ export interface CreateTaskRequest {
   autoAssign?: boolean;
   blockedBy?: string[];
   timeoutMs?: number;
+  // Governance fields
+  projectId?: string;
+  iterationId?: string;
+  createdBy?: string;
+  approvedVia?: string;
+  planReportId?: string;
+  reviewerAgentId?: string;
 }
 
-export type TaskEventType = 'created' | 'status_changed' | 'completed' | 'failed' | 'timeout' | 'unblocked';
+export type TaskEventType =
+  | 'created'
+  | 'status_changed'
+  | 'completed'
+  | 'failed'
+  | 'timeout'
+  | 'unblocked';
 export interface TaskEvent {
   type: TaskEventType;
   taskId: string;
@@ -85,13 +106,17 @@ export class TaskService {
    * Format previous execution logs into a context block so the agent can resume
    * from where it left off instead of starting fresh.
    */
-  private formatPreviousExecutionContext(logs: import('@markus/storage').TaskLogRow[]): string {
+  private formatPreviousExecutionContext(logs: TaskLogRow[]): string {
     if (logs.length === 0) return '';
 
     const lines: string[] = [];
     lines.push('## Previous Execution History');
-    lines.push('This task was previously worked on and paused/interrupted. Below is a record of what was already done.');
-    lines.push('**Continue from where the work stopped — do NOT repeat steps that are already marked as completed.**');
+    lines.push(
+      'This task was previously worked on and paused/interrupted. Below is a record of what was already done.'
+    );
+    lines.push(
+      '**Continue from where the work stopped — do NOT repeat steps that are already marked as completed.**'
+    );
     lines.push('');
 
     let runIndex = 0;
@@ -114,9 +139,7 @@ export class TaskService {
 
       if (entry.type === 'text') {
         // Truncate long reasoning to avoid bloating context too much
-        const text = entry.content.length > 600
-          ? entry.content.slice(0, 600) + '…'
-          : entry.content;
+        const text = entry.content.length > 600 ? entry.content.slice(0, 600) + '…' : entry.content;
         lines.push(text);
         lines.push('');
       } else if (entry.type === 'tool_start') {
@@ -166,7 +189,7 @@ export class TaskService {
         const otherTask = this.tasks.get(otherTaskId);
         throw new Error(
           `Agent "${agent.config.name}" is already working on "${otherTask?.title ?? otherTaskId}". ` +
-          `An agent can only execute one task at a time.`
+            `An agent can only execute one task at a time.`
         );
       }
     }
@@ -201,129 +224,164 @@ export class TaskService {
     const ws = this.ws;
 
     // Fire and forget — runs concurrently
-    void agent.executeTask(taskId, taskDescription, async (entry) => {
-      // Broadcast real-time delta via WS (not persisted)
-      if (!entry.persist) {
-        ws?.broadcast({
-          type: 'task:log:delta',
-          payload: { taskId, agentId, text: entry.content },
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      // Persist structured log entries to DB
-      const logEntry = {
+    void agent
+      .executeTask(
         taskId,
-        agentId,
-        seq: seq++,
-        type: entry.type as import('@markus/storage').TaskLogType,
-        content: entry.content,
-        metadata: entry.metadata,
-      };
+        taskDescription,
+        async entry => {
+          // Broadcast real-time delta via WS (not persisted)
+          if (!entry.persist) {
+            ws?.broadcast({
+              type: 'task:log:delta',
+              payload: { taskId, agentId, text: entry.content },
+              timestamp: new Date().toISOString(),
+            });
+            return;
+          }
 
-      let savedId: string | undefined;
-      if (taskLogRepo) {
-        try {
-          const row = await taskLogRepo.append(logEntry);
-          savedId = row.id;
-        } catch (err) {
-          log.warn('Failed to persist task log', { taskId, error: String(err) });
-        }
-      }
+          // Persist structured log entries to DB
+          const logEntry = {
+            taskId,
+            agentId,
+            seq: seq++,
+            type: entry.type as TaskLogType,
+            content: entry.content,
+            metadata: entry.metadata,
+          };
 
-      // Broadcast structured log event via WS
-      ws?.broadcast({
-        type: 'task:log',
-        payload: {
-          taskId,
-          agentId,
-          id: savedId,
-          seq: logEntry.seq,
-          logType: entry.type,
-          content: entry.content,
-          metadata: entry.metadata,
-          createdAt: new Date().toISOString(),
-        },
-        timestamp: new Date().toISOString(),
-      });
+          let savedId: string | undefined;
+          if (taskLogRepo) {
+            try {
+              const row = await taskLogRepo.append(logEntry);
+              savedId = row.id;
+            } catch (err) {
+              log.warn('Failed to persist task log', { taskId, error: String(err) });
+            }
+          }
 
-      // Handle task completion/failure from log events
-      if (entry.type === 'status') {
-        if (entry.content === 'completed') {
-          this.updateTaskStatus(taskId, 'completed');
-          // Also broadcast agent status update
-          const agentState = agent.getState();
-          ws?.broadcast({
-            type: 'agent:update',
-            payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
-            timestamp: new Date().toISOString(),
-          });
-        } else if (entry.content === 'started') {
-          const agentState = agent.getState();
-          ws?.broadcast({
-            type: 'agent:update',
-            payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } else if (entry.type === 'error') {
-        // Retry on transient failures (network / LLM timeout); give up after MAX_TASK_RETRIES
-        const nextAttempt = _retryAttempt + 1;
-        if (!cancelToken.cancelled && nextAttempt <= TaskService.MAX_TASK_RETRIES) {
-          const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
-          const retryMsg = `Attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES} failed. Retrying in ${delayMs / 1000}s…`;
-          log.warn(retryMsg, { taskId, error: entry.content });
-          // Append a visible retry notice to the execution log
-          const noticeEntry = { taskId, agentId, seq: seq++, type: 'error' as import('@markus/storage').TaskLogType, content: retryMsg };
-          taskLogRepo?.append(noticeEntry).catch(() => {});
+          // Broadcast structured log event via WS
           ws?.broadcast({
             type: 'task:log',
-            payload: { taskId, agentId, logType: 'error', content: retryMsg, createdAt: new Date().toISOString() },
+            payload: {
+              taskId,
+              agentId,
+              id: savedId,
+              seq: logEntry.seq,
+              logType: entry.type,
+              content: entry.content,
+              metadata: entry.metadata,
+              createdAt: new Date().toISOString(),
+            },
             timestamp: new Date().toISOString(),
           });
-          setTimeout(() => {
-            const current = this.tasks.get(taskId);
-            if (!current || current.status !== 'in_progress') return;
-            this.runTask(taskId, nextAttempt).catch(e =>
-              log.error('Retry invocation failed', { taskId, error: String(e) })
+
+          // Handle task completion/failure from log events
+          if (entry.type === 'status') {
+            if (entry.content === 'completed') {
+              this.updateTaskStatus(taskId, 'completed');
+              // Also broadcast agent status update
+              const agentState = agent.getState();
+              ws?.broadcast({
+                type: 'agent:update',
+                payload: {
+                  agentId,
+                  status: agentState.status,
+                  activeTaskCount: agentState.activeTaskCount,
+                },
+                timestamp: new Date().toISOString(),
+              });
+            } else if (entry.content === 'started') {
+              const agentState = agent.getState();
+              ws?.broadcast({
+                type: 'agent:update',
+                payload: {
+                  agentId,
+                  status: agentState.status,
+                  activeTaskCount: agentState.activeTaskCount,
+                },
+                timestamp: new Date().toISOString(),
+              });
+            }
+          } else if (entry.type === 'error') {
+            // Retry on transient failures (network / LLM timeout); give up after MAX_TASK_RETRIES
+            const nextAttempt = _retryAttempt + 1;
+            if (!cancelToken.cancelled && nextAttempt <= TaskService.MAX_TASK_RETRIES) {
+              const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
+              const retryMsg = `Attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES} failed. Retrying in ${delayMs / 1000}s…`;
+              log.warn(retryMsg, { taskId, error: entry.content });
+              // Append a visible retry notice to the execution log
+              const noticeEntry = {
+                taskId,
+                agentId,
+                seq: seq++,
+                type: 'error' as TaskLogType,
+                content: retryMsg,
+              };
+              taskLogRepo?.append(noticeEntry).catch(() => {});
+              ws?.broadcast({
+                type: 'task:log',
+                payload: {
+                  taskId,
+                  agentId,
+                  logType: 'error',
+                  content: retryMsg,
+                  createdAt: new Date().toISOString(),
+                },
+                timestamp: new Date().toISOString(),
+              });
+              setTimeout(() => {
+                const current = this.tasks.get(taskId);
+                if (!current || current.status !== 'in_progress') return;
+                this.runTask(taskId, nextAttempt).catch(e =>
+                  log.error('Retry invocation failed', { taskId, error: String(e) })
+                );
+              }, delayMs);
+            } else if (!cancelToken.cancelled) {
+              this.updateTaskStatus(taskId, 'failed');
+            }
+            const agentState = agent.getState();
+            ws?.broadcast({
+              type: 'agent:update',
+              payload: {
+                agentId,
+                status: agentState.status,
+                activeTaskCount: agentState.activeTaskCount,
+              },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        },
+        cancelToken
+      )
+      .catch(err => {
+        // Promise-level rejection (rare — usually executeTask catches internally)
+        log.error('Task execution promise rejected', { taskId, error: String(err) });
+        if (!cancelToken.cancelled) {
+          const nextAttempt = _retryAttempt + 1;
+          if (nextAttempt <= TaskService.MAX_TASK_RETRIES) {
+            const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
+            log.warn(
+              `Retrying task in ${delayMs / 1000}s (attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES})`,
+              { taskId }
             );
-          }, delayMs);
-        } else if (!cancelToken.cancelled) {
-          this.updateTaskStatus(taskId, 'failed');
+            setTimeout(() => {
+              const current = this.tasks.get(taskId);
+              if (!current || current.status !== 'in_progress') return;
+              this.runTask(taskId, nextAttempt).catch(e =>
+                log.error('Retry invocation failed', { taskId, error: String(e) })
+              );
+            }, delayMs);
+          } else {
+            this.updateTaskStatus(taskId, 'failed');
+          }
         }
-        const agentState = agent.getState();
-        ws?.broadcast({
-          type: 'agent:update',
-          payload: { agentId, status: agentState.status, activeTaskCount: agentState.activeTaskCount },
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }, cancelToken).catch(err => {
-      // Promise-level rejection (rare — usually executeTask catches internally)
-      log.error('Task execution promise rejected', { taskId, error: String(err) });
-      if (!cancelToken.cancelled) {
-        const nextAttempt = _retryAttempt + 1;
-        if (nextAttempt <= TaskService.MAX_TASK_RETRIES) {
-          const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
-          log.warn(`Retrying task in ${delayMs / 1000}s (attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES})`, { taskId });
-          setTimeout(() => {
-            const current = this.tasks.get(taskId);
-            if (!current || current.status !== 'in_progress') return;
-            this.runTask(taskId, nextAttempt).catch(e =>
-              log.error('Retry invocation failed', { taskId, error: String(e) })
-            );
-          }, delayMs);
-        } else {
-          this.updateTaskStatus(taskId, 'failed');
+      })
+      .finally(() => {
+        // Clean up cancel token after execution ends
+        if (this.taskCancelTokens.get(taskId) === cancelToken) {
+          this.taskCancelTokens.delete(taskId);
         }
-      }
-    }).finally(() => {
-      // Clean up cancel token after execution ends
-      if (this.taskCancelTokens.get(taskId) === cancelToken) {
-        this.taskCancelTokens.delete(taskId);
-      }
-    });
+      });
   }
 
   /** Load tasks from DB into in-memory map (call once on startup) */
@@ -344,10 +402,17 @@ export class TaskService {
           parentTaskId: row.parentTaskId ?? undefined,
           subtaskIds: [],
           result: (row.result as Task['result']) ?? undefined,
-          notes: (Array.isArray(row.notes) ? row.notes as string[] : undefined),
-          createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
-          updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
-          dueAt: row.dueAt instanceof Date ? row.dueAt.toISOString() : (row.dueAt ? String(row.dueAt) : undefined),
+          notes: Array.isArray(row.notes) ? (row.notes as string[]) : undefined,
+          createdAt:
+            row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+          updatedAt:
+            row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+          dueAt:
+            row.dueAt instanceof Date
+              ? row.dueAt.toISOString()
+              : row.dueAt
+                ? String(row.dueAt)
+                : undefined,
         };
         this.tasks.set(task.id, task);
       }
@@ -384,11 +449,19 @@ export class TaskService {
         // No agent — reset to pending so it can be assigned later
         task.status = 'pending';
         if (this.taskRepo) {
-          this.taskRepo.updateStatus(task.id, 'pending').catch(err =>
-            log.warn('Failed to reset unassigned in_progress task', { taskId: task.id, error: String(err) })
-          );
+          this.taskRepo
+            .updateStatus(task.id, 'pending')
+            .catch(err =>
+              log.warn('Failed to reset unassigned in_progress task', {
+                taskId: task.id,
+                error: String(err),
+              })
+            );
         }
-        log.info(`Reset unassigned in_progress task to pending`, { taskId: task.id, title: task.title });
+        log.info(`Reset unassigned in_progress task to pending`, {
+          taskId: task.id,
+          title: task.title,
+        });
         continue;
       }
 
@@ -396,7 +469,11 @@ export class TaskService {
         await this.runTask(task.id);
         log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title });
       } catch (err) {
-        log.warn(`Failed to resume task on startup`, { taskId: task.id, title: task.title, error: String(err) });
+        log.warn(`Failed to resume task on startup`, {
+          taskId: task.id,
+          title: task.title,
+          error: String(err),
+        });
         // Reset to assigned so user can manually retry
         task.status = 'assigned';
         if (this.taskRepo) {
@@ -414,7 +491,7 @@ export class TaskService {
     }
 
     const hasBlockers = request.blockedBy && request.blockedBy.length > 0;
-    const initialStatus = hasBlockers ? 'blocked' : (assignedAgentId ? 'assigned' : 'pending');
+    const initialStatus = hasBlockers ? 'blocked' : assignedAgentId ? 'assigned' : 'pending';
 
     const task: Task = {
       id: taskId(),
@@ -431,6 +508,12 @@ export class TaskService {
       updatedAt: new Date().toISOString(),
       dueAt: request.dueAt,
       timeoutMs: request.timeoutMs,
+      projectId: request.projectId,
+      iterationId: request.iterationId,
+      createdBy: request.createdBy,
+      approvedVia: request.approvedVia,
+      planReportId: request.planReportId,
+      reviewerAgentId: request.reviewerAgentId,
     };
 
     if (request.parentTaskId) {
@@ -444,16 +527,18 @@ export class TaskService {
 
     // Persist to DB
     if (this.taskRepo) {
-      this.taskRepo.create({
-        id: task.id,
-        orgId: task.orgId,
-        title: task.title,
-        description: task.description,
-        priority: task.priority,
-        assignedAgentId: task.assignedAgentId,
-        parentTaskId: task.parentTaskId,
-        dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
-      }).catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
+      this.taskRepo
+        .create({
+          id: task.id,
+          orgId: task.orgId,
+          title: task.title,
+          description: task.description,
+          priority: task.priority,
+          assignedAgentId: task.assignedAgentId,
+          parentTaskId: task.parentTaskId,
+          dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
+        })
+        .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
     }
 
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
@@ -466,7 +551,11 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    log.info(`Task created: ${task.title}`, { id: task.id, status: task.status, assignedTo: assignedAgentId });
+    log.info(`Task created: ${task.title}`, {
+      id: task.id,
+      status: task.status,
+      assignedTo: assignedAgentId,
+    });
     return task;
   }
 
@@ -505,14 +594,23 @@ export class TaskService {
 
     // Persist to DB
     if (this.taskRepo) {
-      this.taskRepo.updateStatus(id, status).catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
+      this.taskRepo
+        .updateStatus(id, status)
+        .catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
     }
 
     // Auto-start execution when a task transitions to in_progress but has no active runner.
-    if (status === 'in_progress' && prevStatus !== 'in_progress' && task.assignedAgentId && this.agentManager) {
+    if (
+      status === 'in_progress' &&
+      prevStatus !== 'in_progress' &&
+      task.assignedAgentId &&
+      this.agentManager
+    ) {
       const activeToken = this.taskCancelTokens.get(id);
       if (!activeToken || activeToken.cancelled) {
-        log.info(`Auto-starting task execution (triggered by status change to in_progress)`, { taskId: id });
+        log.info(`Auto-starting task execution (triggered by status change to in_progress)`, {
+          taskId: id,
+        });
         setImmediate(() => {
           this.runTask(id).catch(err =>
             log.warn('Auto-start runTask failed', { taskId: id, error: String(err) })
@@ -530,9 +628,7 @@ export class TaskService {
 
     // Emit task event
     const eventType: TaskEventType =
-      status === 'completed' ? 'completed' :
-      status === 'failed' ? 'failed' :
-      'status_changed';
+      status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'status_changed';
     this.emitTaskEvent({
       type: eventType,
       taskId: id,
@@ -557,7 +653,9 @@ export class TaskService {
 
     // Persist to DB
     if (this.taskRepo) {
-      this.taskRepo.assign(id, agentId).catch(err => log.warn('Failed to persist task assignment to DB', { error: String(err) }));
+      this.taskRepo
+        .assign(id, agentId)
+        .catch(err => log.warn('Failed to persist task assignment to DB', { error: String(err) }));
     }
 
     this.ws?.broadcastTaskUpdate(id, 'assigned', { title: task.title, assignedAgentId: agentId });
@@ -573,7 +671,11 @@ export class TaskService {
     task.updatedAt = new Date().toISOString();
 
     if (this.taskRepo) {
-      this.taskRepo.assign(id, null).catch(err => log.warn('Failed to persist task unassignment to DB', { error: String(err) }));
+      this.taskRepo
+        .assign(id, null)
+        .catch(err =>
+          log.warn('Failed to persist task unassignment to DB', { error: String(err) })
+        );
     }
 
     this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title });
@@ -590,7 +692,9 @@ export class TaskService {
     task.updatedAt = ts;
 
     if (this.taskRepo) {
-      this.taskRepo.update(id, { notes: task.notes }).catch(err => log.warn('Failed to persist task note to DB', { error: String(err) }));
+      this.taskRepo
+        .update(id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist task note to DB', { error: String(err) }));
     }
 
     log.info(`Task note added`, { taskId: id, note: note.slice(0, 80) });
@@ -603,15 +707,16 @@ export class TaskService {
     priority?: TaskPriority;
   }): Task[] {
     let result = [...this.tasks.values()];
-    if (filters?.orgId) result = result.filter((t) => t.orgId === filters.orgId);
-    if (filters?.status) result = result.filter((t) => t.status === filters.status);
-    if (filters?.assignedAgentId) result = result.filter((t) => t.assignedAgentId === filters.assignedAgentId);
-    if (filters?.priority) result = result.filter((t) => t.priority === filters.priority);
+    if (filters?.orgId) result = result.filter(t => t.orgId === filters.orgId);
+    if (filters?.status) result = result.filter(t => t.status === filters.status);
+    if (filters?.assignedAgentId)
+      result = result.filter(t => t.assignedAgentId === filters.assignedAgentId);
+    if (filters?.priority) result = result.filter(t => t.priority === filters.priority);
     return result;
   }
 
   getTasksByAgent(agentId: string): Task[] {
-    return [...this.tasks.values()].filter((t) => t.assignedAgentId === agentId);
+    return [...this.tasks.values()].filter(t => t.assignedAgentId === agentId);
   }
 
   getTaskBoard(orgId: string): Record<TaskStatus, Task[]> {
@@ -620,9 +725,13 @@ export class TaskService {
       assigned: [],
       in_progress: [],
       blocked: [],
+      review: [],
+      revision: [],
+      accepted: [],
       completed: [],
       failed: [],
       cancelled: [],
+      archived: [],
     };
 
     for (const task of this.tasks.values()) {
@@ -637,7 +746,12 @@ export class TaskService {
   getDashboard(orgId?: string): {
     statusCounts: Record<TaskStatus, number>;
     totalTasks: number;
-    agentWorkload: Array<{ agentId: string; agentName?: string; activeTasks: number; completedTasks: number }>;
+    agentWorkload: Array<{
+      agentId: string;
+      agentName?: string;
+      activeTasks: number;
+      completedTasks: number;
+    }>;
     recentActivity: Array<{ taskId: string; title: string; status: TaskStatus; updatedAt: string }>;
     averageCompletionTimeMs: number | null;
   } {
@@ -646,8 +760,17 @@ export class TaskService {
       : [...this.tasks.values()];
 
     const statusCounts: Record<TaskStatus, number> = {
-      pending: 0, assigned: 0, in_progress: 0, blocked: 0,
-      completed: 0, failed: 0, cancelled: 0,
+      pending: 0,
+      assigned: 0,
+      in_progress: 0,
+      blocked: 0,
+      review: 0,
+      revision: 0,
+      accepted: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      archived: 0,
     };
     for (const t of tasks) statusCounts[t.status]++;
 
@@ -665,7 +788,9 @@ export class TaskService {
       try {
         const agents = this.agentManager?.listAgents() ?? [];
         agentName = agents.find(a => a.id === agentId)?.name;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       return { agentId, agentName, activeTasks: counts.active, completedTasks: counts.completed };
     });
 
@@ -674,7 +799,9 @@ export class TaskService {
       .slice(0, 20)
       .map(t => ({ taskId: t.id, title: t.title, status: t.status, updatedAt: t.updatedAt }));
 
-    const completedTasks = tasks.filter(t => t.status === 'completed' && t.updatedAt && t.createdAt);
+    const completedTasks = tasks.filter(
+      t => t.status === 'completed' && t.updatedAt && t.createdAt
+    );
     let averageCompletionTimeMs: number | null = null;
     if (completedTasks.length > 0) {
       const totalMs = completedTasks.reduce((sum, t) => {
@@ -696,7 +823,7 @@ export class TaskService {
     if (!this.agentManager) return undefined;
 
     const agents = this.agentManager.listAgents();
-    const idleAgents = agents.filter((a) => a.status === 'idle');
+    const idleAgents = agents.filter(a => a.status === 'idle');
 
     if (idleAgents.length === 0) return undefined;
 
@@ -711,8 +838,10 @@ export class TaskService {
     for (const a of idleAgents) {
       const agent = this.agentManager.getAgent(a.id);
       const agentSkills = agent.config.skills ?? [];
-      const score = requiredSkills.reduce((acc, skill) =>
-        acc + (agentSkills.includes(skill) ? 1 : 0), 0);
+      const score = requiredSkills.reduce(
+        (acc, skill) => acc + (agentSkills.includes(skill) ? 1 : 0),
+        0
+      );
 
       if (score > bestScore) {
         bestScore = score;
@@ -723,7 +852,10 @@ export class TaskService {
     return bestId ?? idleAgents[0]?.id;
   }
 
-  updateTask(id: string, data: { title?: string; description?: string; priority?: TaskPriority }): Task {
+  updateTask(
+    id: string,
+    data: { title?: string; description?: string; priority?: TaskPriority }
+  ): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (data.title !== undefined) task.title = data.title;
@@ -732,7 +864,9 @@ export class TaskService {
     task.updatedAt = new Date().toISOString();
 
     if (this.taskRepo) {
-      this.taskRepo.update(id, data).catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
+      this.taskRepo
+        .update(id, data)
+        .catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
     }
 
     return task;
@@ -754,7 +888,9 @@ export class TaskService {
     }
     this.tasks.delete(id);
     if (this.taskRepo) {
-      this.taskRepo.delete(id).catch(err => log.warn('Failed to delete task from DB', { error: String(err) }));
+      this.taskRepo
+        .delete(id)
+        .catch(err => log.warn('Failed to delete task from DB', { error: String(err) }));
     }
   }
 
@@ -769,7 +905,7 @@ export class TaskService {
     const parent = this.tasks.get(task.parentTaskId);
     if (!parent) return;
 
-    const allSubDone = parent.subtaskIds.every((subId) => {
+    const allSubDone = parent.subtaskIds.every(subId => {
       const sub = this.tasks.get(subId);
       return sub && (sub.status === 'completed' || sub.status === 'cancelled');
     });
@@ -852,5 +988,167 @@ export class TaskService {
         log.warn('Task webhook error (sync)', { error: String(err) });
       }
     }
+  }
+
+  // ─── Governance: Task Approval ─────────────────────────────────────────────
+
+  private governancePolicy?: TaskGovernancePolicy;
+
+  setGovernancePolicy(policy: TaskGovernancePolicy): void {
+    this.governancePolicy = policy;
+    log.info('Governance policy updated', {
+      enabled: policy.enabled,
+      defaultTier: policy.defaultTier,
+    });
+  }
+
+  getGovernancePolicy(): TaskGovernancePolicy | undefined {
+    return this.governancePolicy;
+  }
+
+  determineApprovalTier(
+    request: CreateTaskRequest,
+    creatorRole?: 'worker' | 'manager'
+  ): ApprovalTier {
+    const policy = this.governancePolicy;
+    if (!policy?.enabled) return 'auto';
+
+    if (request.approvedVia === 'plan_approval') return 'auto';
+
+    if (request.priority && policy.requireApprovalForPriority.includes(request.priority)) {
+      return 'human';
+    }
+
+    for (const rule of policy.rules) {
+      const cond = rule.condition;
+      if (cond.creatorRole && cond.creatorRole !== creatorRole) continue;
+      if (cond.priority && request.priority && !cond.priority.includes(request.priority)) continue;
+      if (cond.titlePattern) {
+        try {
+          if (!new RegExp(cond.titlePattern, 'i').test(request.title)) continue;
+        } catch {
+          continue;
+        }
+      }
+      return rule.tier;
+    }
+
+    return policy.defaultTier;
+  }
+
+  checkTaskLimits(request: CreateTaskRequest): { allowed: boolean; reason?: string } {
+    const policy = this.governancePolicy;
+    if (!policy?.enabled) return { allowed: true };
+
+    if (policy.maxTotalActiveTasks > 0) {
+      const activeTasks = [...this.tasks.values()].filter(
+        t =>
+          t.orgId === request.orgId &&
+          !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
+      );
+      if (activeTasks.length >= policy.maxTotalActiveTasks) {
+        return {
+          allowed: false,
+          reason: `Org-wide active task cap reached (${policy.maxTotalActiveTasks})`,
+        };
+      }
+    }
+
+    if (request.assignedAgentId && policy.maxPendingTasksPerAgent > 0) {
+      const agentTasks = [...this.tasks.values()].filter(
+        t =>
+          t.assignedAgentId === request.assignedAgentId &&
+          !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
+      );
+      if (agentTasks.length >= policy.maxPendingTasksPerAgent) {
+        return {
+          allowed: false,
+          reason: `Agent task cap reached (${policy.maxPendingTasksPerAgent})`,
+        };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  // ─── Governance: Submit for Review ─────────────────────────────────────────
+
+  submitForReview(taskId: string, deliverables: TaskDeliverable[]): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'in_progress' && task.status !== 'revision') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot submit for review`);
+    }
+
+    task.deliverables = deliverables;
+    task.status = 'review';
+    task.updatedAt = new Date().toISOString();
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { deliverables });
+
+    this.emitTaskEvent({
+      type: 'status_changed',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: 'review',
+      previousStatus: 'in_progress',
+      agentId: task.assignedAgentId,
+      timestamp: task.updatedAt,
+    });
+
+    log.info(`Task submitted for review: ${task.title}`, { id: task.id });
+    return task;
+  }
+
+  acceptTask(taskId: string): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
+    }
+
+    task.status = 'accepted';
+    task.updatedAt = new Date().toISOString();
+    this.ws?.broadcastTaskUpdate(task.id, task.status, {});
+
+    this.emitTaskEvent({
+      type: 'status_changed',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: 'accepted',
+      previousStatus: 'review',
+      agentId: task.assignedAgentId,
+      timestamp: task.updatedAt,
+    });
+
+    log.info(`Task accepted: ${task.title}`, { id: task.id });
+    return task;
+  }
+
+  requestRevision(taskId: string, reason: string): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
+    }
+
+    task.status = 'revision';
+    task.notes = task.notes ?? [];
+    task.notes.push(`[${new Date().toISOString()}] Revision requested: ${reason}`);
+    task.updatedAt = new Date().toISOString();
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { reason });
+
+    log.info(`Revision requested for task: ${task.title}`, { id: task.id, reason });
+    return task;
+  }
+
+  archiveTask(taskId: string): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    task.status = 'archived';
+    task.updatedAt = new Date().toISOString();
+    log.info(`Task archived: ${task.title}`, { id: task.id });
+    return task;
   }
 }

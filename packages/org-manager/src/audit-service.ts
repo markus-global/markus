@@ -13,7 +13,27 @@ export type AuditEventType =
   | 'approval_response'
   | 'bounty_post'
   | 'error'
-  | 'system';
+  | 'system'
+  // Governance events
+  | 'task_approval_requested'
+  | 'task_approval_granted'
+  | 'task_approval_rejected'
+  | 'task_submitted_for_review'
+  | 'task_review_accepted'
+  | 'task_review_revision_requested'
+  | 'task_branch_merged'
+  | 'system_pause_all'
+  | 'system_resume_all'
+  | 'system_emergency_stop'
+  | 'announcement_broadcast'
+  | 'trust_level_changed'
+  | 'project_created'
+  | 'iteration_created'
+  | 'knowledge_contributed'
+  | 'report_generated'
+  | 'plan_approved'
+  | 'plan_rejected'
+  | 'feedback_submitted';
 
 export interface AuditEntry {
   id: string;
@@ -28,6 +48,8 @@ export interface AuditEntry {
   tokensUsed?: number;
   durationMs?: number;
   success: boolean;
+  taskId?: string;
+  projectId?: string;
 }
 
 export interface TokenUsage {
@@ -40,11 +62,35 @@ export interface TokenUsage {
   lastUpdated: string;
 }
 
+/** Minimal DB repository interface for persisting audit logs */
+export interface AuditLogRepository {
+  insert(row: {
+    id: string;
+    orgId: string;
+    agentId?: string;
+    userId?: string;
+    type: string;
+    action: string;
+    detail?: string;
+    metadata?: Record<string, unknown>;
+    tokensUsed?: number;
+    durationMs?: number;
+    success: boolean;
+    createdAt: Date;
+  }): Promise<void>;
+}
+
 let entryCounter = 0;
 
 export class AuditService {
   private entries: AuditEntry[] = [];
   private tokenUsage = new Map<string, TokenUsage>();
+  private db?: AuditLogRepository;
+
+  setRepository(db: AuditLogRepository): void {
+    this.db = db;
+    log.info('Audit persistence enabled — events will be written to DB');
+  }
 
   record(entry: Omit<AuditEntry, 'id' | 'timestamp'>): AuditEntry {
     const full: AuditEntry = {
@@ -58,10 +104,36 @@ export class AuditService {
       this.entries = this.entries.slice(-5000);
     }
 
+    if (this.db) {
+      this.db
+        .insert({
+          id: full.id,
+          orgId: full.orgId,
+          agentId: full.agentId,
+          userId: full.userId,
+          type: full.type,
+          action: full.action,
+          detail: full.detail,
+          metadata: full.metadata,
+          tokensUsed: full.tokensUsed,
+          durationMs: full.durationMs,
+          success: full.success,
+          createdAt: new Date(full.timestamp),
+        })
+        .catch(err =>
+          log.warn('Failed to persist audit entry', { id: full.id, error: String(err) })
+        );
+    }
+
     return full;
   }
 
-  recordLLMUsage(orgId: string, agentId: string, promptTokens: number, completionTokens: number): void {
+  recordLLMUsage(
+    orgId: string,
+    agentId: string,
+    promptTokens: number,
+    completionTokens: number
+  ): void {
     const key = `${orgId}:${agentId}`;
     const existing = this.tokenUsage.get(key);
     if (existing) {

@@ -1,4 +1,12 @@
-import { createLogger, agentId as genAgentId, type AgentConfig, type AgentProfile, type IdentityContext, type HumanUser } from '@markus/shared';
+import {
+  createLogger,
+  agentId as genAgentId,
+  type AgentConfig,
+  type AgentProfile,
+  type IdentityContext,
+  type HumanUser,
+  type SystemAnnouncement,
+} from '@markus/shared';
 import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
@@ -7,13 +15,13 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { createManagerTools } from './tools/manager.js';
-import { createA2ATools } from './tools/a2a.js';
+import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
-import { A2ABus, DelegationManager } from '@markus/a2a';
+import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
@@ -37,10 +45,26 @@ export interface TaskServiceBridge {
     parentTaskId?: string;
   }): { id: string; title: string; status: string };
   listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string }): Array<{
-    id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string;
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    assignedAgentId?: string;
   }>;
   updateTaskStatus(id: string, status: string): { id: string; title: string; status: string };
-  getTask(id: string): { id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string } | undefined;
+  getTask(
+    id: string
+  ):
+    | {
+        id: string;
+        title: string;
+        description: string;
+        status: string;
+        priority: string;
+        assignedAgentId?: string;
+      }
+    | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string): void;
 }
@@ -79,17 +103,45 @@ export class AgentManager {
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
   private taskService?: TaskServiceBridge;
-  private agentAuditCallback?: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void;
+  private agentAuditCallback?: (
+    agentId: string,
+    event: {
+      type: string;
+      action: string;
+      tokensUsed?: number;
+      durationMs?: number;
+      success: boolean;
+      detail?: string;
+    }
+  ) => void;
   private escalationHandler?: (agentId: string, reason: string) => void;
-  private approvalHandler?: (agentId: string, request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<boolean>;
-  private stateChangeHandler?: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void;
+  private approvalHandler?: (
+    agentId: string,
+    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }
+  ) => Promise<boolean>;
+  private stateChangeHandler?: (
+    agentId: string,
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+  ) => void;
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
   private templateRegistry?: TemplateRegistry;
   private groupChatHandlers?: {
-    sendGroupMessage: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
-    createGroupChat: (name: string, creatorId: string, creatorName: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
-    listGroupChats: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
+    sendGroupMessage: (
+      channelKey: string,
+      message: string,
+      senderId: string,
+      senderName: string
+    ) => Promise<string>;
+    createGroupChat: (
+      name: string,
+      creatorId: string,
+      creatorName: string,
+      memberIds: string[]
+    ) => Promise<{ id: string; name: string }>;
+    listGroupChats: () => Promise<
+      Array<{ id: string; name: string; type: string; channelKey: string }>
+    >;
   };
 
   constructor(options: {
@@ -131,7 +183,11 @@ export class AgentManager {
           priority: delegation.priority ?? 'medium',
           assignedAgentId: envelope.to,
         });
-        log.info('Delegation created real task', { taskId: task.id, delegatedTo: envelope.to, from: envelope.from });
+        log.info('Delegation created real task', {
+          taskId: task.id,
+          delegatedTo: envelope.to,
+          from: envelope.from,
+        });
       } else {
         // No task service — send as a direct message to the agent
         await targetAgent.handleMessage(
@@ -210,45 +266,65 @@ export class AgentManager {
     }
 
     // A2A tools — every agent can message colleagues
-    const a2aContext: import('./tools/a2a.js').A2AContext = {
+    const a2aContext: A2AContext = {
       selfId: id,
       selfName: config.name,
-      listColleagues: () => this.listAgents().map(a => {
-        try {
-          const ag = this.getAgent(a.id);
-          return { ...a, skills: ag.config.skills };
-        } catch { return { ...a, skills: [] }; }
-      }),
+      listColleagues: () =>
+        this.listAgents().map(a => {
+          try {
+            const ag = this.getAgent(a.id);
+            return { ...a, skills: ag.config.skills };
+          } catch {
+            return { ...a, skills: [] };
+          }
+        }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
-        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' }, {
-          ephemeral: true,
-          maxHistory: 15,
-        });
+        return target.handleMessage(
+          message,
+          fromId,
+          { name: fromName, role: config.agentRole ?? 'worker' },
+          {
+            ephemeral: true,
+            maxHistory: 15,
+          }
+        );
       },
-      delegateTask: async (targetId: string, delegation: import('@markus/a2a').TaskDelegation) =>
+      delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
-      ...(this.groupChatHandlers ? {
-        sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
-        createGroupChat: (name: string, memberIds: string[]) => this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
-        listGroupChats: this.groupChatHandlers.listGroupChats,
-      } : {}),
+      ...(this.groupChatHandlers
+        ? {
+            sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
+            createGroupChat: (name: string, memberIds: string[]) =>
+              this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
+            listGroupChats: this.groupChatHandlers.listGroupChats,
+          }
+        : {}),
     };
     for (const tool of createA2ATools(a2aContext)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aContext)) agent.registerTool(tool);
 
     // Memory tools — every agent can save/search/list memories
-    for (const tool of createMemoryTools({ agentId: id, agentName: config.name, memory: agent.getMemory() })) {
+    for (const tool of createMemoryTools({
+      agentId: id,
+      agentName: config.name,
+      memory: agent.getMemory(),
+    })) {
       agent.registerTool(tool);
     }
 
     // Register agent on A2A bus for structured message delivery
-    this.a2aBus.registerAgent(id, async (envelope) => {
+    this.a2aBus.registerAgent(id, async envelope => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' }, {
-        ephemeral: true,
-        maxHistory: 10,
-      });
+      await agent.handleMessage(
+        summary,
+        envelope.from,
+        { name: envelope.from, role: 'worker' },
+        {
+          ephemeral: true,
+          maxHistory: 10,
+        }
+      );
     });
 
     // Task tools — every agent can create/list/update tasks
@@ -258,7 +334,7 @@ export class AgentManager {
       const taskCtx: AgentTaskContext = {
         agentId: id,
         agentName: config.name,
-        createTask: async (params) => {
+        createTask: async params => {
           return ts.createTask({
             orgId,
             title: params.title,
@@ -268,7 +344,7 @@ export class AgentManager {
             parentTaskId: params.parentTaskId,
           });
         },
-        listTasks: async (filter) => {
+        listTasks: async filter => {
           return ts.listTasks({
             orgId,
             status: filter?.status,
@@ -278,7 +354,7 @@ export class AgentManager {
         updateTaskStatus: async (taskId, status) => {
           return ts.updateTaskStatus(taskId, status);
         },
-        getTask: async (taskId) => {
+        getTask: async taskId => {
           return ts.getTask(taskId) ?? null;
         },
         assignTask: async (taskId, agentId) => {
@@ -313,12 +389,15 @@ export class AgentManager {
     // If this is a manager agent, inject manager-specific tools
     if (request.agentRole === 'manager') {
       const managerTools = createManagerTools({
-        listAgents: () => this.listAgents().map(a => {
-          try {
-            const ag = this.getAgent(a.id);
-            return { ...a, skills: ag.config.skills };
-          } catch { return { ...a, skills: [] }; }
-        }),
+        listAgents: () =>
+          this.listAgents().map(a => {
+            try {
+              const ag = this.getAgent(a.id);
+              return { ...a, skills: ag.config.skills };
+            } catch {
+              return { ...a, skills: [] };
+            }
+          }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
@@ -337,13 +416,20 @@ export class AgentManager {
           }
           return `task_${Date.now()}`;
         },
-        getTeamStatus: () => this.listAgents().map(a => {
-          try {
-            const ag = this.getAgent(a.id);
-            const state = ag.getState();
-            return { ...a, currentTask: state.currentTaskId, tokensUsedToday: state.tokensUsedToday };
-          } catch { return { ...a, tokensUsedToday: 0 }; }
-        }),
+        getTeamStatus: () =>
+          this.listAgents().map(a => {
+            try {
+              const ag = this.getAgent(a.id);
+              const state = ag.getState();
+              return {
+                ...a,
+                currentTask: state.currentTaskId,
+                tokensUsedToday: state.tokensUsedToday,
+              };
+            } catch {
+              return { ...a, tokensUsedToday: 0 };
+            }
+          }),
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
@@ -360,23 +446,30 @@ export class AgentManager {
           for (const tool of mcpTools) {
             agent.registerTool(tool);
           }
-          log.info(`MCP server ${serverName} tools registered for agent ${id}`, { toolCount: mcpTools.length });
+          log.info(`MCP server ${serverName} tools registered for agent ${id}`, {
+            toolCount: mcpTools.length,
+          });
         } catch (error) {
-          log.warn(`Failed to connect MCP server ${serverName} for agent ${id}`, { error: String(error) });
+          log.warn(`Failed to connect MCP server ${serverName} for agent ${id}`, {
+            error: String(error),
+          });
         }
       }
     }
 
     if (this.agentAuditCallback) {
       const cb = this.agentAuditCallback;
-      agent.setAuditCallback((event) => cb(id, event));
+      agent.setAuditCallback(event => cb(id, event));
     }
     if (this.escalationHandler) {
       agent.setEscalationCallback(this.escalationHandler);
     }
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
-      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => ah(id, req));
+      agent.setApprovalCallback(
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) =>
+          ah(id, req)
+      );
     }
     if (this.stateChangeHandler) {
       agent.setStateChangeCallback(this.stateChangeHandler);
@@ -421,16 +514,26 @@ export class AgentManager {
     // 2) roleName (display name stored by older agents), 3) display-name→folder lookup
     const role = (() => {
       // Try roleId first (it stores the folder name for agents hired after this fix)
-      try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
+      try {
+        return this.roleLoader.loadRole(row.roleId);
+      } catch {
+        /* try next */
+      }
       // Try roleName directly (might be a folder name for some agents)
-      try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
+      try {
+        return this.roleLoader.loadRole(row.roleName);
+      } catch {
+        /* try next */
+      }
       // Last resort: find by matching display name across available roles
       const available = this.roleLoader.listAvailableRoles();
       for (const templateName of available) {
         try {
           const candidate = this.roleLoader.loadRole(templateName);
           if (candidate.name.toLowerCase() === row.roleName.toLowerCase()) return candidate;
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
       throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
     })();
@@ -467,7 +570,11 @@ export class AgentManager {
     const tools = createBuiltinTools({ agentId: id, security, workspacePath });
 
     const agent = new Agent({
-      config, role, llmRouter: this.llmRouter, dataDir: agentDataDir, tools,
+      config,
+      role,
+      llmRouter: this.llmRouter,
+      dataDir: agentDataDir,
+      tools,
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
     });
 
@@ -480,35 +587,52 @@ export class AgentManager {
     const a2aCtx = {
       selfId: id,
       selfName: config.name,
-      listColleagues: () => this.listAgents().map(a => {
-        try {
-          const ag = this.getAgent(a.id);
-          return { ...a, skills: ag.config.skills };
-        } catch { return { ...a, skills: [] }; }
-      }),
+      listColleagues: () =>
+        this.listAgents().map(a => {
+          try {
+            const ag = this.getAgent(a.id);
+            return { ...a, skills: ag.config.skills };
+          } catch {
+            return { ...a, skills: [] };
+          }
+        }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
         const target = this.getAgent(targetId);
-        return target.handleMessage(message, fromId, { name: fromName, role: config.agentRole ?? 'worker' }, {
-          ephemeral: true,
-          maxHistory: 15,
-        });
+        return target.handleMessage(
+          message,
+          fromId,
+          { name: fromName, role: config.agentRole ?? 'worker' },
+          {
+            ephemeral: true,
+            maxHistory: 15,
+          }
+        );
       },
-      delegateTask: async (targetId: string, delegation: import('@markus/a2a').TaskDelegation) =>
+      delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
     };
     for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
 
-    for (const tool of createMemoryTools({ agentId: id, agentName: config.name, memory: agent.getMemory() })) {
+    for (const tool of createMemoryTools({
+      agentId: id,
+      agentName: config.name,
+      memory: agent.getMemory(),
+    })) {
       agent.registerTool(tool);
     }
 
-    this.a2aBus.registerAgent(id, async (envelope) => {
+    this.a2aBus.registerAgent(id, async envelope => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(summary, envelope.from, { name: envelope.from, role: 'worker' }, {
-        ephemeral: true,
-        maxHistory: 10,
-      });
+      await agent.handleMessage(
+        summary,
+        envelope.from,
+        { name: envelope.from, role: 'worker' },
+        {
+          ephemeral: true,
+          maxHistory: 10,
+        }
+      );
     });
 
     if (this.taskService) {
@@ -517,60 +641,94 @@ export class AgentManager {
       const taskCtx: AgentTaskContext = {
         agentId: id,
         agentName: config.name,
-        createTask: async (params) => ts.createTask({ orgId, ...params }),
-        listTasks: async (filter) => ts.listTasks({ orgId, status: filter?.status, assignedAgentId: filter?.assignedToMe ? id : undefined }),
+        createTask: async params => ts.createTask({ orgId, ...params }),
+        listTasks: async filter =>
+          ts.listTasks({
+            orgId,
+            status: filter?.status,
+            assignedAgentId: filter?.assignedToMe ? id : undefined,
+          }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status),
-        getTask: async (taskId) => ts.getTask(taskId) ?? null,
+        getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
-        addTaskNote: async (taskId, note) => { ts.addTaskNote(taskId, note); },
+        addTaskNote: async (taskId, note) => {
+          ts.addTaskNote(taskId, note);
+        },
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
       agent.setTasksFetcher(() => {
         try {
           return ts.listTasks({ orgId, assignedAgentId: id }).map(t => ({
-            id: t.id, title: t.title, description: t.description, status: t.status, priority: t.priority,
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+            priority: t.priority,
           }));
-        } catch { return []; }
+        } catch {
+          return [];
+        }
       });
     }
 
     if (config.agentRole === 'manager') {
       const managerTools = createManagerTools({
-        listAgents: () => this.listAgents().map(a => {
-          try { const ag = this.getAgent(a.id); return { ...a, skills: ag.config.skills }; }
-          catch { return { ...a, skills: [] }; }
-        }),
+        listAgents: () =>
+          this.listAgents().map(a => {
+            try {
+              const ag = this.getAgent(a.id);
+              return { ...a, skills: ag.config.skills };
+            } catch {
+              return { ...a, skills: [] };
+            }
+          }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
         createTask: (title, description, assignedAgentId, priority) => {
           if (this.taskService) {
-            return this.taskService.createTask({ orgId: config.orgId, title, description, priority: priority ?? 'medium', assignedAgentId }).id;
+            return this.taskService.createTask({
+              orgId: config.orgId,
+              title,
+              description,
+              priority: priority ?? 'medium',
+              assignedAgentId,
+            }).id;
           }
           return `task_${Date.now()}`;
         },
-        getTeamStatus: () => this.listAgents().map(a => {
-          try {
-            const ag = this.getAgent(a.id);
-            const state = ag.getState();
-            return { ...a, currentTask: state.currentTaskId, tokensUsedToday: state.tokensUsedToday };
-          } catch { return { ...a, tokensUsedToday: 0 }; }
-        }),
+        getTeamStatus: () =>
+          this.listAgents().map(a => {
+            try {
+              const ag = this.getAgent(a.id);
+              const state = ag.getState();
+              return {
+                ...a,
+                currentTask: state.currentTaskId,
+                tokensUsedToday: state.tokensUsedToday,
+              };
+            } catch {
+              return { ...a, tokensUsedToday: 0 };
+            }
+          }),
       });
       for (const tool of managerTools) agent.registerTool(tool);
     }
 
     if (this.agentAuditCallback) {
       const cb = this.agentAuditCallback;
-      agent.setAuditCallback((event) => cb(id, event));
+      agent.setAuditCallback(event => cb(id, event));
     }
     if (this.escalationHandler) {
       agent.setEscalationCallback(this.escalationHandler);
     }
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
-      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => ah(id, req));
+      agent.setApprovalCallback(
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) =>
+          ah(id, req)
+      );
     }
     if (this.stateChangeHandler) {
       agent.setStateChangeCallback(this.stateChangeHandler);
@@ -611,8 +769,16 @@ export class AgentManager {
           log.warn('Task not found during rehydration, skipping', { agentId, taskId });
           continue;
         }
-        if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
-          log.debug('Task already terminal, skipping rehydration', { agentId, taskId, status: task.status });
+        if (
+          task.status === 'completed' ||
+          task.status === 'cancelled' ||
+          task.status === 'failed'
+        ) {
+          log.debug('Task already terminal, skipping rehydration', {
+            agentId,
+            taskId,
+            status: task.status,
+          });
           continue;
         }
         // Re-assign and the task service will handle execution
@@ -663,7 +829,11 @@ export class AgentManager {
       this.a2aBus.unregisterAgent(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       if (this.sandboxFactory) {
-        try { await this.sandboxFactory.destroy(agentId); } catch { /* ignore */ }
+        try {
+          await this.sandboxFactory.destroy(agentId);
+        } catch {
+          /* ignore */
+        }
       }
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
@@ -681,10 +851,22 @@ export class AgentManager {
     return this.agents.has(agentId);
   }
 
-  setAuditCallback(cb: (agentId: string, event: { type: string; action: string; tokensUsed?: number; durationMs?: number; success: boolean; detail?: string }) => void): void {
+  setAuditCallback(
+    cb: (
+      agentId: string,
+      event: {
+        type: string;
+        action: string;
+        tokensUsed?: number;
+        durationMs?: number;
+        success: boolean;
+        detail?: string;
+      }
+    ) => void
+  ): void {
     this.agentAuditCallback = cb;
     for (const [id, agent] of this.agents) {
-      agent.setAuditCallback((event) => cb(id, event));
+      agent.setAuditCallback(event => cb(id, event));
     }
   }
 
@@ -695,22 +877,44 @@ export class AgentManager {
     }
   }
 
-  setApprovalHandler(handler: (agentId: string, request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<boolean>): void {
+  setApprovalHandler(
+    handler: (
+      agentId: string,
+      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }
+    ) => Promise<boolean>
+  ): void {
     this.approvalHandler = handler;
     for (const [id, agent] of this.agents) {
-      agent.setApprovalCallback(async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => handler(id, req));
+      agent.setApprovalCallback(
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) =>
+          handler(id, req)
+      );
     }
   }
 
-  setStateChangeHandler(handler: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void): void {
+  setStateChangeHandler(
+    handler: (
+      agentId: string,
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+    ) => void
+  ): void {
     this.stateChangeHandler = handler;
     for (const [, agent] of this.agents) {
       agent.setStateChangeCallback(handler);
     }
   }
 
-  listAgents(): Array<{ id: string; name: string; role: string; status: string; agentRole: string; skills: string[]; activeTaskCount: number; teamId?: string }> {
-    return [...this.agents.values()].map((a) => {
+  listAgents(): Array<{
+    id: string;
+    name: string;
+    role: string;
+    status: string;
+    agentRole: string;
+    skills: string[];
+    activeTaskCount: number;
+    teamId?: string;
+  }> {
+    return [...this.agents.values()].map(a => {
       const state = a.getState();
       return {
         id: a.id,
@@ -754,9 +958,21 @@ export class AgentManager {
   }
 
   setGroupChatHandlers(handlers: {
-    sendGroupMessage: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
-    createGroupChat: (name: string, creatorId: string, creatorName: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
-    listGroupChats: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
+    sendGroupMessage: (
+      channelKey: string,
+      message: string,
+      senderId: string,
+      senderName: string
+    ) => Promise<string>;
+    createGroupChat: (
+      name: string,
+      creatorId: string,
+      creatorName: string,
+      memberIds: string[]
+    ) => Promise<{ id: string; name: string }>;
+    listGroupChats: () => Promise<
+      Array<{ id: string; name: string; type: string; channelKey: string }>
+    >;
   }): void {
     this.groupChatHandlers = handlers;
   }
@@ -778,6 +994,94 @@ export class AgentManager {
       skills: request.overrides?.skills ?? template.skills,
       heartbeatIntervalMs: request.overrides?.heartbeatIntervalMs ?? template.heartbeatIntervalMs,
     });
+  }
+
+  // ─── Global Agent Control ──────────────────────────────────────────────────
+
+  private globalPaused = false;
+  private emergencyMode = false;
+
+  async pauseAllAgents(reason?: string): Promise<void> {
+    for (const [, agent] of this.agents) {
+      if (agent.getState().status !== 'offline') {
+        agent.pause(reason);
+      }
+    }
+    this.globalPaused = true;
+    this.eventBus.emit('system:pause-all', { reason });
+    log.info('All agents paused', { reason });
+  }
+
+  async resumeAllAgents(): Promise<void> {
+    for (const [, agent] of this.agents) {
+      if (agent.getState().status === 'paused') {
+        agent.resume();
+      }
+    }
+    this.globalPaused = false;
+    this.eventBus.emit('system:resume-all', {});
+    log.info('All agents resumed');
+  }
+
+  async emergencyStop(): Promise<void> {
+    for (const [, agent] of this.agents) {
+      agent.cancelActiveStream();
+      await agent.stop();
+    }
+    this.emergencyMode = true;
+    this.globalPaused = true;
+    this.eventBus.emit('system:emergency-stop', {});
+    log.warn('EMERGENCY STOP — all agents stopped');
+  }
+
+  isGlobalPaused(): boolean {
+    return this.globalPaused;
+  }
+
+  isEmergencyMode(): boolean {
+    return this.emergencyMode;
+  }
+
+  clearEmergencyMode(): void {
+    this.emergencyMode = false;
+    this.globalPaused = false;
+    log.info('Emergency mode cleared');
+  }
+
+  // ─── System Announcements ────────────────────────────────────────────────
+
+  private announcements: SystemAnnouncement[] = [];
+
+  broadcastAnnouncement(announcement: SystemAnnouncement): void {
+    this.announcements.push(announcement);
+
+    for (const [, agent] of this.agents) {
+      if (agent.getState().status !== 'offline') {
+        this.a2aBus.send({
+          id: `a2a_ann_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          from: 'system',
+          to: agent.id,
+          type: 'announcement',
+          timestamp: new Date().toISOString(),
+          payload: announcement,
+        });
+      }
+    }
+
+    this.eventBus.emit('system:announcement', announcement);
+    log.info('Announcement broadcast', { id: announcement.id, title: announcement.title });
+  }
+
+  getActiveAnnouncements(): SystemAnnouncement[] {
+    const now = new Date().toISOString();
+    return this.announcements.filter(a => !a.expiresAt || a.expiresAt > now);
+  }
+
+  acknowledgeAnnouncement(announcementId: string, agentId: string): void {
+    const announcement = this.announcements.find(a => a.id === announcementId);
+    if (announcement && !announcement.acknowledged.includes(agentId)) {
+      announcement.acknowledged.push(agentId);
+    }
   }
 
   /**
@@ -812,9 +1116,10 @@ export class AgentManager {
         organization: { id: orgId, name: orgName },
         colleagues,
         humans: humans.map(h => ({ id: h.id, name: h.name, role: h.role })),
-        manager: managerAgent && managerAgent.id !== agent.id
-          ? { id: managerAgent.id, name: managerAgent.config.name }
-          : undefined,
+        manager:
+          managerAgent && managerAgent.id !== agent.id
+            ? { id: managerAgent.id, name: managerAgent.config.name }
+            : undefined,
       };
 
       agent.setIdentityContext(identity);

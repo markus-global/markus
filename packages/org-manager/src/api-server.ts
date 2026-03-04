@@ -25,6 +25,9 @@ import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { StorageBridge } from './storage-bridge.js';
+import type { ProjectService } from './project-service.js';
+import type { ReportService } from './report-service.js';
+import type { KnowledgeService } from './knowledge-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 
@@ -3483,7 +3486,417 @@ export class APIServer {
       return;
     }
 
+    // ── Governance: System Controls ──────────────────────────────────────────
+
+    if (path === '/api/system/pause-all' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const am = this.orgService.getAgentManager();
+      await am.pauseAllAgents(body['reason'] as string | undefined);
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'system_pause_all',
+        action: 'pause_all',
+        detail: body['reason'] as string,
+        success: true,
+      });
+      this.json(res, 200, { status: 'paused', message: 'All agents paused' });
+      return;
+    }
+
+    if (path === '/api/system/resume-all' && req.method === 'POST') {
+      const am = this.orgService.getAgentManager();
+      await am.resumeAllAgents();
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'system_resume_all',
+        action: 'resume_all',
+        success: true,
+      });
+      this.json(res, 200, { status: 'resumed', message: 'All agents resumed' });
+      return;
+    }
+
+    if (path === '/api/system/emergency-stop' && req.method === 'POST') {
+      const am = this.orgService.getAgentManager();
+      await am.emergencyStop();
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'system_emergency_stop',
+        action: 'emergency_stop',
+        success: true,
+      });
+      this.json(res, 200, { status: 'stopped', message: 'EMERGENCY STOP — all agents terminated' });
+      return;
+    }
+
+    if (path === '/api/system/status' && req.method === 'GET') {
+      const am = this.orgService.getAgentManager();
+      this.json(res, 200, {
+        globalPaused: am.isGlobalPaused(),
+        emergencyMode: am.isEmergencyMode(),
+      });
+      return;
+    }
+
+    // ── Governance: Announcements ─────────────────────────────────────────
+
+    if (path === '/api/system/announcements' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const am = this.orgService.getAgentManager();
+      const announcement = {
+        id: generateId('ann'),
+        type: (body['type'] as string) ?? 'info',
+        title: body['title'] as string,
+        content: body['content'] as string,
+        priority: (body['priority'] as string) ?? 'normal',
+        createdBy: (body['createdBy'] as string) ?? 'human',
+        createdAt: new Date().toISOString(),
+        expiresAt: body['expiresAt'] as string | undefined,
+        targetScope: (body['targetScope'] as string) ?? 'all',
+        targetIds: body['targetIds'] as string[] | undefined,
+        acknowledged: [],
+      };
+      am.broadcastAnnouncement(announcement as any);
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'announcement_broadcast',
+        action: 'broadcast',
+        detail: announcement.title,
+        success: true,
+      });
+      this.json(res, 201, { announcement });
+      return;
+    }
+
+    if (path === '/api/system/announcements' && req.method === 'GET') {
+      const am = this.orgService.getAgentManager();
+      this.json(res, 200, { announcements: am.getActiveAnnouncements() });
+      return;
+    }
+
+    // ── Governance: Projects ──────────────────────────────────────────────
+
+    if (path === '/api/projects' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? undefined;
+      this.json(res, 200, { projects: this.projectService?.listProjects(orgId) ?? [] });
+      return;
+    }
+
+    if (path === '/api/projects' && req.method === 'POST') {
+      if (!this.projectService) {
+        this.json(res, 503, { error: 'Project service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const project = this.projectService.createProject({
+        orgId: (body['orgId'] as string) ?? 'default',
+        name: body['name'] as string,
+        description: (body['description'] as string) ?? '',
+        iterationModel: body['iterationModel'] as any,
+        repositories: body['repositories'] as any,
+        teamIds: body['teamIds'] as any,
+        governancePolicy: body['governancePolicy'] as any,
+      });
+      this.json(res, 201, { project });
+      return;
+    }
+
+    if (path.match(/^\/api\/projects\/[^/]+$/) && req.method === 'GET') {
+      const projectId = path.split('/')[3]!;
+      const project = this.projectService?.getProject(projectId);
+      if (!project) {
+        this.json(res, 404, { error: 'Project not found' });
+        return;
+      }
+      this.json(res, 200, { project });
+      return;
+    }
+
+    if (path.match(/^\/api\/projects\/[^/]+$/) && req.method === 'PUT') {
+      if (!this.projectService) {
+        this.json(res, 503, { error: 'Project service not available' });
+        return;
+      }
+      const projectId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const project = this.projectService.updateProject(projectId, body as any);
+        this.json(res, 200, { project });
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/projects\/[^/]+$/) && req.method === 'DELETE') {
+      if (!this.projectService) {
+        this.json(res, 503, { error: 'Project service not available' });
+        return;
+      }
+      const projectId = path.split('/')[3]!;
+      this.projectService.deleteProject(projectId);
+      this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    // ── Governance: Iterations ────────────────────────────────────────────
+
+    if (path.match(/^\/api\/projects\/[^/]+\/iterations$/) && req.method === 'GET') {
+      const projectId = path.split('/')[3]!;
+      this.json(res, 200, { iterations: this.projectService?.listIterations(projectId) ?? [] });
+      return;
+    }
+
+    if (path.match(/^\/api\/projects\/[^/]+\/iterations$/) && req.method === 'POST') {
+      if (!this.projectService) {
+        this.json(res, 503, { error: 'Project service not available' });
+        return;
+      }
+      const projectId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const iteration = this.projectService.createIteration({
+        projectId,
+        name: body['name'] as string,
+        goal: body['goal'] as string,
+        startDate: body['startDate'] as string,
+        endDate: body['endDate'] as string,
+      });
+      this.json(res, 201, { iteration });
+      return;
+    }
+
+    if (path.match(/^\/api\/iterations\/[^/]+\/status$/) && req.method === 'PUT') {
+      if (!this.projectService) {
+        this.json(res, 503, { error: 'Project service not available' });
+        return;
+      }
+      const iterationId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const iteration = this.projectService.updateIterationStatus(
+          iterationId,
+          body['status'] as any
+        );
+        this.json(res, 200, { iteration });
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Governance: Task Review ───────────────────────────────────────────
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/accept$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.acceptTask(taskId);
+        this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/revision$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const task = this.taskService.requestRevision(
+          taskId,
+          (body['reason'] as string) ?? 'Revisions needed'
+        );
+        this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/archive$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.archiveTask(taskId);
+        this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Governance: Governance Policy ─────────────────────────────────────
+
+    if (path === '/api/governance/policy' && req.method === 'GET') {
+      this.json(res, 200, { policy: this.taskService.getGovernancePolicy() ?? null });
+      return;
+    }
+
+    if (path === '/api/governance/policy' && req.method === 'PUT') {
+      const body = await this.readBody(req);
+      this.taskService.setGovernancePolicy(body as any);
+      this.json(res, 200, { policy: this.taskService.getGovernancePolicy() });
+      return;
+    }
+
+    // ── Governance: Reports ───────────────────────────────────────────────
+
+    if (path === '/api/reports' && req.method === 'GET') {
+      this.json(res, 200, {
+        reports:
+          this.reportService?.listReports({
+            scope: url.searchParams.get('scope') ?? undefined,
+            scopeId: url.searchParams.get('scopeId') ?? undefined,
+            type: url.searchParams.get('type') ?? undefined,
+          }) ?? [],
+      });
+      return;
+    }
+
+    if (path === '/api/reports/generate' && req.method === 'POST') {
+      if (!this.reportService) {
+        this.json(res, 503, { error: 'Report service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const report = await this.reportService.generateReport({
+        type: (body['type'] as any) ?? 'weekly',
+        scope: (body['scope'] as any) ?? 'project',
+        scopeId: (body['scopeId'] as string) ?? 'default',
+        periodStart: new Date((body['periodStart'] as string) ?? Date.now() - 7 * 86400000),
+        periodEnd: new Date((body['periodEnd'] as string) ?? Date.now()),
+        includePlan: body['includePlan'] as boolean,
+      });
+      this.json(res, 201, { report });
+      return;
+    }
+
+    if (path.match(/^\/api\/reports\/[^/]+$/) && req.method === 'GET') {
+      const reportId = path.split('/')[3]!;
+      const report = this.reportService?.getReport(reportId);
+      if (!report) {
+        this.json(res, 404, { error: 'Report not found' });
+        return;
+      }
+      this.json(res, 200, { report });
+      return;
+    }
+
+    if (path.match(/^\/api\/reports\/[^/]+\/plan\/approve$/) && req.method === 'POST') {
+      if (!this.reportService) {
+        this.json(res, 503, { error: 'Report service not available' });
+        return;
+      }
+      const reportId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const report = this.reportService.approvePlan(
+          reportId,
+          (body['userId'] as string) ?? 'human'
+        );
+        this.json(res, 200, { report });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/reports\/[^/]+\/plan\/reject$/) && req.method === 'POST') {
+      if (!this.reportService) {
+        this.json(res, 503, { error: 'Report service not available' });
+        return;
+      }
+      const reportId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const report = this.reportService.rejectPlan(
+          reportId,
+          (body['userId'] as string) ?? 'human',
+          (body['reason'] as string) ?? ''
+        );
+        this.json(res, 200, { report });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/reports\/[^/]+\/feedback$/) && req.method === 'POST') {
+      if (!this.reportService) {
+        this.json(res, 503, { error: 'Report service not available' });
+        return;
+      }
+      const reportId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const feedback = this.reportService.addFeedback({
+        reportId,
+        authorId: (body['authorId'] as string) ?? 'human',
+        authorName: (body['authorName'] as string) ?? 'Human Manager',
+        type: (body['type'] as any) ?? 'comment',
+        content: body['content'] as string,
+        priority: body['priority'] as any,
+        anchor: body['anchor'] as any,
+        disclosure: (body['disclosure'] as any) ?? { scope: 'broadcast' },
+        saveToKnowledge: body['saveToKnowledge'] as boolean,
+        projectId: body['projectId'] as string,
+      });
+      this.json(res, 201, { feedback });
+      return;
+    }
+
+    if (path.match(/^\/api\/reports\/[^/]+\/feedback$/) && req.method === 'GET') {
+      const reportId = path.split('/')[3]!;
+      this.json(res, 200, { feedback: this.reportService?.getFeedback(reportId) ?? [] });
+      return;
+    }
+
+    // ── Governance: Knowledge ─────────────────────────────────────────────
+
+    if (path === '/api/knowledge/search' && req.method === 'GET') {
+      const query = url.searchParams.get('query') ?? '';
+      const scope = url.searchParams.get('scope') as any;
+      const scopeId = url.searchParams.get('scopeId') ?? undefined;
+      const category = url.searchParams.get('category') as any;
+      this.json(res, 200, {
+        results: this.knowledgeService?.search({ query, scope, scopeId, category }) ?? [],
+      });
+      return;
+    }
+
+    if (path === '/api/knowledge' && req.method === 'POST') {
+      if (!this.knowledgeService) {
+        this.json(res, 503, { error: 'Knowledge service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const entry = this.knowledgeService.contribute({
+        scope: body['scope'] as any,
+        scopeId: body['scopeId'] as string,
+        category: body['category'] as any,
+        title: body['title'] as string,
+        content: body['content'] as string,
+        source: (body['source'] as string) ?? 'human',
+        importance: body['importance'] as number,
+        tags: body['tags'] as string[],
+        supersedes: body['supersedes'] as string,
+      });
+      this.json(res, 201, { entry });
+      return;
+    }
+
     this.json(res, 404, { error: 'Not found' });
+  }
+
+  private projectService?: ProjectService;
+  private reportService?: ReportService;
+  private knowledgeService?: KnowledgeService;
+
+  setProjectService(svc: ProjectService): void {
+    this.projectService = svc;
+  }
+  setReportService(svc: ReportService): void {
+    this.reportService = svc;
+  }
+  setKnowledgeService(svc: KnowledgeService): void {
+    this.knowledgeService = svc;
   }
 
   private buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {

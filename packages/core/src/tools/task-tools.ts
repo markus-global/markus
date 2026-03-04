@@ -13,19 +13,48 @@ export interface AgentTaskContext {
     assignedAgentId?: string;
     priority?: string;
     parentTaskId?: string;
+    projectId?: string;
+    iterationId?: string;
   }) => Promise<{ id: string; title: string; status: string }>;
   /** List tasks — defaults to tasks assigned to this agent */
-  listTasks: (filter?: { assignedToMe?: boolean; status?: string }) => Promise<Array<{
-    id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string;
-  }>>;
+  listTasks: (filter?: { assignedToMe?: boolean; status?: string }) => Promise<
+    Array<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+      assignedAgentId?: string;
+    }>
+  >;
   /** Update a task's status (e.g. in_progress, blocked, completed, failed) */
-  updateTaskStatus: (taskId: string, status: string) => Promise<{ id: string; title: string; status: string }>;
+  updateTaskStatus: (
+    taskId: string,
+    status: string
+  ) => Promise<{ id: string; title: string; status: string }>;
   /** Get details of a specific task */
-  getTask: (taskId: string) => Promise<{ id: string; title: string; description: string; status: string; priority: string; assignedAgentId?: string } | null>;
+  getTask: (
+    taskId: string
+  ) => Promise<{
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    assignedAgentId?: string;
+  } | null>;
   /** Assign a task to an agent */
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string) => Promise<void>;
+  /** Submit task deliverables for review */
+  submitForReview?: (
+    taskId: string,
+    summary: string,
+    branchName?: string,
+    testResults?: string,
+    knownIssues?: string
+  ) => Promise<{ id: string; status: string }>;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -41,7 +70,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Short, clear task title' },
-          description: { type: 'string', description: 'Detailed description of what needs to be done and why' },
+          description: {
+            type: 'string',
+            description: 'Detailed description of what needs to be done and why',
+          },
           priority: {
             type: 'string',
             enum: ['low', 'medium', 'high', 'urgent'],
@@ -92,11 +124,20 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         properties: {
           assigned_to_me: {
             type: 'boolean',
-            description: 'If true (default), only show tasks assigned to you. If false, show all tasks.',
+            description:
+              'If true (default), only show tasks assigned to you. If false, show all tasks.',
           },
           status: {
             type: 'string',
-            enum: ['pending', 'assigned', 'in_progress', 'blocked', 'completed', 'failed', 'cancelled'],
+            enum: [
+              'pending',
+              'assigned',
+              'in_progress',
+              'blocked',
+              'completed',
+              'failed',
+              'cancelled',
+            ],
             description: 'Filter by status (optional)',
           },
         },
@@ -140,7 +181,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           },
           note: {
             type: 'string',
-            description: 'Optional progress note — brief summary of what was done, what is blocked, or next steps',
+            description:
+              'Optional progress note — brief summary of what was done, what is blocked, or next steps',
           },
         },
         required: ['task_id', 'status'],
@@ -149,13 +191,16 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         try {
           const task = await ctx.updateTaskStatus(
             args['task_id'] as string,
-            args['status'] as string,
+            args['status'] as string
           );
           const note = args['note'] as string | undefined;
           if (note && ctx.addTaskNote) {
             await ctx.addTaskNote(task.id, `[${ctx.agentName}] ${note}`).catch(() => {});
           }
-          log.info(`Task updated by agent ${ctx.agentId}`, { taskId: task.id, status: task.status });
+          log.info(`Task updated by agent ${ctx.agentId}`, {
+            taskId: task.id,
+            status: task.status,
+          });
           return JSON.stringify({
             status: 'success',
             task,
@@ -190,52 +235,112 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       },
     },
 
-    ...(ctx.addTaskNote ? [{
-      name: 'task_note',
-      description: 'Add a progress note or comment to a task without changing its status. Use this to log intermediate findings, decisions, or observations while working on a task.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'string', description: 'The task ID to add a note to' },
-          note: { type: 'string', description: 'The note or progress update to add' },
-        },
-        required: ['task_id', 'note'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        try {
-          await ctx.addTaskNote!(
-            args['task_id'] as string,
-            `[${ctx.agentName}] ${args['note'] as string}`,
-          );
-          return JSON.stringify({ status: 'success', message: 'Note added to task' });
-        } catch (error) {
-          return JSON.stringify({ status: 'error', error: String(error) });
-        }
-      },
-    } as AgentToolHandler] : []),
+    ...(ctx.addTaskNote
+      ? [
+          {
+            name: 'task_note',
+            description:
+              'Add a progress note or comment to a task without changing its status. Use this to log intermediate findings, decisions, or observations while working on a task.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID to add a note to' },
+                note: { type: 'string', description: 'The note or progress update to add' },
+              },
+              required: ['task_id', 'note'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                await ctx.addTaskNote!(
+                  args['task_id'] as string,
+                  `[${ctx.agentName}] ${args['note'] as string}`
+                );
+                return JSON.stringify({ status: 'success', message: 'Note added to task' });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
 
-    ...(ctx.assignTask ? [{
-      name: 'task_assign',
-      description: 'Assign a task to a specific agent. Use this when delegating work to team members.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'string', description: 'The task ID to assign' },
-          agent_id: { type: 'string', description: 'The agent ID to assign the task to' },
-        },
-        required: ['task_id', 'agent_id'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        try {
-          const result = await ctx.assignTask!(
-            args['task_id'] as string,
-            args['agent_id'] as string,
-          );
-          return JSON.stringify({ status: 'success', taskId: result.id, taskStatus: result.status });
-        } catch (error) {
-          return JSON.stringify({ status: 'error', error: String(error) });
-        }
-      },
-    } as AgentToolHandler] : []),
+    ...(ctx.assignTask
+      ? [
+          {
+            name: 'task_assign',
+            description:
+              'Assign a task to a specific agent. Use this when delegating work to team members.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID to assign' },
+                agent_id: { type: 'string', description: 'The agent ID to assign the task to' },
+              },
+              required: ['task_id', 'agent_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = await ctx.assignTask!(
+                  args['task_id'] as string,
+                  args['agent_id'] as string
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  taskId: result.id,
+                  taskStatus: result.status,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.submitForReview
+      ? [
+          {
+            name: 'task_submit_review',
+            description:
+              'Submit your completed work for review. Provide a summary of changes, the branch name with your commits, and any test results. The task will enter review status and a reviewer will evaluate your work.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID to submit for review' },
+                summary: { type: 'string', description: 'What was done and why (2-5 sentences)' },
+                branch_name: {
+                  type: 'string',
+                  description: 'Git branch containing your changes (optional)',
+                },
+                test_results: { type: 'string', description: 'Test execution results (optional)' },
+                known_issues: {
+                  type: 'string',
+                  description: 'Any known issues or follow-up items (optional)',
+                },
+              },
+              required: ['task_id', 'summary'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = await ctx.submitForReview!(
+                  args['task_id'] as string,
+                  args['summary'] as string,
+                  args['branch_name'] as string | undefined,
+                  args['test_results'] as string | undefined,
+                  args['known_issues'] as string | undefined
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  taskId: result.id,
+                  taskStatus: result.status,
+                  message: 'Work submitted for review. A reviewer will evaluate your deliverables.',
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
   ];
 }

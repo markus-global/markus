@@ -67,6 +67,37 @@ export class ContextEngine {
     }>;
     knowledgeContext?: string;
     environment?: EnvironmentProfile;
+    // Governance context extensions
+    projectContext?: {
+      project: { id: string; name: string; description: string; status: string };
+      iteration?: { id: string; name: string; goal?: string; status: string; endDate?: string };
+      repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
+      governanceRules?: string;
+      teamRole?: string;
+    };
+    currentWorkspace?: {
+      branch: string;
+      worktreePath: string;
+      baseBranch: string;
+    };
+    announcements?: Array<{
+      type: string;
+      priority: string;
+      title: string;
+      content: string;
+    }>;
+    trustLevel?: { level: string; score: number };
+    projectKnowledge?: Array<{
+      category: string;
+      title: string;
+      content: string;
+    }>;
+    recentFeedback?: Array<{
+      authorName: string;
+      priority: string;
+      content: string;
+      anchor?: { section: string; itemId?: string };
+    }>;
   }): string {
     const parts: string[] = [];
 
@@ -75,6 +106,72 @@ export class ContextEngine {
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
     if (orgCtx) parts.push(orgCtx);
+
+    // ── Governance: Project Context (P1 priority) ────────────────────────
+    if (opts.projectContext) {
+      const { project, iteration, repositories, governanceRules, teamRole } = opts.projectContext;
+      parts.push('\n## Current Project');
+      parts.push(`- Project: **${project.name}** (${project.status})`);
+      if (project.description) parts.push(`- ${project.description.slice(0, 200)}`);
+      if (iteration) {
+        parts.push(
+          `- Iteration: ${iteration.name} — "${iteration.goal ?? ''}" (${iteration.status}${iteration.endDate ? `, ends ${iteration.endDate}` : ''})`
+        );
+      }
+      if (repositories?.length) {
+        for (const repo of repositories) {
+          parts.push(
+            `- Repository: ${repo.localPath} (${repo.role}, branch: ${repo.defaultBranch})`
+          );
+        }
+      }
+      if (teamRole) parts.push(`- Your role: ${teamRole}`);
+      if (governanceRules) parts.push(`- Governance: ${governanceRules}`);
+    }
+
+    // ── Governance: Workspace Info (P0 priority) ─────────────────────────
+    if (opts.currentWorkspace) {
+      parts.push('\n## Your Workspace');
+      parts.push(`- Branch: \`${opts.currentWorkspace.branch}\``);
+      parts.push(`- Working directory: ${opts.currentWorkspace.worktreePath}`);
+      parts.push(`- Base branch: ${opts.currentWorkspace.baseBranch}`);
+      parts.push('- IMPORTANT: All file operations are restricted to this directory');
+    }
+
+    // ── Governance: System Announcements (P1 urgent, P2 others) ──────────
+    if (opts.announcements?.length) {
+      parts.push('\n## System Announcements');
+      for (const a of opts.announcements) {
+        const prefix =
+          a.priority === 'urgent' ? '[URGENT] ' : a.priority === 'high' ? '[HIGH] ' : '[INFO] ';
+        parts.push(`- ${prefix}${a.title}: ${a.content}`);
+      }
+    }
+
+    // ── Governance: Human Feedback (P1 priority) ─────────────────────────
+    if (opts.recentFeedback?.length) {
+      parts.push('\n## Human Feedback (recent)');
+      for (const fb of opts.recentFeedback) {
+        const urgency =
+          fb.priority === 'critical'
+            ? '[CRITICAL] '
+            : fb.priority === 'important'
+              ? '[IMPORTANT] '
+              : '';
+        const anchor = fb.anchor
+          ? ` (re: ${fb.anchor.section}${fb.anchor.itemId ? '/' + fb.anchor.itemId : ''})`
+          : '';
+        parts.push(`- ${urgency}**${fb.authorName}**${anchor}: ${fb.content}`);
+      }
+    }
+
+    // ── Governance: Project Knowledge (P1 priority) ──────────────────────
+    if (opts.projectKnowledge?.length) {
+      parts.push('\n## Project Knowledge Base (key entries)');
+      for (const k of opts.projectKnowledge) {
+        parts.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, 200)}`);
+      }
+    }
 
     if (opts.role.defaultPolicies.length > 0) {
       parts.push('\n## Policies');

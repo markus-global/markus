@@ -12,6 +12,9 @@ export interface UsageRecord {
   amount: number;
   timestamp: string;
   metadata?: Record<string, unknown>;
+  taskId?: string;
+  projectId?: string;
+  iterationId?: string;
 }
 
 export interface UsageSummary {
@@ -91,11 +94,13 @@ export class BillingService {
   }
 
   getOrgPlan(orgId: string): OrgPlan {
-    return this.orgPlans.get(orgId) ?? {
-      orgId,
-      tier: 'free',
-      limits: { ...DEFAULT_PLANS.free },
-    };
+    return (
+      this.orgPlans.get(orgId) ?? {
+        orgId,
+        tier: 'free',
+        limits: { ...DEFAULT_PLANS.free },
+      }
+    );
   }
 
   recordUsage(record: Omit<UsageRecord, 'timestamp'>): UsageRecord {
@@ -117,11 +122,15 @@ export class BillingService {
       llmTokens: filtered.filter(r => r.type === 'llm_tokens').reduce((s, r) => s + r.amount, 0),
       toolCalls: filtered.filter(r => r.type === 'tool_call').reduce((s, r) => s + r.amount, 0),
       messages: filtered.filter(r => r.type === 'message').reduce((s, r) => s + r.amount, 0),
-      storageBytes: filtered.filter(r => r.type === 'storage_bytes').reduce((s, r) => s + r.amount, 0),
+      storageBytes: filtered
+        .filter(r => r.type === 'storage_bytes')
+        .reduce((s, r) => s + r.amount, 0),
     };
   }
 
-  getAgentBreakdown(orgId: string): Array<{ agentId: string; llmTokens: number; toolCalls: number; messages: number }> {
+  getAgentBreakdown(
+    orgId: string
+  ): Array<{ agentId: string; llmTokens: number; toolCalls: number; messages: number }> {
     const month = new Date().toISOString().slice(0, 7);
     const orgRecords = this.records.filter(r => r.orgId === orgId && r.timestamp.startsWith(month));
 
@@ -143,7 +152,11 @@ export class BillingService {
     }));
   }
 
-  checkLimit(orgId: string, type: UsageRecord['type'], additionalAmount = 1): { allowed: boolean; reason?: string } {
+  checkLimit(
+    orgId: string,
+    type: UsageRecord['type'],
+    additionalAmount = 1
+  ): { allowed: boolean; reason?: string } {
     const plan = this.getOrgPlan(orgId);
     if (plan.tier === 'enterprise') return { allowed: true };
 
@@ -152,31 +165,58 @@ export class BillingService {
 
     if (type === 'llm_tokens') {
       const summary = this.getUsageSummary(orgId, month);
-      if (plan.limits.maxTokensPerMonth > 0 && summary.llmTokens + additionalAmount > plan.limits.maxTokensPerMonth) {
-        return { allowed: false, reason: `Monthly token limit reached (${plan.limits.maxTokensPerMonth})` };
+      if (
+        plan.limits.maxTokensPerMonth > 0 &&
+        summary.llmTokens + additionalAmount > plan.limits.maxTokensPerMonth
+      ) {
+        return {
+          allowed: false,
+          reason: `Monthly token limit reached (${plan.limits.maxTokensPerMonth})`,
+        };
       }
     }
 
     if (type === 'tool_call') {
-      const todayRecords = this.records.filter(r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today));
+      const todayRecords = this.records.filter(
+        r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today)
+      );
       const todayCount = todayRecords.reduce((s, r) => s + r.amount, 0);
-      if (plan.limits.maxToolCallsPerDay > 0 && todayCount + additionalAmount > plan.limits.maxToolCallsPerDay) {
-        return { allowed: false, reason: `Daily tool call limit reached (${plan.limits.maxToolCallsPerDay})` };
+      if (
+        plan.limits.maxToolCallsPerDay > 0 &&
+        todayCount + additionalAmount > plan.limits.maxToolCallsPerDay
+      ) {
+        return {
+          allowed: false,
+          reason: `Daily tool call limit reached (${plan.limits.maxToolCallsPerDay})`,
+        };
       }
     }
 
     if (type === 'message') {
-      const todayRecords = this.records.filter(r => r.orgId === orgId && r.type === 'message' && r.timestamp.startsWith(today));
+      const todayRecords = this.records.filter(
+        r => r.orgId === orgId && r.type === 'message' && r.timestamp.startsWith(today)
+      );
       const todayCount = todayRecords.reduce((s, r) => s + r.amount, 0);
-      if (plan.limits.maxMessagesPerDay > 0 && todayCount + additionalAmount > plan.limits.maxMessagesPerDay) {
-        return { allowed: false, reason: `Daily message limit reached (${plan.limits.maxMessagesPerDay})` };
+      if (
+        plan.limits.maxMessagesPerDay > 0 &&
+        todayCount + additionalAmount > plan.limits.maxMessagesPerDay
+      ) {
+        return {
+          allowed: false,
+          reason: `Daily message limit reached (${plan.limits.maxMessagesPerDay})`,
+        };
       }
     }
 
     return { allowed: true };
   }
 
-  createAPIKey(orgId: string, name: string, scopes: string[] = ['*'], expiresInDays?: number): APIKey {
+  createAPIKey(
+    orgId: string,
+    name: string,
+    scopes: string[] = ['*'],
+    expiresInDays?: number
+  ): APIKey {
     const id = `mk_${(++keyCounter).toString(36)}_${Date.now().toString(36)}`;
     const key = `mk_${randomBytes(32).toString('hex')}`;
     const now = new Date();
@@ -186,7 +226,9 @@ export class BillingService {
       orgId,
       name,
       createdAt: now.toISOString(),
-      expiresAt: expiresInDays ? new Date(now.getTime() + expiresInDays * 86400000).toISOString() : undefined,
+      expiresAt: expiresInDays
+        ? new Date(now.getTime() + expiresInDays * 86400000).toISOString()
+        : undefined,
       scopes,
       active: true,
     };
@@ -226,5 +268,88 @@ export class BillingService {
         scopes: k.scopes,
         active: k.active,
       }));
+  }
+
+  // ─── Cost Attribution ────────────────────────────────────────────────────
+
+  getProjectCostBreakdown(
+    projectId: string,
+    periodPrefix?: string
+  ): {
+    projectId: string;
+    period: string;
+    totalTokens: number;
+    totalToolCalls: number;
+    estimatedCost: number;
+    byAgent: Array<{ agentId: string; tokens: number; toolCalls: number; cost: number }>;
+  } {
+    const period = periodPrefix ?? new Date().toISOString().slice(0, 7);
+    const filtered = this.records.filter(
+      r => r.projectId === projectId && r.timestamp.startsWith(period)
+    );
+
+    const agentMap = new Map<string, { tokens: number; toolCalls: number }>();
+    let totalTokens = 0;
+    let totalToolCalls = 0;
+
+    for (const r of filtered) {
+      let entry = agentMap.get(r.agentId);
+      if (!entry) {
+        entry = { tokens: 0, toolCalls: 0 };
+        agentMap.set(r.agentId, entry);
+      }
+      if (r.type === 'llm_tokens') {
+        entry.tokens += r.amount;
+        totalTokens += r.amount;
+      }
+      if (r.type === 'tool_call') {
+        entry.toolCalls += r.amount;
+        totalToolCalls += r.amount;
+      }
+    }
+
+    const costPerToken = 0.000003;
+    return {
+      projectId,
+      period,
+      totalTokens,
+      totalToolCalls,
+      estimatedCost: totalTokens * costPerToken,
+      byAgent: [...agentMap.entries()].map(([agentId, data]) => ({
+        agentId,
+        ...data,
+        cost: data.tokens * costPerToken,
+      })),
+    };
+  }
+
+  getTaskCost(taskId: string): { tokens: number; toolCalls: number; estimatedCost: number } {
+    const filtered = this.records.filter(r => r.taskId === taskId);
+    const tokens = filtered.filter(r => r.type === 'llm_tokens').reduce((s, r) => s + r.amount, 0);
+    const toolCalls = filtered
+      .filter(r => r.type === 'tool_call')
+      .reduce((s, r) => s + r.amount, 0);
+    return { tokens, toolCalls, estimatedCost: tokens * 0.000003 };
+  }
+
+  getUsageSummaryForPeriod(scopeId: string, periodStart: Date, periodEnd: Date): UsageSummary {
+    const startStr = periodStart.toISOString();
+    const endStr = periodEnd.toISOString();
+    const filtered = this.records.filter(
+      r =>
+        (r.orgId === scopeId || r.projectId === scopeId) &&
+        r.timestamp >= startStr &&
+        r.timestamp <= endStr
+    );
+    return {
+      orgId: scopeId,
+      period: `${startStr.slice(0, 10)}~${endStr.slice(0, 10)}`,
+      llmTokens: filtered.filter(r => r.type === 'llm_tokens').reduce((s, r) => s + r.amount, 0),
+      toolCalls: filtered.filter(r => r.type === 'tool_call').reduce((s, r) => s + r.amount, 0),
+      messages: filtered.filter(r => r.type === 'message').reduce((s, r) => s + r.amount, 0),
+      storageBytes: filtered
+        .filter(r => r.type === 'storage_bytes')
+        .reduce((s, r) => s + r.amount, 0),
+    };
   }
 }

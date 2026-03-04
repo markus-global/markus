@@ -1,5 +1,8 @@
 import { createLogger } from '@markus/shared';
+import { exec as execCb } from 'node:child_process';
+import { promisify } from 'node:util';
 
+const execAsync = promisify(execCb);
 const log = createLogger('review-service');
 
 export interface ReviewCheckResult {
@@ -27,6 +30,8 @@ export interface ReviewContext {
   agentId?: string;
   changedFiles?: string[];
   description?: string;
+  worktreePath?: string;
+  baseBranch?: string;
 }
 
 /**
@@ -119,29 +124,111 @@ export class ReviewService {
 // --- Built-in checkers ---
 
 export function createTypeScriptChecker(): ReviewChecker {
-  return async (_ctx) => {
-    // In a real implementation, this would run `tsc --noEmit`
-    return { name: 'typescript', status: 'skip', message: 'TypeScript check requires shell access (use via CI)' };
+  return async ctx => {
+    if (!ctx.worktreePath) {
+      return {
+        name: 'typescript',
+        status: 'skip',
+        message: 'No worktree path — skipping TypeScript check',
+      };
+    }
+    try {
+      await execAsync('npx tsc --noEmit 2>&1', {
+        cwd: ctx.worktreePath,
+        timeout: 120000,
+      });
+      return { name: 'typescript', status: 'pass', message: 'TypeScript compilation clean' };
+    } catch (err: unknown) {
+      const _err = err as Record<string, unknown>;
+      const output = _err.stdout || _err.stderr || String(err);
+      return {
+        name: 'typescript',
+        status: 'fail',
+        message: 'TypeScript compilation errors',
+        details: String(output).slice(0, 2000),
+      };
+    }
   };
 }
 
 export function createTestChecker(): ReviewChecker {
-  return async (_ctx) => {
-    return { name: 'tests', status: 'skip', message: 'Test runner requires shell access (use via CI)' };
+  return async ctx => {
+    if (!ctx.worktreePath) {
+      return { name: 'tests', status: 'skip', message: 'No worktree path — skipping tests' };
+    }
+    try {
+      const base = ctx.baseBranch ?? 'main';
+      const { stdout: testOutput } = await execAsync(
+        `npx vitest run --reporter=verbose --changed ${base} 2>&1`,
+        { cwd: ctx.worktreePath, timeout: 300000 }
+      );
+      return {
+        name: 'tests',
+        status: 'pass',
+        message: 'All tests passed',
+        details: testOutput.slice(-1000),
+      };
+    } catch (err: unknown) {
+      const _err = err as Record<string, unknown>;
+      const output = _err.stdout || _err.stderr || String(err);
+      return {
+        name: 'tests',
+        status: 'fail',
+        message: 'Test failures detected',
+        details: String(output).slice(0, 2000),
+      };
+    }
+  };
+}
+
+export function createLintChecker(): ReviewChecker {
+  return async ctx => {
+    if (!ctx.worktreePath) {
+      return { name: 'lint', status: 'skip', message: 'No worktree path — skipping lint' };
+    }
+    try {
+      const base = ctx.baseBranch ?? 'main';
+      const { stdout: changedFiles } = await execAsync(
+        `git diff --name-only ${base} -- '*.ts' '*.tsx' '*.js' '*.jsx'`,
+        { cwd: ctx.worktreePath }
+      );
+      const files = changedFiles.trim().split('\n').filter(Boolean);
+      if (files.length === 0) {
+        return { name: 'lint', status: 'pass', message: 'No lintable files changed' };
+      }
+      await execAsync(`npx eslint ${files.join(' ')} 2>&1`, {
+        cwd: ctx.worktreePath,
+        timeout: 60000,
+      });
+      return { name: 'lint', status: 'pass', message: `Lint clean on ${files.length} files` };
+    } catch (err: unknown) {
+      const _err = err as Record<string, unknown>;
+      const output = _err.stdout || _err.stderr || String(err);
+      return {
+        name: 'lint',
+        status: 'fail',
+        message: 'Lint errors found',
+        details: String(output).slice(0, 2000),
+      };
+    }
   };
 }
 
 export function createDescriptionChecker(): ReviewChecker {
-  return async (ctx) => {
+  return async ctx => {
     if (!ctx.description || ctx.description.trim().length < 10) {
-      return { name: 'description', status: 'warn', message: 'Task description is missing or too short' };
+      return {
+        name: 'description',
+        status: 'warn',
+        message: 'Task description is missing or too short',
+      };
     }
     return { name: 'description', status: 'pass', message: 'Description is adequate' };
   };
 }
 
 export function createChangedFilesChecker(maxFiles = 50): ReviewChecker {
-  return async (ctx) => {
+  return async ctx => {
     if (!ctx.changedFiles) {
       return { name: 'scope', status: 'skip', message: 'No changed files information available' };
     }

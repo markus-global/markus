@@ -4,6 +4,8 @@ export * from './types/task.js';
 export * from './types/message.js';
 export * from './types/compute.js';
 export * from './types/llm.js';
+export * from './types/governance.js';
+export * from './types/project.js';
 export * from './utils/logger.js';
 export * from './utils/config.js';
 export * from './utils/id.js';

@@ -60,6 +60,9 @@ export {
   ReviewService,
   createDescriptionChecker,
   createChangedFilesChecker,
+  createTypeScriptChecker,
+  createTestChecker,
+  createLintChecker,
 } from './review-service.js';
 export type {
   ReviewReport,
@@ -67,6 +70,13 @@ export type {
   ReviewChecker,
   ReviewContext,
 } from './review-service.js';
+export {
+  WorkspaceManager,
+  type WorktreeInfo,
+  type ProjectRepositoryRef,
+  type MergeResult,
+  type DiffStats,
+} from './workspace-manager.js';
 export { EventBus } from './events.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
 export {
