@@ -66,7 +66,7 @@ export function Dashboard() {
           </div>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => navBus.navigate('templates')} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
+          <button onClick={() => navBus.navigate('templates', { tab: 'agent' })} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
         </div>
       </div>
 

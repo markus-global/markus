@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, type TeamTemplateInfo } from '../api.ts';
+import { navBus } from '../navBus.ts';
 
 type TabId = 'agent' | 'team';
 
@@ -63,6 +64,20 @@ function StarRating({ rating, count }: { rating: number; count: number }) {
 
 export function TemplateMarketplace() {
   const [activeTab, setActiveTab] = useState<TabId>('agent');
+
+  useEffect(() => {
+    const applyNavTab = () => {
+      const t = localStorage.getItem('markus_nav_tab');
+      if (t === 'agent' || t === 'team') { setActiveTab(t); localStorage.removeItem('markus_nav_tab'); }
+    };
+    applyNavTab();
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ page: string }>).detail;
+      if (detail.page === 'templates') applyNavTab();
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
+  }, []);
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">

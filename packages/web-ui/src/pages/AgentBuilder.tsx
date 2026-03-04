@@ -140,6 +140,21 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
     api.agents.list()
       .then(d => setAgents(d.agents))
       .catch(() => {});
+
+    const applyNavTab = () => {
+      const t = localStorage.getItem('markus_nav_tab');
+      if (t && ['template', 'workflow', 'team', 'prompts'].includes(t)) {
+        setTab(t as BuilderTab);
+        localStorage.removeItem('markus_nav_tab');
+      }
+    };
+    applyNavTab();
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ page: string }>).detail;
+      if (detail.page === 'builder') applyNavTab();
+    };
+    window.addEventListener('markus:navigate', handler);
+    return () => window.removeEventListener('markus:navigate', handler);
   }, []);
 
   const showResult = useCallback((ok: boolean, message: string) => {

@@ -207,15 +207,15 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
                 </button>
                 {headerMenu === 'agent' && (
                   <div className="absolute right-0 top-full mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
-                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates'); }}
+                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates', { tab: 'agent' }); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors">
                       <div className="font-medium">Hire from Templates</div>
                       <div className="text-[10px] text-gray-500 mt-0.5">Browse pre-built agent roles</div>
                     </button>
-                    <button onClick={() => { setHeaderMenu(null); setShowHire({}); }}
+                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('builder', { tab: 'template' }); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
                       <div className="font-medium">New Agent</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5">Create a custom agent</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">Build a custom agent template</div>
                     </button>
                   </div>
                 )}
@@ -227,7 +227,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
                 </button>
                 {headerMenu === 'team' && (
                   <div className="absolute right-0 top-full mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
-                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates'); }}
+                    <button onClick={() => { setHeaderMenu(null); navBus.navigate('templates', { tab: 'team' }); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 transition-colors">
                       <div className="font-medium">Hire Team</div>
                       <div className="text-[10px] text-gray-500 mt-0.5">Deploy from team templates</div>
@@ -457,11 +457,11 @@ function TeamCard({
               </button>
               {addMemberMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-30 w-48">
-                  <button onClick={() => navBus.navigate('templates')} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300">
+                  <button onClick={() => navBus.navigate('templates', { tab: 'agent' })} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300">
                     Hire from Templates
                   </button>
                   <button onClick={onHireAgent} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-indigo-300/70">
-                    New Custom Agent
+                    Quick Create
                   </button>
                   <div className="border-t border-gray-700 my-1" />
                   <button onClick={onAddHuman} className="w-full text-left px-4 py-2 text-sm hover:bg-gray-700 text-emerald-300">
