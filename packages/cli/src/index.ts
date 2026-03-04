@@ -286,10 +286,20 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const skillRegistry = await createDefaultSkillRegistry();
 
-  // Run DB migrations for PostgreSQL only (SQLite creates tables on open)
+  // Run DB migrations for PostgreSQL only (SQLite creates tables on open).
+  // Wrapped in try/catch: if PG is unreachable, initStorage will fall back to SQLite.
   const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
   if (dbUrl && (dbUrl.startsWith('postgresql://') || dbUrl.startsWith('postgres://'))) {
-    await runMigrations(dbUrl);
+    try {
+      await runMigrations(dbUrl);
+    } catch (migrationErr) {
+      log.warn(
+        'PostgreSQL migrations failed (database may be unreachable), will attempt SQLite fallback',
+        {
+          error: String(migrationErr),
+        }
+      );
+    }
   }
 
   const storage = await initStorage(config.database?.url);

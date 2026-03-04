@@ -73,6 +73,12 @@ async function initPostgresStorage(url: string): Promise<StorageBridge | null> {
   try {
     const storage = await import('@markus/storage');
     const db = storage.getDb(url);
+
+    // Health check: postgres.js uses lazy connections, so getDb() never throws.
+    // We must run an actual query to verify the database is reachable.
+    const { sql } = await import('drizzle-orm');
+    await db.execute(sql`SELECT 1`);
+
     const bridge: StorageBridge = {
       orgRepo: new storage.OrgRepo(db),
       taskRepo: new storage.TaskRepo(db),
@@ -101,7 +107,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
     const storage = await import('@markus/storage');
     const dbPath = resolveSqlitePath(url);
     const db = storage.openSqlite(dbPath);
-     
+
     const bridge: StorageBridge = {
       orgRepo: new storage.SqliteOrgRepo(db) as any,
       taskRepo: new storage.SqliteTaskRepo(db) as any,

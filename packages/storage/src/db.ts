@@ -11,7 +11,13 @@ let sqlClient: ReturnType<typeof postgres> | null = null;
 export function getDb(url?: string) {
   if (dbInstance) return dbInstance;
 
-  const connectionUrl = url ?? process.env['DATABASE_URL'] ?? 'postgresql://markus:markus@localhost:5432/markus';
+  const connectionUrl = url ?? process.env['DATABASE_URL'];
+  if (!connectionUrl) {
+    throw new Error(
+      'No PostgreSQL connection URL provided. Set DATABASE_URL or pass a URL explicitly. ' +
+        'If you want zero-setup mode, leave DATABASE_URL empty and the system will use SQLite.'
+    );
+  }
   sqlClient = postgres(connectionUrl, { max: 10 });
   dbInstance = drizzle(sqlClient, { schema });
 

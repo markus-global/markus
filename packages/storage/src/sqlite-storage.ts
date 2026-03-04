@@ -489,7 +489,7 @@ export class SqliteAgentRepo {
 export class SqliteTaskRepo {
   constructor(private db: Database.Database) {}
 
-  create(data: {
+  async create(data: {
     id: string;
     orgId: string;
     title: string;
@@ -527,13 +527,13 @@ export class SqliteTaskRepo {
     return r ? this._map(r) : undefined;
   }
 
-  updateStatus(id: string, status: string) {
+  async updateStatus(id: string, status: string) {
     this.db
       .prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
       .run(status, now(), id);
   }
 
-  assign(id: string, agentId: string | null) {
+  async assign(id: string, agentId: string | null) {
     this.db
       .prepare(
         "UPDATE tasks SET assigned_agent_id = ?, status = CASE WHEN ? IS NOT NULL THEN 'assigned' ELSE status END, updated_at = ? WHERE id = ?"
@@ -541,7 +541,7 @@ export class SqliteTaskRepo {
       .run(agentId, agentId, now(), id);
   }
 
-  update(
+  async update(
     id: string,
     data: { title?: string; description?: string; priority?: string; notes?: string[] }
   ) {
@@ -599,7 +599,7 @@ export class SqliteTaskRepo {
     ).map(r => this._map(r));
   }
 
-  delete(id: string) {
+  async delete(id: string) {
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
   }
 
@@ -626,7 +626,7 @@ export class SqliteTaskRepo {
 export class SqliteTaskLogRepo {
   constructor(private db: Database.Database) {}
 
-  append(data: {
+  async append(data: {
     taskId: string;
     agentId: string;
     seq: number;
@@ -917,7 +917,7 @@ export class SqliteChatSessionRepo {
 export class SqliteChannelMessageRepo {
   constructor(private db: Database.Database) {}
 
-  append(data: {
+  async append(data: {
     orgId: string;
     channel: string;
     senderId: string;
@@ -1010,7 +1010,7 @@ export class SqliteUserRepo {
     return this.findById(data.id)!;
   }
 
-  upsert(data: {
+  async upsert(data: {
     id: string;
     orgId: string;
     name: string;
@@ -1035,11 +1035,11 @@ export class SqliteUserRepo {
       );
   }
 
-  updateTeamId(id: string, teamId: string | null) {
+  async updateTeamId(id: string, teamId: string | null) {
     this.db.prepare('UPDATE users SET team_id = ? WHERE id = ?').run(teamId, id);
   }
 
-  delete(id: string) {
+  async delete(id: string) {
     this.db.prepare('DELETE FROM users WHERE id = ?').run(id);
   }
 
