@@ -10,7 +10,9 @@ import {
   type LLMStreamEvent,
   type IdentityContext,
 } from '@markus/shared';
+import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
+import { GuardrailPipeline } from './guardrails.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
@@ -86,6 +88,7 @@ export class Agent {
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private toolSelector: ToolSelector;
+  private guardrails: GuardrailPipeline;
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private currentSessionId?: string;
@@ -114,6 +117,7 @@ export class Agent {
   private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
   private activeTasks = new Set<string>();
+  private activeStreamToken?: { cancelled: boolean };
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
@@ -146,6 +150,7 @@ export class Agent {
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
+    this.guardrails = new GuardrailPipeline();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     this.heartbeat = new HeartbeatScheduler(
       this.id,
@@ -225,7 +230,9 @@ export class Agent {
 
     // Periodic memory consolidation: compact sessions and generate daily insights
     this.memoryConsolidationTimer = setInterval(() => {
-      this.consolidateMemory();
+      this.consolidateMemory().catch(e =>
+        log.warn('Memory consolidation failed', { error: String(e) })
+      );
     }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
 
     this.eventBus.emit('agent:started', { agentId: this.id });
@@ -356,6 +363,25 @@ export class Agent {
       return false;
     }
     return this.taskExecutor.cancelTask(taskId);
+  }
+
+  /** Cancel any active streaming response */
+  cancelActiveStream(): void {
+    if (this.activeStreamToken) {
+      this.activeStreamToken.cancelled = true;
+      log.info('Active stream cancelled', { agentId: this.id });
+    }
+  }
+
+  /** Get a cancel token for the current stream */
+  getStreamCancelToken(): { cancelled: boolean } {
+    this.activeStreamToken = { cancelled: false };
+    return this.activeStreamToken;
+  }
+
+  /** Access the guardrail pipeline to add/remove guardrails */
+  getGuardrails(): GuardrailPipeline {
+    return this.guardrails;
   }
 
   /**
@@ -536,6 +562,13 @@ export class Agent {
       this.setStatus('working');
     }
 
+    // Run input guardrails
+    const inputCheck = await this.guardrails.checkInput(userMessage, { agentId: this.id, senderId });
+    if (!inputCheck.passed) {
+      return `I cannot process this request: ${inputCheck.reason}`;
+    }
+    const effectiveMessage = inputCheck.transformedInput ?? userMessage;
+
     const isEphemeral = options?.ephemeral ?? false;
     const maxHistory = options?.maxHistory ?? 200; // load generously; context engine will trim intelligently
 
@@ -560,14 +593,14 @@ export class Agent {
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
       memory: this.memory,
-      currentQuery: userMessage,
+      currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
-      knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(userMessage),
+      knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(effectiveMessage),
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage });
+    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
 
     let messages: LLMMessage[];
     if (isEphemeral) {
@@ -578,7 +611,7 @@ export class Agent {
       messages = [
         { role: 'system' as const, content: systemPrompt },
         ...channelMsgs.slice(-maxHistory),
-        { role: 'user' as const, content: userMessage },
+        { role: 'user' as const, content: effectiveMessage },
       ];
     } else {
       const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
@@ -704,6 +737,14 @@ export class Agent {
       }
 
       const reply = response.content;
+      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      if (!outputCheck.passed) {
+        const filtered = `[Response filtered: ${outputCheck.reason}]`;
+        if (!isEphemeral) {
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
+        }
+        return filtered;
+      }
       if (!isEphemeral) {
         this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
         // Post-interaction: write to daily log for medium-term memory
@@ -742,11 +783,19 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string }
+    senderInfo?: { name: string; role: string },
+    cancelToken?: { cancelled: boolean }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
     }
+
+    // Run input guardrails
+    const inputCheck = await this.guardrails.checkInput(userMessage, { agentId: this.id, senderId });
+    if (!inputCheck.passed) {
+      return `I cannot process this request: ${inputCheck.reason}`;
+    }
+    const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
     if (!this.currentSessionId) {
       const session = this.memory.createSession(this.id);
@@ -762,14 +811,14 @@ export class Agent {
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
       memory: this.memory,
-      currentQuery: userMessage,
+      currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: this.tasksFetcher?.(),
-      knowledgeContext: this.getKnowledgeContext(userMessage),
+      knowledgeContext: this.getKnowledgeContext(effectiveMessage),
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage });
+    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
     const messages = this.contextEngine.prepareMessages({
@@ -799,6 +848,12 @@ export class Agent {
       });
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+        if (cancelToken?.cancelled) {
+          log.info('Stream cancelled by user during tool loop', { agentId: this.id });
+          if (this.activeTasks.size === 0) this.setStatus('idle');
+          return response.content || '[Stream cancelled]';
+        }
+
         this.memory.appendMessage(this.currentSessionId, {
           role: 'assistant',
           content: response.content,
@@ -806,6 +861,11 @@ export class Agent {
         });
 
         for (const tc of response.toolCalls) {
+          if (cancelToken?.cancelled) {
+            log.info('Stream cancelled before tool execution', { agentId: this.id, tool: tc.name });
+            if (this.activeTasks.size === 0) this.setStatus('idle');
+            return response.content || '[Stream cancelled]';
+          }
           const toolStart = Date.now();
           onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
           try {
@@ -852,6 +912,12 @@ export class Agent {
           toolDefinitions: llmTools,
         });
 
+        if (cancelToken?.cancelled) {
+          log.info('Stream cancelled before LLM re-call', { agentId: this.id });
+          if (this.activeTasks.size === 0) this.setStatus('idle');
+          return response.content || '[Stream cancelled]';
+        }
+
         const llmStart2 = Date.now();
         response = await this.llmRouter.chatStream(
           { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
@@ -869,6 +935,12 @@ export class Agent {
       }
 
       const reply = response.content;
+      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      if (!outputCheck.passed) {
+        const filtered = `[Response filtered: ${outputCheck.reason}]`;
+        this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: filtered });
+        return filtered;
+      }
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
       if (this.activeTasks.size === 0) this.setStatus('idle');
 
@@ -1383,10 +1455,18 @@ export class Agent {
           await new Promise(r => setTimeout(r, delay));
         }
         log.debug(`Executing tool: ${toolCall.name}`, { args: toolCall.arguments, attempt });
-        const result = await handler.execute(toolCall.arguments);
-        this.recordToolUsage(toolCall.name, true);
-        this.consecutiveFailures = 0;
-        return result;
+        const span = startSpan('agent.tool', { tool: toolCall.name, attempt });
+        try {
+          const result = await handler.execute(toolCall.arguments);
+          this.recordToolUsage(toolCall.name, true);
+          this.consecutiveFailures = 0;
+          span.end({ success: true });
+          return result;
+        } catch (error) {
+          span.setError(error instanceof Error ? error : String(error));
+          span.end({ success: false });
+          throw error;
+        }
       } catch (error) {
         lastError = error;
         log.error(`Tool execution failed: ${toolCall.name} (attempt ${attempt + 1})`, {
@@ -1467,17 +1547,59 @@ export class Agent {
   }
 
   /**
+   * Memory flush: before compaction, prompt the agent to persist important information.
+   * Inspired by OpenClaw's pre-compaction memory flush pattern.
+   */
+  private async memoryFlush(sessionId: string): Promise<void> {
+    const session = this.memory.getSession(sessionId);
+    if (!session || session.messages.length < 20) return;
+
+    const recentMessages = session.messages.slice(-20);
+    const hasSubstantiveContent = recentMessages.some(
+      m => m.role === 'assistant' && m.content.length > 100
+    );
+    if (!hasSubstantiveContent) return;
+
+    try {
+      const flushPrompt = [
+        '[MEMORY FLUSH — System Request]',
+        '',
+        'The conversation context is approaching its limit and will be compacted soon.',
+        'Review the recent conversation and save any important information that should be remembered long-term.',
+        '',
+        'Use `memory_save` to persist:',
+        '- Key decisions or conclusions reached',
+        '- Important facts learned about the project or user preferences',
+        '- Task outcomes or status changes',
+        '- Technical details that would be costly to rediscover',
+        '',
+        'Only save genuinely important information. Skip routine exchanges.',
+        'If nothing important needs saving, just respond with "No important information to save."',
+      ].join('\n');
+
+      await this.handleMessage(flushPrompt, undefined, undefined, {
+        ephemeral: true,
+        maxHistory: 25,
+      });
+      log.info('Memory flush completed before compaction', { agentId: this.id, sessionId });
+    } catch (error) {
+      log.warn('Memory flush failed, proceeding with compaction anyway', { error: String(error) });
+    }
+  }
+
+  /**
    * Periodic memory consolidation:
    * 1. Compact main session if it has grown large
    * 2. Generate daily report (writes to MEMORY.md long-term store)
    * 3. Log the consolidation activity
    */
-  private consolidateMemory(): void {
+  private async consolidateMemory(): Promise<void> {
     try {
       // 1. Compact main session if it exists and is large
       if (this.currentSessionId) {
         const session = this.memory.getSession(this.currentSessionId);
         if (session && session.messages.length > 30) {
+          await this.memoryFlush(this.currentSessionId);
           const { flushedCount } = this.memory.compactSession(this.currentSessionId, 15);
           if (flushedCount > 0) {
             log.info('Memory consolidation: compacted main session', {

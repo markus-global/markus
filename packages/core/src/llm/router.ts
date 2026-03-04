@@ -1,4 +1,5 @@
 import { createLogger, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings } from '@markus/shared';
+import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
@@ -240,10 +241,12 @@ export class LLMRouter {
 
     log.debug(`Sending request to ${primary}`, { model: provider.model, messageCount: request.messages.length });
 
+    const span = startSpan('llm.chat', { provider: primary, model: provider.model });
     let lastError: unknown = null;
     try {
       const response = await provider.chat(request);
       this.recordSuccess(primary);
+      span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       log.debug(`Response from ${primary}`, { tokens: response.usage, finishReason: response.finishReason });
       return response;
     } catch (error) {
@@ -258,6 +261,7 @@ export class LLMRouter {
         try {
           const response = await fb.chat(request);
           this.recordSuccess(fallbackName);
+          span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           log.info(`Fallback to ${fallbackName} succeeded`);
           return response;
         } catch (fbError) {
@@ -267,6 +271,8 @@ export class LLMRouter {
         }
       }
 
+      span.setError(lastError instanceof Error ? lastError : String(lastError));
+      span.end();
       throw lastError;
     }
   }
@@ -278,11 +284,14 @@ export class LLMRouter {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
 
+    const span = startSpan('llm.chatStream', { provider: primary, model: provider.model });
+
     if (!provider.chatStream) {
       log.debug(`Provider ${primary} does not support streaming, falling back to non-stream`);
       const response = await provider.chat(request);
       if (response.content) onEvent({ type: 'text_delta', text: response.content });
       onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
+      span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       return response;
     }
 
@@ -290,6 +299,7 @@ export class LLMRouter {
     try {
       const response = await provider.chatStream(request, onEvent);
       this.recordSuccess(primary);
+      span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       return response;
     } catch (error) {
       lastError = error;
@@ -309,6 +319,7 @@ export class LLMRouter {
             onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
           }
           this.recordSuccess(fallbackName);
+          span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           log.info(`Stream fallback to ${fallbackName} succeeded`);
           return response;
         } catch (fbError) {
@@ -318,6 +329,8 @@ export class LLMRouter {
         }
       }
 
+      span.setError(lastError instanceof Error ? lastError : String(lastError));
+      span.end();
       throw lastError;
     }
   }

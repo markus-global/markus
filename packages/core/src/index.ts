@@ -1,5 +1,7 @@
 export { Agent } from './agent.js';
 export type { AgentToolHandler, SandboxHandle, ApprovalCallback } from './agent.js';
+export { startSpan, trace, setTracingProvider } from './tracing.js';
+export type { Span, SpanAttributes, TracingProvider } from './tracing.js';
 export { AgentManager, type CreateAgentRequest, type SandboxFactory } from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
@@ -26,6 +28,8 @@ export { ReviewService, createDescriptionChecker, createChangedFilesChecker } fr
 export type { ReviewReport, ReviewCheckResult, ReviewChecker, ReviewContext } from './review-service.js';
 export { EventBus } from './events.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
+export { GuardrailPipeline, promptInjectionGuardrail, sensitiveDataGuardrail, createMaxLengthGuardrail } from './guardrails.js';
+export type { InputGuardrail, OutputGuardrail, GuardrailResult } from './guardrails.js';
 export type { LLMProviderInterface } from './llm/provider.js';
 export {
   ShellTool, FileReadTool, FileWriteTool, FileEditTool,

@@ -1596,3 +1596,75 @@ Agent 调用敏感工具 → 检查 requireApprovalFor 匹配 → 调用 approva
 **接线方式**：服务启动时调用 `agentManager.setStateChangeHandler()` 注册 DB 更新逻辑。
 
 **涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`, `packages/storage/src/schema.ts`, `packages/storage/drizzle/0006_add_agent_active_tasks.sql`
+
+## 10. Phase 2 实施记录（2026-03-04）
+
+Phase 2 聚焦于四个维度：结构化记忆增强、安全护栏、流式中断、可观测性。
+
+### 10.1 Memory Flush（OpenClaw 预压缩记忆冲刷）
+
+**问题**：`compactSession()` 直接截断旧消息，重要信息可能丢失。
+
+**改进**：
+- 新增 `memoryFlush(sessionId)` 方法，在压缩前触发一次 ephemeral LLM 调用
+- 提示 Agent 审视近期对话，通过 `memory_save` 持久化关键决策、事实和技术细节
+- `consolidateMemory()` 改为 `async`，在 `compactSession` 前先执行 `memoryFlush`
+- 失败不阻塞压缩流程（graceful degradation）
+
+**端到端流程**：
+```
+定时器触发 consolidateMemory → session.messages > 30
+→ memoryFlush: ephemeral LLM 调用 → Agent 通过工具保存重要信息到 MEMORY.md
+→ compactSession: 截断旧消息 → writeDailyLog 写入中期记忆
+```
+
+**涉及文件**：`packages/core/src/agent.ts`
+
+### 10.2 Guardrails 输入/输出护栏管线
+
+**问题**：Agent 无安全边界，无法拦截 prompt injection 或阻止敏感信息泄露。
+
+**改进**：
+- 新增 `GuardrailPipeline` 类，支持链式注册多个 `InputGuardrail` 和 `OutputGuardrail`
+- `InputGuardrail`：在用户消息到达 LLM 前执行检查，支持 tripwire（立即中断）和内容转换
+- `OutputGuardrail`：在 Agent 响应返回用户前执行检查，支持内容过滤
+- 内置三个护栏：
+  - `promptInjectionGuardrail`：检测常见 prompt injection 模式
+  - `createMaxLengthGuardrail(n)`：限制输入长度
+  - `sensitiveDataGuardrail`：拦截输出中的 API key、私钥等敏感信息
+- `handleMessage()` 和 `handleMessageStream()` 入口添加 input guardrail 检查
+- 两个方法的出口添加 output guardrail 检查
+- 默认管线为空，不影响现有行为；通过 `agent.getGuardrails().addInputGuardrail(...)` 按需启用
+
+**涉及文件**：`packages/core/src/guardrails.ts`（新）, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
+
+### 10.3 流式中断与 Steering
+
+**问题**：`handleMessageStream` 中 Agent 进入工具循环后无法被用户打断，只能等待全部工具调用完成。
+
+**改进**：
+- `handleMessageStream` 新增可选 `cancelToken?: { cancelled: boolean }` 参数
+- 三处中断检查点：
+  1. `while` 循环入口：每轮工具批次开始前
+  2. `for` 循环内：每个工具执行前
+  3. 第二次 `chatStream` 调用前：LLM 重入前
+- Agent 新增 `cancelActiveStream()` 和 `getStreamCancelToken()` 方法
+- 取消后返回当前已有的 response 内容（graceful cancellation）
+
+**涉及文件**：`packages/core/src/agent.ts`
+
+### 10.4 轻量级 Tracing（OpenTelemetry 兼容）
+
+**问题**：LLM 调用和工具执行缺乏可观测性，难以诊断性能瓶颈和错误链路。
+
+**改进**：
+- 新增 `packages/core/src/tracing.ts`，定义 `Span`、`TracingProvider` 接口
+- 默认实现 `DefaultSpan`：记录 name、startTime、durationMs、attributes，通过 `log.debug` 输出
+- 可通过 `setTracingProvider()` 替换为 OpenTelemetry SDK 实现（零改动接入）
+- 三处 trace 埋点：
+  1. `LLMRouter.chat()`：`llm.chat` span，记录 provider/model/tokens/finishReason
+  2. `LLMRouter.chatStream()`：`llm.chatStream` span，同上
+  3. `Agent.executeTool()`：`agent.tool` span，记录 tool name/attempt/success
+- 提供 `trace<T>(name, fn)` 便捷函数用于包裹异步操作
+
+**涉及文件**：`packages/core/src/tracing.ts`（新）, `packages/core/src/llm/router.ts`, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
