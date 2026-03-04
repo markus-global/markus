@@ -389,8 +389,54 @@ async function startServer(
     });
     if (event.tokensUsed && event.type === 'llm_request') {
       auditService.recordLLMUsage('default', agentId, Math.floor(event.tokensUsed * 0.7), Math.ceil(event.tokensUsed * 0.3));
+      billingService.recordUsage({
+        orgId: 'default',
+        agentId,
+        type: 'llm_tokens',
+        amount: event.tokensUsed,
+        metadata: { action: event.action },
+      });
+    }
+    if (event.type === 'tool_call') {
+      billingService.recordUsage({
+        orgId: 'default',
+        agentId,
+        type: 'tool_call',
+        amount: 1,
+        metadata: { action: event.action },
+      });
     }
   });
+
+  // Wire agent state changes to DB persistence
+  if (storage) {
+    agentManager.setStateChangeHandler(async (agentId, state) => {
+      try {
+        await storage.agentRepo.updateStatus(agentId, state.status as 'idle' | 'working' | 'paused' | 'offline' | 'error');
+      } catch (err) {
+        log.warn('Failed to persist agent state', { agentId, error: String(err) });
+      }
+    });
+  }
+
+  // Daily token reset scheduler: runs at midnight to reset per-agent tokensUsedToday
+  const scheduleDailyReset = () => {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+    const msUntilMidnight = nextMidnight.getTime() - now.getTime();
+    setTimeout(() => {
+      log.info('Daily token reset triggered');
+      for (const agentInfo of agentManager.listAgents()) {
+        try {
+          const agent = agentManager.getAgent(agentInfo.id);
+          agent.resetDailyTokens();
+        } catch { /* agent may be offline */ }
+      }
+      scheduleDailyReset();
+    }, msUntilMidnight);
+    log.info(`Daily token reset scheduled in ${Math.round(msUntilMidnight / 60000)} minutes`);
+  };
+  scheduleDailyReset();
 
   const messageRouter = new MessageRouter();
   const webUIAdapter = new WebUIAdapter();

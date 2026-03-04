@@ -1742,3 +1742,73 @@ Phase 3 聚焦于四个遗留的 P0/P1 问题：工作区隔离、Profile 持久
   - 重新分配给 agent，由 TaskService 恢复执行
 
 **涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`
+
+## 12. Phase 4 实施记录（2026-03-04）
+
+Phase 4 聚焦于端到端成本控制与可观测性闭环，解决第 6 章诊断的根因 5（缺乏可观测性）中最关键的"成本不可见"问题。
+
+### 12.1 Token 持久化接线（修复根因 1 的"最后一公里"）
+
+**问题**：`setStateChangeHandler()` 已实现但从未在 `startServer()` 中调用。Agent token 数据在进程重启后丢失。`agentRepo.updateTokens()` 存在但无调用者。
+
+**改进**：
+- `startServer()` 中新增 `agentManager.setStateChangeHandler()` 调用
+- 回调函数通过 `storage.agentRepo.updateStatus()` 将状态变更持久化到 DB
+- Agent 状态变更（status、tokensUsedToday、activeTaskIds）在每次变化时同步到数据库
+
+**涉及文件**：`packages/cli/src/index.ts`
+
+### 12.2 BillingService 接入 Agent 执行流（修复根因 5：缺乏成本统计）
+
+**问题**：`BillingService.recordUsage()` 已实现但从未被调用。Agent 的 token 消耗和工具调用未进入计费系统。
+
+**改进**：
+- `agentAuditCallback` 中新增 BillingService 集成：
+  - `llm_request` 事件 → `billingService.recordUsage(type: 'llm_tokens')`
+  - `tool_call` 事件 → `billingService.recordUsage(type: 'tool_call')`
+- `BillingService` 新增 `getAgentBreakdown(orgId)` 方法，按 Agent 聚合当月用量
+
+**端到端流程**：
+```
+Agent 调用 LLM → updateTokensUsed → emitAudit(llm_request)
+→ auditCallback → auditService.recordLLMUsage + billingService.recordUsage
+→ /api/usage 和 /api/usage/agents 可查询
+→ Web UI Usage 页面展示
+```
+
+**涉及文件**：`packages/cli/src/index.ts`, `packages/org-manager/src/billing-service.ts`
+
+### 12.3 每日 Token 重置调度器
+
+**问题**：`tokensUsedToday` 字段名暗示每日重置，但无任何重置逻辑。Agent 被预算暂停后无法自动恢复。
+
+**改进**：
+- `startServer()` 中新增 `scheduleDailyReset()` 调度器
+- 每天午夜自动触发，遍历所有 Agent 调用 `resetDailyTokens()`
+- Agent 新增 `resetDailyTokens()` 公开方法：
+  - 将 `tokensUsedToday` 重置为 0
+  - 同步重置 `AgentStateManager`
+  - 通知 `stateChangeCallback`（触发 DB 更新）
+  - 如果 Agent 因日预算超限而暂停，自动恢复为 `idle`
+- `AgentStateManager` 新增 `resetTokensUsed()` 方法
+
+**涉及文件**：`packages/cli/src/index.ts`, `packages/core/src/agent.ts`, `packages/core/src/concurrent/state-manager.ts`
+
+### 12.4 Usage & Costs Dashboard（Web UI）
+
+**问题**：后端 API（`/api/usage`、`/api/audit/tokens`）已存在但无前端页面消费。运营者无法可视化查看成本数据。
+
+**改进**：
+- 新增 `/api/usage/agents` API 端点：
+  - 返回每个 Agent 的 token 用量、请求次数、工具调用次数、估算成本
+  - 融合 AuditService 的 token 数据 + BillingService 的用量数据 + Agent 实时状态
+- 新增 `Usage.tsx` 页面，包含：
+  - **用量仪表盘**：LLM Tokens / Tool Calls / Messages / Storage 四项指标，带进度条和限额对比
+  - **成本摘要**：月度估算总成本、当日 Token 总量、活跃 Agent 数
+  - **Agent 明细表**：可排序的 Agent 用量排行（支持按 Total Tokens / Today / Requests / Tool Calls / Cost 排序）
+  - **Plan 限额卡片**：展示当前 Plan 的各项限制
+- Sidebar 新增 "Usage & Costs" 导航入口
+- `api.ts` 新增 `usage.summary()` 和 `usage.agents()` 客户端方法
+- `PageId` 类型和 `App.tsx` 路由已连接
+
+**涉及文件**：`packages/org-manager/src/api-server.ts`, `packages/web-ui/src/pages/Usage.tsx`（新）, `packages/web-ui/src/api.ts`, `packages/web-ui/src/App.tsx`, `packages/web-ui/src/types.ts`, `packages/web-ui/src/components/Sidebar.tsx`

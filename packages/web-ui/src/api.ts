@@ -317,6 +317,21 @@ export interface AgentMetrics {
   totalInteractions: number;
 }
 
+export interface AgentUsageInfo {
+  agentId: string;
+  agentName: string;
+  role: string;
+  status: string;
+  tokensUsedToday: number;
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  requestCount: number;
+  toolCalls: number;
+  messages: number;
+  estimatedCost: number;
+}
+
 export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents'),
@@ -521,6 +536,18 @@ export const api = {
   },
   agentMetrics: (id: string, period: '1h' | '24h' | '7d' = '24h') =>
     request<AgentMetrics>(`/agents/${id}/metrics?period=${period}`),
+  usage: {
+    summary: (orgId = 'default', period?: string) => {
+      const params = new URLSearchParams({ orgId });
+      if (period) params.set('period', period);
+      return request<{
+        usage: { orgId: string; period: string; llmTokens: number; toolCalls: number; messages: number; storageBytes: number };
+        plan: { orgId: string; tier: string; limits: { maxAgents: number; maxTokensPerMonth: number; maxToolCallsPerDay: number; maxMessagesPerDay: number; maxStorageBytes: number } };
+      }>(`/usage?${params}`);
+    },
+    agents: (orgId = 'default') =>
+      request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
+  },
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),

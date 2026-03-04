@@ -1971,6 +1971,44 @@ export class APIServer {
       return;
     }
 
+    // Billing: Per-agent usage breakdown
+    if (path === '/api/usage/agents' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const agentList = this.orgService.getAgentManager().listAgents();
+      const tokenUsage = this.auditService?.getTokenUsage(orgId) ?? [];
+      const billingRecords = this.billingService?.getAgentBreakdown(orgId) ?? [];
+
+      const agentUsage = agentList.map(a => {
+        const tokenData = tokenUsage.find(t => t.agentId === a.id);
+        const billingData = billingRecords.find(b => b.agentId === a.id);
+        return {
+          agentId: a.id,
+          agentName: a.name,
+          role: a.role,
+          status: a.status,
+          tokensUsedToday: 0,
+          totalTokens: tokenData?.totalTokens ?? 0,
+          promptTokens: tokenData?.promptTokens ?? 0,
+          completionTokens: tokenData?.completionTokens ?? 0,
+          requestCount: tokenData?.requestCount ?? 0,
+          toolCalls: billingData?.toolCalls ?? 0,
+          messages: billingData?.messages ?? 0,
+          estimatedCost: (tokenData?.totalTokens ?? 0) * 0.000003,
+        };
+      });
+
+      // Also try to fill tokensUsedToday from live agent state
+      for (const au of agentUsage) {
+        try {
+          const agent = this.orgService.getAgentManager().getAgent(au.agentId);
+          au.tokensUsedToday = agent.getTokensUsedToday();
+        } catch { /* agent offline */ }
+      }
+
+      this.json(res, 200, { agents: agentUsage });
+      return;
+    }
+
     // Billing: API Keys
     if (path === '/api/keys' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';

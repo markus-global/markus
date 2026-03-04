@@ -13,6 +13,7 @@ const navItems: Array<{ id: PageId; label: string; icon: string; section: string
   { id: 'team', label: 'Team', icon: '◎', section: 'workspace' },
   { id: 'chat', label: 'Chat', icon: '◈', section: 'workspace' },
   { id: 'tasks', label: 'Tasks', icon: '☑', section: 'workspace' },
+  { id: 'usage', label: 'Usage & Costs', icon: '◇', section: 'workspace' },
   { id: 'templates', label: 'Templates', icon: '⧉', section: 'explore' },
   { id: 'builder', label: 'Builder', icon: '⊞', section: 'explore' },
   { id: 'skills', label: 'Skill Store', icon: '◆', section: 'explore' },

@@ -106,6 +106,13 @@ export class AgentStateManager {
   }
 
   /**
+   * Reset daily token counter to zero
+   */
+  resetTokensUsed(): void {
+    this.state.tokensUsedToday = 0;
+  }
+
+  /**
    * 获取任务信息
    */
   getTaskInfo(taskId: string): TaskInfo | undefined {

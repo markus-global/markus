@@ -447,6 +447,27 @@ export class Agent {
     return this.getTokensUsed();
   }
 
+  /**
+   * Reset daily token counter (called at midnight by scheduler).
+   * If agent was paused due to budget exceeded, resume to idle.
+   */
+  resetDailyTokens(): void {
+    const wasPausedByBudget = this.state.status === 'paused' &&
+      this.config.profile?.maxTokensPerDay !== undefined && this.config.profile.maxTokensPerDay !== null &&
+      this.state.tokensUsedToday >= this.config.profile.maxTokensPerDay;
+
+    this.state.tokensUsedToday = 0;
+    if (this.stateManager) {
+      this.stateManager.resetTokensUsed();
+    }
+    this.notifyStateChange();
+
+    if (wasPausedByBudget) {
+      this.setStatus('idle');
+      log.info('Agent resumed after daily token reset', { agentId: this.id });
+    }
+  }
+
   setSandbox(sandbox: SandboxHandle): void {
     this.sandbox = sandbox;
     this.registerSandboxedTools(sandbox);

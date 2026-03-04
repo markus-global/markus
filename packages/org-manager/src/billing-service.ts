@@ -121,6 +121,28 @@ export class BillingService {
     };
   }
 
+  getAgentBreakdown(orgId: string): Array<{ agentId: string; llmTokens: number; toolCalls: number; messages: number }> {
+    const month = new Date().toISOString().slice(0, 7);
+    const orgRecords = this.records.filter(r => r.orgId === orgId && r.timestamp.startsWith(month));
+
+    const agentMap = new Map<string, { llmTokens: number; toolCalls: number; messages: number }>();
+    for (const r of orgRecords) {
+      let entry = agentMap.get(r.agentId);
+      if (!entry) {
+        entry = { llmTokens: 0, toolCalls: 0, messages: 0 };
+        agentMap.set(r.agentId, entry);
+      }
+      if (r.type === 'llm_tokens') entry.llmTokens += r.amount;
+      else if (r.type === 'tool_call') entry.toolCalls += r.amount;
+      else if (r.type === 'message') entry.messages += r.amount;
+    }
+
+    return [...agentMap.entries()].map(([agentId, data]) => ({
+      agentId,
+      ...data,
+    }));
+  }
+
   checkLimit(orgId: string, type: UsageRecord['type'], additionalAmount = 1): { allowed: boolean; reason?: string } {
     const plan = this.getOrgPlan(orgId);
     if (plan.tier === 'enterprise') return { allowed: true };
