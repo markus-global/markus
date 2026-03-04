@@ -453,7 +453,7 @@ describe('TeamTemplateRegistry', () => {
   it('should create default team templates', () => {
     const registry = createDefaultTeamTemplates();
     const all = registry.list();
-    expect(all.length).toBe(5);
+    expect(all.length).toBe(10);
 
     const devSquad = registry.get('team-dev-squad');
     expect(devSquad).toBeDefined();
@@ -463,9 +463,9 @@ describe('TeamTemplateRegistry', () => {
 
   it('should unregister team templates', () => {
     const registry = createDefaultTeamTemplates();
-    expect(registry.list()).toHaveLength(5);
+    expect(registry.list()).toHaveLength(10);
     registry.unregister('team-dev-squad');
-    expect(registry.list()).toHaveLength(4);
+    expect(registry.list()).toHaveLength(9);
     expect(registry.get('team-dev-squad')).toBeUndefined();
   });
 

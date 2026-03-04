@@ -134,8 +134,8 @@ describe('Marketplace - TemplateRegistry with persistence', () => {
 
     it('should list all templates (official + community)', () => {
       const all = registry.list();
-      expect(all.length).toBe(8); // 7 official + 1 community
-      expect(all.filter(t => t.source === 'official')).toHaveLength(7);
+      expect(all.length).toBe(15); // 14 official + 1 community
+      expect(all.filter(t => t.source === 'official')).toHaveLength(14);
       expect(all.filter(t => t.source === 'community')).toHaveLength(1);
     });
 
@@ -155,11 +155,11 @@ describe('Marketplace - TemplateRegistry with persistence', () => {
 
     it('should filter by agentRole', () => {
       const managers = registry.search({ agentRole: 'manager' });
-      expect(managers.templates).toHaveLength(1);
-      expect(managers.templates[0]!.name).toBe('Project Manager');
+      expect(managers.templates).toHaveLength(3);
+      expect(managers.templates.map(t => t.name)).toContain('Project Manager');
 
       const workers = registry.search({ agentRole: 'worker' });
-      expect(workers.templates.length).toBe(7);
+      expect(workers.templates.length).toBe(12); // 11 official + 1 community
     });
   });
 });
@@ -231,14 +231,14 @@ describe('Marketplace - TemplatePersistenceAdapter integration', () => {
     await registry.syncFromDatabase();
 
     const all = registry.list();
-    expect(all).toHaveLength(8); // 7 official + 1 community
+    expect(all).toHaveLength(15); // 14 official + 1 community
 
     const securityResults = registry.search({ text: 'security' });
     expect(securityResults.templates).toHaveLength(1);
     expect(securityResults.templates[0]!.source).toBe('community');
 
     const officialOnly = registry.search({ source: 'official' });
-    expect(officialOnly.templates).toHaveLength(7);
+    expect(officialOnly.templates).toHaveLength(14);
 
     const communityOnly = registry.search({ source: 'community' });
     expect(communityOnly.templates).toHaveLength(1);
