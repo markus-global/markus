@@ -1,6 +1,6 @@
 # Markus 系统架构深度分析报告
 
-> 版本：v0.3.0 | 分析日期：2026-03-04 | 基于源码深度调研
+> 版本：v0.7.0 | 分析日期：2026-03-04 | 基于源码深度调研
 
 ---
 
@@ -22,9 +22,13 @@
 5. [与业界框架对比分析](#5-与业界框架对比分析)
    - 5.1 [OpenClaw 架构借鉴](#51-openclaw-架构借鉴)
    - 5.2 [CrewAI / AutoGen / LangGraph / OpenAI Agents SDK](#52-crewai--autogen--langgraph--openai-agents-sdk)
-6. [核心问题诊断：为何仍是"玩具"而非"工具"](#6-核心问题诊断为何仍是玩具而非工具)
-7. [改进路线图](#7-改进路线图)
-8. [附录：PlantUML 源码](#8-附录plantuml-源码)
+6. [问题诊断与解决进展](#6-问题诊断与解决进展)
+   - 6.1 [已解决的核心问题](#61-已解决的核心问题)
+   - 6.2 [仍待解决的问题](#62-仍待解决的问题)
+   - 6.3 [架构设计反思](#63-架构设计反思)
+7. [实施进展总览](#7-实施进展总览)
+8. [后续路线图](#8-后续路线图)
+9. [附录](#9-附录)
 
 ---
 
@@ -1143,372 +1147,272 @@ rectangle "Markus (当前)" as Markus #FFCDD2 {
 
 #### 对比矩阵
 
-| 能力维度 | CrewAI | AutoGen | LangGraph | OpenAI Agents SDK | **Markus** |
+| 能力维度 | CrewAI | AutoGen | LangGraph | OpenAI Agents SDK | **Markus (v0.7)** |
 |---|---|---|---|---|---|
-| **工具执行可靠性** | Tool Call Hooks (before/after) | OTel spans | 包装为确定性 task | Guardrails | 简单重试 (max 2)，无钩子 |
-| **状态持久化** | Pydantic state | save/load | 检查点 + 恢复 | Sessions | **无**（全内存） |
-| **错误恢复** | HITL 反馈重试 | Runtime 级处理 | 检查点恢复 | 企业级错误路径 | 简单重试，人类升级仅日志 |
-| **Human-in-the-Loop** | Task HITL, Flow 装饰器 | Human 作为 Agent 类型 | `interrupt()` + `Command` | 内建 HITL | **未实现**（`needsApproval` 存在但不阻塞） |
-| **可观测性** | 基础日志 | OpenTelemetry | LangSmith | 内建 Tracing | **无**（仅日志） |
-| **Agent 定义** | Role + 目标 + 背景 | Conversable Agents | 图节点 | Instructions + Guardrails | ROLE.md + Skills |
-| **多 Agent 协作** | Crews + Flows | Multi-agent chat | 图组合 | Handoffs + agents-as-tools | A2A Bus（未真正连通） |
-| **生产就绪度** | 中高 | 高 | 高 | 高 | **低** |
+| **工具执行可靠性** | Tool Call Hooks (before/after) | OTel spans | 包装为确定性 task | Guardrails | ✅ ToolHookRegistry (before/after) + 幂等缓存 + 重试 |
+| **状态持久化** | Pydantic state | save/load | 检查点 + 恢复 | Sessions | ✅ DB 持久化 (status, tokens, tasks, profile) |
+| **错误恢复** | HITL 反馈重试 | Runtime 级处理 | 检查点恢复 | 企业级错误路径 | ✅ 重试 + HITL 审批 + 日 token 重置恢复 |
+| **Human-in-the-Loop** | Task HITL, Flow 装饰器 | Human 作为 Agent 类型 | `interrupt()` + `Command` | 内建 HITL | ✅ 审批阻塞 + REST API + 超时自动拒绝 |
+| **可观测性** | 基础日志 | OpenTelemetry | LangSmith | 内建 Tracing | ✅ Tracing (OTel 兼容) + Usage Dashboard |
+| **Agent 定义** | Role + 目标 + 背景 | Conversable Agents | 图节点 | Instructions + Guardrails | ✅ ROLE.md + AgentProfile (工具白名单/预算) + Guardrails |
+| **多 Agent 协作** | Crews + Flows | Multi-agent chat | 图组合 | Handoffs + agents-as-tools | ✅ A2A Bus + DelegationManager (真实任务委派) |
+| **成本控制** | 基础 | 无内建 | 无内建 | 企业级 | ✅ 日 token 预算 + BillingService + Usage Dashboard |
+| **生产就绪度** | 中高 | 高 | 高 | 高 | **中**（核心流程可靠，缺 RAG 和分布式） |
 
 ---
 
-## 6. 核心问题诊断：为何仍是"玩具"而非"工具"
+## 6. 问题诊断与解决进展
 
-经过深入代码分析和框架对比，Markus 当前的核心问题**不在于缺少 Channel 集成**，而在于以下根本性的架构和工程缺陷：
+初始代码分析（v0.3.0）诊断出 6 个根因阻碍 Markus 从"玩具"变为"工具"。经过 4 轮迭代，绝大多数已解决。
 
-### 6.1 Agent 不实用：缺乏可靠的任务执行能力
-
-**症状**：Agent 可以对话，但无法可靠地完成实际工作任务。
-
-**根因分析**：
+### 6.1 已解决的核心问题
 
 ```plantuml
-@startuml problem-analysis
+@startuml problem-status
 !theme plain
 skinparam backgroundColor #FEFEFE
 
-rectangle "表象：Agent 只能聊天，无法干活" as Problem #FFCDD2
+rectangle "原始问题（v0.3.0）" as Problems #FFF3E0
 
-rectangle "根因 1：执行状态不持久化" as C1 #FFE0B2 {
-  card "进程重启 = 丢失所有上下文" as C1a
-  card "长任务无法断点续做" as C1b
-  card "无法从失败中恢复" as C1c
+rectangle "✅ 已解决" as Solved #C8E6C9 {
+  card "根因 1：执行状态不持久化\n→ DB 持久化 (status, tokens, tasks, profile)" as S1
+  card "根因 2：工具系统不成熟\n→ ToolHookRegistry + 幂等缓存 + 工作区隔离" as S2
+  card "根因 3：A2A 协作未实现\n→ DelegationManager 真实任务委派" as S3
+  card "根因 4：安全模型不完整\n→ HITL 审批阻塞 + AgentProfile 约束" as S4
+  card "根因 5：缺乏可观测性\n→ Tracing + BillingService + Usage Dashboard" as S5
 }
 
-rectangle "根因 2：工具系统不成熟" as C2 #FFE0B2 {
-  card "Shell 工具无工作区隔离" as C2a
-  card "文件操作无事务性" as C2b
-  card "无工具结果验证" as C2c
-  card "无幂等性保证" as C2d
+rectangle "⚠ 部分解决" as Partial #FFF9C4 {
+  card "根因 6：上下文工程粗糙\n→ Memory Flush 改善了记忆保留\n⚠ 仍缺 RAG/向量检索" as P1
 }
 
-rectangle "根因 3：A2A 协作未实现" as C3 #FFE0B2 {
-  card "DelegationManager 未连通 Agent" as C3a
-  card "CollaborationManager 纯内存" as C3b
-  card "Agent 间无法真正委派工作" as C3c
-}
-
-rectangle "根因 4：安全模型不完整" as C4 #FFE0B2 {
-  card "needsApproval 不阻塞执行" as C4a
-  card "无资源限制 (token/时间/并发)" as C4b
-  card "pendingApprovals 未使用" as C4c
-}
-
-rectangle "根因 5：缺乏可观测性" as C5 #FFE0B2 {
-  card "无 OpenTelemetry / Tracing" as C5a
-  card "无成本统计与预算" as C5b
-  card "出错后难以诊断" as C5c
-}
-
-rectangle "根因 6：上下文工程粗糙" as C6 #FFE0B2 {
-  card "Token 估算用 len/2.5（不准确）" as C6a
-  card "长对话截断策略过于简单" as C6b
-  card "无 RAG / 向量检索" as C6c
-}
-
-Problem --> C1
-Problem --> C2
-Problem --> C3
-Problem --> C4
-Problem --> C5
-Problem --> C6
+Problems --> Solved
+Problems --> Partial
 
 @enduml
 ```
 
-### 6.2 详细问题剖析
+| 根因 | 原始问题 | 当前状态 | 解决方案 |
+|---|---|---|---|
+| **1. 状态不持久化** | 进程重启丢失所有上下文 | ✅ 已解决 | Agent status/tokens/tasks/profile 持久化到 DB；启动时自动恢复 |
+| **2. 工具系统不成熟** | 无隔离、无验证、无幂等 | ✅ 已解决 | 工作区路径隔离；ToolHookRegistry (before/after)；幂等缓存 (5min TTL) |
+| **3. A2A 协作形同虚设** | DelegationManager 仅记日志 | ✅ 已解决 | 委派 → 自动创建 Task 并分配给目标 Agent；AgentCard 自动注册 |
+| **4. 安全模型不完整** | needsApproval 不阻塞 | ✅ 已解决 | 审批阻塞 + Promise 等待 + REST API approve/reject + 超时自动拒绝 |
+| **5. 缺乏可观测性** | 无 tracing、无成本统计 | ✅ 已解决 | OTel 兼容 Tracing；BillingService 接入执行流；Usage & Costs Dashboard |
+| **6. 上下文工程粗糙** | Token 估算不准、无 RAG | ⚠ 部分 | Memory Flush 改善记忆保留；`agentKnowledge` 表存在但无向量检索 |
 
-#### P0：执行状态完全内存化
+### 6.2 仍待解决的问题
 
-这是最致命的问题。当前所有运行时状态（Agent 实例、工作流执行、A2A 消息、会话上下文）都保存在内存中。
+#### P1：RAG / 向量语义检索
 
-- **影响**：进程重启 → 所有正在执行的任务丢失，所有 Agent 状态重置
-- **对比**：LangGraph 的检查点系统、AutoGen 的 save/load state、OpenClaw 的 JSONL 会话持久化
-- **量化差距**：生产系统需要保证任务不丢失；Markus 无法做到
+- `agentKnowledge` 表已定义但检索基于简单关键词匹配
+- 长期记忆（`memory_search`）无法按语义相关性召回
+- Token 估算仍使用 `Math.ceil(text.length / 2.5)`，对非英文内容不够准确
+- **建议**：集成 pgvector 或外部向量 DB，为 `agentKnowledge` 和 `memories` 添加 embedding 列
 
-#### P0：A2A 协作形同虚设
+#### P1：Workflow 持久化执行
 
-代码分析发现：
+- `WorkflowExecution` 完全内存化，进程重启后丢失
+- 已定义 `human_approval` 步骤类型但无审批 UI
+- **建议**：将 execution state 写入 DB，支持跨重启恢复
 
-- `DelegationManager` 的 `task_delegate` 处理器只做日志记录，不连接实际 Agent
-- `CollaborationManager` 的会话纯内存，不持久化
-- `A2ABus` 每个 `AgentManager` 独立创建，Agent 间实际上不共享消息总线
-- Manager Agent 的 `delegate_message` 工具只是发消息，不跟踪执行结果
+#### P2：文件操作事务性
 
-**本质**：多 Agent 协作的架构已经搭建，但关键的"最后一公里"——消息真正到达 Agent 并触发工作——没有实现。
+- 文件写入失败可能留下半成品
+- 无 rollback 机制
+- **建议**：写入临时文件后原子 rename；或对关键操作添加 undo 日志
 
-#### P1：Human-in-the-Loop 缺失
+#### P2：分布式 Agent 运行时
 
-`SecurityGuard` 定义了 `needsApproval` 但返回后不阻塞执行。`pendingApprovals` Map 存在但从未使用。没有 UI 来展示审批请求。
+- 所有 Agent 运行在单进程中，无法水平扩展
+- **建议**：远期考虑基于消息队列的分布式执行
 
-这意味着用户无法对 Agent 的关键操作进行确认，只能事后查看日志。在实际使用中，这会导致**信任危机**——用户不敢让 Agent 执行真正重要的任务。
+### 6.3 架构设计反思
 
-#### P1：工具执行不可靠
+#### "组织模拟"隐喻的演进
 
-- Shell 工具直接在主机文件系统执行，无工作区隔离（Sandbox 可选但默认关闭）
-- 文件操作没有事务性：写入失败可能留下半成品
-- 工具结果没有结构化验证：Agent 可能基于错误的工具输出继续推理
-- 无幂等性保证：重试可能导致重复副作用
+Markus 的"数字员工平台"隐喻在概念上吸引人，但实践中需要平衡**组织开销**与**使用便捷性**。当前采取的策略是保留组织模型但降低使用门槛：
 
-#### P2：上下文工程粗糙
+- 启动即创建默认组织和 Agent，用户无需手动配置即可开始对话
+- AgentProfile 约束了能力边界，避免角色仅停留在"提示词声称"层面
+- 按需创建 Agent，而非要求预先规划完整组织结构
 
-- Token 估算使用 `Math.ceil(text.length / 2.5)`，对英文内容偏保守，对 JSON/代码内容不准确
-- 长对话管理：超过 60 条消息才触发摘要截断，此前可能已经超出上下文窗口
-- 无 RAG 支持：记忆检索基于简单关键词搜索，不支持向量语义检索
-- `agentKnowledge` 表已定义但知识检索能力有限
-
-### 6.3 架构设计本身的问题
-
-#### "组织模拟"隐喻的陷阱
-
-Markus 试图模拟一个完整的公司组织——有 CEO（org-manager）、各部门（teams）、员工（worker agents）。这个隐喻在概念上很吸引人，但在实践中带来了过多的**组织开销**：
-
-- 用户需要先创建组织、配置团队、部署多个 Agent，才能开始一个简单的任务
-- 每个 Agent 都需要独立的 LLM 调用来理解上下文，导致 token 消耗乘以 Agent 数量
-- Org Manager 作为路由中枢，每条消息都要经过它"理解和转发"，增加延迟和成本
-
-**对比 OpenClaw**：一个 Agent，一个工作区，直接干活。需要多 Agent 时，用 `sessions_spawn` 按需创建。
-
-**对比 CrewAI**：Crews 按任务组合，任务完成后 Crew 解散。不维持永久的组织结构。
-
-#### 角色系统过于宽泛
-
-16 个内置角色（developer, marketing, hr, finance...）看似功能全面，实际上：
-
-- 角色定义只是系统提示词，缺乏**结构化的能力边界**
-- 一个 "developer" Agent 和一个 "devops" Agent 在工具层面几乎相同
-- 用户无法验证 Agent 是否真的具备所声称的能力
-- 无 Guardrails 确保 Agent 只做角色范围内的事
+**对比参考**：
+- OpenClaw：一个 Agent + 一个工作区，极简模式
+- CrewAI：按任务组队，临时组合
+- Markus：保留组织结构，但支持单 Agent 直接对话的"捷径"模式
 
 ---
 
-## 7. 改进路线图
+## 7. 实施进展总览
 
-### 7.1 总体策略：从"模拟组织"到"实用工具"
+### 7.1 迭代路线与完成状态
 
 ```plantuml
-@startuml improvement-roadmap
+@startuml implementation-progress
 !theme plain
 skinparam backgroundColor #FEFEFE
 
-rectangle "Phase 1: 单 Agent 可靠执行\n(夯实基础)" as P1 #C8E6C9 {
-  card "1.1 执行状态持久化" as P1a
-  card "1.2 工作区隔离 (默认开启)" as P1b
-  card "1.3 工具结果验证 + 幂等性" as P1c
-  card "1.4 Human-in-the-Loop 审批流" as P1d
-  card "1.5 OpenTelemetry 可观测性" as P1e
+rectangle "Phase 1: 基础可靠性 ✅" as P1 #C8E6C9 {
+  card "✅ A2A 委派连通" as P1a
+  card "✅ HITL 审批阻塞" as P1b
+  card "✅ AgentProfile 结构化能力定义" as P1c
+  card "✅ 执行状态持久化基础设施" as P1d
 }
 
-rectangle "Phase 2: Agent 真正好用\n(提升实用性)" as P2 #BBDEFB {
-  card "2.1 RAG / 向量记忆" as P2a
-  card "2.2 Agent Profile (替代宽泛角色)" as P2b
-  card "2.3 Guardrails (输入/输出验证)" as P2c
-  card "2.4 流式中断与 Steering" as P2d
-  card "2.5 成本控制与预算系统" as P2e
+rectangle "Phase 2: 安全与可观测 ✅" as P2 #C8E6C9 {
+  card "✅ Memory Flush 预压缩记忆" as P2a
+  card "✅ Guardrails 输入/输出护栏" as P2b
+  card "✅ 流式中断与 Steering" as P2c
+  card "✅ OTel 兼容 Tracing" as P2d
 }
 
-rectangle "Phase 3: 多 Agent 真正协作\n(实现愿景)" as P3 #F8BBD0 {
-  card "3.1 A2A 真正连通" as P3a
-  card "3.2 Session-based 委派 (借鉴 OpenClaw)" as P3b
-  card "3.3 Workflow 持久化执行" as P3c
-  card "3.4 按需组队 (替代永久组织)" as P3d
+rectangle "Phase 3: 工具与恢复 ✅" as P3 #C8E6C9 {
+  card "✅ 工作区路径隔离" as P3a
+  card "✅ Profile 持久化到 DB" as P3b
+  card "✅ ToolHookRegistry + 幂等缓存" as P3c
+  card "✅ Agent 状态完整恢复" as P3d
 }
 
-rectangle "Phase 4: 平台级能力\n(规模化)" as P4 #FFE0B2 {
-  card "4.1 插件/技能市场" as P4a
-  card "4.2 多租户与权限" as P4b
-  card "4.3 分布式 Agent 运行时" as P4c
-  card "4.4 声明式路由规则" as P4d
+rectangle "Phase 4: 成本闭环 ✅" as P4 #C8E6C9 {
+  card "✅ Token 持久化接线" as P4a
+  card "✅ BillingService 接入执行流" as P4b
+  card "✅ 每日 Token 重置调度器" as P4c
+  card "✅ Usage & Costs Dashboard" as P4d
+}
+
+rectangle "Phase 5: 待实施" as P5 #FFE0B2 {
+  card "⬜ RAG / 向量语义检索" as P5a
+  card "⬜ Workflow 持久化执行" as P5b
+  card "⬜ 审批 UI（Web UI）" as P5c
+  card "⬜ 分布式 Agent 运行时" as P5d
 }
 
 P1 --> P2
 P2 --> P3
 P3 --> P4
+P4 --> P5
 
 @enduml
 ```
 
-### 7.2 Phase 1 关键改进详解
+### 7.2 各 Phase 实施摘要
 
-#### 1.1 执行状态持久化
+#### Phase 1 — 基础可靠性
 
-```
-当前: Agent 状态 → 内存 → 进程重启全部丢失
-目标: Agent 状态 → 数据库 → 进程重启后自动恢复
-
-参考:
-- LangGraph: Checkpoint + PostgresSaver
-- AutoGen: save_state() / load_state()
-- OpenClaw: JSONL transcript 持久化
-```
-
-具体措施：
-- 将 `WorkflowExecution` 持久化到数据库，支持断点恢复
-- 将 `Agent.state` 的关键字段（activeTasks, currentSessionId）持久化
-- Task 执行的 LLM 对话历史已经通过 `chatMessages` 持久化，需要完善恢复逻辑
-
-#### 1.2 工作区隔离
-
-```
-当前: Agent 直接操作主机文件系统
-目标: 每个 Agent/Task 一个隔离工作区
-
-参考:
-- OpenClaw: 一个 Agent 一个 cwd workspace
-- Markus 已有 SandboxHandle 接口，但默认关闭
-```
-
-具体措施：
-- 默认启用 Docker Sandbox 或至少 chroot 级别隔离
-- 每个 Agent 分配 `~/.markus/workspaces/<agentId>/` 作为工作目录
-- 工具执行限制在工作区范围内
-
-#### 1.3 工具结果验证 + 幂等性
-
-```
-当前: 工具返回字符串，Agent 自行解读
-目标: 工具返回结构化结果，支持验证和重试
-
-参考:
-- CrewAI: Tool Call Hooks (before_tool_call / after_tool_call)
-- OpenClaw: 幂等键
-```
-
-具体措施：
-- 工具结果标准化为 `{ status: 'success' | 'error', data: any, idempotencyKey?: string }`
-- 添加 before/after 钩子，支持日志、验证、审计
-- 副作用工具（shell, file_write）添加幂等键机制
-
-#### 1.4 Human-in-the-Loop 审批流
-
-```
-当前: needsApproval 返回但不阻塞
-目标: 关键操作暂停等待人类审批
-
-参考:
-- LangGraph: interrupt() + Command
-- CrewAI: Task-level HITL
-```
-
-具体措施：
-- 实现审批等待机制：工具返回 `needsApproval` 时暂停 Agent 执行
-- Web UI 添加审批请求列表和操作界面
-- 支持超时自动拒绝
-
-### 7.3 Phase 2 关键改进详解
-
-#### 2.2 Agent Profile（替代宽泛角色）
-
-当前的角色系统过于宽泛——一个 ROLE.md 文件无法定义 Agent 的真实能力边界。
-
-```
-当前:
-  developer/ROLE.md → 大段提示词 → Agent "声称"自己能写代码
-  
-目标:
-  Agent Profile = {
-    capabilities: ['typescript', 'react', 'testing'],
-    tools: ['shell', 'file_*', 'git_*'],     // 严格的工具白名单
-    guardrails: [...],                         // 输入/输出验证规则
-    workspace: '/path/to/workspace',           // 绑定工作区
-    costBudget: { maxTokensPerTask: 50000 },   // 成本预算
-    approvalRequired: ['shell:rm', 'git:push'] // 需要审批的操作
-  }
-```
-
-这样 Agent 的能力是**可验证、可约束、可度量**的，而不仅仅是提示词中的"声称"。
-
-#### 2.3 Guardrails
-
-```
-参考:
-- OpenAI Agents SDK: InputGuardrail / OutputGuardrail
-- 可并行或串行执行
-- 支持 tripwire (触发后中止)
-```
-
-具体措施：
-- 输入 Guardrail：在 Agent 处理消息前验证（如敏感信息过滤、注入检测）
-- 输出 Guardrail：在 Agent 回复前验证（如合规检查、格式验证）
-- 工具 Guardrail：在工具执行前验证（现有 SecurityGuard 的增强版）
-
-### 7.4 核心设计理念转变
-
-```plantuml
-@startuml design-shift
-!theme plain
-skinparam backgroundColor #FEFEFE
-
-rectangle "当前设计理念" as Current #FFCDD2 {
-  card "模拟公司组织 → 部署多个 Agent → 每个有角色\n→ 组成团队 → 等待任务" as C1
-  card "Agent 是\n\"数字员工\"" as C2
-  card "先建组织\n后干活" as C3
-}
-
-rectangle "目标设计理念" as Target #C8E6C9 {
-  card "一个可靠的 Agent → 给它工具和上下文\n→ 让它完成任务 → 需要时按需组队" as T1
-  card "Agent 是\n\"智能工具\"" as T2
-  card "先干活\n按需扩展" as T3
-}
-
-Current -right-> Target : 转变
-
-note bottom of Current
-  问题：组织开销大，
-  Agent 多但每个都不强，
-  token 消耗 × N
-end note
-
-note bottom of Target
-  优势：单点可靠，
-  按需扩展，成本可控，
-  用户体验直接
-end note
-
-@enduml
-```
-
-**核心转变**：
-
-| 维度 | 当前（玩具） | 目标（工具） |
+| 改进项 | 解决的根因 | 关键实现 |
 |---|---|---|
-| **上手体验** | 创建组织 → 配置团队 → 部署 Agent → 开始对话 | 启动 → 直接对话 → Agent 帮你干活 |
-| **Agent 数量** | 默认多个（模拟组织） | 默认一个（按需增加） |
-| **能力证明** | 声称（ROLE.md 提示词） | 验证（能力测试 + Guardrails） |
-| **失败处理** | 静默失败 + 日志 | 人类审批 + 断点恢复 + 清晰错误报告 |
-| **成本感知** | 无（每个 Agent 独立消耗 token） | 有预算、有统计、有告警 |
-| **信任建立** | 用户猜测 Agent 在做什么 | 用户看到 Agent 在做什么（可观测性） |
+| A2A 委派连通 | 根因 3 (A2A 形同虚设) | `DelegationManager.onDelegationReceived()` → 自动创建 Task 并分配 |
+| HITL 审批阻塞 | 根因 4 (安全模型不完整) | `ApprovalCallback` + `HITLService.requestApprovalAndWait()` + 超时拒绝 |
+| AgentProfile | 根因 4 (无资源限制) | 工具白/黑名单、日 token 预算、并发限制、审批配置 |
+| 状态持久化基础设施 | 根因 1 (状态内存化) | `stateChangeCallback` + DB 列 (active_task_ids, profile) |
+
+**涉及文件**：`a2a/delegation.ts`, `core/agent.ts`, `core/agent-manager.ts`, `org-manager/hitl-service.ts`, `shared/types/agent.ts`, `storage/schema.ts`
+
+#### Phase 2 — 安全与可观测
+
+| 改进项 | 解决的根因 | 关键实现 |
+|---|---|---|
+| Memory Flush | 根因 6 (上下文粗糙) | 压缩前 ephemeral LLM 调用，持久化关键记忆 |
+| Guardrails | 根因 4 (安全模型) | `GuardrailPipeline` 链式管线；内置 prompt injection/sensitive data 检测 |
+| 流式中断 | 新需求 | `cancelToken` 三处检查点；`cancelActiveStream()` API |
+| Tracing | 根因 5 (无可观测性) | `DefaultSpan` + `setTracingProvider()` 可替换为 OTel SDK |
+
+**涉及文件**：`core/agent.ts`, `core/guardrails.ts` (新), `core/tracing.ts` (新), `core/llm/router.ts`
+
+#### Phase 3 — 工具与恢复
+
+| 改进项 | 解决的根因 | 关键实现 |
+|---|---|---|
+| 工作区隔离 | 根因 2 (工具不成熟) | Shell/File 工具 `workspacePath` 参数；路径越界检查 |
+| Profile 持久化 | 根因 1 (状态不持久化) | DB `agents.profile` jsonb 列；`restoreAgent` 恢复 profile |
+| ToolHookRegistry | 根因 2 (工具不成熟) | before/after 钩子；幂等缓存 (5min TTL)；审计日志钩子 |
+| 状态恢复完善 | 根因 1 (状态不持久化) | `tokensUsedToday` + `activeTaskIds` 重启后恢复 |
+
+**涉及文件**：`core/tools/shell.ts`, `core/tools/file.ts`, `core/tool-hooks.ts` (新), `core/agent-manager.ts`, `storage/schema.ts`
+
+#### Phase 4 — 成本闭环
+
+| 改进项 | 解决的根因 | 关键实现 |
+|---|---|---|
+| Token 持久化接线 | 根因 1 最后一公里 | `startServer()` 中 `setStateChangeHandler()` → DB 更新 |
+| BillingService 接入 | 根因 5 (成本不可见) | 审计回调中 `billingService.recordUsage()`；`getAgentBreakdown()` |
+| 每日 Token 重置 | 预算恢复 | `scheduleDailyReset()` 午夜触发；超限暂停后自动恢复 |
+| Usage Dashboard | 根因 5 (无可视化) | `/api/usage/agents` 端点 + `Usage.tsx` 页面 + Sidebar 入口 |
+
+**涉及文件**：`cli/index.ts`, `org-manager/api-server.ts`, `org-manager/billing-service.ts`, `web-ui/pages/Usage.tsx` (新)
 
 ---
 
-## 8. 附录：PlantUML 源码
+## 8. 后续路线图
 
-以上所有 PlantUML 图表的源码已内嵌在对应章节中。要渲染这些图表，可以使用：
+### Phase 5：待实施项目
+
+```plantuml
+@startuml future-roadmap
+!theme plain
+skinparam backgroundColor #FEFEFE
+
+rectangle "短期 (1-2 周)" as Short #BBDEFB {
+  card "RAG / 向量语义记忆\n(pgvector + embedding)" as S1
+  card "审批请求 UI\n(Web UI 审批列表)" as S2
+  card "Workflow 持久化\n(execution → DB)" as S3
+}
+
+rectangle "中期 (1-2 月)" as Mid #F8BBD0 {
+  card "多租户与权限" as M1
+  card "声明式路由规则" as M2
+  card "插件/技能市场" as M3
+}
+
+rectangle "远期" as Long #FFE0B2 {
+  card "分布式 Agent 运行时" as L1
+  card "语音交互" as L2
+}
+
+Short --> Mid
+Mid --> Long
+
+@enduml
+```
+
+| 优先级 | 项目 | 预期价值 |
+|---|---|---|
+| P1 | RAG / 向量语义记忆 | Agent 能基于语义检索相关知识和历史，大幅提升长期工作能力 |
+| P1 | 审批 UI | 用户可在 Web UI 中查看、批准、拒绝 Agent 的敏感操作请求 |
+| P1 | Workflow 持久化 | DAG 工作流跨重启恢复，支持长周期多 Agent 编排 |
+| P2 | 多租户与权限 | 支持多组织隔离，RBAC 权限模型 |
+| P2 | 声明式路由规则 | 基于 channel/sender/keyword 的精确消息路由配置 |
+| P3 | 插件/技能市场 | 社区贡献的工具和角色模板共享 |
+| P3 | 分布式运行时 | 基于消息队列的 Agent 水平扩展 |
+
+---
+
+## 9. 附录
+
+### 9.1 PlantUML 渲染
+
+以上所有 PlantUML 图表的源码已内嵌在对应章节中。渲染方式：
 
 1. **VS Code 插件**：PlantUML extension（推荐）
 2. **在线渲染**：https://www.plantuml.com/plantuml/uml/
 3. **命令行**：`java -jar plantuml.jar docs/architecture-analysis.md`
 
----
-
-## 附录 B：关键文件索引
+### 9.2 关键文件索引
 
 | 文件 | 职责 |
 |---|---|
-| `packages/core/src/agent.ts` | Agent 核心运行时（1426 行） |
-| `packages/core/src/agent-manager.ts` | Agent 生命周期管理（683 行） |
-| `packages/core/src/context-engine.ts` | 上下文组装引擎（550 行） |
+| `packages/core/src/agent.ts` | Agent 核心运行时（~1700 行） |
+| `packages/core/src/agent-manager.ts` | Agent 生命周期管理 |
+| `packages/core/src/context-engine.ts` | 上下文组装引擎 |
 | `packages/core/src/tool-selector.ts` | 工具动态选择 |
 | `packages/core/src/security.ts` | 安全策略执行 |
+| `packages/core/src/guardrails.ts` | 输入/输出 Guardrail 管线 |
+| `packages/core/src/tracing.ts` | OTel 兼容 Tracing |
+| `packages/core/src/tool-hooks.ts` | 工具执行钩子 + 幂等缓存 |
 | `packages/core/src/llm/router.ts` | LLM 多 Provider 路由 |
 | `packages/core/src/workflow/engine.ts` | DAG 工作流引擎 |
-| `packages/core/src/workflow/types.ts` | 工作流类型定义 |
 | `packages/core/src/skills/registry.ts` | 技能注册中心 |
-| `packages/core/src/skills/types.ts` | 技能类型定义 |
 | `packages/core/src/role-loader.ts` | 角色模板加载器 |
 | `packages/core/src/external-gateway.ts` | 外部 Agent 网关 |
 | `packages/a2a/src/bus.ts` | Agent 间消息总线 |
@@ -1516,299 +1420,17 @@ end note
 | `packages/org-manager/src/task-service.ts` | 任务生命周期管理 |
 | `packages/org-manager/src/org-service.ts` | 组织服务与消息路由 |
 | `packages/org-manager/src/api-server.ts` | REST/WS API |
+| `packages/org-manager/src/hitl-service.ts` | 人类审批服务 |
+| `packages/org-manager/src/billing-service.ts` | 计费与用量统计 |
 | `packages/storage/src/schema.ts` | 数据库 Schema |
+| `packages/storage/src/migrate.ts` | 迁移与启动安全网 |
 | `packages/web-ui/src/pages/Chat.tsx` | 聊天界面 |
-| `packages/web-ui/src/pages/Dashboard.tsx` | 仪表盘 |
+| `packages/web-ui/src/pages/Dashboard.tsx` | 运营仪表盘 |
+| `packages/web-ui/src/pages/Usage.tsx` | Usage & Costs 仪表盘 |
+| `packages/cli/src/index.ts` | 服务启动入口与接线 |
 | `templates/roles/*/ROLE.md` | 16 个内置角色模板 |
 | `templates/teams/*.json` | 4 个团队模板 |
 
 ---
 
-> **总结**：Markus 的架构设计展现了对 AI Agent 平台的深入思考——类型系统完善、模块边界清晰、概念模型丰富。但当前的核心矛盾是**架构完整性与实现可靠性之间的断裂**：定义了组织、团队、工作流、A2A 等丰富概念，但在关键的"最后一公里"——状态持久化、工具可靠性、A2A 真正连通、Human-in-the-Loop——都存在明显缺口。要从"玩具"变成"工具"，首要任务不是增加更多功能，而是让现有的单 Agent 执行流程**端到端可靠**。
-
----
-
-## 9. Phase 1 实施记录（2026-03-04）
-
-以下改进已在本次迭代中完成，解决了第 6 章诊断的四个核心问题。
-
-### 9.1 A2A 委派连通（修复根因 3）
-
-**问题**：`DelegationManager` 的处理器仅记录日志，不触发实际工作。
-
-**改进**：
-- `DelegationManager` 新增 `onDelegationReceived()` 回调机制
-- `AgentManager` 在构造函数中创建 `DelegationManager` 并注册委派处理器
-- 委派处理器接收到 `task_delegate` 消息时，自动通过 `TaskService.createTask()` 创建真实任务并分配给目标 Agent
-- Agent 创建/恢复时自动注册 `AgentCard`，移除时注销
-- `agent_delegate_task` 工具优先使用 `DelegationManager`（创建真实任务），降级为消息发送
-
-**涉及文件**：`packages/a2a/src/delegation.ts`, `packages/core/src/agent-manager.ts`, `packages/core/src/tools/a2a-structured.ts`, `packages/core/src/tools/a2a.ts`
-
-### 9.2 Human-in-the-Loop 审批阻塞（修复根因 4）
-
-**问题**：`SecurityGuard.needsApproval` 返回后不阻塞执行，`pendingApprovals` 未使用。
-
-**改进**：
-- Agent 新增 `ApprovalCallback` 类型和 `setApprovalCallback()` 方法
-- `executeTool()` 中检查 `config.profile.requireApprovalFor`，匹配时调用审批回调并**等待**人类响应
-- `HITLService` 新增 `requestApprovalAndWait()` 方法，创建审批请求后返回 Promise，在人类通过 `/api/approvals/:id` 响应后 resolve
-- 审批超时（默认 5 分钟）自动拒绝
-- CLI 启动时自动连接 `agentManager.setApprovalHandler()` → `hitlService.requestApprovalAndWait()`
-
-**端到端流程**：
-```
-Agent 调用敏感工具 → 检查 requireApprovalFor 匹配 → 调用 approvalCallback
-→ HITLService 创建审批请求 + WebSocket 通知 → 等待人类响应
-→ 人类通过 API approve/reject → Promise resolve → 工具执行或拒绝
-```
-
-**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`, `packages/org-manager/src/hitl-service.ts`, `packages/cli/src/index.ts`
-
-### 9.3 Agent Profile 结构化能力定义（修复根因 6 的一部分）
-
-**问题**：角色系统过于宽泛，Agent 的能力无法验证和约束。
-
-**改进**：
-- 新增 `AgentProfile` 类型，包含：
-  - `toolWhitelist` / `toolBlacklist`：工具白/黑名单
-  - `maxTokensPerTask` / `maxTokensPerDay`：成本预算
-  - `maxConcurrentTasks`：并发限制
-  - `requireApprovalFor`：需要审批的工具列表
-  - `workspacePath`：工作区路径约束
-- `AgentConfig` 新增可选 `profile` 字段
-- `executeTool()` 中强制执行工具白/黑名单
-- `_executeTaskInternal()` 中强制执行并发限制
-- `updateTokensUsed()` 中检查日预算，超出后自动暂停 Agent
-
-**涉及文件**：`packages/shared/src/types/agent.ts`, `packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`
-
-### 9.4 执行状态持久化（修复根因 1 的基础设施）
-
-**问题**：所有运行时状态在内存中，进程重启全部丢失。
-
-**改进**：
-- Agent 新增 `stateChangeCallback`，在状态变更（status、token、activeTasks）时通知外部
-- `AgentManager` 新增 `setStateChangeHandler()`，将回调传递给所有 Agent
-- 数据库 Schema 新增 `active_task_ids` 字段
-- 新增 SQL 迁移 `0006_add_agent_active_tasks.sql`
-
-**接线方式**：服务启动时调用 `agentManager.setStateChangeHandler()` 注册 DB 更新逻辑。
-
-**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`, `packages/storage/src/schema.ts`, `packages/storage/drizzle/0006_add_agent_active_tasks.sql`
-
-## 10. Phase 2 实施记录（2026-03-04）
-
-Phase 2 聚焦于四个维度：结构化记忆增强、安全护栏、流式中断、可观测性。
-
-### 10.1 Memory Flush（OpenClaw 预压缩记忆冲刷）
-
-**问题**：`compactSession()` 直接截断旧消息，重要信息可能丢失。
-
-**改进**：
-- 新增 `memoryFlush(sessionId)` 方法，在压缩前触发一次 ephemeral LLM 调用
-- 提示 Agent 审视近期对话，通过 `memory_save` 持久化关键决策、事实和技术细节
-- `consolidateMemory()` 改为 `async`，在 `compactSession` 前先执行 `memoryFlush`
-- 失败不阻塞压缩流程（graceful degradation）
-
-**端到端流程**：
-```
-定时器触发 consolidateMemory → session.messages > 30
-→ memoryFlush: ephemeral LLM 调用 → Agent 通过工具保存重要信息到 MEMORY.md
-→ compactSession: 截断旧消息 → writeDailyLog 写入中期记忆
-```
-
-**涉及文件**：`packages/core/src/agent.ts`
-
-### 10.2 Guardrails 输入/输出护栏管线
-
-**问题**：Agent 无安全边界，无法拦截 prompt injection 或阻止敏感信息泄露。
-
-**改进**：
-- 新增 `GuardrailPipeline` 类，支持链式注册多个 `InputGuardrail` 和 `OutputGuardrail`
-- `InputGuardrail`：在用户消息到达 LLM 前执行检查，支持 tripwire（立即中断）和内容转换
-- `OutputGuardrail`：在 Agent 响应返回用户前执行检查，支持内容过滤
-- 内置三个护栏：
-  - `promptInjectionGuardrail`：检测常见 prompt injection 模式
-  - `createMaxLengthGuardrail(n)`：限制输入长度
-  - `sensitiveDataGuardrail`：拦截输出中的 API key、私钥等敏感信息
-- `handleMessage()` 和 `handleMessageStream()` 入口添加 input guardrail 检查
-- 两个方法的出口添加 output guardrail 检查
-- 默认管线为空，不影响现有行为；通过 `agent.getGuardrails().addInputGuardrail(...)` 按需启用
-
-**涉及文件**：`packages/core/src/guardrails.ts`（新）, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
-
-### 10.3 流式中断与 Steering
-
-**问题**：`handleMessageStream` 中 Agent 进入工具循环后无法被用户打断，只能等待全部工具调用完成。
-
-**改进**：
-- `handleMessageStream` 新增可选 `cancelToken?: { cancelled: boolean }` 参数
-- 三处中断检查点：
-  1. `while` 循环入口：每轮工具批次开始前
-  2. `for` 循环内：每个工具执行前
-  3. 第二次 `chatStream` 调用前：LLM 重入前
-- Agent 新增 `cancelActiveStream()` 和 `getStreamCancelToken()` 方法
-- 取消后返回当前已有的 response 内容（graceful cancellation）
-
-**涉及文件**：`packages/core/src/agent.ts`
-
-### 10.4 轻量级 Tracing（OpenTelemetry 兼容）
-
-**问题**：LLM 调用和工具执行缺乏可观测性，难以诊断性能瓶颈和错误链路。
-
-**改进**：
-- 新增 `packages/core/src/tracing.ts`，定义 `Span`、`TracingProvider` 接口
-- 默认实现 `DefaultSpan`：记录 name、startTime、durationMs、attributes，通过 `log.debug` 输出
-- 可通过 `setTracingProvider()` 替换为 OpenTelemetry SDK 实现（零改动接入）
-- 三处 trace 埋点：
-  1. `LLMRouter.chat()`：`llm.chat` span，记录 provider/model/tokens/finishReason
-  2. `LLMRouter.chatStream()`：`llm.chatStream` span，同上
-  3. `Agent.executeTool()`：`agent.tool` span，记录 tool name/attempt/success
-- 提供 `trace<T>(name, fn)` 便捷函数用于包裹异步操作
-
-**涉及文件**：`packages/core/src/tracing.ts`（新）, `packages/core/src/llm/router.ts`, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
-
-## 11. Phase 3 实施记录（2026-03-04）
-
-Phase 3 聚焦于四个遗留的 P0/P1 问题：工作区隔离、Profile 持久化、工具钩子、状态恢复。
-
-### 11.1 工作区隔离（修复根因 2：工具系统不成熟）
-
-**问题**：`AgentProfile.workspacePath` 已定义但从未实施。Shell/File 工具在宿主文件系统上无边界运行。
-
-**改进**：
-- `createShellTool(security, workspacePath)` 新增 `workspacePath` 参数
-  - 当指定时，强制 `cwd` 默认为 workspace 目录
-  - Agent 请求的 `cwd` 必须在 workspace 内部（`resolve` + `startsWith` 校验）
-  - 超出边界立即返回 `denied`
-- `createFileReadTool`、`createFileWriteTool`、`createFileEditTool` 同样新增 `workspacePath`
-  - 相对路径自动解析为 workspace 内路径
-  - 绝对路径必须在 workspace 内，否则拒绝
-- `createBuiltinTools` 接口新增 `workspacePath` 字段，透传到所有工具
-- `AgentManager.createAgent`：
-  - workspace 路径 = `profile.workspacePath` 或默认 `<dataDir>/<agentId>/workspace/`
-  - 自动 `mkdirSync` 创建目录
-  - `SecurityGuard` 的 `pathAllowlist` 自动包含 workspace 路径
-- `AgentManager.restoreAgent`：同上逻辑
-
-**涉及文件**：`packages/core/src/tools/shell.ts`, `packages/core/src/tools/file.ts`, `packages/core/src/tools/builtin.ts`, `packages/core/src/agent-manager.ts`
-
-### 11.2 Profile 持久化（修复根因 1：状态不持久化）
-
-**问题**：`restoreAgent` 不恢复 `profile`，所有 Phase 1 的 Profile 约束（工具白名单、日 token 预算、并发限制）在进程重启后丢失。
-
-**改进**：
-- DB Schema `agents` 表新增 `profile jsonb` 列
-- SQL 迁移文件：`0007_add_agent_profile.sql`
-- `restoreAgent` 入参新增 `profile?: unknown`，恢复到 `AgentConfig.profile`
-- workspace 路径从恢复的 profile 中读取并重建
-
-**涉及文件**：`packages/storage/src/schema.ts`, `packages/storage/drizzle/0007_add_agent_profile.sql`, `packages/core/src/agent-manager.ts`
-
-### 11.3 工具执行钩子 + 幂等性（修复根因 2：工具系统不成熟）
-
-**问题**：工具执行无 before/after 钩子，无法做验证、审计、幂等重试。
-
-**改进**：
-- 新增 `ToolHookRegistry` 类（`packages/core/src/tool-hooks.ts`）：
-  - `register(hook)` / `unregister(name)`：注册/注销钩子
-  - `runBefore(ctx)`：执行所有 before 钩子，支持阻止执行和参数转换
-  - `runAfter(ctx)`：执行所有 after 钩子，支持结果修改
-  - 内置幂等缓存（5 分钟 TTL），相同 tool + args 不重复执行
-- `ToolHook` 接口：`before(ctx) → BeforeToolResult`, `after(ctx) → AfterToolResult | void`
-- 内置钩子 `auditLogHook`：记录副作用工具（shell、file_write、file_edit）的执行审计
-- `generateIdempotencyKey(toolName, args)`：为副作用工具生成幂等键
-- `Agent.executeTool` 集成：
-  - retry 循环前调用 `runBefore`，命中幂等缓存直接返回
-  - before 钩子可阻止执行或修改参数
-  - 执行成功后调用 `runAfter`，钩子可修改结果
-- `Agent.addToolHook(hook)` 和 `Agent.getToolHooks()` 暴露给外部
-
-**涉及文件**：`packages/core/src/tool-hooks.ts`（新）, `packages/core/src/agent.ts`, `packages/core/src/index.ts`
-
-### 11.4 状态恢复完善（修复根因 1：状态不持久化）
-
-**问题**：`tokensUsedToday` 和 `activeTaskIds` 存在于 DB 但 Agent 重启后不恢复。
-
-**改进**：
-- `AgentOptions` 新增 `restoredState?: { tokensUsedToday?: number }`
-- Agent 构造函数中 `state.tokensUsedToday` 从 `restoredState` 恢复（而非始终为 0）
-- `restoreAgent` 入参新增 `tokensUsedToday?: number` 和 `activeTaskIds?: unknown`
-- 恢复时将 `tokensUsedToday` 传入 `Agent` 构造
-- `stateChangeHandler` 在 `restoreAgent` 中也正确接线
-- 新增 `rehydrateAgentTasks(agentId, activeTaskIds)`：
-  - 遍历每个 taskId，检查任务是否仍需执行（排除 completed/cancelled/failed）
-  - 重新分配给 agent，由 TaskService 恢复执行
-
-**涉及文件**：`packages/core/src/agent.ts`, `packages/core/src/agent-manager.ts`
-
-## 12. Phase 4 实施记录（2026-03-04）
-
-Phase 4 聚焦于端到端成本控制与可观测性闭环，解决第 6 章诊断的根因 5（缺乏可观测性）中最关键的"成本不可见"问题。
-
-### 12.1 Token 持久化接线（修复根因 1 的"最后一公里"）
-
-**问题**：`setStateChangeHandler()` 已实现但从未在 `startServer()` 中调用。Agent token 数据在进程重启后丢失。`agentRepo.updateTokens()` 存在但无调用者。
-
-**改进**：
-- `startServer()` 中新增 `agentManager.setStateChangeHandler()` 调用
-- 回调函数通过 `storage.agentRepo.updateStatus()` 将状态变更持久化到 DB
-- Agent 状态变更（status、tokensUsedToday、activeTaskIds）在每次变化时同步到数据库
-
-**涉及文件**：`packages/cli/src/index.ts`
-
-### 12.2 BillingService 接入 Agent 执行流（修复根因 5：缺乏成本统计）
-
-**问题**：`BillingService.recordUsage()` 已实现但从未被调用。Agent 的 token 消耗和工具调用未进入计费系统。
-
-**改进**：
-- `agentAuditCallback` 中新增 BillingService 集成：
-  - `llm_request` 事件 → `billingService.recordUsage(type: 'llm_tokens')`
-  - `tool_call` 事件 → `billingService.recordUsage(type: 'tool_call')`
-- `BillingService` 新增 `getAgentBreakdown(orgId)` 方法，按 Agent 聚合当月用量
-
-**端到端流程**：
-```
-Agent 调用 LLM → updateTokensUsed → emitAudit(llm_request)
-→ auditCallback → auditService.recordLLMUsage + billingService.recordUsage
-→ /api/usage 和 /api/usage/agents 可查询
-→ Web UI Usage 页面展示
-```
-
-**涉及文件**：`packages/cli/src/index.ts`, `packages/org-manager/src/billing-service.ts`
-
-### 12.3 每日 Token 重置调度器
-
-**问题**：`tokensUsedToday` 字段名暗示每日重置，但无任何重置逻辑。Agent 被预算暂停后无法自动恢复。
-
-**改进**：
-- `startServer()` 中新增 `scheduleDailyReset()` 调度器
-- 每天午夜自动触发，遍历所有 Agent 调用 `resetDailyTokens()`
-- Agent 新增 `resetDailyTokens()` 公开方法：
-  - 将 `tokensUsedToday` 重置为 0
-  - 同步重置 `AgentStateManager`
-  - 通知 `stateChangeCallback`（触发 DB 更新）
-  - 如果 Agent 因日预算超限而暂停，自动恢复为 `idle`
-- `AgentStateManager` 新增 `resetTokensUsed()` 方法
-
-**涉及文件**：`packages/cli/src/index.ts`, `packages/core/src/agent.ts`, `packages/core/src/concurrent/state-manager.ts`
-
-### 12.4 Usage & Costs Dashboard（Web UI）
-
-**问题**：后端 API（`/api/usage`、`/api/audit/tokens`）已存在但无前端页面消费。运营者无法可视化查看成本数据。
-
-**改进**：
-- 新增 `/api/usage/agents` API 端点：
-  - 返回每个 Agent 的 token 用量、请求次数、工具调用次数、估算成本
-  - 融合 AuditService 的 token 数据 + BillingService 的用量数据 + Agent 实时状态
-- 新增 `Usage.tsx` 页面，包含：
-  - **用量仪表盘**：LLM Tokens / Tool Calls / Messages / Storage 四项指标，带进度条和限额对比
-  - **成本摘要**：月度估算总成本、当日 Token 总量、活跃 Agent 数
-  - **Agent 明细表**：可排序的 Agent 用量排行（支持按 Total Tokens / Today / Requests / Tool Calls / Cost 排序）
-  - **Plan 限额卡片**：展示当前 Plan 的各项限制
-- Sidebar 新增 "Usage & Costs" 导航入口
-- `api.ts` 新增 `usage.summary()` 和 `usage.agents()` 客户端方法
-- `PageId` 类型和 `App.tsx` 路由已连接
-
-**涉及文件**：`packages/org-manager/src/api-server.ts`, `packages/web-ui/src/pages/Usage.tsx`（新）, `packages/web-ui/src/api.ts`, `packages/web-ui/src/App.tsx`, `packages/web-ui/src/types.ts`, `packages/web-ui/src/components/Sidebar.tsx`
+> **总结**：Markus v0.7.0 已完成从"玩具"到"工具"的关键转变。经过 4 轮迭代，原始诊断的 6 个根因中 5 个已完全解决（状态持久化、工具可靠性、A2A 连通、HITL 审批、可观测性），1 个部分解决（上下文工程）。系统现在支持：Agent 状态跨重启恢复、工具执行隔离与幂等、真实任务委派、敏感操作审批阻塞、OTel 兼容 Tracing、端到端成本控制与 Dashboard 可视化。下一阶段的重点是 RAG 向量检索、Workflow 持久化和审批 UI，以进一步提升 Agent 的长期工作能力和用户信任。

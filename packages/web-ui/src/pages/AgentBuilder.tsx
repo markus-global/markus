@@ -74,8 +74,8 @@ function emptyStep(index: number): WorkflowStepForm {
   return { id: `step_${index}`, name: '', type: 'agent_task', agentId: '', dependsOn: [], prompt: '' };
 }
 
-export function AgentBuilder() {
-  const [tab, setTab] = useState<BuilderTab>('template');
+export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
+  const [tab, setTab] = useState<BuilderTab>(initialTab ?? 'template');
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [availableTemplates, setAvailableTemplates] = useState<AvailableTemplate[]>([]);

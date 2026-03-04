@@ -38,6 +38,10 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
     `ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata jsonb`,
     // tasks: notes array for persistent task notes
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notes jsonb DEFAULT '[]'`,
+    // agents: daily token tracking, active task persistence, and structured profile
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS tokens_used_today integer DEFAULT 0`,
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS active_task_ids jsonb DEFAULT '[]'`,
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS profile jsonb`,
     // task_logs: structured execution log entries (audit + live display)
     `CREATE TABLE IF NOT EXISTS task_logs (
       id varchar(64) PRIMARY KEY,

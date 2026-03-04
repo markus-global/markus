@@ -68,7 +68,7 @@ export function App() {
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,
     builder: <AgentBuilder />,
-    prompts: <AgentBuilder />,
+    prompts: <AgentBuilder initialTab="prompts" />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [currentUser?.id]);
 

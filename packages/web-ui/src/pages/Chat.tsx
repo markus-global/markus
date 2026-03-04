@@ -326,11 +326,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     '_smart';
 
   /** Write to a conversation's message buffer and refresh display if currently viewing it */
-  const updateConvMsgs = (key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
+  const updateConvMsgs = useCallback((key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
     const next = updater(msgBuffers.current.get(key) ?? []);
     msgBuffers.current.set(key, next);
     if (currentConvKeyRef.current === key) setMessages(next);
-  };
+  }, []);
 
   /** Append an activity step to a conversation's activity buffer */
   const appendConvActivity = (key: string, step: ActivityStep) => {
@@ -523,7 +523,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const unsub = wsClient.on('chat:message', (event) => {
       const p = event.payload;
       const msgChannel = (p['channel'] as string) ?? '';
-      // Only handle messages for the current active channel
       if (msgChannel && msgChannel !== activeChannel) return;
       const senderType = (p['senderType'] as string) ?? 'agent';
       const newMsg: ChatMsg = {
@@ -533,10 +532,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         time: new Date().toLocaleTimeString(),
         agentName: senderType === 'agent' ? ((p['senderName'] as string) ?? (p['agentId'] as string) ?? 'Agent') : undefined,
       };
-      setMessages(prev => [...prev, newMsg]);
+      const key = makeConvKey('channel', selectedAgent, activeChannel, activeDmUserId);
+      updateConvMsgs(key, prev => [...prev, newMsg]);
     });
     return unsub;
-  }, [chatMode]);
+  }, [chatMode, activeChannel, selectedAgent, activeDmUserId, updateConvMsgs]);
 
   // ── Task helpers ─────────────────────────────────────────────────────────────
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
@@ -640,6 +640,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           time: new Date().toLocaleTimeString(), agentName: 'System',
         }]);
       }
+      sendingConvs.current.delete(sendKey);
+      if (currentConvKeyRef.current === sendKey) setSending(false);
     } else {
       // direct or smart — build an interleaved segment stream
       const agentMsgId = `a_${Date.now()}`;

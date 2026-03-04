@@ -40,15 +40,24 @@ function formatBytes(b: number): string {
   return `${b} B`;
 }
 
+const colorMap: Record<string, string> = {
+  indigo: 'bg-indigo-500',
+  blue: 'bg-blue-500',
+  emerald: 'bg-emerald-500',
+  amber: 'bg-amber-500',
+  purple: 'bg-purple-500',
+  green: 'bg-green-500',
+  red: 'bg-red-500',
+};
+
 function ProgressBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   const isUnlimited = max < 0;
+  const barColor = isUnlimited ? 'bg-gray-600' : pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : (colorMap[color] ?? 'bg-indigo-500');
   return (
     <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
       <div
-        className={`h-full rounded-full transition-all duration-500 ${
-          isUnlimited ? 'bg-gray-600' : pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : `bg-${color}-500`
-        }`}
+        className={`h-full rounded-full transition-all duration-500 ${barColor}`}
         style={{ width: isUnlimited ? '5%' : `${pct}%` }}
       />
     </div>
