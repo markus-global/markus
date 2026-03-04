@@ -42,7 +42,7 @@ function makeMockRouter(chatFn: (...args: unknown[]) => Promise<unknown>) {
 function makeResponse(
   content: string,
   finishReason: string,
-  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>,
+  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
 ) {
   return {
     content,
@@ -83,7 +83,11 @@ describe('Agent Loop Improvements', () => {
     agent.registerTool({
       name: 'shell_execute',
       description: 'test',
-      inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      inputSchema: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
       execute: async () => '{"status":"success","stdout":"hi"}',
     });
 
@@ -144,8 +148,8 @@ describe('Agent Loop Improvements', () => {
     expect(result).toBe('Done with both tools.');
   });
 
-  it('should auto-truncate oversized tool results', async () => {
-    const hugeOutput = 'x'.repeat(50_000);
+  it('should offload oversized tool results to filesystem', async () => {
+    const hugeOutput = 'x'.repeat(20_000);
 
     let callIndex = 0;
     const mockRouter = makeMockRouter(async () => {
@@ -170,15 +174,17 @@ describe('Agent Loop Improvements', () => {
     const result = await agent.handleMessage('get big data');
     expect(result).toBe('Processed the data.');
 
-    // The second LLM call should have received a truncated tool result
+    // The second LLM call should have received an offloaded file reference
     const chat = (mockRouter as { chat: { mock: { calls: unknown[][] } } }).chat;
     const secondCall = chat.mock.calls[1];
     if (secondCall) {
-      const msgs = (secondCall[0] as { messages: Array<{ role: string; content: string }> }).messages;
+      const msgs = (secondCall[0] as { messages: Array<{ role: string; content: string }> })
+        .messages;
       const toolMsg = msgs.find(m => m.role === 'tool');
       if (toolMsg) {
         expect(toolMsg.content.length).toBeLessThan(hugeOutput.length);
-        expect(toolMsg.content).toContain('truncated');
+        expect(toolMsg.content).toContain('Tool output saved to file');
+        expect(toolMsg.content).toContain('file_read');
       }
     }
   });

@@ -1,5 +1,10 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { createLogger, type LLMMessage, type RoleTemplate, type IdentityContext } from '@markus/shared';
+import {
+  createLogger,
+  type LLMMessage,
+  type RoleTemplate,
+  type IdentityContext,
+} from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import type { EnvironmentProfile } from './environment-profile.js';
@@ -53,7 +58,13 @@ export class ContextEngine {
     currentQuery?: string;
     identity?: IdentityContext;
     senderIdentity?: { id: string; name: string; role: string };
-    assignedTasks?: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
+    assignedTasks?: Array<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+    }>;
     knowledgeContext?: string;
     environment?: EnvironmentProfile;
   }): string {
@@ -102,13 +113,19 @@ export class ContextEngine {
     }
 
     if (opts.assignedTasks && opts.assignedTasks.length > 0) {
-      const activeTasks = opts.assignedTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
-      const doneTasks = opts.assignedTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+      const activeTasks = opts.assignedTasks.filter(
+        t => !['completed', 'cancelled', 'failed'].includes(t.status)
+      );
+      const doneTasks = opts.assignedTasks.filter(t =>
+        ['completed', 'cancelled', 'failed'].includes(t.status)
+      );
       parts.push('\n## Your Task Board');
       if (activeTasks.length > 0) {
         parts.push('### Active Tasks (work on these):');
         for (const t of activeTasks) {
-          parts.push(`- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`);
+          parts.push(
+            `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
+          );
           if (t.description) parts.push(`  ${t.description.slice(0, 200)}`);
         }
       }
@@ -121,11 +138,17 @@ export class ContextEngine {
     }
 
     parts.push('');
-    parts.push('**Task Rule:** All work must be linked to a task. Use `task_create` → `task_update(in_progress)` → `task_update(completed)`. Check `task_list` before creating duplicates.');
+    parts.push(
+      '**Task Rule:** All work must be linked to a task. Use `task_create` → `task_update(in_progress)` → `task_update(completed)`. Check `task_list` before creating duplicates.'
+    );
 
     parts.push('\n## Memory & Tools');
-    parts.push('- `memory_save` — Persist important facts/decisions. `memory_search` — Recall past context.');
-    parts.push('- Save only meaningful information (preferences, decisions, outcomes). Skip trivial data.');
+    parts.push(
+      '- `memory_save` — Persist important facts/decisions. `memory_search` — Recall past context.'
+    );
+    parts.push(
+      '- Save only meaningful information (preferences, decisions, outcomes). Skip trivial data.'
+    );
 
     if (opts.environment) {
       parts.push(this.buildEnvironmentSection(opts.environment));
@@ -133,15 +156,49 @@ export class ContextEngine {
 
     if (opts.senderIdentity) {
       parts.push(`\n## Current Conversation`);
-      parts.push(`You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`);
+      parts.push(
+        `You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`
+      );
       if (opts.senderIdentity.role === 'owner') {
-        parts.push('This person is the organization owner. Their instructions have the highest priority. Be proactive in reporting and responsive to their needs.');
+        parts.push(
+          'This person is the organization owner. Their instructions have the highest priority. Be proactive in reporting and responsive to their needs.'
+        );
       } else if (opts.senderIdentity.role === 'admin') {
-        parts.push('This person is an administrator. Cooperate actively and share progress proactively.');
+        parts.push(
+          'This person is an administrator. Cooperate actively and share progress proactively.'
+        );
       } else if (opts.senderIdentity.role === 'guest') {
-        parts.push('This person is an external guest. Be polite but cautious — do not expose internal sensitive information.');
+        parts.push(
+          'This person is an external guest. Be polite but cautious — do not expose internal sensitive information.'
+        );
       }
     }
+
+    // --- Manus-inspired: Attention Recitation ---
+    // For complex multi-step tasks, maintaining a running plan prevents
+    // "lost-in-the-middle" issues and keeps the model focused on its goals.
+    parts.push('\n## Working Strategy');
+    parts.push('For complex tasks requiring multiple steps:');
+    parts.push(
+      '1. **Plan first**: Before acting, outline your approach. For long tasks, create a `todo.md` in the workspace to track progress.'
+    );
+    parts.push(
+      '2. **Update progress**: After completing each step, update your plan — check off done items, note blockers.'
+    );
+    parts.push(
+      '3. **Recite objectives**: Before each action, briefly restate what you are trying to achieve. This keeps your focus sharp.'
+    );
+    parts.push(
+      '4. **Learn from errors**: If a tool call fails, analyze why before retrying. Do NOT repeat the exact same action — try a different approach.'
+    );
+    parts.push(
+      '5. **Offload large data**: If a tool returns very large output, save it to a file and reference the file path instead of keeping it all in context.'
+    );
+
+    // --- KV-Cache optimization: timestamp at end, date-only precision ---
+    // Placing time at the end of the system prompt preserves cache for the
+    // stable prefix (identity, role, policies, memory) which rarely changes.
+    parts.push(`\n---\nCurrent date: ${new Date().toISOString().split('T')[0]}`);
 
     return parts.join('\n');
   }
@@ -158,24 +215,32 @@ export class ContextEngine {
       const self = opts.identity.self;
       lines.push(`- Name: ${self.name}`);
       lines.push(`- Role: ${opts.role.name} (${opts.role.description})`);
-      lines.push(`- Position: ${self.agentRole === 'manager' ? 'Organization Manager — you lead the AI team' : 'Team Member'}`);
+      lines.push(
+        `- Position: ${self.agentRole === 'manager' ? 'Organization Manager — you lead the AI team' : 'Team Member'}`
+      );
       if (self.skills.length > 0) {
         lines.push(`- Skills: ${self.skills.join(', ')}`);
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);
-      lines.push(`- Current time: ${new Date().toISOString()}`);
+      // KV-Cache optimization: move timestamp to end of context (not prefix),
+      // and only use date precision to avoid invalidating cache every second.
+      // See: Manus "Context Engineering" — keep prefix stable for cache hits.
 
       if (opts.identity.manager && opts.identity.self.agentRole !== 'manager') {
         lines.push(`\n### Your Manager`);
-        lines.push(`- ${opts.identity.manager.name} (AI Organization Manager) — report progress and escalate issues to them`);
+        lines.push(
+          `- ${opts.identity.manager.name} (AI Organization Manager) — report progress and escalate issues to them`
+        );
       }
 
       if (opts.identity.colleagues.length > 0) {
         lines.push(`\n### Your Colleagues`);
         for (const c of opts.identity.colleagues) {
           const statusTag = c.status ? ` [${c.status}]` : '';
-          lines.push(`- ${c.name} (${c.role}, ${c.type})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`);
+          lines.push(
+            `- ${c.name} (${c.role}, ${c.type})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
+          );
         }
       }
 
@@ -190,17 +255,20 @@ export class ContextEngine {
       if (opts.identity.self.agentRole === 'manager') {
         lines.push(`\n### Manager Responsibilities`);
         lines.push('As Organization Manager, you are responsible for:');
-        lines.push('1. **Routing** — When receiving vague messages, determine which team member should handle it');
+        lines.push(
+          '1. **Routing** — When receiving vague messages, determine which team member should handle it'
+        );
         lines.push('2. **Coordination** — Assign tasks to the right agents based on their skills');
         lines.push('3. **Reporting** — Proactively report team progress to human stakeholders');
-        lines.push('4. **Training** — Help new agents understand their roles and the organization context');
+        lines.push(
+          '4. **Training** — Help new agents understand their roles and the organization context'
+        );
         lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
       }
     } else {
       lines.push(`- Name: ${opts.agentName}`);
       lines.push(`- Role: ${opts.role.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);
-      lines.push(`- Current time: ${new Date().toISOString()}`);
     }
 
     return lines.join('\n');
@@ -220,7 +288,11 @@ export class ContextEngine {
     sessionId: string;
     modelContextWindow?: number;
     modelMaxOutput?: number;
-    toolDefinitions?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+    toolDefinitions?: Array<{
+      name: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+    }>;
   }): LLMMessage[] {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const maxOutput = opts.modelMaxOutput ?? 4096;
@@ -230,11 +302,17 @@ export class ContextEngine {
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
     // Budget = contextWindow - system - tools - reply - safety margin (10%)
-    const safetyMargin = Math.ceil(contextWindow * 0.10);
+    const safetyMargin = Math.ceil(contextWindow * 0.1);
     const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
 
     if (messageBudget < 500) {
-      log.warn('Very tight message budget', { contextWindow, systemTokens, toolDefTokens, maxOutput, messageBudget });
+      log.warn('Very tight message budget', {
+        contextWindow,
+        systemTokens,
+        toolDefTokens,
+        maxOutput,
+        messageBudget,
+      });
     }
 
     let messages = opts.sessionMessages;
@@ -272,19 +350,22 @@ export class ContextEngine {
       messages = this.trimToFitBudget(messages, messageBudget);
       totalTokens = this.sumTokens(messages);
       log.info('Trimmed oldest messages to fit budget', {
-        remaining: messages.length, tokens: totalTokens, budget: messageBudget,
+        remaining: messages.length,
+        tokens: totalTokens,
+        budget: messageBudget,
       });
     }
 
     log.debug('Context assembled', {
-      contextWindow, messageBudget, messageTokens: totalTokens,
-      systemTokens, toolDefTokens, messageCount: messages.length,
+      contextWindow,
+      messageBudget,
+      messageTokens: totalTokens,
+      systemTokens,
+      toolDefTokens,
+      messageCount: messages.length,
     });
 
-    return [
-      { role: 'system', content: opts.systemPrompt },
-      ...messages,
-    ];
+    return [{ role: 'system', content: opts.systemPrompt }, ...messages];
   }
 
   /**
@@ -296,10 +377,17 @@ export class ContextEngine {
       if (m.content.length <= maxChars) return m;
       if (m.role === 'tool') {
         const preview = m.content.slice(0, 300);
-        return { ...m, content: `[Compacted tool result: ${m.content.length} chars]\n${preview}...` };
+        return {
+          ...m,
+          content: `[Compacted tool result: ${m.content.length} chars]\n${preview}...`,
+        };
       }
       // For user/assistant, keep the beginning (context is usually front-loaded)
-      return { ...m, content: m.content.slice(0, maxChars) + `\n\n[... content trimmed from ${m.content.length} chars]` };
+      return {
+        ...m,
+        content:
+          m.content.slice(0, maxChars) + `\n\n[... content trimmed from ${m.content.length} chars]`,
+      };
     });
   }
 
@@ -322,13 +410,13 @@ export class ContextEngine {
   private compactOldTurns(
     messages: LLMMessage[],
     currentTurnStart: number,
-    budget: number,
+    budget: number
   ): LLMMessage[] {
     const history = messages.slice(0, currentTurnStart);
     const currentTurn = messages.slice(currentTurnStart);
 
     const currentTurnTokens = this.sumTokens(currentTurn);
-    let historyBudget = budget - currentTurnTokens;
+    const historyBudget = budget - currentTurnTokens;
 
     // Parse history into "blocks": a tool-call block is [assistant+toolCalls, tool, tool, ...]
     // Everything else is a standalone message.
@@ -389,6 +477,9 @@ export class ContextEngine {
   /**
    * Compress a tool-call block into a single assistant summary message.
    * Preserves the intent (what tool was called and why) without the raw output.
+   *
+   * Manus insight: uses template variation to break few-shot repetition patterns.
+   * The model mimics patterns from context — uniform summaries cause behavioral drift.
    */
   private summarizeToolBlock(block: LLMMessage[]): LLMMessage {
     const assistant = block[0]!;
@@ -400,27 +491,49 @@ export class ContextEngine {
       summaryParts.push(assistant.content.trim());
     }
 
+    // Manus: serialization diversity — vary summary templates to avoid few-shot ruts
+    const templates = [
+      (name: string, args: string, res: string) => `[Called ${name}(${args})${res}]`,
+      (name: string, args: string, res: string) => `[Tool: ${name} | args: ${args}${res}]`,
+      (name: string, args: string, res: string) => `[${name}(${args})${res}]`,
+      (name: string, args: string, res: string) => `[Action: ${name}, input: ${args}${res}]`,
+    ];
+
+    // Manus: keep error details in summaries — they help the model learn from failures
     for (let i = 0; i < toolCalls.length; i++) {
       const tc = toolCalls[i]!;
       const result = toolResults[i];
-      const argsStr = JSON.stringify(tc.arguments).slice(0, 100);
+      // Deterministic serialization: sorted keys prevent cache-busting from key order differences
+      const argsStr = JSON.stringify(tc.arguments, Object.keys(tc.arguments ?? {}).sort()).slice(
+        0,
+        100
+      );
       let resultSummary = '';
       if (result) {
         const content = result.content;
-        if (content.startsWith('Error:') || content.startsWith('{') && content.includes('"status":"error"')) {
-          resultSummary = ' → error';
+        if (
+          content.startsWith('Error:') ||
+          (content.startsWith('{') && content.includes('"status":"error"'))
+        ) {
+          // Preserve error details for self-correction (don't just say "error")
+          const errorPreview = content.slice(0, 200);
+          resultSummary = ` → ERROR: ${errorPreview}`;
         } else if (content.length <= 120) {
           resultSummary = ` → ${content}`;
         } else {
-          resultSummary = ` → (${content.length} chars result)`;
+          resultSummary = ` → (${content.length} chars)`;
         }
       }
-      summaryParts.push(`[Used ${tc.name}(${argsStr})${resultSummary}]`);
+      const template = templates[(i + block.length) % templates.length]!;
+      summaryParts.push(template(tc.name, argsStr, resultSummary));
     }
+
+    const prefixes = ['[Previous step]', '[Earlier action]', '[History]', '[Past step]'];
+    const prefix = prefixes[block.length % prefixes.length]!;
 
     return {
       role: 'assistant',
-      content: `[Previous action summary] ${summaryParts.join(' ')}`,
+      content: `${prefix} ${summaryParts.join(' ')}`,
     };
   }
 
@@ -549,13 +662,17 @@ export class ContextEngine {
       lines.push(`- Package Managers: ${env.packageManagers.join(', ')}`);
     }
 
-    lines.push(`- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ${env.resources.diskFreeMB} MB free disk`);
+    lines.push(
+      `- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ${env.resources.diskFreeMB} MB free disk`
+    );
 
     const missing = ['git', 'node', 'docker', 'python3', 'java'].filter(
-      name => !env.tools.some(t => t.name === name) && !env.runtimes.some(r => r.name === name),
+      name => !env.tools.some(t => t.name === name) && !env.runtimes.some(r => r.name === name)
     );
     if (missing.length > 0) {
-      lines.push(`- NOT available: ${missing.join(', ')}. Do not attempt commands that require these.`);
+      lines.push(
+        `- NOT available: ${missing.join(', ')}. Do not attempt commands that require these.`
+      );
     }
 
     return lines.join('\n');
@@ -566,8 +683,8 @@ export class ContextEngine {
 
     if (query) {
       const searchResults = memory.search(query);
-      const searchIds = new Set(searchResults.map((m) => m.id));
-      const combined = [...facts.filter((f) => !searchIds.has(f.id)), ...searchResults];
+      const searchIds = new Set(searchResults.map(m => m.id));
+      const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
       return combined.slice(0, this.config.memorySearchTopK * 2);
     }
 

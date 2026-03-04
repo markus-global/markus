@@ -13,7 +13,7 @@ import {
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { GuardrailPipeline } from './guardrails.js';
-import { ToolHookRegistry, generateIdempotencyKey } from './tool-hooks.js';
+import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
@@ -23,6 +23,8 @@ import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metric
 import { ContextEngine, type OrgContext } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
@@ -129,9 +131,14 @@ export class Agent {
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
   private stateManager?: AgentStateManager;
-  private stateChangeCallback?: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void;
+  private stateChangeCallback?: (
+    agentId: string,
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+  ) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
+  private dataDir: string;
+  private toolResultCounter = 0;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
@@ -155,6 +162,7 @@ export class Agent {
       tokensUsedToday: options.restoredState?.tokensUsedToday ?? 0,
     };
 
+    this.dataDir = options.dataDir;
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
@@ -401,7 +409,7 @@ export class Agent {
   }
 
   /** Register a tool execution hook for before/after processing */
-  addToolHook(hook: import('./tool-hooks.js').ToolHook): void {
+  addToolHook(hook: ToolHook): void {
     this.toolHooks.register(hook);
   }
 
@@ -423,6 +431,37 @@ export class Agent {
   /**
    * 更新令牌使用量
    */
+  /**
+   * Manus-inspired: offload large tool results to filesystem.
+   * Keeps a compact reference in context, full data in a file the agent can re-read.
+   * This prevents context bloat while preserving all information (restorable compression).
+   */
+  private offloadLargeResult(toolName: string, result: string): string {
+    const OFFLOAD_THRESHOLD = 8_000; // chars; results above this get offloaded
+    if (result.length <= OFFLOAD_THRESHOLD) return result;
+
+    try {
+      const offloadDir = join(this.dataDir, 'tool-outputs');
+      mkdirSync(offloadDir, { recursive: true });
+      const filename = `${toolName}_${++this.toolResultCounter}_${Date.now()}.txt`;
+      const filepath = join(offloadDir, filename);
+      writeFileSync(filepath, result);
+
+      const preview = result.slice(0, 500);
+      const lineCount = result.split('\n').length;
+      return [
+        `[Tool output saved to file: ${filepath}]`,
+        `[${result.length} chars, ${lineCount} lines — use file_read to access full content]`,
+        `Preview:`,
+        preview,
+        result.length > 500 ? '...' : '',
+      ].join('\n');
+    } catch {
+      // Fallback: truncate in-place if file write fails
+      return result.slice(0, 2000) + `\n\n[... truncated ${result.length} chars total ...]`;
+    }
+  }
+
   private updateTokensUsed(tokens: number): void {
     this.state.tokensUsedToday += tokens;
     if (this.stateManager) {
@@ -431,7 +470,11 @@ export class Agent {
     this.notifyStateChange();
     // Enforce daily token budget — pause agent if exceeded
     const profile = this.config.profile;
-    if (profile?.maxTokensPerDay != null && this.state.tokensUsedToday >= profile.maxTokensPerDay) {
+    if (
+      profile?.maxTokensPerDay !== undefined &&
+      profile.maxTokensPerDay !== null &&
+      this.state.tokensUsedToday >= profile.maxTokensPerDay
+    ) {
       this.setStatus('paused');
       log.warn('Agent paused: daily token budget exceeded', {
         agentId: this.id,
@@ -463,8 +506,10 @@ export class Agent {
    * If agent was paused due to budget exceeded, resume to idle.
    */
   resetDailyTokens(): void {
-    const wasPausedByBudget = this.state.status === 'paused' &&
-      this.config.profile?.maxTokensPerDay !== undefined && this.config.profile.maxTokensPerDay !== null &&
+    const wasPausedByBudget =
+      this.state.status === 'paused' &&
+      this.config.profile?.maxTokensPerDay !== undefined &&
+      this.config.profile.maxTokensPerDay !== null &&
       this.state.tokensUsedToday >= this.config.profile.maxTokensPerDay;
 
     this.state.tokensUsedToday = 0;
@@ -530,7 +575,12 @@ export class Agent {
     this.escalationCallback = cb;
   }
 
-  setStateChangeCallback(cb: (agentId: string, state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }) => void): void {
+  setStateChangeCallback(
+    cb: (
+      agentId: string,
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+    ) => void
+  ): void {
     this.stateChangeCallback = cb;
   }
 
@@ -610,7 +660,10 @@ export class Agent {
     }
 
     // Run input guardrails
-    const inputCheck = await this.guardrails.checkInput(userMessage, { agentId: this.id, senderId });
+    const inputCheck = await this.guardrails.checkInput(userMessage, {
+      agentId: this.id,
+      senderId,
+    });
     if (!inputCheck.passed) {
       return `I cannot process this request: ${inputCheck.reason}`;
     }
@@ -692,7 +745,6 @@ export class Agent {
       });
 
       const MAX_TOOL_ITERATIONS = 25;
-      const TOOL_RESULT_MAX_CHARS = 30_000;
       let toolIterations = 0;
 
       while (
@@ -700,7 +752,10 @@ export class Agent {
         response.finishReason === 'max_tokens'
       ) {
         if (++toolIterations > MAX_TOOL_ITERATIONS) {
-          log.warn('Tool loop hit max iterations', { agentId: this.id, iterations: toolIterations });
+          log.warn('Tool loop hit max iterations', {
+            agentId: this.id,
+            iterations: toolIterations,
+          });
           break;
         }
 
@@ -712,7 +767,10 @@ export class Agent {
             messages.push({ role: 'assistant', content: response.content });
           }
           // Continue generation from where it left off
-          const contMsg: LLMMessage = { role: 'user', content: '[Continue from where you left off. Do not repeat what you already said.]' };
+          const contMsg: LLMMessage = {
+            role: 'user',
+            content: '[Continue from where you left off. Do not repeat what you already said.]',
+          };
           if (!isEphemeral) {
             this.memory.appendMessage(sessionId, contMsg);
           } else {
@@ -736,16 +794,13 @@ export class Agent {
 
           // Execute all tool calls in parallel
           const toolResults = await Promise.all(
-            response.toolCalls!.map(async (tc) => {
+            response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               try {
                 let result = await this.executeTool(tc);
-                // Auto-truncate oversized tool results
-                if (result.length > TOOL_RESULT_MAX_CHARS) {
-                  const preview = result.slice(0, 2000);
-                  const tail = result.slice(-500);
-                  result = `${preview}\n\n[... truncated ${result.length} chars total ...]\n\n${tail}`;
-                }
+                // Manus-inspired: offload large results to filesystem instead of truncating
+                // This preserves full data (agent can re-read) while keeping context lean
+                result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
                 this.emitAudit({
                   type: 'tool_call',
@@ -756,6 +811,7 @@ export class Agent {
                 });
                 return { toolCallId: tc.id, content: result, error: false };
               } catch (toolErr) {
+                // Manus principle: keep errors in context for model self-correction
                 this.emitAudit({
                   type: 'tool_call',
                   action: tc.name,
@@ -765,7 +821,7 @@ export class Agent {
                 });
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
               }
-            }),
+            })
           );
 
           for (const tr of toolResults) {
@@ -788,7 +844,10 @@ export class Agent {
           const loopCheck = this.loopDetector.check();
           if (loopCheck.detected) {
             if (loopCheck.severity === 'critical') {
-              log.warn('Loop detector: critical pattern — breaking', { agentId: this.id, pattern: loopCheck.pattern });
+              log.warn('Loop detector: critical pattern — breaking', {
+                agentId: this.id,
+                pattern: loopCheck.pattern,
+              });
               // Inject a warning message so the model can self-correct
               const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
               if (!isEphemeral) {
@@ -888,7 +947,10 @@ export class Agent {
     }
 
     // Run input guardrails
-    const inputCheck = await this.guardrails.checkInput(userMessage, { agentId: this.id, senderId });
+    const inputCheck = await this.guardrails.checkInput(userMessage, {
+      agentId: this.id,
+      senderId,
+    });
     if (!inputCheck.passed) {
       return `I cannot process this request: ${inputCheck.reason}`;
     }
@@ -946,7 +1008,6 @@ export class Agent {
       });
 
       const MAX_STREAM_TOOL_ITERATIONS = 25;
-      const STREAM_RESULT_MAX_CHARS = 30_000;
       let streamToolIterations = 0;
 
       while (
@@ -954,7 +1015,10 @@ export class Agent {
         response.finishReason === 'max_tokens'
       ) {
         if (++streamToolIterations > MAX_STREAM_TOOL_ITERATIONS) {
-          log.warn('Stream tool loop hit max iterations', { agentId: this.id, iterations: streamToolIterations });
+          log.warn('Stream tool loop hit max iterations', {
+            agentId: this.id,
+            iterations: streamToolIterations,
+          });
           break;
         }
 
@@ -966,8 +1030,14 @@ export class Agent {
 
         // Handle max_tokens continuation
         if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-          this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: response.content });
-          this.memory.appendMessage(this.currentSessionId, { role: 'user', content: '[Continue from where you left off. Do not repeat what you already said.]' });
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: response.content,
+          });
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'user',
+            content: '[Continue from where you left off. Do not repeat what you already said.]',
+          });
         } else {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
@@ -977,16 +1047,12 @@ export class Agent {
 
           // Execute all tool calls in parallel
           const toolResults = await Promise.all(
-            response.toolCalls!.map(async (tc) => {
+            response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
               try {
                 let result = await this.executeTool(tc);
-                if (result.length > STREAM_RESULT_MAX_CHARS) {
-                  const preview = result.slice(0, 2000);
-                  const tail = result.slice(-500);
-                  result = `${preview}\n\n[... truncated ${result.length} chars total ...]\n\n${tail}`;
-                }
+                result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
                 this.emitAudit({
                   type: 'tool_call',
@@ -1008,7 +1074,7 @@ export class Agent {
                 onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
               }
-            }),
+            })
           );
 
           for (const tr of toolResults) {
@@ -1173,8 +1239,14 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean }
   ): Promise<void> {
-    if (this.config.profile?.maxConcurrentTasks != null && this.activeTasks.size >= this.config.profile.maxConcurrentTasks) {
-      throw new Error(`Agent has reached maximum concurrent tasks (${this.config.profile.maxConcurrentTasks})`);
+    if (
+      this.config.profile?.maxConcurrentTasks !== undefined &&
+      this.config.profile.maxConcurrentTasks !== null &&
+      this.activeTasks.size >= this.config.profile.maxConcurrentTasks
+    ) {
+      throw new Error(
+        `Agent has reached maximum concurrent tasks (${this.config.profile.maxConcurrentTasks})`
+      );
     }
     this.setStatus('working');
     this.activeTasks.add(taskId);
@@ -1522,10 +1594,16 @@ export class Agent {
     const profile = this.config.profile;
     if (profile) {
       if (profile.toolWhitelist && !profile.toolWhitelist.includes(toolCall.name)) {
-        return JSON.stringify({ status: 'denied', error: `Tool '${toolCall.name}' is not in this agent's allowed tool list` });
+        return JSON.stringify({
+          status: 'denied',
+          error: `Tool '${toolCall.name}' is not in this agent's allowed tool list`,
+        });
       }
       if (profile.toolBlacklist?.includes(toolCall.name)) {
-        return JSON.stringify({ status: 'denied', error: `Tool '${toolCall.name}' is blocked by agent profile` });
+        return JSON.stringify({
+          status: 'denied',
+          error: `Tool '${toolCall.name}' is blocked by agent profile`,
+        });
       }
     }
 
@@ -1545,11 +1623,16 @@ export class Agent {
         });
         if (!approved) {
           log.info(`Tool ${toolCall.name} execution denied by human`, { agentId: this.id });
-          return JSON.stringify({ status: 'denied', error: `Execution of '${toolCall.name}' was denied by human reviewer` });
+          return JSON.stringify({
+            status: 'denied',
+            error: `Execution of '${toolCall.name}' was denied by human reviewer`,
+          });
         }
         log.info(`Tool ${toolCall.name} approved by human`, { agentId: this.id });
       } else {
-        log.warn(`Tool ${toolCall.name} requires approval but no approval callback set`, { agentId: this.id });
+        log.warn(`Tool ${toolCall.name} requires approval but no approval callback set`, {
+          agentId: this.id,
+        });
       }
     }
 
@@ -1568,14 +1651,23 @@ export class Agent {
 
     // Run before-hooks (outside retry loop — hooks decide once)
     const idempotencyKey = generateIdempotencyKey(toolCall.name, toolCall.arguments);
-    const hookCtx = { agentId: this.id, toolName: toolCall.name, arguments: toolCall.arguments, attempt: 0, idempotencyKey };
+    const hookCtx = {
+      agentId: this.id,
+      toolName: toolCall.name,
+      arguments: toolCall.arguments,
+      attempt: 0,
+      idempotencyKey,
+    };
     const beforeResult = await this.toolHooks.runBefore(hookCtx);
     if (!beforeResult.proceed) {
       // Check for idempotency cache hit
       if (beforeResult.reason?.startsWith('__idempotent__:')) {
         return beforeResult.reason.slice('__idempotent__:'.length);
       }
-      return JSON.stringify({ status: 'denied', error: beforeResult.reason ?? 'Blocked by tool hook' });
+      return JSON.stringify({
+        status: 'denied',
+        error: beforeResult.reason ?? 'Blocked by tool hook',
+      });
     }
     const effectiveArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
 
@@ -1596,7 +1688,11 @@ export class Agent {
           const toolDurationMs = Date.now() - span.startTime;
           span.end({ success: true });
           const finalResult = await this.toolHooks.runAfter({
-            ...hookCtx, attempt, result, durationMs: toolDurationMs, success: true,
+            ...hookCtx,
+            attempt,
+            result,
+            durationMs: toolDurationMs,
+            success: true,
           });
           return finalResult;
         } catch (error) {
@@ -1763,4 +1859,3 @@ export class Agent {
     }
   }
 }
-
