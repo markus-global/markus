@@ -34,7 +34,13 @@
     "@typescript-eslint/parser": "^8.56.1",
     "drizzle-kit": "^0.31.9",
     "eslint": "^10.0.2",
+    "prettier": "^3.8.1",
     "tsx": "^4.21.0",
     "vitest": "^4.0.18"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

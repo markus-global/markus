@@ -15,10 +15,12 @@
   },
   "dependencies": {
     "@markus/shared": "workspace:*",
+    "better-sqlite3": "^12.6.2",
     "drizzle-orm": "^0.45.1",
     "postgres": "^3.4.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "drizzle-kit": "^0.31.9"
   }
 }

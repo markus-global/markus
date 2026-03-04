@@ -12,6 +12,32 @@ export { UserRepo, type User } from './repos/user-repo.js';
 export { TeamRepo, type TeamRow } from './repos/team-repo.js';
 export { TaskLogRepo, type TaskLogRow, type TaskLogType } from './repos/task-log-repo.js';
 export { AgentKnowledgeRepo, type KnowledgeRow } from './repos/agent-knowledge-repo.js';
-export { MarketplaceTemplateRepo, type MarketplaceTemplateRow } from './repos/marketplace-template-repo.js';
+export {
+  MarketplaceTemplateRepo,
+  type MarketplaceTemplateRow,
+} from './repos/marketplace-template-repo.js';
 export { MarketplaceSkillRepo, type MarketplaceSkillRow } from './repos/marketplace-skill-repo.js';
-export { MarketplaceRatingRepo, type MarketplaceRatingRow } from './repos/marketplace-rating-repo.js';
+export {
+  MarketplaceRatingRepo,
+  type MarketplaceRatingRow,
+} from './repos/marketplace-rating-repo.js';
+
+// SQLite storage: zero-dependency alternative to PostgreSQL
+export {
+  openSqlite,
+  closeSqlite,
+  SqliteOrgRepo,
+  SqliteAgentRepo,
+  SqliteTaskRepo,
+  SqliteTaskLogRepo,
+  SqliteMessageRepo,
+  SqliteMemoryRepo,
+  SqliteChatSessionRepo,
+  SqliteChannelMessageRepo,
+  SqliteUserRepo,
+  SqliteTeamRepo,
+  SqliteMarketplaceTemplateRepo,
+  SqliteMarketplaceSkillRepo,
+  SqliteMarketplaceRatingRepo,
+  SqliteAgentKnowledgeRepo,
+} from './sqlite-storage.js';

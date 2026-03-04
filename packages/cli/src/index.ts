@@ -3,9 +3,19 @@
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
-import { loadConfig, createLogger } from '@markus/shared';
+import { loadConfig, createLogger, type LLMProviderConfig } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
-import { OrganizationService, TaskService, APIServer, HITLService, BillingService, AuditService, initStorage, runMigrations } from '@markus/org-manager';
+import {
+  OrganizationService,
+  TaskService,
+  APIServer,
+  HITLService,
+  BillingService,
+  AuditService,
+  initStorage,
+  runMigrations,
+  type AuditEventType,
+} from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
 
 // Load .env file from project root
@@ -200,10 +210,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const templateDirs = [resolve(process.cwd(), 'templates', 'roles')];
   const roleLoader = new RoleLoader(templateDirs);
 
-  const providerConfigs: Record<string, import('@markus/shared').LLMProviderConfig> = {};
+  const providerConfigs: Record<string, LLMProviderConfig> = {};
   let defaultProvider = config.llm.defaultProvider;
 
-  const anthropicKey = config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'];
+  const anthropicKey =
+    config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'];
   if (anthropicKey) {
     providerConfigs['anthropic'] = {
       provider: 'anthropic',
@@ -227,33 +238,44 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
       provider: 'openai',
       model: process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat',
       apiKey: deepseekKey,
-      baseUrl: process.env['DEEPSEEK_BASE_URL'] ?? config.llm.providers['deepseek']?.baseUrl ?? 'https://api.deepseek.com',
+      baseUrl:
+        process.env['DEEPSEEK_BASE_URL'] ??
+        config.llm.providers['deepseek']?.baseUrl ??
+        'https://api.deepseek.com',
     };
     if (!anthropicKey || config.llm.defaultProvider === 'deepseek') {
       defaultProvider = 'deepseek';
     }
   }
 
-  const siliconflowKey = config.llm.providers['siliconflow']?.apiKey ?? process.env['SILICONFLOW_API_KEY'];
+  const siliconflowKey =
+    config.llm.providers['siliconflow']?.apiKey ?? process.env['SILICONFLOW_API_KEY'];
   if (siliconflowKey) {
     providerConfigs['siliconflow'] = {
       provider: 'siliconflow',
       model: process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen2.5-72B-Instruct',
       apiKey: siliconflowKey,
-      baseUrl: process.env['SILICONFLOW_BASE_URL'] ?? config.llm.providers['siliconflow']?.baseUrl ?? 'https://api.siliconflow.cn/v1',
+      baseUrl:
+        process.env['SILICONFLOW_BASE_URL'] ??
+        config.llm.providers['siliconflow']?.baseUrl ??
+        'https://api.siliconflow.cn/v1',
     };
     if (config.llm.defaultProvider === 'siliconflow') {
       defaultProvider = 'siliconflow';
     }
   }
 
-  const openrouterKey = config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
+  const openrouterKey =
+    config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
   if (openrouterKey) {
     providerConfigs['openrouter'] = {
       provider: 'openrouter',
       model: process.env['OPENROUTER_MODEL'] ?? 'openai/gpt-4o',
       apiKey: openrouterKey,
-      baseUrl: process.env['OPENROUTER_BASE_URL'] ?? config.llm.providers['openrouter']?.baseUrl ?? 'https://openrouter.ai/api/v1',
+      baseUrl:
+        process.env['OPENROUTER_BASE_URL'] ??
+        config.llm.providers['openrouter']?.baseUrl ??
+        'https://openrouter.ai/api/v1',
     };
     if (config.llm.defaultProvider === 'openrouter') {
       defaultProvider = 'openrouter';
@@ -264,9 +286,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const skillRegistry = await createDefaultSkillRegistry();
 
-  // Run DB migrations before initializing storage (idempotent, safe on every startup)
+  // Run DB migrations for PostgreSQL only (SQLite creates tables on open)
   const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
-  if (dbUrl) await runMigrations(dbUrl);
+  if (dbUrl && (dbUrl.startsWith('postgresql://') || dbUrl.startsWith('postgres://'))) {
+    await runMigrations(dbUrl);
+  }
 
   const storage = await initStorage(config.database?.url);
 
@@ -298,16 +322,32 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   billingService.setOrgPlan('default', 'free');
   const auditService = new AuditService();
 
-  return { agentManager, orgService, taskService, roleLoader, llmRouter, skillRegistry, hitlService, billingService, auditService };
+  return {
+    agentManager,
+    orgService,
+    taskService,
+    roleLoader,
+    llmRouter,
+    skillRegistry,
+    hitlService,
+    billingService,
+    auditService,
+  };
 }
 
-async function startServer(
-  config: ReturnType<typeof loadConfig>,
-  values: Record<string, unknown>,
-) {
+async function startServer(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
   console.log('Starting Markus server...');
 
-  const { orgService, taskService, agentManager, llmRouter, skillRegistry, hitlService, billingService, auditService } = await createServices(config);
+  const {
+    orgService,
+    taskService,
+    agentManager,
+    llmRouter,
+    skillRegistry,
+    hitlService,
+    billingService,
+    auditService,
+  } = await createServices(config);
 
   const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
@@ -351,14 +391,18 @@ async function startServer(
       priority: 'high',
     });
     auditService.record({
-      orgId: 'default', agentId, type: 'error',
-      action: 'escalation', detail: reason, success: false,
+      orgId: 'default',
+      agentId,
+      type: 'error',
+      action: 'escalation',
+      detail: reason,
+      success: false,
     });
   });
 
   agentManager.setApprovalHandler(async (agentId, request) => {
     const agents = agentManager.listAgents();
-    const agentName = agents.find((a) => a.id === agentId)?.name ?? agentId;
+    const agentName = agents.find(a => a.id === agentId)?.name ?? agentId;
     const approved = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
@@ -384,7 +428,7 @@ async function startServer(
     auditService.record({
       orgId: 'default',
       agentId,
-      type: event.type as import('@markus/org-manager').AuditEventType,
+      type: event.type as AuditEventType,
       action: event.action,
       tokensUsed: event.tokensUsed,
       durationMs: event.durationMs,
@@ -392,7 +436,12 @@ async function startServer(
       detail: event.detail,
     });
     if (event.tokensUsed && event.type === 'llm_request') {
-      auditService.recordLLMUsage('default', agentId, Math.floor(event.tokensUsed * 0.7), Math.ceil(event.tokensUsed * 0.3));
+      auditService.recordLLMUsage(
+        'default',
+        agentId,
+        Math.floor(event.tokensUsed * 0.7),
+        Math.ceil(event.tokensUsed * 0.3)
+      );
       billingService.recordUsage({
         orgId: 'default',
         agentId,
@@ -416,7 +465,10 @@ async function startServer(
   if (storage) {
     agentManager.setStateChangeHandler(async (agentId, state) => {
       try {
-        await storage.agentRepo.updateStatus(agentId, state.status as 'idle' | 'working' | 'paused' | 'offline' | 'error');
+        await storage.agentRepo.updateStatus(
+          agentId,
+          state.status as 'idle' | 'working' | 'paused' | 'offline' | 'error'
+        );
       } catch (err) {
         log.warn('Failed to persist agent state', { agentId, error: String(err) });
       }
@@ -434,7 +486,9 @@ async function startServer(
         try {
           const agent = agentManager.getAgent(agentInfo.id);
           agent.resetDailyTokens();
-        } catch { /* agent may be offline */ }
+        } catch {
+          /* agent may be offline */
+        }
       }
       scheduleDailyReset();
     }, msUntilMidnight);
@@ -452,16 +506,24 @@ async function startServer(
       const agent = agentManager.getAgent(agentId);
       const reply = await agent.handleMessage(message.content.text ?? '', message.senderId);
       auditService.record({
-        orgId: 'default', agentId, type: 'agent_message',
-        action: 'handle_message', detail: (message.content.text ?? '').slice(0, 200),
-        durationMs: Date.now() - startTs, success: true,
+        orgId: 'default',
+        agentId,
+        type: 'agent_message',
+        action: 'handle_message',
+        detail: (message.content.text ?? '').slice(0, 200),
+        durationMs: Date.now() - startTs,
+        success: true,
       });
       return reply;
     } catch (error) {
       auditService.record({
-        orgId: 'default', agentId, type: 'agent_message',
-        action: 'handle_message', detail: String(error).slice(0, 200),
-        durationMs: Date.now() - startTs, success: false,
+        orgId: 'default',
+        agentId,
+        type: 'agent_message',
+        action: 'handle_message',
+        detail: String(error).slice(0, 200),
+        durationMs: Date.now() - startTs,
+        success: false,
       });
       log.error('Agent message handler error', { error: String(error) });
       return undefined;
@@ -476,11 +538,13 @@ async function startServer(
   if (feishuAppId && feishuAppSecret) {
     const feishuAdapter = new FeishuAdapter();
     messageRouter.registerAdapter(feishuAdapter);
-    await messageRouter.connectAll([{
-      platform: 'feishu',
-      appId: feishuAppId,
-      appSecret: feishuAppSecret,
-    }]);
+    await messageRouter.connectAll([
+      {
+        platform: 'feishu',
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+      },
+    ]);
     console.log('  Feishu integration enabled');
   }
 
@@ -509,7 +573,9 @@ async function listAgents(config: ReturnType<typeof loadConfig>) {
   const agents = agentManager.listAgents();
 
   if (agents.length === 0) {
-    console.log('No agents found. Create one with: markus agent:create --name <name> --role <role>');
+    console.log(
+      'No agents found. Create one with: markus agent:create --name <name> --role <role>'
+    );
     return;
   }
 
@@ -543,7 +609,10 @@ async function createAgent(config: ReturnType<typeof loadConfig>, values: Record
   console.log(`  Role: ${agent.role.name}`);
 }
 
-async function chatWithAgent(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+async function chatWithAgent(
+  config: ReturnType<typeof loadConfig>,
+  values: Record<string, unknown>
+) {
   const agentId = values['id'] as string;
 
   const { agentManager } = await createServices(config);
@@ -636,12 +705,17 @@ async function agentStatus(config: ReturnType<typeof loadConfig>, values: Record
   console.log(`  Skills:        ${agent.config.skills?.join(', ') ?? 'none'}`);
 }
 
-async function agentA2AMessage(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+async function agentA2AMessage(
+  config: ReturnType<typeof loadConfig>,
+  values: Record<string, unknown>
+) {
   const fromId = values['id'] as string;
   const targetId = values['target'] as string;
   const text = values['text'] as string;
   if (!fromId || !targetId || !text) {
-    console.error('Usage: markus agent:message --id <from_agent> --target <to_agent> --text "message"');
+    console.error(
+      'Usage: markus agent:message --id <from_agent> --target <to_agent> --text "message"'
+    );
     process.exit(1);
   }
 
@@ -652,13 +726,19 @@ async function agentA2AMessage(config: ReturnType<typeof loadConfig>, values: Re
   console.log(`\nSending A2A message: ${fromAgent.config.name} → ${targetAgent.config.name}`);
   console.log(`Message: ${text}\n`);
 
-  const reply = await targetAgent.handleMessage(text, fromId, { name: fromAgent.config.name, role: fromAgent.config.agentRole ?? 'worker' });
+  const reply = await targetAgent.handleMessage(text, fromId, {
+    name: fromAgent.config.name,
+    role: fromAgent.config.agentRole ?? 'worker',
+  });
   console.log(`Reply from ${targetAgent.config.name}:`);
   console.log('─'.repeat(50));
   console.log(reply);
 }
 
-async function agentProfile(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+async function agentProfile(
+  config: ReturnType<typeof loadConfig>,
+  values: Record<string, unknown>
+) {
   const agentId = values['id'] as string;
   if (!agentId) {
     console.error('Usage: markus agent:profile --id <agent_id>');
@@ -701,7 +781,11 @@ async function dbInit(config: ReturnType<typeof loadConfig>) {
   try {
     const { execSync } = await import('node:child_process');
     const cwd = resolve(process.cwd(), 'packages', 'storage');
-    execSync('npx drizzle-kit push', { cwd, stdio: 'inherit', env: { ...process.env, DATABASE_URL: dbUrl } });
+    execSync('npx drizzle-kit push', {
+      cwd,
+      stdio: 'inherit',
+      env: { ...process.env, DATABASE_URL: dbUrl },
+    });
     console.log('\nDatabase initialized successfully!');
   } catch (error) {
     console.error(`\nDatabase initialization failed: ${String(error)}`);
@@ -722,7 +806,9 @@ async function listSkills() {
   console.log('\nAvailable Skills:');
   console.log('─'.repeat(70));
   for (const s of skills) {
-    console.log(`  ${s.name.padEnd(20)} v${s.version.padEnd(8)} ${s.category.padEnd(14)} ${s.description}`);
+    console.log(
+      `  ${s.name.padEnd(20)} v${s.version.padEnd(8)} ${s.category.padEnd(14)} ${s.description}`
+    );
     for (const t of s.tools) {
       console.log(`    └ ${t.name.padEnd(24)} ${t.description}`);
     }
@@ -737,7 +823,7 @@ async function initSkill(values: Record<string, unknown>) {
   }
 
   const { mkdirSync, writeFileSync } = await import('node:fs');
-  const dir = resolve(process.cwd(), values['dir'] as string ?? name);
+  const dir = resolve(process.cwd(), (values['dir'] as string) ?? name);
 
   mkdirSync(dir, { recursive: true });
   mkdirSync(resolve(dir, 'src'), { recursive: true });
@@ -753,7 +839,11 @@ async function initSkill(values: Record<string, unknown>) {
       {
         name: `${name}_example`,
         description: `Example tool from ${name} skill`,
-        inputSchema: { type: 'object', properties: { input: { type: 'string', description: 'Input text' } }, required: ['input'] },
+        inputSchema: {
+          type: 'object',
+          properties: { input: { type: 'string', description: 'Input text' } },
+          required: ['input'],
+        },
       },
     ],
     requiredPermissions: [],
@@ -809,7 +899,7 @@ Custom skill for Markus AI agents.
 }
 
 async function testSkill(values: Record<string, unknown>) {
-  const dir = resolve(process.cwd(), values['dir'] as string ?? '.');
+  const dir = resolve(process.cwd(), (values['dir'] as string) ?? '.');
 
   const manifestPath = resolve(dir, 'manifest.json');
   if (!existsSync(manifestPath)) {
@@ -819,7 +909,9 @@ async function testSkill(values: Record<string, unknown>) {
   }
 
   const manifestData = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
-    name: string; version: string; tools: Array<{ name: string; description: string }>;
+    name: string;
+    version: string;
+    tools: Array<{ name: string; description: string }>;
   };
 
   console.log(`\nTesting skill: ${manifestData.name} v${manifestData.version}`);
@@ -855,7 +947,9 @@ async function listTeamTemplates() {
   console.log('─'.repeat(70));
   for (const f of files) {
     const data = JSON.parse(readFileSync(resolve(teamsDir, f), 'utf-8')) as {
-      name: string; description: string; category: string;
+      name: string;
+      description: string;
+      category: string;
       agents: Array<{ name: string; role: string; agentRole: string }>;
     };
     console.log(`\n  ${data.name} [${f.replace('.json', '')}]`);
@@ -885,7 +979,8 @@ async function deployTeam(config: ReturnType<typeof loadConfig>, values: Record<
   }
 
   const template = JSON.parse(readFileSync(filePath, 'utf-8')) as {
-    name: string; agents: Array<{ name: string; role: string; agentRole: string; skills?: string[] }>;
+    name: string;
+    agents: Array<{ name: string; role: string; agentRole: string; skills?: string[] }>;
   };
 
   console.log(`\nDeploying team: ${template.name}`);
@@ -931,14 +1026,21 @@ async function addUser(config: ReturnType<typeof loadConfig>, values: Record<str
   const name = values['name'] as string;
   const role = (values['role'] as string) ?? 'member';
   if (!name) {
-    console.error('Usage: markus user:add --name <name> [--role owner|admin|member|guest] [--email <email>]');
+    console.error(
+      'Usage: markus user:add --name <name> [--role owner|admin|member|guest] [--email <email>]'
+    );
     process.exit(1);
   }
 
   const { orgService } = await createServices(config);
-  const user = orgService.addHumanUser('default', name, role as 'owner' | 'admin' | 'member' | 'guest', {
-    email: values['email'] as string | undefined,
-  });
+  const user = orgService.addHumanUser(
+    'default',
+    name,
+    role as 'owner' | 'admin' | 'member' | 'guest',
+    {
+      email: values['email'] as string | undefined,
+    }
+  );
   console.log(`User added: ${user.name} (${user.role}) — ${user.id}`);
 }
 
@@ -959,7 +1061,10 @@ async function listApprovals(config: ReturnType<typeof loadConfig>) {
   }
 }
 
-async function respondApproval(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+async function respondApproval(
+  config: ReturnType<typeof loadConfig>,
+  values: Record<string, unknown>
+) {
   const id = values['id'] as string;
   const approved = values['approved'] as string;
   if (!id || approved === undefined) {
@@ -1028,18 +1133,29 @@ async function showUsage(config: ReturnType<typeof loadConfig>) {
   console.log('─'.repeat(50));
   console.log(`  Plan:          ${plan.tier}`);
   console.log(`  Period:        ${summary.period}`);
-  console.log(`  LLM Tokens:    ${summary.llmTokens.toLocaleString()} / ${plan.limits.maxTokensPerMonth < 0 ? 'unlimited' : plan.limits.maxTokensPerMonth.toLocaleString()}`);
-  console.log(`  Tool Calls:    ${summary.toolCalls.toLocaleString()} / ${plan.limits.maxToolCallsPerDay < 0 ? 'unlimited' : plan.limits.maxToolCallsPerDay.toLocaleString()} per day`);
-  console.log(`  Messages:      ${summary.messages.toLocaleString()} / ${plan.limits.maxMessagesPerDay < 0 ? 'unlimited' : plan.limits.maxMessagesPerDay.toLocaleString()} per day`);
-  console.log(`  Storage:       ${(summary.storageBytes / 1024 / 1024).toFixed(1)}MB / ${plan.limits.maxStorageBytes < 0 ? 'unlimited' : (plan.limits.maxStorageBytes / 1024 / 1024).toFixed(0) + 'MB'}`);
+  console.log(
+    `  LLM Tokens:    ${summary.llmTokens.toLocaleString()} / ${plan.limits.maxTokensPerMonth < 0 ? 'unlimited' : plan.limits.maxTokensPerMonth.toLocaleString()}`
+  );
+  console.log(
+    `  Tool Calls:    ${summary.toolCalls.toLocaleString()} / ${plan.limits.maxToolCallsPerDay < 0 ? 'unlimited' : plan.limits.maxToolCallsPerDay.toLocaleString()} per day`
+  );
+  console.log(
+    `  Messages:      ${summary.messages.toLocaleString()} / ${plan.limits.maxMessagesPerDay < 0 ? 'unlimited' : plan.limits.maxMessagesPerDay.toLocaleString()} per day`
+  );
+  console.log(
+    `  Storage:       ${(summary.storageBytes / 1024 / 1024).toFixed(1)}MB / ${plan.limits.maxStorageBytes < 0 ? 'unlimited' : (plan.limits.maxStorageBytes / 1024 / 1024).toFixed(0) + 'MB'}`
+  );
 }
 
-async function showAuditLog(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
+async function showAuditLog(
+  config: ReturnType<typeof loadConfig>,
+  values: Record<string, unknown>
+) {
   const { auditService } = await createServices(config);
   const entries = auditService.query({
     orgId: 'default',
     agentId: values['id'] as string | undefined,
-    type: values['type'] as import('@markus/org-manager').AuditEventType | undefined,
+    type: values['type'] as AuditEventType | undefined,
     limit: 30,
   });
 
@@ -1050,10 +1166,14 @@ async function showAuditLog(config: ReturnType<typeof loadConfig>, values: Recor
 
   console.log('\nAudit Log:');
   console.log('─'.repeat(90));
-  console.log(`  ${'Time'.padEnd(22)} ${'Type'.padEnd(18)} ${'Agent'.padEnd(14)} ${'Action'.padEnd(20)} OK`);
+  console.log(
+    `  ${'Time'.padEnd(22)} ${'Type'.padEnd(18)} ${'Agent'.padEnd(14)} ${'Action'.padEnd(20)} OK`
+  );
   console.log('─'.repeat(90));
   for (const e of entries) {
-    console.log(`  ${e.timestamp.slice(0, 19).padEnd(22)} ${e.type.padEnd(18)} ${(e.agentId ?? '-').padEnd(14)} ${e.action.slice(0, 20).padEnd(20)} ${e.success ? '✓' : '✗'}`);
+    console.log(
+      `  ${e.timestamp.slice(0, 19).padEnd(22)} ${e.type.padEnd(18)} ${(e.agentId ?? '-').padEnd(14)} ${e.action.slice(0, 20).padEnd(20)} ${e.success ? '✓' : '✗'}`
+    );
   }
 }
 
@@ -1085,13 +1205,15 @@ async function quickInit() {
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q: string, def?: string): Promise<string> =>
-    new Promise(r => rl.question(`${q}${def ? ` [${def}]` : ''}: `, ans => r(ans.trim() || def || '')));
+    new Promise(r =>
+      rl.question(`${q}${def ? ` [${def}]` : ''}: `, ans => r(ans.trim() || def || ''))
+    );
 
   console.log('\n  Welcome to Markus Quick Setup\n');
   console.log('  This will configure your .env file and create default templates.\n');
 
   const provider = await ask('  LLM Provider (anthropic/openai/google/ollama)', 'anthropic');
-  let envLines = [`LLM_PROVIDER=${provider}`];
+  const envLines = [`LLM_PROVIDER=${provider}`];
 
   if (provider === 'anthropic') {
     const key = await ask('  Anthropic API Key');
@@ -1141,24 +1263,27 @@ async function quickInit() {
   const rolesDir = join(process.cwd(), 'templates', 'roles', 'developer');
   if (!existsSync(rolesDir)) {
     mkdirSync(rolesDir, { recursive: true });
-    writeFileSync(join(rolesDir, 'ROLE.md'), [
-      '---',
-      'name: Developer',
-      'description: Full-stack software developer',
-      'heartbeatInterval: 600000',
-      '---',
-      '',
-      'You are a skilled software developer. You write clean, maintainable code and follow best practices.',
-      'You can read and edit files, run shell commands, search the web, and collaborate with other agents.',
-      '',
-    ].join('\n'));
+    writeFileSync(
+      join(rolesDir, 'ROLE.md'),
+      [
+        '---',
+        'name: Developer',
+        'description: Full-stack software developer',
+        'heartbeatInterval: 600000',
+        '---',
+        '',
+        'You are a skilled software developer. You write clean, maintainable code and follow best practices.',
+        'You can read and edit files, run shell commands, search the web, and collaborate with other agents.',
+        '',
+      ].join('\n')
+    );
     console.log('  Created default developer role template.');
   }
 
   console.log('\n  Setup complete! Run `markus start` to launch.\n');
 }
 
-main().catch((error) => {
+main().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
