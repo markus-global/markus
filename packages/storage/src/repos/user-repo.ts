@@ -26,15 +26,18 @@ export class UserRepo {
     teamId?: string;
     passwordHash?: string;
   }): Promise<User> {
-    const [row] = await this.db.insert(users).values({
-      id: data.id,
-      orgId: data.orgId,
-      name: data.name,
-      email: data.email ?? null,
-      role: data.role ?? 'member',
-      teamId: data.teamId ?? null,
-      passwordHash: data.passwordHash ?? null,
-    }).returning();
+    const [row] = await this.db
+      .insert(users)
+      .values({
+        id: data.id,
+        orgId: data.orgId,
+        name: data.name,
+        email: data.email ?? null,
+        role: data.role ?? 'member',
+        teamId: data.teamId ?? null,
+        passwordHash: data.passwordHash ?? null,
+      })
+      .returning();
     return row!;
   }
 
@@ -45,22 +48,31 @@ export class UserRepo {
     email?: string;
     role?: string;
     teamId?: string;
+    passwordHash?: string;
   }): Promise<void> {
-    await this.db.insert(users).values({
-      id: data.id,
-      orgId: data.orgId,
+    const updateSet: Record<string, unknown> = {
       name: data.name,
-      email: data.email ?? null,
       role: data.role ?? 'member',
       teamId: data.teamId ?? null,
-    }).onConflictDoUpdate({
-      target: users.id,
-      set: {
+    };
+    if (data.passwordHash) updateSet['passwordHash'] = data.passwordHash;
+    if (data.email) updateSet['email'] = data.email;
+
+    await this.db
+      .insert(users)
+      .values({
+        id: data.id,
+        orgId: data.orgId,
         name: data.name,
+        email: data.email ?? null,
         role: data.role ?? 'member',
         teamId: data.teamId ?? null,
-      },
-    });
+        passwordHash: data.passwordHash ?? null,
+      })
+      .onConflictDoUpdate({
+        target: users.id,
+        set: updateSet,
+      });
   }
 
   async updateTeamId(id: string, teamId: string | null): Promise<void> {
@@ -72,16 +84,12 @@ export class UserRepo {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    const [row] = await this.db.select().from(users)
-      .where(eq(users.email, email))
-      .limit(1);
+    const [row] = await this.db.select().from(users).where(eq(users.email, email)).limit(1);
     return row ?? null;
   }
 
   async findById(id: string): Promise<User | null> {
-    const [row] = await this.db.select().from(users)
-      .where(eq(users.id, id))
-      .limit(1);
+    const [row] = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
     return row ?? null;
   }
 
@@ -90,20 +98,24 @@ export class UserRepo {
   }
 
   async updateLastLogin(id: string): Promise<void> {
-    await this.db.update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, id));
+    await this.db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, id));
   }
 
   async updatePassword(id: string, passwordHash: string): Promise<void> {
-    await this.db.update(users)
-      .set({ passwordHash })
-      .where(eq(users.id, id));
+    await this.db.update(users).set({ passwordHash }).where(eq(users.id, id));
   }
 
-  async updateProfile(id: string, data: { name?: string; email?: string; role?: string }): Promise<User | null> {
-    await this.db.update(users)
-      .set({ ...(data.name ? { name: data.name } : {}), ...(data.email ? { email: data.email } : {}), ...(data.role ? { role: data.role } : {}) })
+  async updateProfile(
+    id: string,
+    data: { name?: string; email?: string; role?: string }
+  ): Promise<User | null> {
+    await this.db
+      .update(users)
+      .set({
+        ...(data.name ? { name: data.name } : {}),
+        ...(data.email ? { email: data.email } : {}),
+        ...(data.role ? { role: data.role } : {}),
+      })
       .where(eq(users.id, id));
     return this.findById(id);
   }

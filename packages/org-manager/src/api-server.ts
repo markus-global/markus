@@ -2,7 +2,22 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { join } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
-import { GatewayError, WorkflowEngine, TeamTemplateRegistry, createDefaultTeamTemplates, createDefaultTemplateRegistry, PromptStudio, type AgentToolHandler, type ExternalAgentGateway, type LLMRouter, type ReviewService, type SkillRegistry, type TemplateRegistry, type WorkflowExecutor, type WorkflowDefinition } from '@markus/core';
+import {
+  GatewayError,
+  WorkflowEngine,
+  createDefaultTeamTemplates,
+  createDefaultTemplateRegistry,
+  PromptStudio,
+  type TeamTemplateRegistry,
+  type AgentToolHandler,
+  type ExternalAgentGateway,
+  type LLMRouter,
+  type ReviewService,
+  type SkillRegistry,
+  type TemplateRegistry,
+  type WorkflowExecutor,
+  type WorkflowDefinition,
+} from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
@@ -21,9 +36,18 @@ async function signToken(payload: Record<string, unknown>, secret: string): Prom
   const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const body = btoa(JSON.stringify(payload));
   const data = `${header}.${body}`;
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
   return `${data}.${sigB64}`;
 }
 
@@ -32,14 +56,24 @@ async function verifyToken(token: string, secret: string): Promise<Record<string
     const parts = token.split('.');
     if (parts.length !== 3) return null;
     const data = `${parts[0]}.${parts[1]}`;
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-    const sigBytes = Uint8Array.from(atob(parts[2]!.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const sigBytes = Uint8Array.from(atob(parts[2]!.replace(/-/g, '+').replace(/_/g, '/')), c =>
+      c.charCodeAt(0)
+    );
     const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
     if (!valid) return null;
     const payload = JSON.parse(atob(parts[1]!)) as Record<string, unknown>;
     if (payload['exp'] && (payload['exp'] as number) < Date.now() / 1000) return null;
     return payload;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 const PBKDF2_ITERATIONS = 10000;
@@ -47,10 +81,24 @@ const PBKDF2_ITERATIONS = 10000;
 async function hashPassword(password: string): Promise<string> {
   // Format: pbkdf2:<iterations>:<saltHex>:<hashHex>
   const salt = crypto.getRandomValues(new Uint8Array(16));
-  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('');
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' }, key, 256);
-  const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const saltHex = Array.from(salt)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    key,
+    256
+  );
+  const hashHex = Array.from(new Uint8Array(bits))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
   return `pbkdf2:${PBKDF2_ITERATIONS}:${saltHex}:${hashHex}`;
 }
 
@@ -73,9 +121,21 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
     return false;
   }
   const salt = Uint8Array.from((saltHex.match(/.{2}/g) ?? []).map(b => parseInt(b, 16)));
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256);
-  const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    key,
+    256
+  );
+  const hashHex = Array.from(new Uint8Array(bits))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
   return hashHex === expectedHash;
 }
 
@@ -107,12 +167,20 @@ export class APIServer {
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private promptStudio: PromptStudio;
-  private customGroupChats: Array<{ id: string; name: string; orgId: string; creatorId: string; creatorName: string; memberIds: string[]; createdAt: string }> = [];
+  private customGroupChats: Array<{
+    id: string;
+    name: string;
+    orgId: string;
+    creatorId: string;
+    creatorName: string;
+    memberIds: string[];
+    createdAt: string;
+  }> = [];
 
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
-    private port: number = 3001,
+    private port: number = 3001
   ) {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
@@ -126,23 +194,51 @@ export class APIServer {
 
     // Wire up group chat handlers for agent communication tools
     am.setGroupChatHandlers({
-      sendGroupMessage: async (channelKey: string, message: string, senderId: string, senderName: string) => {
+      sendGroupMessage: async (
+        channelKey: string,
+        message: string,
+        senderId: string,
+        senderName: string
+      ) => {
         if (this.storage) {
           await this.storage.channelMessageRepo.append({
-            orgId: 'default', channel: channelKey,
-            senderId, senderType: 'agent', senderName, text: message,
+            orgId: 'default',
+            channel: channelKey,
+            senderId,
+            senderType: 'agent',
+            senderName,
+            text: message,
           });
         }
         this.ws.broadcast({
           type: 'chat:message',
-          payload: { channel: channelKey, senderId, senderType: 'agent', senderName, text: message },
+          payload: {
+            channel: channelKey,
+            senderId,
+            senderType: 'agent',
+            senderName,
+            text: message,
+          },
           timestamp: new Date().toISOString(),
         });
         return 'Message sent to group chat';
       },
-      createGroupChat: async (name: string, creatorId: string, creatorName: string, memberIds: string[]) => {
+      createGroupChat: async (
+        name: string,
+        creatorId: string,
+        creatorName: string,
+        memberIds: string[]
+      ) => {
         const chatId = `group:custom:${Date.now().toString(36)}`;
-        this.customGroupChats.push({ id: chatId, name, orgId: 'default', creatorId, creatorName, memberIds, createdAt: new Date().toISOString() });
+        this.customGroupChats.push({
+          id: chatId,
+          name,
+          orgId: 'default',
+          creatorId,
+          creatorName,
+          memberIds,
+          createdAt: new Date().toISOString(),
+        });
         this.ws.broadcast({
           type: 'chat:group_created',
           payload: { chatId, name, creatorId, creatorName },
@@ -152,8 +248,18 @@ export class APIServer {
       },
       listGroupChats: async () => {
         const teams = this.orgService.listTeamsWithMembers('default');
-        const teamChats = teams.map(t => ({ id: `group:${t.id}`, name: t.name, type: 'team', channelKey: `group:${t.id}` }));
-        const customChats = this.customGroupChats.map(c => ({ id: c.id, name: c.name, type: 'custom', channelKey: c.id }));
+        const teamChats = teams.map(t => ({
+          id: `group:${t.id}`,
+          name: t.name,
+          type: 'team',
+          channelKey: `group:${t.id}`,
+        }));
+        const customChats = this.customGroupChats.map(c => ({
+          id: c.id,
+          name: c.name,
+          type: 'custom',
+          channelKey: c.id,
+        }));
         return [...teamChats, ...customChats];
       },
     });
@@ -173,8 +279,12 @@ export class APIServer {
 
   setHITLService(service: HITLService): void {
     this.hitlService = service;
-    service.onNotification((n) => {
-      this.ws.broadcast({ type: 'notification', payload: { notification: n }, timestamp: new Date().toISOString() });
+    service.onNotification(n => {
+      this.ws.broadcast({
+        type: 'notification',
+        payload: { notification: n },
+        timestamp: new Date().toISOString(),
+      });
     });
   }
 
@@ -201,18 +311,31 @@ export class APIServer {
   initWorkflowEngine(): WorkflowEngine {
     const agentManager = this.orgService.getAgentManager();
     const executor: WorkflowExecutor = {
-      executeStep: async (agentId: string, taskDescription: string, input: Record<string, unknown>) => {
+      executeStep: async (
+        agentId: string,
+        taskDescription: string,
+        input: Record<string, unknown>
+      ) => {
         const agent = agentManager.getAgent(agentId);
-        const reply = await agent.handleMessage(taskDescription, 'workflow-engine', { name: 'workflow', role: 'system' }, {
-          ephemeral: true,
-          maxHistory: 15,
-        });
+        const reply = await agent.handleMessage(
+          taskDescription,
+          'workflow-engine',
+          { name: 'workflow', role: 'system' },
+          {
+            ephemeral: true,
+            maxHistory: 15,
+          }
+        );
         return { reply, input };
       },
       findAgent: (skills: string[]) => {
         const agents = agentManager.listAgents();
         const found = agents.find(a =>
-          skills.some(s => a.role?.toLowerCase().includes(s.toLowerCase()) || a.agentRole?.toLowerCase().includes(s.toLowerCase()))
+          skills.some(
+            s =>
+              a.role?.toLowerCase().includes(s.toLowerCase()) ||
+              a.agentRole?.toLowerCase().includes(s.toLowerCase())
+          )
         );
         return found?.id;
       },
@@ -235,10 +358,12 @@ export class APIServer {
     if (hasAuthUser) return;
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
-    await this.storage.userRepo.create({
-      id: generateId('usr'),
+    // Use the same id ('default') as the synthetic Owner created in createServices
+    // so that loadFromDB deduplicates correctly and we end up with a single human user.
+    await this.storage.userRepo.upsert({
+      id: 'default',
       orgId,
-      name: 'Admin',
+      name: 'Owner',
       email: 'admin@markus.local',
       role: 'owner',
       passwordHash: hash,
@@ -255,7 +380,9 @@ export class APIServer {
   }
 
   /** Returns user payload from JWT cookie, or null if not authenticated */
-  private async getAuthUser(req: IncomingMessage): Promise<{ userId: string; orgId: string; role: string } | null> {
+  private async getAuthUser(
+    req: IncomingMessage
+  ): Promise<{ userId: string; orgId: string; role: string } | null> {
     if (!this.authEnabled) return { userId: 'anonymous', orgId: 'default', role: 'owner' };
     const cookies = parseCookies(req.headers['cookie']);
     const token = cookies['markus_token'];
@@ -266,9 +393,15 @@ export class APIServer {
   }
 
   /** Returns user or sends 401 and returns null */
-  private async requireAuth(req: IncomingMessage, res: ServerResponse): Promise<{ userId: string; orgId: string; role: string } | null> {
+  private async requireAuth(
+    req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<{ userId: string; orgId: string; role: string } | null> {
     const user = await this.getAuthUser(req);
-    if (!user) { this.json(res, 401, { error: 'Unauthorized' }); return null; }
+    if (!user) {
+      this.json(res, 401, { error: 'Unauthorized' });
+      return null;
+    }
     return user;
   }
 
@@ -279,7 +412,7 @@ export class APIServer {
     reply: string,
     senderId?: string,
     tokensUsed = 0,
-    metadata?: unknown,
+    metadata?: unknown
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -290,7 +423,14 @@ export class APIServer {
       }
       const title = !session.title ? userMessage.slice(0, 60) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'assistant', reply, tokensUsed, metadata);
+      await this.storage.chatSessionRepo.appendMessage(
+        session.id,
+        agentId,
+        'assistant',
+        reply,
+        tokensUsed,
+        metadata
+      );
       await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -298,7 +438,11 @@ export class APIServer {
   }
 
   /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence */
-  private async persistUserMessage(agentId: string, userMessage: string, senderId?: string): Promise<string | null> {
+  private async persistUserMessage(
+    agentId: string,
+    userMessage: string,
+    senderId?: string
+  ): Promise<string | null> {
     if (!this.storage) return null;
     try {
       const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
@@ -317,10 +461,23 @@ export class APIServer {
   }
 
   /** Persist the assistant reply after LLM completes */
-  private async persistAssistantMessage(sessionId: string | null, agentId: string, reply: string, tokensUsed = 0, metadata?: unknown): Promise<void> {
+  private async persistAssistantMessage(
+    sessionId: string | null,
+    agentId: string,
+    reply: string,
+    tokensUsed = 0,
+    metadata?: unknown
+  ): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
-      await this.storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', reply, tokensUsed, metadata);
+      await this.storage.chatSessionRepo.appendMessage(
+        sessionId,
+        agentId,
+        'assistant',
+        reply,
+        tokensUsed,
+        metadata
+      );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
     } catch (err) {
       log.warn('Failed to persist assistant message', { error: String(err) });
@@ -357,13 +514,15 @@ export class APIServer {
     const url = new URL(req.url ?? '/', `http://localhost:${this.port}`);
     const path = url.pathname;
 
-    this.route(req, res, path, url).catch((error) => {
+    this.route(req, res, path, url).catch(error => {
       log.error('Request handler error', { error: String(error), path });
       if (res.headersSent) {
         // SSE or chunked stream already started — send an error event and close gracefully
         try {
           res.write(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\n\n`);
-        } catch { /* ignore if write also fails */ }
+        } catch {
+          /* ignore if write also fails */
+        }
         res.end();
       } else {
         this.json(res, 500, { error: 'Internal server error' });
@@ -371,12 +530,17 @@ export class APIServer {
     });
   }
 
-  private async route(req: IncomingMessage, res: ServerResponse, path: string, url: URL): Promise<void> {
+  private async route(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string,
+    url: URL
+  ): Promise<void> {
     // ── Auth endpoints (no auth required) ──────────────────────────────────
     if (path === '/api/auth/login' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const email = (body['email'] as string ?? '').trim().toLowerCase();
-      const password = body['password'] as string ?? '';
+      const email = ((body['email'] as string) ?? '').trim().toLowerCase();
+      const password = (body['password'] as string) ?? '';
 
       if (!this.authEnabled) {
         this.json(res, 200, { user: { id: 'anonymous', name: 'Admin', role: 'owner' } });
@@ -395,9 +559,23 @@ export class APIServer {
       }
       await this.storage!.userRepo.updateLastLogin(userRow.id);
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken({ userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp }, this.jwtSecret);
-      res.setHeader('Set-Cookie', `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`);
-      this.json(res, 200, { user: { id: userRow.id, name: userRow.name, email: userRow.email, role: userRow.role, orgId: userRow.orgId } });
+      const token = await signToken(
+        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
+      this.json(res, 200, {
+        user: {
+          id: userRow.id,
+          name: userRow.name,
+          email: userRow.email,
+          role: userRow.role,
+          orgId: userRow.orgId,
+        },
+      });
       return;
     }
 
@@ -409,41 +587,72 @@ export class APIServer {
 
     if (path === '/api/auth/me' && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
-      if (!authUser) { this.json(res, 401, { error: 'Unauthorized' }); return; }
+      if (!authUser) {
+        this.json(res, 401, { error: 'Unauthorized' });
+        return;
+      }
       if (!this.authEnabled) {
-        this.json(res, 200, { user: { id: 'anonymous', name: 'Admin', role: 'owner', orgId: 'default' } });
+        this.json(res, 200, {
+          user: { id: 'anonymous', name: 'Admin', role: 'owner', orgId: 'default' },
+        });
         return;
       }
       const userRow = this.storage ? await this.storage.userRepo.findById(authUser.userId) : null;
-      if (!userRow) { this.json(res, 401, { error: 'User not found' }); return; }
-      this.json(res, 200, { user: { id: userRow.id, name: userRow.name, email: userRow.email, role: userRow.role, orgId: userRow.orgId } });
+      if (!userRow) {
+        this.json(res, 401, { error: 'User not found' });
+        return;
+      }
+      this.json(res, 200, {
+        user: {
+          id: userRow.id,
+          name: userRow.name,
+          email: userRow.email,
+          role: userRow.role,
+          orgId: userRow.orgId,
+        },
+      });
       return;
     }
 
     if (path === '/api/auth/change-password' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
-      if (!this.storage) { this.json(res, 503, { error: 'Storage not available' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
       const body = await this.readBody(req);
-      const currentPassword = body['currentPassword'] as string ?? '';
-      const newPassword = body['newPassword'] as string ?? '';
+      const currentPassword = (body['currentPassword'] as string) ?? '';
+      const newPassword = (body['newPassword'] as string) ?? '';
       if (!newPassword || newPassword.length < 6) {
         this.json(res, 400, { error: 'New password must be at least 6 characters' });
         return;
       }
       const userRow = await this.storage.userRepo.findById(authUser.userId);
-      if (!userRow) { this.json(res, 404, { error: 'User not found' }); return; }
+      if (!userRow) {
+        this.json(res, 404, { error: 'User not found' });
+        return;
+      }
       // If they already have a password, verify current one (skip for first-time setup where hash is null/empty)
       if (userRow.passwordHash && currentPassword) {
         const valid = await verifyPassword(currentPassword, userRow.passwordHash);
-        if (!valid) { this.json(res, 401, { error: 'Current password is incorrect' }); return; }
+        if (!valid) {
+          this.json(res, 401, { error: 'Current password is incorrect' });
+          return;
+        }
       }
       const newHash = await hashPassword(newPassword);
       await this.storage.userRepo.updatePassword(authUser.userId, newHash);
       // Re-issue token so session stays valid
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken({ userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp }, this.jwtSecret);
-      res.setHeader('Set-Cookie', `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`);
+      const token = await signToken(
+        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
+        this.jwtSecret
+      );
+      res.setHeader(
+        'Set-Cookie',
+        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
+      );
       this.json(res, 200, { ok: true });
       return;
     }
@@ -451,7 +660,10 @@ export class APIServer {
     // ── Chat sessions ──────────────────────────────────────────────────────
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
-      if (!this.storage) { this.json(res, 200, { sessions: [] }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { sessions: [] });
+        return;
+      }
       const limit = parseInt(url.searchParams.get('limit') ?? '20');
       const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit);
       this.json(res, 200, { sessions });
@@ -460,7 +672,10 @@ export class APIServer {
 
     if (path.match(/^\/api\/sessions\/[^/]+\/messages$/) && req.method === 'GET') {
       const sessionId = path.split('/')[3]!;
-      if (!this.storage) { this.json(res, 200, { messages: [], hasMore: false }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { messages: [], hasMore: false });
+        return;
+      }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
@@ -478,7 +693,10 @@ export class APIServer {
     // ── Channel messages ───────────────────────────────────────────────────
     if (path.match(/^\/api\/channels\/[^/]+\/messages$/) && req.method === 'GET') {
       const channel = decodeURIComponent(path.split('/')[3]!);
-      if (!this.storage) { this.json(res, 200, { messages: [], hasMore: false }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { messages: [], hasMore: false });
+        return;
+      }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
       const result = await this.storage.channelMessageRepo.getMessages(channel, limit, before);
@@ -500,7 +718,13 @@ export class APIServer {
       let userMsg: ChannelMsg | undefined;
       if (this.storage) {
         userMsg = await this.storage.channelMessageRepo.append({
-          orgId, channel, senderId, senderType: 'human', senderName, text, mentions,
+          orgId,
+          channel,
+          senderId,
+          senderType: 'human',
+          senderName,
+          text,
+          mentions,
         });
       }
 
@@ -519,9 +743,10 @@ export class APIServer {
           const team = this.orgService.getTeam(teamId);
           if (team) {
             // Prefer team lead/manager, then first available agent member
-            const candidateId = team.leadAgentId
-              ?? (team.managerType === 'agent' ? team.managerId : undefined)
-              ?? team.memberAgentIds[0];
+            const candidateId =
+              team.leadAgentId ??
+              (team.managerType === 'agent' ? team.managerId : undefined) ??
+              team.memberAgentIds[0];
             if (candidateId) routedAgentId = candidateId;
           }
           // Fallback to org-wide routing if no team member found
@@ -544,11 +769,11 @@ export class APIServer {
           const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
           channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
             role: m.senderType === 'agent' ? 'assistant' : 'user',
-            content: m.senderType === 'agent'
-              ? m.text
-              : `[${m.senderName}]: ${m.text}`,
+            content: m.senderType === 'agent' ? m.text : `[${m.senderName}]: ${m.text}`,
           }));
-        } catch { /* ok */ }
+        } catch {
+          /* ok */
+        }
       }
 
       let reply: string;
@@ -565,12 +790,27 @@ export class APIServer {
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           try {
-            const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
+            const parsed = JSON.parse(jsonMatch[0]) as {
+              error?: { message?: string };
+              message?: string;
+            };
             detail = parsed.error?.message ?? parsed.message ?? raw;
-          } catch { /* keep raw */ }
+          } catch {
+            /* keep raw */
+          }
         }
-        const statusCode = raw.includes('402') ? 402 : raw.includes('401') ? 401 : raw.includes('429') ? 429 : 502;
-        this.json(res, statusCode, { userMessage: userMsg ?? null, agentMessage: null, error: detail });
+        const statusCode = raw.includes('402')
+          ? 402
+          : raw.includes('401')
+            ? 401
+            : raw.includes('429')
+              ? 429
+              : 502;
+        this.json(res, statusCode, {
+          userMessage: userMsg ?? null,
+          agentMessage: null,
+          error: detail,
+        });
         return;
       }
 
@@ -578,14 +818,31 @@ export class APIServer {
       let agentMsg: ChannelMsg | undefined;
       if (this.storage) {
         agentMsg = await this.storage.channelMessageRepo.append({
-          orgId, channel, senderId: routedAgentId, senderType: 'agent',
-          senderName: agent.config.name, text: reply, mentions: [],
+          orgId,
+          channel,
+          senderId: routedAgentId,
+          senderType: 'agent',
+          senderName: agent.config.name,
+          text: reply,
+          mentions: [],
         });
         void this.persistChatTurn(routedAgentId, text, reply, senderId);
       }
 
       this.ws.broadcastChat(routedAgentId, reply, 'agent');
-      this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: agentMsg ?? { id: `tmp_${Date.now()}`, channel, senderId: routedAgentId, senderType: 'agent', senderName: agent.config.name, text: reply, mentions: [], createdAt: new Date() } });
+      this.json(res, 200, {
+        userMessage: userMsg ?? null,
+        agentMessage: agentMsg ?? {
+          id: `tmp_${Date.now()}`,
+          channel,
+          senderId: routedAgentId,
+          senderType: 'agent',
+          senderName: agent.config.name,
+          text: reply,
+          mentions: [],
+          createdAt: new Date(),
+        },
+      });
       return;
     }
 
@@ -607,7 +864,15 @@ export class APIServer {
         agentRole: body['agentRole'] as 'manager' | 'worker' | undefined,
         tools: body['tools'] as AgentToolHandler[] | undefined,
       });
-      this.json(res, 201, { agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status } });
+      this.json(res, 201, {
+        agent: {
+          id: agent.id,
+          name: agent.config.name,
+          role: agent.role.name,
+          agentRole: agent.config.agentRole,
+          status: agent.getState().status,
+        },
+      });
       return;
     }
 
@@ -640,7 +905,10 @@ export class APIServer {
         const messageText = body['message'] as string;
         const targetAgent = this.orgService.getAgentManager().getAgent(agentId!);
         const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
-        const reply = await targetAgent.handleMessage(messageText, fromAgentId, { name: fromAgent.config.name, role: fromAgent.config.agentRole ?? 'worker' });
+        const reply = await targetAgent.handleMessage(messageText, fromAgentId, {
+          name: fromAgent.config.name,
+          role: fromAgent.config.agentRole ?? 'worker',
+        });
         this.json(res, 200, { from: fromAgentId, to: agentId, reply });
         return;
       }
@@ -654,7 +922,7 @@ export class APIServer {
 
         if (stream) {
           const userText = body['text'] as string;
-          
+
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -665,7 +933,7 @@ export class APIServer {
             persistUserMessage: this.persistUserMessage.bind(this),
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
           });
-          
+
           await sseHandler.handle(res);
         } else {
           const userText = body['text'] as string;
@@ -673,7 +941,12 @@ export class APIServer {
           const reply = await agent.handleMessage(userText, senderId, senderInfo);
           this.ws.broadcastChat(agentId!, reply, 'agent');
           this.json(res, 200, { reply });
-          void this.persistAssistantMessage(userMsgPersisted, agentId!, reply, agent.getState().tokensUsedToday);
+          void this.persistAssistantMessage(
+            userMsgPersisted,
+            agentId!,
+            reply,
+            agent.getState().tokensUsedToday
+          );
         }
 
         this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
@@ -703,15 +976,18 @@ export class APIServer {
       // Also include custom group chats stored in localStorage-style metadata
       const customChats = this.customGroupChats.filter(c => c.orgId === orgId);
       this.json(res, 200, {
-        chats: [...groupChats, ...customChats.map(c => ({
-          id: c.id,
-          name: c.name,
-          type: 'custom' as const,
-          creatorId: c.creatorId,
-          creatorName: c.creatorName,
-          memberCount: c.memberIds?.length ?? 0,
-          channelKey: c.id,
-        }))],
+        chats: [
+          ...groupChats,
+          ...customChats.map(c => ({
+            id: c.id,
+            name: c.name,
+            type: 'custom' as const,
+            creatorId: c.creatorId,
+            creatorName: c.creatorName,
+            memberCount: c.memberIds?.length ?? 0,
+            channelKey: c.id,
+          })),
+        ],
       });
       return;
     }
@@ -723,16 +999,29 @@ export class APIServer {
       const creatorId = body['creatorId'] as string;
       const creatorName = body['creatorName'] as string;
       const memberIds = body['memberIds'] as string[] | undefined;
-      if (!name) { this.json(res, 400, { error: 'name is required' }); return; }
+      if (!name) {
+        this.json(res, 400, { error: 'name is required' });
+        return;
+      }
       const chatId = `group:custom:${Date.now().toString(36)}`;
-      const chat = { id: chatId, name, orgId, creatorId, creatorName, memberIds: memberIds ?? [], createdAt: new Date().toISOString() };
+      const chat = {
+        id: chatId,
+        name,
+        orgId,
+        creatorId,
+        creatorName,
+        memberIds: memberIds ?? [],
+        createdAt: new Date().toISOString(),
+      };
       this.customGroupChats.push(chat);
       this.ws?.broadcast({
         type: 'chat:group_created',
         payload: { chatId, name, creatorId, creatorName },
         timestamp: new Date().toISOString(),
       });
-      this.json(res, 201, { chat: { id: chatId, name, type: 'custom', creatorId, creatorName, channelKey: chatId } });
+      this.json(res, 201, {
+        chat: { id: chatId, name, type: 'custom', creatorId, creatorName, channelKey: chatId },
+      });
       return;
     }
 
@@ -749,13 +1038,32 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (authUser.role !== 'owner' && authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
       }
       const body = await this.readBody(req);
       const orgId = (body['orgId'] as string) ?? authUser.orgId ?? 'default';
       const name = body['name'] as string;
-      if (!name) { this.json(res, 400, { error: 'name is required' }); return; }
-      const team = await this.orgService.createTeam(orgId, name, body['description'] as string | undefined);
+      if (!name) {
+        this.json(res, 400, { error: 'name is required' });
+        return;
+      }
+      const team = await this.orgService.createTeam(
+        orgId,
+        name,
+        body['description'] as string | undefined
+      );
+      // Notify Chat page so the new team appears as a group chat
+      this.ws?.broadcast({
+        type: 'chat:group_created',
+        payload: {
+          chatId: `group:${team.id}`,
+          name: team.name,
+          creatorId: authUser.userId,
+          creatorName: '',
+        },
+        timestamp: new Date().toISOString(),
+      });
       this.json(res, 201, { team });
       return;
     }
@@ -764,7 +1072,8 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (authUser.role !== 'owner' && authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
       }
       const teamId = path.split('/')[3]!;
       const body = await this.readBody(req);
@@ -782,7 +1091,8 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (authUser.role !== 'owner' && authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
       }
       const teamId = path.split('/')[3]!;
       await this.orgService.deleteTeam(teamId);
@@ -794,13 +1104,17 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (authUser.role !== 'owner' && authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
       }
       const teamId = path.split('/')[3]!;
       const body = await this.readBody(req);
       const memberId = body['memberId'] as string;
       const memberType = body['memberType'] as 'human' | 'agent';
-      if (!memberId || !memberType) { this.json(res, 400, { error: 'memberId and memberType are required' }); return; }
+      if (!memberId || !memberType) {
+        this.json(res, 400, { error: 'memberId and memberType are required' });
+        return;
+      }
       this.orgService.addMemberToTeam(teamId, memberId, memberType);
       this.json(res, 200, { ok: true });
       return;
@@ -810,7 +1124,8 @@ export class APIServer {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       if (authUser.role !== 'owner' && authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Insufficient permissions' }); return;
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
       }
       const parts = path.split('/');
       const teamId = parts[3]!;
@@ -826,7 +1141,12 @@ export class APIServer {
       const roles = roleNames.map(name => {
         try {
           const details = this.orgService.getRoleDetails(name);
-          return { id: name, name, description: details.description ?? '', category: details.category ?? 'custom' };
+          return {
+            id: name,
+            name,
+            description: details.description ?? '',
+            category: details.category ?? 'custom',
+          };
         } catch {
           return { id: name, name, description: '', category: 'custom' };
         }
@@ -862,7 +1182,10 @@ export class APIServer {
     if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
       const task = this.taskService.getTask(taskId);
-      if (!task) { this.json(res, 404, { error: `Task not found: ${taskId}` }); return; }
+      if (!task) {
+        this.json(res, 404, { error: `Task not found: ${taskId}` });
+        return;
+      }
       this.json(res, 200, { task });
       return;
     }
@@ -902,7 +1225,11 @@ export class APIServer {
       }
 
       // General field update (title/description/priority)
-      if (body['title'] !== undefined || body['description'] !== undefined || body['priority'] !== undefined) {
+      if (
+        body['title'] !== undefined ||
+        body['description'] !== undefined ||
+        body['priority'] !== undefined
+      ) {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
           description: body['description'] as string | undefined,
@@ -935,7 +1262,10 @@ export class APIServer {
       const body = await this.readBody(req);
       const parentId = path.split('/')[3]!;
       const parent = this.taskService.getTask(parentId);
-      if (!parent) { this.json(res, 404, { error: 'Parent task not found' }); return; }
+      if (!parent) {
+        this.json(res, 404, { error: 'Parent task not found' });
+        return;
+      }
       const subtask = this.taskService.createTask({
         orgId: parent.orgId,
         title: body['title'] as string,
@@ -978,7 +1308,10 @@ export class APIServer {
     // Task execution logs
     if (path.match(/^\/api\/tasks\/[^/]+\/logs$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
-      if (!this.storage) { this.json(res, 200, { logs: [] }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { logs: [] });
+        return;
+      }
       try {
         const logs = await this.storage.taskLogRepo.getByTask(taskId);
         this.json(res, 200, { logs });
@@ -997,7 +1330,10 @@ export class APIServer {
 
     if (path === '/api/orgs' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const org = await this.orgService.createOrganization(body['name'] as string, (body['ownerId'] as string) ?? 'default');
+      const org = await this.orgService.createOrganization(
+        body['name'] as string,
+        (body['ownerId'] as string) ?? 'default'
+      );
       this.json(res, 201, { org });
       return;
     }
@@ -1030,7 +1366,8 @@ export class APIServer {
           const lc = body['llmConfig'] as Record<string, unknown>;
           cfg.llmConfig = { ...(cfg.llmConfig as Record<string, unknown>), ...lc };
         }
-        if (body['heartbeatIntervalMs'] !== undefined) cfg.heartbeatIntervalMs = body['heartbeatIntervalMs'];
+        if (body['heartbeatIntervalMs'] !== undefined)
+          cfg.heartbeatIntervalMs = body['heartbeatIntervalMs'];
         this.json(res, 200, { ok: true, config: agent.config });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -1050,8 +1387,23 @@ export class APIServer {
         const recentDailyLogs = mem.getRecentDailyLogs(7);
         const longTermMemory = mem.getLongTermMemory();
         this.json(res, 200, {
-          entries: entries.map(e => ({ type: e.type, content: e.content.slice(0, 500), timestamp: e.timestamp, importance: (e as unknown as Record<string, unknown>).importance })),
-          sessions: sessions.map(s => ({ id: s.id, agentId: s.agentId, messageCount: s.messages.length, createdAt: (s as unknown as Record<string, unknown>).createdAt as string ?? new Date().toISOString(), updatedAt: (s as unknown as Record<string, unknown>).updatedAt as string ?? new Date().toISOString() })),
+          entries: entries.map(e => ({
+            type: e.type,
+            content: e.content.slice(0, 500),
+            timestamp: e.timestamp,
+            importance: (e as unknown as Record<string, unknown>).importance,
+          })),
+          sessions: sessions.map(s => ({
+            id: s.id,
+            agentId: s.agentId,
+            messageCount: s.messages.length,
+            createdAt:
+              ((s as unknown as Record<string, unknown>).createdAt as string) ??
+              new Date().toISOString(),
+            updatedAt:
+              ((s as unknown as Record<string, unknown>).updatedAt as string) ??
+              new Date().toISOString(),
+          })),
           dailyLog: dailyLog?.slice(0, 2000) ?? null,
           recentDailyLogs: recentDailyLogs?.slice(0, 5000) ?? null,
           longTermMemory: longTermMemory?.slice(0, 3000) ?? null,
@@ -1068,7 +1420,7 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
-        const content = body['content'] as string ?? '';
+        const content = (body['content'] as string) ?? '';
         agent.getMemory().writeDailyLog(agentId, content);
         this.json(res, 200, { ok: true });
       } catch {
@@ -1083,8 +1435,8 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
-        const key = body['key'] as string ?? '';
-        const content = body['content'] as string ?? '';
+        const key = (body['key'] as string) ?? '';
+        const content = (body['content'] as string) ?? '';
         agent.getMemory().addLongTermMemory(key, content);
         this.json(res, 200, { ok: true });
       } catch {
@@ -1136,7 +1488,7 @@ export class APIServer {
           return;
         }
         const body = await this.readBody(req);
-        const content = body['content'] as string ?? '';
+        const content = (body['content'] as string) ?? '';
         writeFileSync(join(roleDir, filename), content, 'utf-8');
         this.json(res, 200, { ok: true });
       } catch {
@@ -1151,7 +1503,7 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
-        const systemPrompt = body['systemPrompt'] as string ?? '';
+        const systemPrompt = (body['systemPrompt'] as string) ?? '';
         (agent.role as { systemPrompt: string }).systemPrompt = systemPrompt;
         this.json(res, 200, { ok: true });
       } catch {
@@ -1166,7 +1518,7 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
-        const skillName = body['skillName'] as string ?? '';
+        const skillName = (body['skillName'] as string) ?? '';
         if (skillName && !agent.config.skills.includes(skillName)) {
           agent.config.skills.push(skillName);
         }
@@ -1200,7 +1552,7 @@ export class APIServer {
       try {
         this.orgService.getAgentManager().getAgent(agentId);
         const body = await this.readBody(req);
-        const enabled = body['enabled'] as boolean ?? true;
+        const enabled = (body['enabled'] as boolean) ?? true;
         void toolName;
         void enabled;
         this.json(res, 200, { ok: true });
@@ -1215,8 +1567,13 @@ export class APIServer {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const hb = (agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }).heartbeat;
-        this.json(res, 200, { running: hb.isRunning(), ...(hb.getHealthMetrics() as Record<string, unknown>) });
+        const hb = (
+          agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }
+        ).heartbeat;
+        this.json(res, 200, {
+          running: hb.isRunning(),
+          ...(hb.getHealthMetrics() as Record<string, unknown>),
+        });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -1229,11 +1586,25 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const state = agent.getState();
-        const tools = (agent as unknown as { tools: Map<string, { name: string; description: string }> }).tools;
-        const toolList = [...tools.values()].map(t => ({ name: t.name, description: t.description }));
-        const hb = (agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }).heartbeat;
+        const tools = (
+          agent as unknown as { tools: Map<string, { name: string; description: string }> }
+        ).tools;
+        const toolList = [...tools.values()].map(t => ({
+          name: t.name,
+          description: t.description,
+        }));
+        const hb = (
+          agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }
+        ).heartbeat;
         let heartbeatSummary: Record<string, unknown> = {};
-        try { heartbeatSummary = { running: hb.isRunning(), ...(hb.getHealthMetrics() as Record<string, unknown>) }; } catch { /* ok */ }
+        try {
+          heartbeatSummary = {
+            running: hb.isRunning(),
+            ...(hb.getHealthMetrics() as Record<string, unknown>),
+          };
+        } catch {
+          /* ok */
+        }
         this.json(res, 200, {
           id: agent.id,
           name: agent.config.name,
@@ -1265,7 +1636,10 @@ export class APIServer {
 
     // ── Review Service ─────────────────────────────────────────────────────
     if (path === '/api/reviews' && req.method === 'POST') {
-      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      if (!this.reviewService) {
+        this.json(res, 503, { error: 'Review service not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       const report = await this.reviewService.runReview({
         taskId: body['taskId'] as string | undefined,
@@ -1278,7 +1652,10 @@ export class APIServer {
     }
 
     if (path === '/api/reviews' && req.method === 'GET') {
-      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      if (!this.reviewService) {
+        this.json(res, 503, { error: 'Review service not configured' });
+        return;
+      }
       const taskId = url.searchParams.get('taskId');
       const limit = parseInt(url.searchParams.get('limit') ?? '20', 10);
       const reports = taskId
@@ -1289,17 +1666,26 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/reviews\/[^/]+$/) && req.method === 'GET') {
-      if (!this.reviewService) { this.json(res, 503, { error: 'Review service not configured' }); return; }
+      if (!this.reviewService) {
+        this.json(res, 503, { error: 'Review service not configured' });
+        return;
+      }
       const reviewId = path.split('/')[3]!;
       const report = this.reviewService.getReport(reviewId);
-      if (!report) { this.json(res, 404, { error: 'Review not found' }); return; }
+      if (!report) {
+        this.json(res, 404, { error: 'Review not found' });
+        return;
+      }
       this.json(res, 200, report);
       return;
     }
 
     // ── External Agent Gateway ──────────────────────────────────────────────
     if (path === '/api/gateway/register' && req.method === 'POST') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       try {
         const reg = await this.gateway.register({
@@ -1311,14 +1697,20 @@ export class APIServer {
         });
         this.json(res, 201, reg);
       } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
         this.json(res, 500, { error: String(err) });
       }
       return;
     }
 
     if (path === '/api/gateway/auth' && req.method === 'POST') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       try {
         const result = this.gateway.authenticate({
@@ -1328,16 +1720,25 @@ export class APIServer {
         });
         this.json(res, 200, result);
       } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
         this.json(res, 500, { error: String(err) });
       }
       return;
     }
 
     if (path === '/api/gateway/message' && req.method === 'POST') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) {
+        this.json(res, 401, { error: 'Missing Bearer token' });
+        return;
+      }
       try {
         const token = this.gateway.verifyToken(authHeader.slice(7));
         const body = await this.readBody(req);
@@ -1348,22 +1749,34 @@ export class APIServer {
         });
         this.json(res, 200, result);
       } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
         this.json(res, 500, { error: String(err) });
       }
       return;
     }
 
     if (path === '/api/gateway/status' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
       const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      if (!authHeader?.startsWith('Bearer ')) {
+        this.json(res, 401, { error: 'Missing Bearer token' });
+        return;
+      }
       try {
         const token = this.gateway.verifyToken(authHeader.slice(7));
         const status = this.gateway.getStatus(token);
         this.json(res, 200, status);
       } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
         this.json(res, 500, { error: String(err) });
       }
       return;
@@ -1404,7 +1817,11 @@ export class APIServer {
 
       // Add to team if specified
       if (teamId) {
-        try { this.orgService.addMemberToTeam(teamId, userId, 'human'); } catch { /* ok */ }
+        try {
+          this.orgService.addMemberToTeam(teamId, userId, 'human');
+        } catch {
+          /* ok */
+        }
       }
 
       this.json(res, 201, { user });
@@ -1441,65 +1858,104 @@ export class APIServer {
       const stream = body['stream'] as boolean | undefined;
       if (stream) {
         const userText = body['text'] as string;
-        
+
         // Persist user message to smart channel before LLM call so it's never lost
         if (this.storage) {
-          void this.storage.channelMessageRepo.append({
-            orgId: targetOrgId, channel: 'smart:default',
-            senderId: senderId ?? 'anonymous', senderType: 'human',
-            senderName: senderInfo?.name ?? 'You', text: userText, mentions: [],
-          }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+          void this.storage.channelMessageRepo
+            .append({
+              orgId: targetOrgId,
+              channel: 'smart:default',
+              senderId: senderId ?? 'anonymous',
+              senderType: 'human',
+              senderName: senderInfo?.name ?? 'You',
+              text: userText,
+              mentions: [],
+            })
+            .catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
-        
+
         const sseHandler = new SSEHandler({
           agentId: targetAgentId,
           agent,
           userText,
           senderId,
           senderInfo,
-          onTextDelta: (_text) => {
+          onTextDelta: _text => {
             // Smart channels don't need WebSocket broadcast
           },
-          onToolEvent: (_event) => {
+          onToolEvent: _event => {
             // Tool event handling hook
           },
           onComplete: async (reply, segments, tokensUsed) => {
             // 持久化助手消息
             const smartMeta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, smartMeta);
-            
+            void this.persistChatTurn(
+              targetAgentId,
+              userText,
+              reply,
+              senderId,
+              tokensUsed,
+              smartMeta
+            );
+
             // Persist agent reply to smart channel
             if (this.storage) {
-              void this.storage.channelMessageRepo.append({
-                orgId: targetOrgId, channel: 'smart:default',
-                senderId: targetAgentId, senderType: 'agent',
-                senderName: agent.config.name, text: reply, mentions: [],
-              }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+              void this.storage.channelMessageRepo
+                .append({
+                  orgId: targetOrgId,
+                  channel: 'smart:default',
+                  senderId: targetAgentId,
+                  senderType: 'agent',
+                  senderName: agent.config.name,
+                  text: reply,
+                  mentions: [],
+                })
+                .catch(err =>
+                  log.warn('Failed to persist smart agent reply', { error: String(err) })
+                );
             }
           },
         });
-        
+
         await sseHandler.handle(res);
       } else {
         const userText = body['text'] as string;
         // Persist user message before LLM call
         if (this.storage) {
-          void this.storage.channelMessageRepo.append({
-            orgId: targetOrgId, channel: 'smart:default',
-            senderId: senderId ?? 'anonymous', senderType: 'human',
-            senderName: senderInfo?.name ?? 'You', text: userText, mentions: [],
-          }).catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+          void this.storage.channelMessageRepo
+            .append({
+              orgId: targetOrgId,
+              channel: 'smart:default',
+              senderId: senderId ?? 'anonymous',
+              senderType: 'human',
+              senderName: senderInfo?.name ?? 'You',
+              text: userText,
+              mentions: [],
+            })
+            .catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
         const reply = await agent.handleMessage(userText, senderId, senderInfo);
         this.json(res, 200, { reply, agentId: targetAgentId });
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday);
+        void this.persistChatTurn(
+          targetAgentId,
+          userText,
+          reply,
+          senderId,
+          agent.getState().tokensUsedToday
+        );
         // Persist agent reply to smart channel
         if (this.storage) {
-          void this.storage.channelMessageRepo.append({
-            orgId: targetOrgId, channel: 'smart:default',
-            senderId: targetAgentId, senderType: 'agent',
-            senderName: agent.config.name, text: reply, mentions: [],
-          }).catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+          void this.storage.channelMessageRepo
+            .append({
+              orgId: targetOrgId,
+              channel: 'smart:default',
+              senderId: targetAgentId,
+              senderType: 'agent',
+              senderName: agent.config.name,
+              text: reply,
+              mentions: [],
+            })
+            .catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
         }
       }
       this.ws.broadcastAgentUpdate(targetAgentId, agent.getState().status);
@@ -1515,12 +1971,19 @@ export class APIServer {
 
     if (path.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
       const skillName = decodeURIComponent(path.split('/')[3]!);
-      if (!this.skillRegistry) { this.json(res, 404, { error: 'Skill registry not configured' }); return; }
+      if (!this.skillRegistry) {
+        this.json(res, 404, { error: 'Skill registry not configured' });
+        return;
+      }
       const skill = this.skillRegistry.get(skillName);
-      if (!skill) { this.json(res, 404, { error: `Skill not found: ${skillName}` }); return; }
+      if (!skill) {
+        this.json(res, 404, { error: `Skill not found: ${skillName}` });
+        return;
+      }
       const manifest = skill.manifest;
       const toolDetails = skill.tools.map(t => ({
-        name: t.name, description: t.description,
+        name: t.name,
+        description: t.description,
         inputSchema: (t as unknown as { inputSchema?: unknown }).inputSchema,
       }));
       this.json(res, 200, { skill: { ...manifest, toolDetails } });
@@ -1529,22 +1992,36 @@ export class APIServer {
 
     // Agent Templates
     if (path === '/api/templates' && req.method === 'GET') {
-      if (!this.templateRegistry) { this.json(res, 200, { templates: [] }); return; }
-      const source = url.searchParams.get('source') as 'official' | 'community' | 'custom' | undefined;
+      if (!this.templateRegistry) {
+        this.json(res, 200, { templates: [] });
+        return;
+      }
+      const source = url.searchParams.get('source') as
+        | 'official'
+        | 'community'
+        | 'custom'
+        | undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const text = url.searchParams.get('q') ?? undefined;
-      const result = (source || category || text)
-        ? this.templateRegistry.search({ source: source ?? undefined, category, text })
-        : { templates: this.templateRegistry.list(), total: this.templateRegistry.list().length };
+      const result =
+        source || category || text
+          ? this.templateRegistry.search({ source: source ?? undefined, category, text })
+          : { templates: this.templateRegistry.list(), total: this.templateRegistry.list().length };
       this.json(res, 200, result);
       return;
     }
 
     if (path.match(/^\/api\/templates\/[^/]+$/) && req.method === 'GET') {
-      if (!this.templateRegistry) { this.json(res, 404, { error: 'Template registry not configured' }); return; }
+      if (!this.templateRegistry) {
+        this.json(res, 404, { error: 'Template registry not configured' });
+        return;
+      }
       const templateId = path.split('/')[3]!;
       const template = this.templateRegistry.get(templateId);
-      if (!template) { this.json(res, 404, { error: `Template not found: ${templateId}` }); return; }
+      if (!template) {
+        this.json(res, 404, { error: `Template not found: ${templateId}` });
+        return;
+      }
       this.json(res, 200, { template });
       return;
     }
@@ -1556,11 +2033,17 @@ export class APIServer {
       const orgId = (body['orgId'] as string) ?? 'default';
       const teamId = body['teamId'] as string | undefined;
       const agentRole = body['agentRole'] as 'manager' | 'worker' | undefined;
-      if (!templateId || !name) { this.json(res, 400, { error: 'templateId and name are required' }); return; }
+      if (!templateId || !name) {
+        this.json(res, 400, { error: 'templateId and name are required' });
+        return;
+      }
       try {
         const agentManager = this.orgService.getAgentManager();
         const agent = await agentManager.createAgentFromTemplate({
-          templateId, name, orgId, teamId,
+          templateId,
+          name,
+          orgId,
+          teamId,
           overrides: body['overrides'] as Record<string, unknown> | undefined,
         });
         if (agentRole) agent.config.agentRole = agentRole;
@@ -1591,7 +2074,13 @@ export class APIServer {
 
         await agentManager.startAgent(agent.id);
         this.json(res, 201, {
-          agent: { id: agent.id, name: agent.config.name, role: agent.role.name, agentRole: agent.config.agentRole, status: agent.getState().status },
+          agent: {
+            id: agent.id,
+            name: agent.config.name,
+            role: agent.role.name,
+            agentRole: agent.config.agentRole,
+            status: agent.getState().status,
+          },
         });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -1601,14 +2090,20 @@ export class APIServer {
 
     // ── External Agents ─────────────────────────────────────────────────────
     if (path === '/api/external-agents' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 200, { agents: [] }); return; }
+      if (!this.gateway) {
+        this.json(res, 200, { agents: [] });
+        return;
+      }
       const orgId = url.searchParams.get('orgId') ?? 'default';
       this.json(res, 200, { agents: this.gateway.listRegistrations(orgId) });
       return;
     }
 
     if (path === '/api/external-agents/register' && req.method === 'POST') {
-      if (!this.gateway) { this.json(res, 503, { error: 'External agent gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'External agent gateway not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       try {
         const reg = await this.gateway.register({
@@ -1627,7 +2122,10 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/external-agents\/[^/]+$/) && req.method === 'DELETE') {
-      if (!this.gateway) { this.json(res, 503, { error: 'External agent gateway not configured' }); return; }
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'External agent gateway not configured' });
+        return;
+      }
       const externalId = path.split('/')[3]!;
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const deleted = this.gateway.unregister(externalId, orgId);
@@ -1637,8 +2135,15 @@ export class APIServer {
 
     // ── Marketplace: Templates ────────────────────────────────────────────────
     if (path === '/api/marketplace/templates' && req.method === 'GET') {
-      if (!this.storage) { this.json(res, 200, { templates: [], total: 0 }); return; }
-      const source = url.searchParams.get('source') as 'official' | 'community' | 'custom' | undefined;
+      if (!this.storage) {
+        this.json(res, 200, { templates: [], total: 0 });
+        return;
+      }
+      const source = url.searchParams.get('source') as
+        | 'official'
+        | 'community'
+        | 'custom'
+        | undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const q = url.searchParams.get('q');
       const status = url.searchParams.get('status') ?? 'published';
@@ -1646,14 +2151,27 @@ export class APIServer {
       const offset = Number(url.searchParams.get('offset') ?? 0);
 
       const templates = q
-        ? await this.storage.marketplaceTemplateRepo.search(q, { source: source ?? undefined, category, limit })
-        : await this.storage.marketplaceTemplateRepo.list({ source: source ?? undefined, status, category, limit, offset });
+        ? await this.storage.marketplaceTemplateRepo.search(q, {
+            source: source ?? undefined,
+            category,
+            limit,
+          })
+        : await this.storage.marketplaceTemplateRepo.list({
+            source: source ?? undefined,
+            status,
+            category,
+            limit,
+            offset,
+          });
       this.json(res, 200, { templates, total: templates.length });
       return;
     }
 
     if (path === '/api/marketplace/templates' && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       const id = generateId('mkt-tpl');
       const template = await this.storage.marketplaceTemplateRepo.create({
@@ -1673,26 +2191,41 @@ export class APIServer {
         category: body['category'] as string,
         icon: body['icon'] as string | undefined,
         heartbeatIntervalMs: body['heartbeatIntervalMs'] as number | undefined,
-        starterTasks: body['starterTasks'] as Array<{ title: string; description: string; priority: string }> | undefined,
+        starterTasks: body['starterTasks'] as
+          | Array<{ title: string; description: string; priority: string }>
+          | undefined,
         config: body['config'] as Record<string, unknown> | undefined,
       });
       this.json(res, 201, { template });
       return;
     }
 
-    if (path.match(/^\/api\/marketplace\/templates\/[^/]+$/) && !path.includes('/rate') && !path.includes('/reviews')) {
+    if (
+      path.match(/^\/api\/marketplace\/templates\/[^/]+$/) &&
+      !path.includes('/rate') &&
+      !path.includes('/reviews')
+    ) {
       const templateId = path.split('/')[4]!;
 
       if (req.method === 'GET') {
-        if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+        if (!this.storage) {
+          this.json(res, 503, { error: 'Database not configured' });
+          return;
+        }
         const template = await this.storage.marketplaceTemplateRepo.findById(templateId);
-        if (!template) { this.json(res, 404, { error: 'Template not found' }); return; }
+        if (!template) {
+          this.json(res, 404, { error: 'Template not found' });
+          return;
+        }
         this.json(res, 200, { template });
         return;
       }
 
       if (req.method === 'PUT') {
-        if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+        if (!this.storage) {
+          this.json(res, 503, { error: 'Database not configured' });
+          return;
+        }
         const body = await this.readBody(req);
         await this.storage.marketplaceTemplateRepo.update(templateId, {
           name: body['name'] as string | undefined,
@@ -1709,7 +2242,10 @@ export class APIServer {
       }
 
       if (req.method === 'DELETE') {
-        if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+        if (!this.storage) {
+          this.json(res, 503, { error: 'Database not configured' });
+          return;
+        }
         await this.storage.marketplaceTemplateRepo.delete(templateId);
         this.json(res, 200, { deleted: true });
         return;
@@ -1717,7 +2253,10 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/publish$/) && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const templateId = path.split('/')[4]!;
       await this.storage.marketplaceTemplateRepo.updateStatus(templateId, 'published');
       this.json(res, 200, { published: true });
@@ -1725,10 +2264,16 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/install$/) && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const templateId = path.split('/')[4]!;
       const mktTemplate = await this.storage.marketplaceTemplateRepo.findById(templateId);
-      if (!mktTemplate) { this.json(res, 404, { error: 'Template not found' }); return; }
+      if (!mktTemplate) {
+        this.json(res, 404, { error: 'Template not found' });
+        return;
+      }
 
       await this.storage.marketplaceTemplateRepo.incrementDownloads(templateId);
 
@@ -1745,9 +2290,18 @@ export class APIServer {
           skills: mktTemplate.skills,
           llmProvider: mktTemplate.llmProvider ?? undefined,
           tags: mktTemplate.tags,
-          category: mktTemplate.category as 'development' | 'devops' | 'productivity' | 'management' | 'general',
+          category: mktTemplate.category as
+            | 'development'
+            | 'devops'
+            | 'productivity'
+            | 'management'
+            | 'general',
           heartbeatIntervalMs: mktTemplate.heartbeatIntervalMs ?? undefined,
-          starterTasks: mktTemplate.starterTasks as Array<{ title: string; description: string; priority: 'low' | 'medium' | 'high' }>,
+          starterTasks: mktTemplate.starterTasks as Array<{
+            title: string;
+            description: string;
+            priority: 'low' | 'medium' | 'high';
+          }>,
           icon: mktTemplate.icon ?? undefined,
         });
       }
@@ -1757,10 +2311,16 @@ export class APIServer {
 
     // ── Marketplace: Template Fork ──────────────────────────────────────────
     if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/fork$/) && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const templateId = path.split('/')[4]!;
       const original = await this.storage.marketplaceTemplateRepo.findById(templateId);
-      if (!original) { this.json(res, 404, { error: 'Template not found' }); return; }
+      if (!original) {
+        this.json(res, 404, { error: 'Template not found' });
+        return;
+      }
       const body = await this.readBody(req);
       const forkId = generateId('mkt-tpl');
       const forked = await this.storage.marketplaceTemplateRepo.create({
@@ -1780,24 +2340,40 @@ export class APIServer {
         category: original.category,
         icon: original.icon ?? undefined,
         heartbeatIntervalMs: original.heartbeatIntervalMs ?? undefined,
-        starterTasks: original.starterTasks as Array<{ title: string; description: string; priority: string }> | undefined,
+        starterTasks: original.starterTasks as
+          | Array<{ title: string; description: string; priority: string }>
+          | undefined,
         config: { ...((original.config ?? {}) as Record<string, unknown>), forkedFrom: templateId },
       });
       // Increment fork count on original (best-effort via raw SQL)
       try {
-        const db = (this.storage as unknown as { db: { execute: (q: unknown) => Promise<unknown> } }).db;
+        const db = (
+          this.storage as unknown as { db: { execute: (q: unknown) => Promise<unknown> } }
+        ).db;
         if (db?.execute) {
-          await db.execute({ sql: `UPDATE marketplace_templates SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = $1`, params: [templateId] });
+          await db.execute({
+            sql: `UPDATE marketplace_templates SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = $1`,
+            params: [templateId],
+          });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       this.json(res, 201, { template: forked, forkedFrom: templateId });
       return;
     }
 
     // ── Marketplace: Skills ──────────────────────────────────────────────────
     if (path === '/api/marketplace/skills' && req.method === 'GET') {
-      if (!this.storage) { this.json(res, 200, { skills: [], total: 0 }); return; }
-      const source = url.searchParams.get('source') as 'official' | 'community' | 'custom' | undefined;
+      if (!this.storage) {
+        this.json(res, 200, { skills: [], total: 0 });
+        return;
+      }
+      const source = url.searchParams.get('source') as
+        | 'official'
+        | 'community'
+        | 'custom'
+        | undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const q = url.searchParams.get('q');
       const status = url.searchParams.get('status') ?? 'published';
@@ -1805,14 +2381,27 @@ export class APIServer {
       const offset = Number(url.searchParams.get('offset') ?? 0);
 
       const skills = q
-        ? await this.storage.marketplaceSkillRepo.search(q, { source: source ?? undefined, category, limit })
-        : await this.storage.marketplaceSkillRepo.list({ source: source ?? undefined, status, category, limit, offset });
+        ? await this.storage.marketplaceSkillRepo.search(q, {
+            source: source ?? undefined,
+            category,
+            limit,
+          })
+        : await this.storage.marketplaceSkillRepo.list({
+            source: source ?? undefined,
+            status,
+            category,
+            limit,
+            offset,
+          });
       this.json(res, 200, { skills, total: skills.length });
       return;
     }
 
     if (path === '/api/marketplace/skills' && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       const id = generateId('mkt-skill');
       const skill = await this.storage.marketplaceSkillRepo.create({
@@ -1836,16 +2425,25 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/marketplace\/skills\/[^/]+$/) && req.method === 'GET') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const skillId = path.split('/')[4]!;
       const skill = await this.storage.marketplaceSkillRepo.findById(skillId);
-      if (!skill) { this.json(res, 404, { error: 'Skill not found' }); return; }
+      if (!skill) {
+        this.json(res, 404, { error: 'Skill not found' });
+        return;
+      }
       this.json(res, 200, { skill });
       return;
     }
 
     if (path.match(/^\/api\/marketplace\/skills\/[^/]+\/publish$/) && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const skillId = path.split('/')[4]!;
       await this.storage.marketplaceSkillRepo.updateStatus(skillId, 'published');
       this.json(res, 200, { published: true });
@@ -1853,7 +2451,10 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/marketplace\/skills\/[^/]+\/install$/) && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const skillId = path.split('/')[4]!;
       await this.storage.marketplaceSkillRepo.incrementDownloads(skillId);
       this.json(res, 200, { installed: true, skillId });
@@ -1862,7 +2463,10 @@ export class APIServer {
 
     // ── Marketplace: Ratings ──────────────────────────────────────────────────
     if (path === '/api/marketplace/ratings' && req.method === 'POST') {
-      if (!this.storage) { this.json(res, 503, { error: 'Database not configured' }); return; }
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Database not configured' });
+        return;
+      }
       const body = await this.readBody(req);
       const targetType = body['targetType'] as 'template' | 'skill';
       const targetId = body['targetId'] as string;
@@ -1875,12 +2479,23 @@ export class APIServer {
         return;
       }
 
-      const existing = await this.storage.marketplaceRatingRepo.findUserRating(userId, targetType, targetId);
+      const existing = await this.storage.marketplaceRatingRepo.findUserRating(
+        userId,
+        targetType,
+        targetId
+      );
       if (existing) {
         await this.storage.marketplaceRatingRepo.update(existing.id, { rating, review });
       } else {
         const id = generateId('rating');
-        await this.storage.marketplaceRatingRepo.create({ id, targetType, targetId, userId, rating, review });
+        await this.storage.marketplaceRatingRepo.create({
+          id,
+          targetType,
+          targetId,
+          userId,
+          rating,
+          review,
+        });
       }
 
       const agg = await this.storage.marketplaceRatingRepo.getAggregation(targetType, targetId);
@@ -1894,7 +2509,10 @@ export class APIServer {
     }
 
     if (path.match(/^\/api\/marketplace\/ratings\/[^/]+$/) && req.method === 'GET') {
-      if (!this.storage) { this.json(res, 200, { ratings: [] }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { ratings: [] });
+        return;
+      }
       const targetId = path.split('/')[4]!;
       const targetType = (url.searchParams.get('type') as 'template' | 'skill') ?? 'template';
       const ratings = await this.storage.marketplaceRatingRepo.findByTarget(targetType, targetId);
@@ -1905,7 +2523,10 @@ export class APIServer {
 
     // ── Marketplace: Stats ────────────────────────────────────────────────────
     if (path === '/api/marketplace/stats' && req.method === 'GET') {
-      if (!this.storage) { this.json(res, 200, { templates: {}, skills: {} }); return; }
+      if (!this.storage) {
+        this.json(res, 200, { templates: {}, skills: {} });
+        return;
+      }
       const templateCounts = await this.storage.marketplaceTemplateRepo.countBySource();
       this.json(res, 200, { templates: templateCounts });
       return;
@@ -1913,17 +2534,26 @@ export class APIServer {
 
     // HITL: Approvals
     if (path === '/api/approvals' && req.method === 'GET') {
-      const status = url.searchParams.get('status') as 'pending' | 'approved' | 'rejected' | undefined;
-      this.json(res, 200, { approvals: this.hitlService?.listApprovals(status ?? undefined) ?? [] });
+      const status = url.searchParams.get('status') as
+        | 'pending'
+        | 'approved'
+        | 'rejected'
+        | undefined;
+      this.json(res, 200, {
+        approvals: this.hitlService?.listApprovals(status ?? undefined) ?? [],
+      });
       return;
     }
 
     if (path === '/api/approvals' && req.method === 'POST') {
-      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      if (!this.hitlService) {
+        this.json(res, 503, { error: 'HITL service not available' });
+        return;
+      }
       const body = await this.readBody(req);
       const approval = this.hitlService.requestApproval({
         agentId: body['agentId'] as string,
-        agentName: body['agentName'] as string ?? 'Agent',
+        agentName: (body['agentName'] as string) ?? 'Agent',
         type: (body['type'] as 'action' | 'custom') ?? 'custom',
         title: body['title'] as string,
         description: body['description'] as string,
@@ -1935,11 +2565,21 @@ export class APIServer {
     }
 
     if (path.startsWith('/api/approvals/') && req.method === 'POST') {
-      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      if (!this.hitlService) {
+        this.json(res, 503, { error: 'HITL service not available' });
+        return;
+      }
       const approvalId = path.split('/')[3]!;
       const body = await this.readBody(req);
-      const result = this.hitlService.respondToApproval(approvalId, body['approved'] as boolean, (body['respondedBy'] as string) ?? 'default');
-      if (!result) { this.json(res, 404, { error: 'Approval not found or not pending' }); return; }
+      const result = this.hitlService.respondToApproval(
+        approvalId,
+        body['approved'] as boolean,
+        (body['respondedBy'] as string) ?? 'default'
+      );
+      if (!result) {
+        this.json(res, 404, { error: 'Approval not found or not pending' });
+        return;
+      }
       this.json(res, 200, { approval: result });
       return;
     }
@@ -1952,11 +2592,14 @@ export class APIServer {
     }
 
     if (path === '/api/bounties' && req.method === 'POST') {
-      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      if (!this.hitlService) {
+        this.json(res, 503, { error: 'HITL service not available' });
+        return;
+      }
       const body = await this.readBody(req);
       const bounty = this.hitlService.postBounty({
         agentId: body['agentId'] as string,
-        agentName: body['agentName'] as string ?? 'Agent',
+        agentName: (body['agentName'] as string) ?? 'Agent',
         title: body['title'] as string,
         description: body['description'] as string,
         skills: body['skills'] as string[],
@@ -1967,17 +2610,26 @@ export class APIServer {
     }
 
     if (path.startsWith('/api/bounties/') && req.method === 'POST') {
-      if (!this.hitlService) { this.json(res, 503, { error: 'HITL service not available' }); return; }
+      if (!this.hitlService) {
+        this.json(res, 503, { error: 'HITL service not available' });
+        return;
+      }
       const bountyId = path.split('/')[3]!;
       const body = await this.readBody(req);
       const action = body['action'] as string;
       if (action === 'claim') {
         const result = this.hitlService.claimBounty(bountyId, body['userId'] as string);
-        if (!result) { this.json(res, 404, { error: 'Bounty not found or not open' }); return; }
+        if (!result) {
+          this.json(res, 404, { error: 'Bounty not found or not open' });
+          return;
+        }
         this.json(res, 200, { bounty: result });
       } else if (action === 'complete') {
         const result = this.hitlService.completeBounty(bountyId, body['result'] as string);
-        if (!result) { this.json(res, 404, { error: 'Bounty not found or not claimed' }); return; }
+        if (!result) {
+          this.json(res, 404, { error: 'Bounty not found or not claimed' });
+          return;
+        }
         this.json(res, 200, { bounty: result });
       } else {
         this.json(res, 400, { error: 'Unknown action. Use claim or complete' });
@@ -1989,7 +2641,9 @@ export class APIServer {
     if (path === '/api/notifications' && req.method === 'GET') {
       const userId = url.searchParams.get('userId') ?? undefined;
       const unread = url.searchParams.get('unread') === 'true';
-      this.json(res, 200, { notifications: this.hitlService?.listNotifications(userId, unread) ?? [] });
+      this.json(res, 200, {
+        notifications: this.hitlService?.listNotifications(userId, unread) ?? [],
+      });
       return;
     }
 
@@ -2041,7 +2695,9 @@ export class APIServer {
         try {
           const agent = this.orgService.getAgentManager().getAgent(au.agentId);
           au.tokensUsedToday = agent.getTokensUsedToday();
-        } catch { /* agent offline */ }
+        } catch {
+          /* agent offline */
+        }
       }
 
       this.json(res, 200, { agents: agentUsage });
@@ -2056,13 +2712,16 @@ export class APIServer {
     }
 
     if (path === '/api/keys' && req.method === 'POST') {
-      if (!this.billingService) { this.json(res, 503, { error: 'Billing service not available' }); return; }
+      if (!this.billingService) {
+        this.json(res, 503, { error: 'Billing service not available' });
+        return;
+      }
       const body = await this.readBody(req);
       const key = this.billingService.createAPIKey(
         (body['orgId'] as string) ?? 'default',
-        body['name'] as string ?? 'Default Key',
+        (body['name'] as string) ?? 'Default Key',
         body['scopes'] as string[],
-        body['expiresInDays'] as number | undefined,
+        body['expiresInDays'] as number | undefined
       );
       this.json(res, 201, { key });
       return;
@@ -2083,11 +2742,14 @@ export class APIServer {
     }
 
     if (path === '/api/plan' && req.method === 'POST') {
-      if (!this.billingService) { this.json(res, 503, { error: 'Billing service not available' }); return; }
+      if (!this.billingService) {
+        this.json(res, 503, { error: 'Billing service not available' });
+        return;
+      }
       const body = await this.readBody(req);
       const plan = this.billingService.setOrgPlan(
         (body['orgId'] as string) ?? 'default',
-        (body['tier'] as 'free' | 'pro' | 'enterprise') ?? 'free',
+        (body['tier'] as 'free' | 'pro' | 'enterprise') ?? 'free'
       );
       this.json(res, 200, { plan });
       return;
@@ -2110,7 +2772,10 @@ export class APIServer {
 
     // Audit log
     if (path === '/api/audit' && req.method === 'GET') {
-      if (!this.auditService) { this.json(res, 200, { entries: [] }); return; }
+      if (!this.auditService) {
+        this.json(res, 200, { entries: [] });
+        return;
+      }
       const entries = this.auditService.query({
         orgId: url.searchParams.get('orgId') ?? 'default',
         agentId: url.searchParams.get('agentId') ?? undefined,
@@ -2123,7 +2788,10 @@ export class APIServer {
     }
 
     if (path === '/api/audit/summary' && req.method === 'GET') {
-      if (!this.auditService) { this.json(res, 200, { summary: null }); return; }
+      if (!this.auditService) {
+        this.json(res, 200, { summary: null });
+        return;
+      }
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const summary = this.auditService.summary(orgId);
       this.json(res, 200, { summary });
@@ -2131,10 +2799,13 @@ export class APIServer {
     }
 
     if (path === '/api/audit/tokens' && req.method === 'GET') {
-      if (!this.auditService) { this.json(res, 200, { usage: [] }); return; }
+      if (!this.auditService) {
+        this.json(res, 200, { usage: [] });
+        return;
+      }
       const usage = this.auditService.getTokenUsage(
         url.searchParams.get('orgId') ?? undefined,
-        url.searchParams.get('agentId') ?? undefined,
+        url.searchParams.get('agentId') ?? undefined
       );
       this.json(res, 200, { usage });
       return;
@@ -2153,10 +2824,16 @@ export class APIServer {
     if (path === '/api/settings/llm' && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
-      if (!this.llmRouter) { this.json(res, 503, { error: 'LLM router not available' }); return; }
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
       const body = await this.readBody(req);
       const { defaultProvider } = body as { defaultProvider?: string };
-      if (!defaultProvider) { this.json(res, 400, { error: 'defaultProvider is required' }); return; }
+      if (!defaultProvider) {
+        this.json(res, 400, { error: 'defaultProvider is required' });
+        return;
+      }
       try {
         this.llmRouter.setDefaultProvider(defaultProvider);
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
@@ -2167,7 +2844,10 @@ export class APIServer {
     }
 
     if (path === '/api/settings/llm/models' && req.method === 'GET') {
-      if (!this.llmRouter) { this.json(res, 200, { models: [] }); return; }
+      if (!this.llmRouter) {
+        this.json(res, 200, { models: [] });
+        return;
+      }
       this.json(res, 200, { models: this.llmRouter.getModelCatalog() });
       return;
     }
@@ -2175,11 +2855,21 @@ export class APIServer {
     if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+$/) && req.method === 'PATCH') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
-      if (!this.llmRouter) { this.json(res, 503, { error: 'LLM router not available' }); return; }
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
       const providerName = path.split('/')[5]!;
       const body = await this.readBody(req);
       try {
-        this.llmRouter.updateProviderModelConfig(providerName, body as { contextWindow?: number; maxOutputTokens?: number; cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number } });
+        this.llmRouter.updateProviderModelConfig(
+          providerName,
+          body as {
+            contextWindow?: number;
+            maxOutputTokens?: number;
+            cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+          }
+        );
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2193,7 +2883,11 @@ export class APIServer {
       if (!auth) return;
       const body = await this.readBody(req);
       const sections = (body.sections as string[]) ?? ['llm', 'teams', 'agents', 'templates'];
-      const exportData: Record<string, unknown> = { version: '1.0', exportedAt: new Date().toISOString(), sections: {} };
+      const exportData: Record<string, unknown> = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        sections: {},
+      };
       const sectionData = exportData.sections as Record<string, unknown>;
       if (sections.includes('llm') && this.llmRouter) {
         sectionData.llm = this.llmRouter.getEnhancedSettings();
@@ -2204,7 +2898,12 @@ export class APIServer {
       }
       if (sections.includes('agents')) {
         const agents = this.orgService.getAgentManager().listAgents();
-        sectionData.agents = agents.map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
+        sectionData.agents = agents.map(a => ({
+          id: a.id,
+          name: a.name,
+          role: a.role,
+          status: a.status,
+        }));
       }
       this.json(res, 200, exportData);
       return;
@@ -2216,7 +2915,10 @@ export class APIServer {
       if (!auth) return;
       const body = await this.readBody(req);
       const { data, preview } = body as { data: Record<string, unknown>; preview?: boolean };
-      if (!data || !data.sections) { this.json(res, 400, { error: 'Invalid import data: missing sections' }); return; }
+      if (!data || !data.sections) {
+        this.json(res, 400, { error: 'Invalid import data: missing sections' });
+        return;
+      }
       const sections = data.sections as Record<string, unknown>;
       const available = Object.keys(sections);
       if (preview) {
@@ -2224,7 +2926,10 @@ export class APIServer {
         if (sections.llm) {
           const llm = sections.llm as Record<string, unknown>;
           const provCount = llm.providers ? Object.keys(llm.providers as object).length : 0;
-          summary.llm = { count: provCount, items: llm.providers ? Object.keys(llm.providers as object) : [] };
+          summary.llm = {
+            count: provCount,
+            items: llm.providers ? Object.keys(llm.providers as object) : [],
+          };
         }
         if (sections.teams) {
           const teams = sections.teams as Array<{ name: string }>;
@@ -2240,11 +2945,25 @@ export class APIServer {
       // Apply import
       const applied: string[] = [];
       if (sections.llm && this.llmRouter) {
-        const llm = sections.llm as { defaultProvider?: string; providers?: Record<string, { cost?: { input: number; output: number }; contextWindow?: number; maxOutputTokens?: number }> };
+        const llm = sections.llm as {
+          defaultProvider?: string;
+          providers?: Record<
+            string,
+            {
+              cost?: { input: number; output: number };
+              contextWindow?: number;
+              maxOutputTokens?: number;
+            }
+          >;
+        };
         if (llm.providers) {
           for (const [name, cfg] of Object.entries(llm.providers)) {
             if (cfg.cost || cfg.contextWindow || cfg.maxOutputTokens) {
-              this.llmRouter.updateProviderModelConfig(name, { cost: cfg.cost, contextWindow: cfg.contextWindow, maxOutputTokens: cfg.maxOutputTokens });
+              this.llmRouter.updateProviderModelConfig(name, {
+                cost: cfg.cost,
+                contextWindow: cfg.contextWindow,
+                maxOutputTokens: cfg.maxOutputTokens,
+              });
             }
           }
         }
@@ -2277,7 +2996,11 @@ export class APIServer {
       let found = '';
       let rawContent = '';
       for (const p of possiblePaths) {
-        if (fsExists(p)) { found = p; rawContent = fsRead(p, 'utf-8'); break; }
+        if (fsExists(p)) {
+          found = p;
+          rawContent = fsRead(p, 'utf-8');
+          break;
+        }
       }
 
       if (!found) {
@@ -2286,22 +3009,45 @@ export class APIServer {
       }
 
       try {
-        const cleaned = rawContent.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*([\]}])/g, '$1');
+        const cleaned = rawContent
+          .replace(/\/\/.*$/gm, '')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/,\s*([\]}])/g, '$1');
         const parsed = JSON.parse(cleaned) as Record<string, unknown>;
 
-        const modelsSection = parsed.models as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id: string; name: string; cost?: { input: number; output: number }; contextWindow?: number; maxTokens?: number }> }> } | undefined;
+        const modelsSection = parsed.models as
+          | {
+              providers?: Record<
+                string,
+                {
+                  baseUrl?: string;
+                  models?: Array<{
+                    id: string;
+                    name: string;
+                    cost?: { input: number; output: number };
+                    contextWindow?: number;
+                    maxTokens?: number;
+                  }>;
+                }
+              >;
+            }
+          | undefined;
         const channelsSection = parsed.channels as Record<string, unknown> | undefined;
 
         if (preview) {
           const summary: Record<string, unknown> = { configPath: found };
           if (modelsSection?.providers) {
             const provs = Object.entries(modelsSection.providers).map(([name, cfg]) => ({
-              name, modelCount: cfg.models?.length ?? 0, baseUrl: cfg.baseUrl,
+              name,
+              modelCount: cfg.models?.length ?? 0,
+              baseUrl: cfg.baseUrl,
             }));
             summary.models = { providerCount: provs.length, providers: provs };
           }
           if (channelsSection) {
-            summary.channels = Object.keys(channelsSection).filter(k => k !== 'defaults' && k !== 'modelByChannel');
+            summary.channels = Object.keys(channelsSection).filter(
+              k => k !== 'defaults' && k !== 'modelByChannel'
+            );
           }
           this.json(res, 200, { found: true, summary });
           return;
@@ -2315,7 +3061,9 @@ export class APIServer {
               for (const m of cfg.models) {
                 if (m.cost || m.contextWindow || m.maxTokens) {
                   this.llmRouter.updateProviderModelConfig(name, {
-                    cost: m.cost, contextWindow: m.contextWindow, maxOutputTokens: m.maxTokens,
+                    cost: m.cost,
+                    contextWindow: m.contextWindow,
+                    maxOutputTokens: m.maxTokens,
                   });
                   appliedModels++;
                 }
@@ -2332,10 +3080,17 @@ export class APIServer {
 
     // ── Workflow Engine ────────────────────────────────────────────────────
     if (path === '/api/workflows' && req.method === 'GET') {
-      if (!this.workflowEngine) { this.json(res, 200, { executions: [] }); return; }
+      if (!this.workflowEngine) {
+        this.json(res, 200, { executions: [] });
+        return;
+      }
       const executions = this.workflowEngine.listExecutions().map(e => ({
-        id: e.id, workflowId: e.workflowId, status: e.status,
-        startedAt: e.startedAt, completedAt: e.completedAt, error: e.error,
+        id: e.id,
+        workflowId: e.workflowId,
+        status: e.status,
+        startedAt: e.startedAt,
+        completedAt: e.completedAt,
+        error: e.error,
         stepCount: e.steps.size,
       }));
       this.json(res, 200, { executions });
@@ -2354,11 +3109,13 @@ export class APIServer {
       try {
         const execution = await this.workflowEngine!.start(
           body['workflow'] as WorkflowDefinition,
-          (body['inputs'] as Record<string, unknown>) ?? {},
+          (body['inputs'] as Record<string, unknown>) ?? {}
         );
         this.json(res, 201, {
-          executionId: execution.id, status: execution.status,
-          outputs: execution.outputs, error: execution.error,
+          executionId: execution.id,
+          status: execution.status,
+          outputs: execution.outputs,
+          error: execution.error,
         });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2367,14 +3124,24 @@ export class APIServer {
     }
 
     if (path.startsWith('/api/workflows/') && req.method === 'GET') {
-      if (!this.workflowEngine) { this.json(res, 404, { error: 'No workflow engine' }); return; }
+      if (!this.workflowEngine) {
+        this.json(res, 404, { error: 'No workflow engine' });
+        return;
+      }
       const executionId = path.split('/')[3]!;
       const execution = this.workflowEngine.getExecution(executionId);
-      if (!execution) { this.json(res, 404, { error: 'Execution not found' }); return; }
+      if (!execution) {
+        this.json(res, 404, { error: 'Execution not found' });
+        return;
+      }
       const steps = [...execution.steps.entries()].map(([id, s]) => ({
-        id, status: s.status, agentId: s.agentId,
-        startedAt: s.startedAt, completedAt: s.completedAt,
-        error: s.error, retryCount: s.retryCount,
+        id,
+        status: s.status,
+        agentId: s.agentId,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt,
+        error: s.error,
+        retryCount: s.retryCount,
         output: s.output,
       }));
       this.json(res, 200, { execution: { ...execution, steps } });
@@ -2382,7 +3149,10 @@ export class APIServer {
     }
 
     if (path.startsWith('/api/workflows/') && req.method === 'DELETE') {
-      if (!this.workflowEngine) { this.json(res, 404, { error: 'No workflow engine' }); return; }
+      if (!this.workflowEngine) {
+        this.json(res, 404, { error: 'No workflow engine' });
+        return;
+      }
       const executionId = path.split('/')[3]!;
       const cancelled = this.workflowEngine.cancel(executionId);
       this.json(res, 200, { cancelled });
@@ -2401,7 +3171,21 @@ export class APIServer {
 
     if (path === '/api/team-templates' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const tpl = body as unknown as { id: string; name: string; description: string; version: string; author: string; members: Array<{ templateId: string; name?: string; count?: number; role?: 'manager' | 'worker' }>; tags?: string[]; category?: string };
+      const tpl = body as unknown as {
+        id: string;
+        name: string;
+        description: string;
+        version: string;
+        author: string;
+        members: Array<{
+          templateId: string;
+          name?: string;
+          count?: number;
+          role?: 'manager' | 'worker';
+        }>;
+        tags?: string[];
+        category?: string;
+      };
       if (!tpl.name || !tpl.members?.length) {
         this.json(res, 400, { error: 'name and members are required' });
         return;
@@ -2417,7 +3201,10 @@ export class APIServer {
     if (path.startsWith('/api/team-templates/') && req.method === 'GET') {
       const id = path.split('/')[3]!;
       const tpl = this.teamTemplateRegistry.get(id);
-      if (!tpl) { this.json(res, 404, { error: 'Team template not found' }); return; }
+      if (!tpl) {
+        this.json(res, 404, { error: 'Team template not found' });
+        return;
+      }
       this.json(res, 200, { template: tpl });
       return;
     }
@@ -2434,7 +3221,9 @@ export class APIServer {
     if (path === '/api/prompts' && req.method === 'GET') {
       const category = url.searchParams.get('category') ?? undefined;
       const q = url.searchParams.get('q');
-      const prompts = q ? this.promptStudio.searchPrompts(q) : this.promptStudio.listPrompts(category);
+      const prompts = q
+        ? this.promptStudio.searchPrompts(q)
+        : this.promptStudio.listPrompts(category);
       this.json(res, 200, { prompts });
       return;
     }
@@ -2444,12 +3233,23 @@ export class APIServer {
       if (!auth) return;
       const body = await this.readBody(req);
       const { name, description, category, content, tags } = body as {
-        name: string; description: string; category: string; content: string; tags?: string[];
+        name: string;
+        description: string;
+        category: string;
+        content: string;
+        tags?: string[];
       };
-      if (!name || !content) { this.json(res, 400, { error: 'name and content are required' }); return; }
+      if (!name || !content) {
+        this.json(res, 400, { error: 'name and content are required' });
+        return;
+      }
       const prompt = this.promptStudio.createPrompt({
-        name, description: description ?? '', category: category ?? 'general',
-        content, author: auth.userId ?? 'user', tags,
+        name,
+        description: description ?? '',
+        category: category ?? 'general',
+        content,
+        author: auth.userId ?? 'user',
+        tags,
       });
       this.json(res, 201, { prompt });
       return;
@@ -2458,7 +3258,10 @@ export class APIServer {
     if (path.match(/^\/api\/prompts\/[^/]+$/) && req.method === 'GET') {
       const promptId = path.split('/')[3]!;
       const prompt = this.promptStudio.getPrompt(promptId);
-      if (!prompt) { this.json(res, 404, { error: 'Prompt not found' }); return; }
+      if (!prompt) {
+        this.json(res, 404, { error: 'Prompt not found' });
+        return;
+      }
       this.json(res, 200, { prompt });
       return;
     }
@@ -2476,9 +3279,17 @@ export class APIServer {
       const promptId = path.split('/')[3]!;
       const body = await this.readBody(req);
       const { content, changelog } = body as { content: string; changelog?: string };
-      if (!content) { this.json(res, 400, { error: 'content is required' }); return; }
+      if (!content) {
+        this.json(res, 400, { error: 'content is required' });
+        return;
+      }
       try {
-        const version = this.promptStudio.updatePrompt(promptId, content, auth.userId ?? 'user', changelog);
+        const version = this.promptStudio.updatePrompt(
+          promptId,
+          content,
+          auth.userId ?? 'user',
+          changelog
+        );
         this.json(res, 201, { version });
       } catch (err) {
         this.json(res, 404, { error: String(err) });
@@ -2489,7 +3300,10 @@ export class APIServer {
     if (path.match(/^\/api\/prompts\/[^/]+\/render$/) && req.method === 'POST') {
       const promptId = path.split('/')[3]!;
       const body = await this.readBody(req);
-      const { variables, version } = body as { variables?: Record<string, string>; version?: number };
+      const { variables, version } = body as {
+        variables?: Record<string, string>;
+        version?: number;
+      };
       try {
         const rendered = this.promptStudio.renderPrompt(promptId, variables ?? {}, version);
         this.json(res, 200, { rendered });
@@ -2512,10 +3326,20 @@ export class APIServer {
       if (!auth) return;
       const body = await this.readBody(req);
       const { name, promptId, variantA, variantB, splitRatio } = body as {
-        name: string; promptId: string; variantA: number; variantB: number; splitRatio?: number;
+        name: string;
+        promptId: string;
+        variantA: number;
+        variantB: number;
+        splitRatio?: number;
       };
       try {
-        const test = this.promptStudio.createABTest({ name, promptId, variantA, variantB, splitRatio });
+        const test = this.promptStudio.createABTest({
+          name,
+          promptId,
+          variantA,
+          variantB,
+          splitRatio,
+        });
         this.json(res, 201, { test });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2533,7 +3357,10 @@ export class APIServer {
     if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/complete$/) && req.method === 'POST') {
       const testId = path.split('/')[4]!;
       const result = this.promptStudio.completeABTest(testId);
-      if (!result) { this.json(res, 404, { error: 'Test not found or not running' }); return; }
+      if (!result) {
+        this.json(res, 404, { error: 'Test not found or not running' });
+        return;
+      }
       this.json(res, 200, { test: result });
       return;
     }
@@ -2550,7 +3377,10 @@ export class APIServer {
     if (path.match(/^\/api\/prompts\/ab-tests\/[^/]+\/results$/) && req.method === 'GET') {
       const testId = path.split('/')[4]!;
       const results = this.promptStudio.getABTestResults(testId);
-      if (!results) { this.json(res, 404, { error: 'Test not found' }); return; }
+      if (!results) {
+        this.json(res, 404, { error: 'Test not found' });
+        return;
+      }
       this.json(res, 200, results);
       return;
     }
@@ -2558,7 +3388,9 @@ export class APIServer {
     // Evaluations
     if (path.match(/^\/api\/prompts\/[^/]+\/evaluations$/) && req.method === 'GET') {
       const promptId = path.split('/')[3]!;
-      const version = url.searchParams.get('version') ? parseInt(url.searchParams.get('version')!, 10) : undefined;
+      const version = url.searchParams.get('version')
+        ? parseInt(url.searchParams.get('version')!, 10)
+        : undefined;
       const evaluations = this.promptStudio.getEvaluations(promptId, version);
       this.json(res, 200, { evaluations });
       return;
@@ -2570,7 +3402,9 @@ export class APIServer {
       const promptId = path.split('/')[3]!;
       const body = await this.readBody(req);
       const { version, testInput, variables } = body as {
-        version: number; testInput: string; variables?: Record<string, string>;
+        version: number;
+        testInput: string;
+        variables?: Record<string, string>;
       };
       if (!testInput || version === undefined) {
         this.json(res, 400, { error: 'version and testInput are required' });
@@ -2584,7 +3418,11 @@ export class APIServer {
             const startMs = Date.now();
             const response = await this.llmRouter!.chat({
               messages: [
-                { role: 'system', content: 'You are a helpful assistant. Respond to the prompt accurately and concisely.' },
+                {
+                  role: 'system',
+                  content:
+                    'You are a helpful assistant. Respond to the prompt accurately and concisely.',
+                },
                 { role: 'user', content: prompt },
               ],
             });
@@ -2599,7 +3437,11 @@ export class APIServer {
 
       try {
         const result = await this.promptStudio.evaluate(
-          promptId, version, testInput, variables ?? {}, auth.userId ?? 'user',
+          promptId,
+          version,
+          testInput,
+          variables ?? {},
+          auth.userId ?? 'user'
         );
         this.json(res, 200, { evaluation: result });
       } catch (err) {
@@ -2619,8 +3461,13 @@ export class APIServer {
 
     if (path.match(/^\/api\/prompts\/[^/]+\/evaluation-summary$/) && req.method === 'GET') {
       const promptId = path.split('/')[3]!;
-      const version = url.searchParams.get('version') ? parseInt(url.searchParams.get('version')!, 10) : undefined;
-      if (version === undefined) { this.json(res, 400, { error: 'version query param is required' }); return; }
+      const version = url.searchParams.get('version')
+        ? parseInt(url.searchParams.get('version')!, 10)
+        : undefined;
+      if (version === undefined) {
+        this.json(res, 400, { error: 'version query param is required' });
+        return;
+      }
       const summary = this.promptStudio.getEvaluationSummary(promptId, version);
       this.json(res, 200, { summary });
       return;
@@ -2645,52 +3492,56 @@ export class APIServer {
     // Agent efficiency ranking with health scores
     const agentManager = this.orgService.getAgentManager();
     const allAgents = agentManager.listAgents();
-    const agentRanking = allAgents.map(a => {
-      try {
-        const agent = agentManager.getAgent(a.id);
-        const metrics = agent.getMetrics(period);
-        return {
-          agentId: a.id,
-          agentName: a.name,
-          role: a.role,
-          agentRole: a.agentRole,
-          status: a.status,
-          healthScore: metrics.healthScore,
-          tokenUsage: metrics.tokenUsage,
-          taskMetrics: metrics.taskMetrics,
-          averageResponseTimeMs: metrics.averageResponseTimeMs,
-          errorRate: metrics.errorRate,
-          totalInteractions: metrics.totalInteractions,
-        };
-      } catch {
-        return {
-          agentId: a.id,
-          agentName: a.name,
-          role: a.role,
-          agentRole: a.agentRole,
-          status: a.status,
-          healthScore: 0,
-          tokenUsage: { input: 0, output: 0, cost: 0 },
-          taskMetrics: { completed: 0, failed: 0, cancelled: 0, averageCompletionTimeMs: 0 },
-          averageResponseTimeMs: 0,
-          errorRate: 0,
-          totalInteractions: 0,
-        };
-      }
-    }).sort((a, b) => b.healthScore - a.healthScore);
+    const agentRanking = allAgents
+      .map(a => {
+        try {
+          const agent = agentManager.getAgent(a.id);
+          const metrics = agent.getMetrics(period);
+          return {
+            agentId: a.id,
+            agentName: a.name,
+            role: a.role,
+            agentRole: a.agentRole,
+            status: a.status,
+            healthScore: metrics.healthScore,
+            tokenUsage: metrics.tokenUsage,
+            taskMetrics: metrics.taskMetrics,
+            averageResponseTimeMs: metrics.averageResponseTimeMs,
+            errorRate: metrics.errorRate,
+            totalInteractions: metrics.totalInteractions,
+          };
+        } catch {
+          return {
+            agentId: a.id,
+            agentName: a.name,
+            role: a.role,
+            agentRole: a.agentRole,
+            status: a.status,
+            healthScore: 0,
+            tokenUsage: { input: 0, output: 0, cost: 0 },
+            taskMetrics: { completed: 0, failed: 0, cancelled: 0, averageCompletionTimeMs: 0 },
+            averageResponseTimeMs: 0,
+            errorRate: 0,
+            totalInteractions: 0,
+          };
+        }
+      })
+      .sort((a, b) => b.healthScore - a.healthScore);
 
     // System health summary
     const healthScores = agentRanking.map(a => a.healthScore);
-    const avgHealth = healthScores.length > 0
-      ? Math.round(healthScores.reduce((s, h) => s + h, 0) / healthScores.length)
-      : 0;
+    const avgHealth =
+      healthScores.length > 0
+        ? Math.round(healthScores.reduce((s, h) => s + h, 0) / healthScores.length)
+        : 0;
     const criticalAgents = agentRanking.filter(a => a.healthScore < 50);
     const totalTokenCost = agentRanking.reduce((s, a) => s + a.tokenUsage.cost, 0);
     const totalInteractions = agentRanking.reduce((s, a) => s + a.totalInteractions, 0);
 
-    const taskSuccessRate = taskDashboard.totalTasks > 0
-      ? Math.round((taskDashboard.statusCounts.completed / taskDashboard.totalTasks) * 100)
-      : 0;
+    const taskSuccessRate =
+      taskDashboard.totalTasks > 0
+        ? Math.round((taskDashboard.statusCounts.completed / taskDashboard.totalTasks) * 100)
+        : 0;
 
     const blockedTasks = taskDashboard.statusCounts.blocked ?? 0;
 
@@ -2701,7 +3552,11 @@ export class APIServer {
         overallScore: avgHealth,
         activeAgents: allAgents.filter(a => a.status !== 'offline').length,
         totalAgents: allAgents.length,
-        criticalAgents: criticalAgents.map(a => ({ id: a.agentId, name: a.agentName, score: a.healthScore })),
+        criticalAgents: criticalAgents.map(a => ({
+          id: a.agentId,
+          name: a.agentName,
+          score: a.healthScore,
+        })),
         totalTokenCost: Math.round(totalTokenCost * 10000) / 10000,
         totalInteractions,
       },
@@ -2738,7 +3593,10 @@ export class APIServer {
   }
 
   /** Resolve the role directory path for an agent. Uses roleId, normalized role name, or matching by display name. */
-  private resolveAgentRoleDir(agent: { config: { roleId?: string }; role: { name: string } }): string | null {
+  private resolveAgentRoleDir(agent: {
+    config: { roleId?: string };
+    role: { name: string };
+  }): string | null {
     const base = join(process.cwd(), 'templates', 'roles');
     if (!existsSync(base)) return null;
 

@@ -1017,12 +1017,13 @@ export class SqliteUserRepo {
     email?: string;
     role?: string;
     teamId?: string;
+    passwordHash?: string;
   }) {
     this.db
       .prepare(
-        `INSERT INTO users (id, org_id, name, email, role, team_id, created_at)
-       VALUES (?,?,?,?,?,?,?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, email = excluded.email, role = excluded.role, team_id = excluded.team_id`
+        `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, created_at)
+       VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, email = excluded.email, role = excluded.role, team_id = excluded.team_id, password_hash = COALESCE(excluded.password_hash, password_hash)`
       )
       .run(
         data.id,
@@ -1031,6 +1032,7 @@ export class SqliteUserRepo {
         data.email ?? null,
         data.role ?? 'member',
         data.teamId ?? null,
+        data.passwordHash ?? null,
         now()
       );
   }

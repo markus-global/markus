@@ -1,6 +1,16 @@
-import type { Organization, Team, TeamInfo, TeamMemberInfo, RoleTemplate, HumanUser, HumanRole } from '@markus/shared';
-import { createLogger, orgId, generateId } from '@markus/shared';
-import { AgentManager, RoleLoader, type CreateAgentRequest } from '@markus/core';
+import {
+  createLogger,
+  orgId,
+  generateId,
+  type Organization,
+  type Team,
+  type TeamInfo,
+  type TeamMemberInfo,
+  type RoleTemplate,
+  type HumanUser,
+  type HumanRole,
+} from '@markus/shared';
+import { RoleLoader, type AgentManager, type CreateAgentRequest } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
 
 const log = createLogger('org-service');
@@ -21,7 +31,12 @@ export class OrganizationService {
 
   // ─── Human User Management ───
 
-  addHumanUser(orgId: string, name: string, role: HumanRole, opts?: { id?: string; email?: string }): HumanUser {
+  addHumanUser(
+    orgId: string,
+    name: string,
+    role: HumanRole,
+    opts?: { id?: string; email?: string }
+  ): HumanUser {
     const org = this.orgs.get(orgId);
     if (!org) throw new Error(`Organization not found: ${orgId}`);
 
@@ -39,9 +54,11 @@ export class OrganizationService {
     // Only persist users with an email address to DB — emailless users are synthetic
     // in-memory sentinels (e.g. the default 'Owner') and must not pollute auth user count.
     if (this.storage && opts?.email) {
-      this.storage.userRepo.upsert({ id: user.id, orgId, name, email: opts.email, role }).catch((error) => {
-        log.warn('Failed to persist user to DB', { error: String(error) });
-      });
+      this.storage.userRepo
+        .upsert({ id: user.id, orgId, name, email: opts.email, role })
+        .catch(error => {
+          log.warn('Failed to persist user to DB', { error: String(error) });
+        });
     }
 
     log.info(`Human user added: ${name} (${role})`, { orgId, userId: user.id });
@@ -63,7 +80,7 @@ export class OrganizationService {
       this.refreshIdentityContextsForOrg(user.orgId);
 
       if (this.storage) {
-        this.storage.userRepo.delete(userId).catch((error) => {
+        this.storage.userRepo.delete(userId).catch(error => {
           log.warn('Failed to delete user from DB', { error: String(error) });
         });
       }
@@ -85,7 +102,10 @@ export class OrganizationService {
    * Given a message, determine which agent should handle it.
    * Priority: explicit @mention > channel binding > manager fallback
    */
-  routeMessage(orgId: string, opts: { targetAgentId?: string; channelId?: string; text?: string }): string | undefined {
+  routeMessage(
+    orgId: string,
+    opts: { targetAgentId?: string; channelId?: string; text?: string }
+  ): string | undefined {
     if (opts.targetAgentId) return opts.targetAgentId;
 
     const org = this.orgs.get(orgId);
@@ -97,12 +117,18 @@ export class OrganizationService {
       try {
         const agent = this.agentManager.getAgent(a.id);
         return agent.config.orgId === orgId;
-      } catch { return false; }
+      } catch {
+        return false;
+      }
     });
     return agents[0]?.id;
   }
 
-  async createOrganization(name: string, ownerId: string, explicitId?: string): Promise<Organization> {
+  async createOrganization(
+    name: string,
+    ownerId: string,
+    explicitId?: string
+  ): Promise<Organization> {
     const id = explicitId ?? orgId();
     const org: Organization = {
       id,
@@ -165,13 +191,22 @@ export class OrganizationService {
     return team;
   }
 
-  async updateTeam(teamId: string, data: { name?: string; description?: string; managerId?: string | null; managerType?: 'human' | 'agent' | null }): Promise<Team> {
+  async updateTeam(
+    teamId: string,
+    data: {
+      name?: string;
+      description?: string;
+      managerId?: string | null;
+      managerType?: 'human' | 'agent' | null;
+    }
+  ): Promise<Team> {
     const team = this.teams.get(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
     if (data.name !== undefined) team.name = data.name;
     if (data.description !== undefined) team.description = data.description;
     if ('managerId' in data) team.managerId = data.managerId ?? undefined;
-    if ('managerType' in data) team.managerType = (data.managerType as 'human' | 'agent' | undefined) ?? undefined;
+    if ('managerType' in data)
+      team.managerType = (data.managerType as 'human' | 'agent' | undefined) ?? undefined;
 
     if (this.storage) {
       try {
@@ -197,10 +232,12 @@ export class OrganizationService {
       try {
         const agent = this.agentManager.getAgent(agentId);
         if (agent.config.teamId === teamId) agent.config.teamId = undefined;
-      } catch { /* agent may not exist */ }
+      } catch {
+        /* agent may not exist */
+      }
     }
     // Unassign all humans
-    for (const userId of (team.humanMemberIds ?? [])) {
+    for (const userId of team.humanMemberIds ?? []) {
       const user = this.humans.get(userId);
       if (user && user.teamId === teamId) user.teamId = undefined;
     }
@@ -225,7 +262,9 @@ export class OrganizationService {
       try {
         const agent = this.agentManager.getAgent(memberId);
         agent.config.teamId = teamId;
-      } catch { /* agent may not exist */ }
+      } catch {
+        /* agent may not exist */
+      }
     } else {
       if (!team.humanMemberIds) team.humanMemberIds = [];
       if (!team.humanMemberIds.includes(memberId)) team.humanMemberIds.push(memberId);
@@ -233,7 +272,7 @@ export class OrganizationService {
       if (user) {
         user.teamId = teamId;
         if (this.storage) {
-          this.storage.userRepo.updateTeamId(memberId, teamId).catch((error) => {
+          this.storage.userRepo.updateTeamId(memberId, teamId).catch(error => {
             log.warn('Failed to update user teamId in DB', { error: String(error) });
           });
         }
@@ -254,12 +293,14 @@ export class OrganizationService {
     try {
       const agent = this.agentManager.getAgent(memberId);
       if (agent.config.teamId === teamId) agent.config.teamId = undefined;
-    } catch { /* ok */ }
+    } catch {
+      /* ok */
+    }
     const user = this.humans.get(memberId);
     if (user && user.teamId === teamId) {
       user.teamId = undefined;
       if (this.storage) {
-        this.storage.userRepo.updateTeamId(memberId, null).catch((error) => {
+        this.storage.userRepo.updateTeamId(memberId, null).catch(error => {
           log.warn('Failed to clear user teamId in DB', { error: String(error) });
         });
       }
@@ -285,10 +326,12 @@ export class OrganizationService {
             teamId: team.id,
             currentTaskId: state.activeTaskIds?.[0],
           });
-        } catch { /* skip removed agents */ }
+        } catch {
+          /* skip removed agents */
+        }
       }
 
-      for (const userId of (team.humanMemberIds ?? [])) {
+      for (const userId of team.humanMemberIds ?? []) {
         const user = this.humans.get(userId);
         if (user) {
           members.push({
@@ -304,7 +347,11 @@ export class OrganizationService {
       let managerName: string | undefined;
       if (team.managerId) {
         if (team.managerType === 'agent') {
-          try { managerName = this.agentManager.getAgent(team.managerId).config.name; } catch { /* ok */ }
+          try {
+            managerName = this.agentManager.getAgent(team.managerId).config.name;
+          } catch {
+            /* ok */
+          }
         } else {
           managerName = this.humans.get(team.managerId)?.name;
         }
@@ -338,20 +385,28 @@ export class OrganizationService {
         if (!agentIdsInTeams.has(a.id)) {
           const state = agent.getState();
           ungrouped.push({
-            id: a.id, name: a.name, type: 'agent',
-            role: agent.role.name, agentRole: agent.config.agentRole ?? 'worker',
+            id: a.id,
+            name: a.name,
+            type: 'agent',
+            role: agent.role.name,
+            agentRole: agent.config.agentRole ?? 'worker',
             status: state.status,
             currentTaskId: state.activeTaskIds?.[0],
           });
         }
-      } catch { /* ok */ }
+      } catch {
+        /* ok */
+      }
     }
 
     for (const user of this.humans.values()) {
       if (user.orgId !== orgId) continue;
       if (!humanIdsInTeams.has(user.id)) {
         ungrouped.push({
-          id: user.id, name: user.name, type: 'human', role: user.role,
+          id: user.id,
+          name: user.name,
+          type: 'human',
+          role: user.role,
         });
       }
     }
@@ -364,7 +419,7 @@ export class OrganizationService {
   }
 
   listTeams(orgId: string): Team[] {
-    return [...this.teams.values()].filter((t) => t.orgId === orgId);
+    return [...this.teams.values()].filter(t => t.orgId === orgId);
   }
 
   async hireAgent(request: CreateAgentRequest & { orgId: string }) {
@@ -389,8 +444,8 @@ export class OrganizationService {
           name: agent.config.name,
           orgId: org.id,
           teamId: request.teamId,
-          roleId: agent.config.roleId,  // template folder name (e.g. 'developer')
-          roleName: agent.role.name,    // display name (e.g. 'Software Developer')
+          roleId: agent.config.roleId, // template folder name (e.g. 'developer')
+          roleName: agent.role.name, // display name (e.g. 'Software Developer')
           agentRole: agent.config.agentRole ?? 'worker',
           skills: agent.config.skills,
           llmConfig: agent.config.llmConfig,
@@ -418,7 +473,11 @@ export class OrganizationService {
     // Onboard = always online. Auto-start the agent immediately.
     try {
       await this.agentManager.startAgent(agent.id);
-      log.info(`Agent onboarded: ${request.name} (auto-started)`, { orgId: request.orgId, agentId: agent.id, agentRole: request.agentRole ?? 'worker' });
+      log.info(`Agent onboarded: ${request.name} (auto-started)`, {
+        orgId: request.orgId,
+        agentId: agent.id,
+        agentRole: request.agentRole ?? 'worker',
+      });
     } catch (error) {
       log.warn(`Agent created but auto-start failed: ${request.name}`, { error: String(error) });
     }
@@ -450,7 +509,7 @@ export class OrganizationService {
     }
 
     for (const team of this.teams.values()) {
-      team.memberAgentIds = team.memberAgentIds.filter((id) => id !== agentId);
+      team.memberAgentIds = team.memberAgentIds.filter(id => id !== agentId);
     }
 
     const orgIdToRefresh = agentInfo ? this.findAgentOrgId(agentId) : undefined;
@@ -563,12 +622,18 @@ export class OrganizationService {
       log.warn('Failed to restore agents from DB', { error: String(error) });
     }
 
-    // 3. Restore human users (skip default owner which is already seeded)
+    // 3. Restore human users (merge DB data into existing in-memory users)
     try {
       const userRows = await this.storage.userRepo.listByOrg(orgId);
       let restoredCount = 0;
       for (const row of userRows) {
-        if (this.humans.has(row.id)) continue; // already loaded (e.g. default owner)
+        const existing = this.humans.get(row.id);
+        if (existing) {
+          // Merge DB fields (e.g. email) into the existing in-memory user
+          if (row.email) existing.email = row.email;
+          if (row.teamId) existing.teamId = row.teamId;
+          continue;
+        }
         const user: HumanUser = {
           id: row.id,
           name: row.name,
@@ -612,7 +677,11 @@ export class OrganizationService {
 
     try {
       // Create the default team
-      const team = await this.createTeam(orgId, 'My Team', 'Your primary team — you and your personal AI Secretary.');
+      const team = await this.createTeam(
+        orgId,
+        'My Team',
+        'Your primary team — you and your personal AI Secretary.'
+      );
 
       // Add the owner as a human member
       const owner = this.humans.get(ownerUserId);

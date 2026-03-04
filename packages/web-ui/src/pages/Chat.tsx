@@ -30,8 +30,6 @@ interface ChatMsg {
 
 type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
 
-const DEFAULT_CHANNELS = ['#general', '#dev', '#support'];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
@@ -260,7 +258,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
-    () => initialAgentId ? 'direct' : ((localStorage.getItem('markus_chat_mode') as ChatMode | null) ?? 'smart')
+    () => initialAgentId ? 'direct' : ((localStorage.getItem('markus_chat_mode') as ChatMode | null) ?? 'direct')
   );
   const [selectedAgent, setSelectedAgent] = useState(
     () => initialAgentId ?? localStorage.getItem('markus_chat_agent') ?? ''
@@ -832,11 +830,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     chatMode === 'channel' ? (activeGroupChat ? `👥 ${activeGroupChat.name}` : activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? 'Select Agent') :
     chatMode === 'dm'      ? (isSelfDm ? '📝 My Notes' : `💬 ${activeDmUser?.name ?? 'Direct Message'}`) :
-    'Smart Route';
+    'Chat';
 
   const placeholder =
     chatMode === 'channel' ? (activeGroupChat ? `Message ${activeGroupChat.name}…` : `Message ${activeChannel}… (use @name to mention)`) :
-    chatMode === 'smart'   ? 'Message anyone — auto-routed to the right agent…' :
     chatMode === 'dm'      ? (isSelfDm ? 'Write a note to yourself…' : `Message ${activeDmUser?.name ?? ''}…`) :
     selectedAgent ? 'Type a message…' : 'Select an agent to start chatting';
 
@@ -845,36 +842,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     <div className="flex-1 overflow-hidden flex">
       {/* ── Left sidebar ── */}
       <div className="w-52 bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0">
-        <div className="p-3 border-b border-gray-800">
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">Chat</p>
-          {/* Mode buttons */}
-          <button
-            onClick={() => { setChatMode('smart'); setMessages([]); }}
-            className={`w-full text-left px-3 py-2 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
-              chatMode === 'smart' ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
-            }`}
-          >
-            <span>✦</span> Smart Route
-          </button>
-        </div>
-
-        {/* Channels */}
-        <div className="px-3 py-2 border-b border-gray-800">
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Channels</p>
-          {DEFAULT_CHANNELS.map(ch => (
-            <button
-              key={ch}
-              onClick={() => { setChatMode('channel'); setActiveChannel(ch); }}
-              className={`w-full text-left px-3 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                chatMode === 'channel' && activeChannel === ch
-                  ? 'bg-indigo-600/20 text-indigo-300'
-                  : 'text-gray-400 hover:bg-gray-800'
-              }`}
-            >
-              {ch}
-            </button>
-          ))}
-        </div>
 
         {/* Group Chats */}
         {groupChats.length > 0 && (
@@ -1041,7 +1008,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             </>
           )}
           {chatMode === 'smart' && (
-            <span className="text-xs text-gray-500">Messages are automatically routed to the right agent</span>
+            <span className="text-xs text-gray-500"></span>
           )}
         </div>
 
@@ -1062,10 +1029,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-gray-600 text-sm space-y-2">
               <div className="text-4xl opacity-20">
-                {chatMode === 'channel' ? '✉' : chatMode === 'smart' ? '✦' : '💬'}
+                {chatMode === 'channel' ? '✉' : '💬'}
               </div>
               {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
-              {chatMode === 'smart' && <div>Send a message — it will be routed to the right agent.</div>}
               {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
               {chatMode === 'direct' && selectedAgent && <div>Start a new conversation with {currentAgent?.name}.</div>}
             </div>
