@@ -1,4 +1,6 @@
 import { createLogger } from '@markus/shared';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { MemoryEntry } from './types.js';
 
 const log = createLogger('semantic-search');
@@ -10,8 +12,15 @@ export interface EmbeddingProvider {
 }
 
 export interface VectorStore {
-  upsert(id: string, embedding: number[], metadata: { agentId: string; content: string; type: string }): Promise<void>;
-  search(queryEmbedding: number[], opts: { topK: number; agentId?: string; minSimilarity?: number }): Promise<Array<{ id: string; similarity: number; content: string; type: string }>>;
+  upsert(
+    id: string,
+    embedding: number[],
+    metadata: { agentId: string; content: string; type: string }
+  ): Promise<void>;
+  search(
+    queryEmbedding: number[],
+    opts: { topK: number; agentId?: string; minSimilarity?: number }
+  ): Promise<Array<{ id: string; similarity: number; content: string; type: string }>>;
   delete(id: string): Promise<void>;
 }
 
@@ -47,7 +56,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify({
         model: this.model,
@@ -61,13 +70,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Embedding API error ${resp.status}: ${errText}`);
     }
 
-    const data = await resp.json() as {
+    const data = (await resp.json()) as {
       data: Array<{ embedding: number[]; index: number }>;
     };
 
-    return data.data
-      .sort((a, b) => a.index - b.index)
-      .map(d => d.embedding);
+    return data.data.sort((a, b) => a.index - b.index).map(d => d.embedding);
   }
 }
 
@@ -83,7 +90,11 @@ export class PgVectorStore implements VectorStore {
     this.db = db;
   }
 
-  async upsert(id: string, embedding: number[], metadata: { agentId: string; content: string; type: string }): Promise<void> {
+  async upsert(
+    id: string,
+    embedding: number[],
+    metadata: { agentId: string; content: string; type: string }
+  ): Promise<void> {
     const db = this.db as { execute: (q: { sql: string; params: unknown[] }) => Promise<unknown> };
     const vectorStr = `[${embedding.join(',')}]`;
 
@@ -101,9 +112,14 @@ export class PgVectorStore implements VectorStore {
 
   async search(
     queryEmbedding: number[],
-    opts: { topK: number; agentId?: string; minSimilarity?: number },
+    opts: { topK: number; agentId?: string; minSimilarity?: number }
   ): Promise<Array<{ id: string; similarity: number; content: string; type: string }>> {
-    const db = this.db as { execute: (q: { sql: string; params: unknown[] }) => Promise<{ rows: Array<Record<string, unknown>> }> };
+    const db = this.db as {
+      execute: (q: {
+        sql: string;
+        params: unknown[];
+      }) => Promise<{ rows: Array<Record<string, unknown>> }>;
+    };
     const vectorStr = `[${queryEmbedding.join(',')}]`;
     const minSim = opts.minSimilarity ?? 0.3;
 
@@ -134,7 +150,9 @@ export class PgVectorStore implements VectorStore {
     const db = this.db as { execute: (q: { sql: string; params: unknown[] }) => Promise<unknown> };
     try {
       await db.execute({ sql: 'DELETE FROM memory_embeddings WHERE id = $1', params: [id] });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   async ensureTable(): Promise<boolean> {
@@ -166,6 +184,114 @@ export class PgVectorStore implements VectorStore {
       return false;
     }
   }
+}
+
+/**
+ * Portable vector store backed by local files — no database required.
+ * Uses in-memory cosine similarity for search. Suitable for single-user
+ * scenarios (personal dev tools, local agents).
+ *
+ * At 1536-dim embeddings, brute-force cosine over 10k entries takes <10ms.
+ */
+export class LocalVectorStore implements VectorStore {
+  private vectors: Map<
+    string,
+    { embedding: number[]; metadata: { agentId: string; content: string; type: string } }
+  > = new Map();
+  private storePath: string;
+  private dirty = false;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(dataDir: string) {
+    const dir = join(dataDir, 'vector-store');
+    mkdirSync(dir, { recursive: true });
+    this.storePath = join(dir, 'embeddings.json');
+    this.load();
+  }
+
+  async upsert(
+    id: string,
+    embedding: number[],
+    metadata: { agentId: string; content: string; type: string }
+  ): Promise<void> {
+    this.vectors.set(id, { embedding, metadata });
+    this.scheduleSave();
+  }
+
+  async search(
+    queryEmbedding: number[],
+    opts: { topK: number; agentId?: string; minSimilarity?: number }
+  ): Promise<Array<{ id: string; similarity: number; content: string; type: string }>> {
+    const minSim = opts.minSimilarity ?? 0.3;
+    const results: Array<{ id: string; similarity: number; content: string; type: string }> = [];
+
+    for (const [id, entry] of this.vectors) {
+      if (opts.agentId && entry.metadata.agentId !== opts.agentId) continue;
+      const sim = cosineSimilarity(queryEmbedding, entry.embedding);
+      if (sim >= minSim) {
+        results.push({
+          id,
+          similarity: sim,
+          content: entry.metadata.content,
+          type: entry.metadata.type,
+        });
+      }
+    }
+
+    results.sort((a, b) => b.similarity - a.similarity);
+    return results.slice(0, opts.topK);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.vectors.delete(id);
+    this.scheduleSave();
+  }
+
+  private load(): void {
+    try {
+      if (existsSync(this.storePath)) {
+        const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Array<
+          [
+            string,
+            { embedding: number[]; metadata: { agentId: string; content: string; type: string } },
+          ]
+        >;
+        this.vectors = new Map(data);
+        log.info('Local vector store loaded', { entries: this.vectors.size });
+      }
+    } catch (err) {
+      log.warn('Failed to load local vector store', { error: String(err) });
+    }
+  }
+
+  private scheduleSave(): void {
+    this.dirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      if (!this.dirty) return;
+      try {
+        writeFileSync(this.storePath, JSON.stringify(Array.from(this.vectors.entries())));
+        this.dirty = false;
+      } catch (err) {
+        log.warn('Failed to save local vector store', { error: String(err) });
+      }
+    }, 2000);
+  }
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0,
+    normA = 0,
+    normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
 }
 
 /**
@@ -209,11 +335,14 @@ export class SemanticMemorySearch {
     }
   }
 
-  async search(query: string, opts?: {
-    topK?: number;
-    agentId?: string;
-    minSimilarity?: number;
-  }): Promise<SemanticSearchResult[]> {
+  async search(
+    query: string,
+    opts?: {
+      topK?: number;
+      agentId?: string;
+      minSimilarity?: number;
+    }
+  ): Promise<SemanticSearchResult[]> {
     if (!this.enabled) return [];
 
     try {
@@ -272,12 +401,20 @@ export class TrigramFallbackSearch {
     }
   }
 
-  async search(query: string, opts?: {
-    agentId?: string;
-    topK?: number;
-    minSimilarity?: number;
-  }): Promise<Array<{ id: string; content: string; type: string; similarity: number }>> {
-    const db = this.db as { execute: (q: { sql: string; params: unknown[] }) => Promise<{ rows: Array<Record<string, unknown>> }> };
+  async search(
+    query: string,
+    opts?: {
+      agentId?: string;
+      topK?: number;
+      minSimilarity?: number;
+    }
+  ): Promise<Array<{ id: string; content: string; type: string; similarity: number }>> {
+    const db = this.db as {
+      execute: (q: {
+        sql: string;
+        params: unknown[];
+      }) => Promise<{ rows: Array<Record<string, unknown>> }>;
+    };
     const minSim = opts?.minSimilarity ?? 0.15;
     try {
       const result = await db.execute({
