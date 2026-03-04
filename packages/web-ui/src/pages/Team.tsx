@@ -43,10 +43,15 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [busyAgent, setBusyAgent] = useState<{ id: string; name: string; taskId: string } | null>(null);
 
   const [pendingConfirm, setPendingConfirm] = useState<{
-    title: string; message: string; confirmLabel?: string; onConfirm: () => void;
+    title: string; message: string; confirmLabel?: string;
+    checkboxes?: { id: string; label: string; defaultChecked?: boolean }[];
+    onConfirm: (checked?: Record<string, boolean>) => void;
   } | null>(null);
-  const askConfirm = (title: string, message: string, onConfirm: () => void, confirmLabel?: string) => {
-    setPendingConfirm({ title, message, onConfirm, confirmLabel });
+  const askConfirm = (
+    title: string, message: string, onConfirm: (checked?: Record<string, boolean>) => void,
+    confirmLabel?: string, checkboxes?: { id: string; label: string; defaultChecked?: boolean }[]
+  ) => {
+    setPendingConfirm({ title, message, onConfirm, confirmLabel, checkboxes });
   };
 
   const refresh = () => {
@@ -108,9 +113,14 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const handleDeleteTeam = (teamId: string, teamName: string) => {
     askConfirm(
       `Delete "${teamName}"?`,
-      'All members will become ungrouped but remain in the organization. This cannot be undone.',
-      async () => { await api.teams.delete(teamId); refresh(); },
+      'This team will be permanently deleted. This cannot be undone.',
+      async (checked) => {
+        const deleteMembers = checked?.['deleteMembers'] ?? true;
+        await api.teams.delete(teamId, deleteMembers);
+        refresh();
+      },
       'Delete Team',
+      [{ id: 'deleteMembers', label: 'Also delete all members in this team', defaultChecked: true }],
     );
   };
 
@@ -325,7 +335,8 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
           title={pendingConfirm.title}
           message={pendingConfirm.message}
           confirmLabel={pendingConfirm.confirmLabel}
-          onConfirm={() => { pendingConfirm.onConfirm(); setPendingConfirm(null); }}
+          checkboxes={pendingConfirm.checkboxes}
+          onConfirm={(checked) => { pendingConfirm.onConfirm(checked); setPendingConfirm(null); }}
           onCancel={() => setPendingConfirm(null)}
         />
       )}

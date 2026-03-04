@@ -224,23 +224,31 @@ export class OrganizationService {
     return team;
   }
 
-  async deleteTeam(teamId: string): Promise<void> {
+  async deleteTeam(teamId: string, deleteMembers = false): Promise<void> {
     const team = this.teams.get(teamId);
     if (!team) return;
-    // Unassign all agents from this team
-    for (const agentId of team.memberAgentIds) {
-      try {
-        const agent = this.agentManager.getAgent(agentId);
-        if (agent.config.teamId === teamId) agent.config.teamId = undefined;
-      } catch {
-        /* agent may not exist */
+
+    if (deleteMembers) {
+      for (const agentId of [...team.memberAgentIds]) {
+        try { await this.fireAgent(agentId); } catch { /* already gone */ }
+      }
+      for (const userId of [...(team.humanMemberIds ?? [])]) {
+        if (userId === 'default') continue; // never delete the default owner
+        this.removeHumanUser(userId);
+      }
+    } else {
+      for (const agentId of team.memberAgentIds) {
+        try {
+          const agent = this.agentManager.getAgent(agentId);
+          if (agent.config.teamId === teamId) agent.config.teamId = undefined;
+        } catch { /* agent may not exist */ }
+      }
+      for (const userId of team.humanMemberIds ?? []) {
+        const user = this.humans.get(userId);
+        if (user && user.teamId === teamId) user.teamId = undefined;
       }
     }
-    // Unassign all humans
-    for (const userId of team.humanMemberIds ?? []) {
-      const user = this.humans.get(userId);
-      if (user && user.teamId === teamId) user.teamId = undefined;
-    }
+
     this.teams.delete(teamId);
 
     if (this.storage) {
@@ -251,7 +259,7 @@ export class OrganizationService {
       }
     }
 
-    log.info(`Team deleted: ${teamId}`);
+    log.info(`Team deleted: ${teamId}`, { deleteMembers });
   }
 
   addMemberToTeam(teamId: string, memberId: string, memberType: 'human' | 'agent'): void {

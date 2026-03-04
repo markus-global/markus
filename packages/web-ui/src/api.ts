@@ -538,7 +538,8 @@ export const api = {
       request<{ team: TeamInfo }>('/teams', { method: 'POST', body: JSON.stringify({ name, description }) }),
     update: (id: string, data: { name?: string; description?: string; managerId?: string; managerType?: 'human' | 'agent' }) =>
       request<{ team: TeamInfo }>(`/teams/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-    delete: (id: string) => request(`/teams/${id}`, { method: 'DELETE' }),
+    delete: (id: string, deleteMembers?: boolean) =>
+      request(`/teams/${id}`, { method: 'DELETE', body: JSON.stringify({ deleteMembers: deleteMembers ?? false }) }),
     addMember: (teamId: string, memberId: string, memberType: 'human' | 'agent') =>
       request(`/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType }) }),
     removeMember: (teamId: string, memberId: string) =>

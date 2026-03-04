@@ -354,15 +354,16 @@ export class APIServer {
   /** Ensure at least one admin user exists; called once after storage init */
   async ensureAdminUser(orgId: string): Promise<void> {
     if (!this.storage) return;
-    // Check for auth-capable users (those with a passwordHash) only.
-    // Synthetic in-memory users (e.g. default owner without email) must not prevent admin creation.
     const allUsers = await this.storage.userRepo.listByOrg(orgId);
-    const hasAuthUser = allUsers.some(u => u.passwordHash);
-    if (hasAuthUser) return;
+    if (allUsers.some(u => u.passwordHash && u.id === 'default')) return;
+
+    // Remove any stale non-default admin users from old versions
+    for (const u of allUsers.filter(u => u.passwordHash && u.id !== 'default')) {
+      await this.storage.userRepo.delete(u.id);
+    }
+
     const adminPassword = process.env['ADMIN_PASSWORD'] ?? 'markus123';
     const hash = await hashPassword(adminPassword);
-    // Use the same id ('default') as the synthetic Owner created in createServices
-    // so that loadFromDB deduplicates correctly and we end up with a single human user.
     await this.storage.userRepo.upsert({
       id: 'default',
       orgId,
@@ -1098,7 +1099,9 @@ export class APIServer {
         return;
       }
       const teamId = path.split('/')[3]!;
-      await this.orgService.deleteTeam(teamId);
+      const body = await this.readBody(req);
+      const deleteMembers = body['deleteMembers'] === true;
+      await this.orgService.deleteTeam(teamId, deleteMembers);
       this.json(res, 200, { deleted: true });
       return;
     }
