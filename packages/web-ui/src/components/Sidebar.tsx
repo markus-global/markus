@@ -10,23 +10,24 @@ interface Props {
 
 const navItems: Array<{ id: PageId; label: string; icon: string; section: string }> = [
   { id: 'dashboard', label: 'Overview', icon: '▦', section: 'workspace' },
+  { id: 'projects', label: 'Work', icon: '◫', section: 'workspace' },
   { id: 'team', label: 'Team', icon: '◎', section: 'workspace' },
   { id: 'chat', label: 'Chat', icon: '◈', section: 'workspace' },
-  { id: 'projects', label: 'Projects & Tasks', icon: '◫', section: 'workspace' },
-  { id: 'usage', label: 'Usage & Costs', icon: '◇', section: 'workspace' },
-  { id: 'governance', label: 'Governance', icon: '⛨', section: 'govern' },
-  { id: 'reports', label: 'Reports', icon: '▤', section: 'govern' },
-  { id: 'knowledge', label: 'Knowledge', icon: '◉', section: 'govern' },
-  { id: 'templates', label: 'Templates', icon: '⧉', section: 'explore' },
-  { id: 'builder', label: 'Builder', icon: '⊞', section: 'explore' },
-  { id: 'skills', label: 'Skill Store', icon: '◆', section: 'explore' },
-  { id: 'settings', label: 'Settings', icon: '⚙', section: 'explore' },
+  { id: 'reports', label: 'Reports', icon: '▤', section: 'insights' },
+  { id: 'knowledge', label: 'Knowledge', icon: '◉', section: 'insights' },
+  { id: 'usage', label: 'Usage', icon: '◇', section: 'insights' },
+  { id: 'builder', label: 'Builder', icon: '⊞', section: 'build' },
+  { id: 'templates', label: 'Templates', icon: '⧉', section: 'build' },
+  { id: 'skills', label: 'Skills', icon: '◆', section: 'build' },
+  { id: 'governance', label: 'Governance', icon: '⛨', section: 'system' },
+  { id: 'settings', label: 'Settings', icon: '⚙', section: 'system' },
 ];
 
 const sections = [
   { key: 'workspace', label: 'WORKSPACE' },
-  { key: 'govern', label: 'GOVERNANCE' },
-  { key: 'explore', label: 'EXPLORE' },
+  { key: 'insights', label: 'INSIGHTS' },
+  { key: 'build', label: 'BUILD' },
+  { key: 'system', label: 'SYSTEM' },
 ];
 
 export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) {

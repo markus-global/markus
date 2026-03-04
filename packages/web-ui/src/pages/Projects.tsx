@@ -570,6 +570,7 @@ export function ProjectsPage() {
   const [taskPriority, setTaskPriority] = useState('medium');
   const [taskAutoAssign, setTaskAutoAssign] = useState(true);
   const [taskAssignTo, setTaskAssignTo] = useState('');
+  const [taskProjectId, setTaskProjectId] = useState<string>('');
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
@@ -708,12 +709,14 @@ export function ProjectsPage() {
 
   const createTask = async () => {
     if (!taskTitle) return;
+    const projId = taskProjectId || undefined;
+    const iterId = projId && selectedIterationId ? selectedIterationId : undefined;
     await api.tasks.create(
       taskTitle, taskDesc, taskPriority,
       taskAutoAssign ? undefined : taskAssignTo || undefined,
       taskAutoAssign,
-      viewMode === 'project' && selectedProjectId ? selectedProjectId : undefined,
-      viewMode === 'project' && selectedIterationId ? selectedIterationId : undefined,
+      projId,
+      iterId,
     );
     setTaskTitle(''); setTaskDesc(''); setShowCreateTask(false);
     refreshBoard();
@@ -922,7 +925,7 @@ export function ProjectsPage() {
             ) : null}
             {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
           </div>
-          <button onClick={() => setShowCreateTask(true)} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">+ New Task</button>
+          <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">+ New Task</button>
         </div>
 
         {/* Active iteration banner (when viewing a project with an active iteration) */}
@@ -1058,18 +1061,14 @@ export function ProjectsPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowCreateTask(false)}>
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-7 w-[480px] shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold mb-5">Create Task</h3>
-            {viewMode === 'project' && selectedProject && (
-              <div className="mb-4 flex items-center gap-2 text-xs">
-                <span className="text-gray-500">Project:</span>
-                <span className="px-2 py-0.5 bg-indigo-900/30 text-indigo-300 rounded">{selectedProject.name}</span>
-                {selectedIterationId && iterations.find(it => it.id === selectedIterationId) && (
-                  <>
-                    <span className="text-gray-600">→</span>
-                    <span className="px-2 py-0.5 bg-gray-700 text-gray-300 rounded">{iterations.find(it => it.id === selectedIterationId)!.name}</span>
-                  </>
-                )}
-              </div>
-            )}
+            <div className="mb-4">
+              <label className="block text-sm text-gray-400 mb-1.5">Project</label>
+              <select value={taskProjectId} onChange={e => setTaskProjectId(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                <option value="">No Project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
             <label className="block text-sm text-gray-400 mb-1.5">Title</label>
             <input autoFocus value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
