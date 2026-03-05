@@ -37,7 +37,10 @@ export class SSEBuffer {
   private flushTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isClosed = false;
+  private closedWarnLogged = false;
+  private droppedAfterClose = 0;
   private options: Required<SSEBufferOptions>;
+  private onCloseCallback?: () => void;
   
   // 性能统计
   private stats = {
@@ -88,11 +91,23 @@ export class SSEBuffer {
   }
 
   /**
+   * Register a callback invoked when the connection closes
+   * (from client disconnect or explicit close).
+   */
+  onClose(cb: () => void): void {
+    this.onCloseCallback = cb;
+  }
+
+  /**
    * 发送消息（缓冲）
    */
   send(message: SSEMessage): void {
     if (this.isClosed) {
-      log.warn('Attempted to send message on closed SSE connection');
+      this.droppedAfterClose++;
+      if (!this.closedWarnLogged) {
+        this.closedWarnLogged = true;
+        log.warn('SSE connection closed — further messages will be silently dropped');
+      }
       return;
     }
 
@@ -255,7 +270,16 @@ export class SSEBuffer {
       log.debug('Error closing SSE connection', { error: String(err) });
     }
 
+    if (this.droppedAfterClose > 0) {
+      log.warn('SSE connection closed after dropping messages', {
+        droppedAfterClose: this.droppedAfterClose,
+      });
+    }
     log.debug('SSE connection closed', { stats: this.stats });
+
+    if (this.onCloseCallback) {
+      try { this.onCloseCallback(); } catch { /* ignore */ }
+    }
   }
 
   /**

@@ -760,6 +760,42 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         }
         return u;
       });
+
+      // Fallback: if the agent message is empty (SSE connection may have dropped),
+      // poll the latest session messages to recover the persisted reply.
+      const currentMsgs = msgBuffers.current.get(sendKey) ?? [];
+      const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
+      if (agentMsg && !agentMsg.text && chatMode === 'direct' && selectedAgent) {
+        const pollForReply = async (retries: number, delayMs: number) => {
+          for (let i = 0; i < retries; i++) {
+            await new Promise(r => setTimeout(r, delayMs));
+            try {
+              const sess = await api.sessions.listByAgent(selectedAgent, 1);
+              if (sess.sessions.length > 0) {
+                const latestSession = sess.sessions[0]!;
+                const result = await api.sessions.getMessages(latestSession.id, 2);
+                const assistantMsg = result.messages.find(m => m.role === 'assistant');
+                if (assistantMsg?.content) {
+                  updateConvMsgs(sendKey, prev => {
+                    const u = [...prev];
+                    const idx = u.findIndex(m => m.id === agentMsgId);
+                    if (idx >= 0) {
+                      u[idx] = {
+                        ...u[idx]!,
+                        text: assistantMsg.content,
+                        segments: [{ type: 'text', content: assistantMsg.content }],
+                      };
+                    }
+                    return u;
+                  });
+                  return;
+                }
+              }
+            } catch { /* retry */ }
+          }
+        };
+        void pollForReply(5, 3000);
+      }
     }
 
     // Clear abort controller and sending state for this conv
