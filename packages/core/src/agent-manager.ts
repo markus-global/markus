@@ -37,6 +37,32 @@ export interface SandboxFactory {
 }
 
 /** Minimal interface that AgentManager needs from TaskService */
+export interface RequirementServiceBridge {
+  proposeRequirement(request: {
+    orgId: string;
+    title: string;
+    description: string;
+    priority?: string;
+    source: string;
+    createdBy: string;
+    projectId?: string;
+    tags?: string[];
+  }): { id: string; title: string; status: string };
+  listRequirements(filters?: {
+    orgId?: string;
+    status?: string;
+    projectId?: string;
+  }): Array<{
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    source: string;
+    taskIds: string[];
+  }>;
+}
+
 export interface TaskServiceBridge {
   createTask(request: {
     orgId: string;
@@ -45,6 +71,7 @@ export interface TaskServiceBridge {
     priority?: string;
     assignedAgentId?: string;
     parentTaskId?: string;
+    requirementId?: string;
     createdBy?: string;
     creatorRole?: string;
   }): { id: string; title: string; status: string };
@@ -108,6 +135,7 @@ export class AgentManager {
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
   private taskService?: TaskServiceBridge;
+  private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
     agentId: string,
     event: {
@@ -212,6 +240,10 @@ export class AgentManager {
 
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
+  }
+
+  setRequirementService(requirementService: RequirementServiceBridge): void {
+    this.requirementService = requirementService;
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
@@ -356,6 +388,7 @@ export class AgentManager {
             priority: params.priority,
             assignedAgentId: params.assignedAgentId,
             parentTaskId: params.parentTaskId,
+            requirementId: params.requirementId,
             createdBy: id,
             creatorRole: 'worker',
           });
@@ -391,6 +424,29 @@ export class AgentManager {
           }
           return ts.submitForReview(taskId, deliverables);
         },
+        proposeRequirement: this.requirementService
+          ? async params => {
+              return this.requirementService!.proposeRequirement({
+                orgId,
+                title: params.title,
+                description: params.description,
+                priority: params.priority,
+                source: 'agent',
+                createdBy: id,
+                projectId: params.projectId,
+                tags: params.tags,
+              });
+            }
+          : undefined,
+        listRequirements: this.requirementService
+          ? async filter => {
+              return this.requirementService!.listRequirements({
+                orgId,
+                status: filter?.status,
+                projectId: filter?.projectId,
+              });
+            }
+          : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);

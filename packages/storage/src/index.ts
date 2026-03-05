@@ -12,6 +12,7 @@ export { UserRepo, type User } from './repos/user-repo.js';
 export { TeamRepo, type TeamRow } from './repos/team-repo.js';
 export { TaskLogRepo, type TaskLogRow, type TaskLogType } from './repos/task-log-repo.js';
 export { AgentKnowledgeRepo, type KnowledgeRow } from './repos/agent-knowledge-repo.js';
+export { RequirementRepo } from './repos/requirement-repo.js';
 export {
   MarketplaceTemplateRepo,
   type MarketplaceTemplateRow,
@@ -30,6 +31,7 @@ export {
   SqliteAgentRepo,
   SqliteTaskRepo,
   SqliteTaskLogRepo,
+  SqliteRequirementRepo,
   SqliteProjectRepo,
   SqliteIterationRepo,
   SqliteMessageRepo,

@@ -22,6 +22,7 @@ export function GovernancePage() {
   const [showPolicyEdit, setShowPolicyEdit] = useState(false);
   const [policyTier, setPolicyTier] = useState('auto');
   const [policyMaxTasks, setPolicyMaxTasks] = useState(10);
+  const [policyRequireReq, setPolicyRequireReq] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -82,7 +83,7 @@ export function GovernancePage() {
 
   const handleSavePolicy = async () => {
     try {
-      const p: GovernancePolicyInfo = { defaultApprovalTier: policyTier, maxTasksPerAgent: policyMaxTasks };
+      const p: GovernancePolicyInfo = { defaultApprovalTier: policyTier, maxTasksPerAgent: policyMaxTasks, requireRequirement: policyRequireReq };
       await api.governance.setPolicy(p);
       flash('Policy updated');
       setShowPolicyEdit(false);
@@ -134,7 +135,7 @@ export function GovernancePage() {
         <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-gray-300">Governance Policy</h3>
-            <button onClick={() => { setShowPolicyEdit(!showPolicyEdit); if (policy) { setPolicyTier(policy.defaultApprovalTier); setPolicyMaxTasks(policy.maxTasksPerAgent ?? 10); } }} className="text-xs text-indigo-400 hover:text-indigo-300">
+            <button onClick={() => { setShowPolicyEdit(!showPolicyEdit); if (policy) { setPolicyTier(policy.defaultApprovalTier); setPolicyMaxTasks(policy.maxTasksPerAgent ?? 10); setPolicyRequireReq(policy.requireRequirement ?? true); } }} className="text-xs text-indigo-400 hover:text-indigo-300">
               {showPolicyEdit ? 'Cancel' : 'Edit'}
             </button>
           </div>
@@ -153,6 +154,16 @@ export function GovernancePage() {
                 <label className="text-xs text-gray-500 block mb-1">Max Tasks per Agent</label>
                 <input type="number" value={policyMaxTasks} onChange={e => setPolicyMaxTasks(Number(e.target.value))} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-32" />
               </div>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={policyRequireReq} onChange={e => setPolicyRequireReq(e.target.checked)} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
+                </label>
+                <div>
+                  <span className="text-xs text-gray-300">Require Requirement for Tasks</span>
+                  <p className="text-[10px] text-gray-500">Top-level tasks must link to an approved requirement</p>
+                </div>
+              </div>
               <button onClick={handleSavePolicy} className="btn-primary text-sm px-4 py-2 rounded-lg">Save Policy</button>
             </div>
           ) : policy ? (
@@ -164,6 +175,14 @@ export function GovernancePage() {
               <div>
                 <span className="text-gray-500">Max Tasks/Agent:</span>
                 <span className="ml-2 text-gray-200">{policy.maxTasksPerAgent ?? '—'}</span>
+              </div>
+              <div className="col-span-2">
+                <span className="text-gray-500">Require Requirement:</span>
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  policy.requireRequirement !== false
+                    ? 'bg-indigo-900/40 text-indigo-300'
+                    : 'bg-gray-700 text-gray-400'
+                }`}>{policy.requireRequirement !== false ? 'Enabled' : 'Disabled'}</span>
               </div>
               {policy.rules && policy.rules.length > 0 && (
                 <div className="col-span-2">

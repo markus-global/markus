@@ -29,6 +29,7 @@ export interface CreateTaskRequest {
   blockedBy?: string[];
   timeoutMs?: number;
   // Governance fields
+  requirementId?: string;
   projectId?: string;
   iterationId?: string;
   createdBy?: string;
@@ -578,6 +579,16 @@ export class TaskService {
       throw new Error(`Task creation blocked by governance: ${limitCheck.reason}`);
     }
 
+    // ── Governance: enforce requirement linkage for top-level tasks ──
+    if (!request.parentTaskId && this.governancePolicy?.requireRequirement) {
+      if (!request.requirementId) {
+        throw new Error(
+          'Task creation blocked: top-level tasks must reference an approved requirement (requirementId). ' +
+          'Use requirement_propose to suggest work, then create tasks after user approval.'
+        );
+      }
+    }
+
     // ── Governance: determine approval tier ──
     const approvalTier = this.determineApprovalTier(
       request,
@@ -610,6 +621,7 @@ export class TaskService {
       priority: request.priority ?? 'medium',
       assignedAgentId: needsApproval ? undefined : assignedAgentId,
       parentTaskId: request.parentTaskId,
+      requirementId: request.requirementId,
       subtaskIds: [],
       blockedBy: request.blockedBy,
       createdAt: new Date().toISOString(),
@@ -644,6 +656,7 @@ export class TaskService {
           priority: task.priority,
           assignedAgentId: task.assignedAgentId,
           parentTaskId: task.parentTaskId,
+          requirementId: task.requirementId,
           projectId: task.projectId,
           iterationId: task.iterationId,
           createdBy: task.createdBy,

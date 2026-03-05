@@ -14,6 +14,7 @@ import {
   BillingService,
   AuditService,
   ProjectService,
+  RequirementService,
   KnowledgeService,
   ReportService,
   TrustService,
@@ -384,9 +385,17 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const knowledgeService = new KnowledgeService();
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
+  const requirementService = new RequirementService();
+  if (storage?.requirementRepo) {
+    requirementService.setRequirementRepo(storage.requirementRepo);
+  }
+  await requirementService.loadFromStorage('default');
+
+  agentManager.setRequirementService(requirementService);
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
+  apiServer.setRequirementService(requirementService);
 
   // Wire WorkspaceManager and ProjectService into TaskService for worktree-based task execution
   const workspaceManager = new WorkspaceManager();
@@ -418,6 +427,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
+  requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });

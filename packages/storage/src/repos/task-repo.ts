@@ -28,6 +28,7 @@ export class TaskRepo {
     priority?: TaskPriority;
     assignedAgentId?: string;
     parentTaskId?: string;
+    requirementId?: string;
     projectId?: string;
     iterationId?: string;
     createdBy?: string;
@@ -44,6 +45,7 @@ export class TaskRepo {
         status: data.assignedAgentId ? 'assigned' : 'pending',
         assignedAgentId: data.assignedAgentId ?? null,
         parentTaskId: data.parentTaskId ?? null,
+        requirementId: data.requirementId ?? null,
         projectId: data.projectId ?? null,
         iterationId: data.iterationId ?? null,
         createdBy: data.createdBy ?? null,

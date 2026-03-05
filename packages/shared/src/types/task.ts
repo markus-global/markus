@@ -43,6 +43,8 @@ export interface Task {
   completedAt?: string;
 
   // ── Governance fields ──
+  /** Requirement that authorized this task */
+  requirementId?: string;
   projectId?: string;
   iterationId?: string;
   repositoryPath?: string;

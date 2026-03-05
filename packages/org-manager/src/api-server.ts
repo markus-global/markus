@@ -28,6 +28,7 @@ import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
 import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
+import type { RequirementService } from './requirement-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 
@@ -3966,6 +3967,139 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
+    // ── Requirements ─────────────────────────────────────────────────────
+
+    if (path === '/api/requirements' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const status = url.searchParams.get('status') ?? undefined;
+      const source = url.searchParams.get('source') ?? undefined;
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const iterationId = url.searchParams.get('iterationId') ?? undefined;
+      if (!this.requirementService) {
+        this.json(res, 200, { requirements: [] });
+        return;
+      }
+      this.json(res, 200, {
+        requirements: this.requirementService.listRequirements({
+          orgId,
+          status: status as any,
+          source: source as any,
+          projectId,
+          iterationId,
+        }),
+      });
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'GET') {
+      const reqId = path.split('/')[3]!;
+      const requirement = this.requirementService?.getRequirement(reqId);
+      if (!requirement) {
+        this.json(res, 404, { error: 'Requirement not found' });
+        return;
+      }
+      this.json(res, 200, { requirement });
+      return;
+    }
+
+    if (path === '/api/requirements' && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req);
+      const body = await this.readBody(req);
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      const requirement = this.requirementService.createRequirement({
+        orgId: (body['orgId'] as string) ?? 'default',
+        title: body['title'] as string,
+        description: (body['description'] as string) ?? '',
+        priority: body['priority'] as TaskPriority | undefined,
+        projectId: body['projectId'] as string | undefined,
+        iterationId: body['iterationId'] as string | undefined,
+        source: 'user',
+        createdBy: authUser?.userId ?? 'unknown',
+        tags: body['tags'] as string[] | undefined,
+      });
+      this.json(res, 201, { requirement });
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'PUT') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      try {
+        const requirement = this.requirementService.updateRequirement(reqId, {
+          title: body['title'] as string | undefined,
+          description: body['description'] as string | undefined,
+          priority: body['priority'] as TaskPriority | undefined,
+          tags: body['tags'] as string[] | undefined,
+        });
+        this.json(res, 200, { requirement });
+      } catch (e) {
+        this.json(res, 404, { error: String(e) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+\/approve$/) && req.method === 'POST') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      const authUser = await this.getAuthUser(req);
+      try {
+        const requirement = this.requirementService.approveRequirement(
+          reqId,
+          authUser?.userId ?? 'unknown'
+        );
+        this.json(res, 200, { requirement });
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+\/reject$/) && req.method === 'POST') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      const authUser = await this.getAuthUser(req);
+      const body = await this.readBody(req);
+      try {
+        const requirement = this.requirementService.rejectRequirement(
+          reqId,
+          authUser?.userId ?? 'unknown',
+          (body['reason'] as string) ?? ''
+        );
+        this.json(res, 200, { requirement });
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'DELETE') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      try {
+        this.requirementService.cancelRequirement(reqId);
+        this.json(res, 200, { ok: true });
+      } catch (e) {
+        this.json(res, 404, { error: String(e) });
+      }
+      return;
+    }
+
     // ── Governance: Projects ──────────────────────────────────────────────
 
     if (path === '/api/projects' && req.method === 'GET') {
@@ -4280,6 +4414,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
   private projectService?: ProjectService;
   private reportService?: ReportService;
   private knowledgeService?: KnowledgeService;
+  private requirementService?: RequirementService;
 
   setProjectService(svc: ProjectService): void {
     this.projectService = svc;
@@ -4289,6 +4424,9 @@ Be conversational. Help the user think through tool design, edge cases, and perm
   }
   setKnowledgeService(svc: KnowledgeService): void {
     this.knowledgeService = svc;
+  }
+  setRequirementService(svc: RequirementService): void {
+    this.requirementService = svc;
   }
 
   private buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {

@@ -13,6 +13,7 @@ export interface AgentTaskContext {
     assignedAgentId?: string;
     priority?: string;
     parentTaskId?: string;
+    requirementId?: string;
     projectId?: string;
     iterationId?: string;
   }) => Promise<{ id: string; title: string; status: string }>;
@@ -55,6 +56,29 @@ export interface AgentTaskContext {
     testResults?: string,
     knownIssues?: string
   ) => Promise<{ id: string; status: string }>;
+  /** Propose a requirement for user review */
+  proposeRequirement?: (params: {
+    title: string;
+    description: string;
+    priority?: string;
+    projectId?: string;
+    tags?: string[];
+  }) => Promise<{ id: string; title: string; status: string }>;
+  /** List requirements visible to this agent */
+  listRequirements?: (filter?: {
+    status?: string;
+    projectId?: string;
+  }) => Promise<
+    Array<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+      source: string;
+      taskIds: string[];
+    }>
+  >;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -63,8 +87,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       name: 'task_create',
       description: [
         'Create a new task in the team task board.',
-        'Use this when you identify work that needs to be tracked, assigned, or handed off.',
-        'Returns the task ID you can reference later to update status.',
+        'Top-level tasks MUST reference an approved requirement_id.',
+        'Subtasks (with parent_task_id) inherit the requirement from their parent.',
+        'If you want to propose new work, use requirement_propose instead.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -73,6 +98,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           description: {
             type: 'string',
             description: 'Detailed description of what needs to be done and why',
+          },
+          requirement_id: {
+            type: 'string',
+            description: 'ID of the approved requirement this task fulfills. Required for top-level tasks.',
           },
           priority: {
             type: 'string',
@@ -98,6 +127,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             priority: args['priority'] as string | undefined,
             assignedAgentId: args['assigned_agent_id'] as string | undefined,
             parentTaskId: args['parent_task_id'] as string | undefined,
+            requirementId: args['requirement_id'] as string | undefined,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title });
           if (task.status === 'pending_approval') {
@@ -341,6 +371,128 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   taskId: result.id,
                   taskStatus: result.status,
                   message: 'Work submitted for review. A reviewer will evaluate your deliverables.',
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.proposeRequirement
+      ? [
+          {
+            name: 'requirement_propose',
+            description: [
+              'Propose a new requirement (需求) for user review.',
+              'Use this when you identify work that should be done but no approved requirement exists.',
+              'The proposal will be reviewed by a human user who decides whether to approve or reject it.',
+              'Do NOT create tasks directly — propose a requirement first and wait for approval.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                title: {
+                  type: 'string',
+                  description: 'Clear, concise title describing what is needed',
+                },
+                description: {
+                  type: 'string',
+                  description:
+                    'Detailed explanation of what needs to be done, why, and expected outcome',
+                },
+                priority: {
+                  type: 'string',
+                  enum: ['low', 'medium', 'high', 'urgent'],
+                  description: 'Suggested priority (default: medium)',
+                },
+                project_id: {
+                  type: 'string',
+                  description: 'Optional: project this requirement belongs to',
+                },
+                tags: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Optional: tags to categorize this requirement',
+                },
+              },
+              required: ['title', 'description'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const req = await ctx.proposeRequirement!({
+                  title: args['title'] as string,
+                  description: args['description'] as string,
+                  priority: args['priority'] as string | undefined,
+                  projectId: args['project_id'] as string | undefined,
+                  tags: args['tags'] as string[] | undefined,
+                });
+                log.info(`Requirement proposed by agent ${ctx.agentId}`, {
+                  requirementId: req.id,
+                  title: req.title,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  requirement: req,
+                  message: `Requirement proposed: "${req.title}" (ID: ${req.id}). It will be reviewed by a human user. Do NOT create tasks for this until it is approved.`,
+                });
+              } catch (error) {
+                log.error('requirement_propose failed', { error: String(error) });
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.listRequirements
+      ? [
+          {
+            name: 'requirement_list',
+            description: [
+              'List requirements (需求) to see what work is authorized.',
+              'Only tasks linked to approved requirements should be created.',
+              'Use this to understand the current priorities and find requirements to work on.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                status: {
+                  type: 'string',
+                  enum: [
+                    'draft',
+                    'pending_review',
+                    'approved',
+                    'in_progress',
+                    'completed',
+                    'rejected',
+                    'cancelled',
+                  ],
+                  description: 'Filter by status (default: shows approved and in_progress)',
+                },
+                project_id: {
+                  type: 'string',
+                  description: 'Optional: filter by project',
+                },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const reqs = await ctx.listRequirements!({
+                  status: args['status'] as string | undefined,
+                  projectId: args['project_id'] as string | undefined,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  requirements: reqs,
+                  count: reqs.length,
+                  summary: reqs
+                    .map(
+                      r =>
+                        `[${r.status}] ${r.id}: ${r.title} (${r.priority}, ${r.source}, ${r.taskIds.length} tasks)`
+                    )
+                    .join('\n'),
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

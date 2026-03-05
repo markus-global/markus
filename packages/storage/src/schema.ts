@@ -103,6 +103,7 @@ export const tasks = pgTable('tasks', {
   executionMode: varchar('execution_mode', { length: 32 }),
   assignedAgentId: varchar('assigned_agent_id', { length: 64 }).references(() => agents.id),
   parentTaskId: varchar('parent_task_id', { length: 64 }),
+  requirementId: varchar('requirement_id', { length: 64 }),
   result: jsonb('result'),
   notes: jsonb('notes').default([]),
   projectId: varchar('project_id', { length: 64 }),
@@ -364,6 +365,49 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   lastLoginAt: timestamp('last_login_at'),
 });
+
+// ─── Requirements ────────────────────────────────────────────────────────────
+
+export const requirementStatusEnum = pgEnum('requirement_status', [
+  'draft',
+  'pending_review',
+  'approved',
+  'in_progress',
+  'completed',
+  'rejected',
+  'cancelled',
+]);
+
+export const requirementSourceEnum = pgEnum('requirement_source', ['user', 'agent']);
+
+export const requirements = pgTable(
+  'requirements',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    orgId: varchar('org_id', { length: 64 })
+      .notNull()
+      .references(() => organizations.id),
+    projectId: varchar('project_id', { length: 64 }),
+    iterationId: varchar('iteration_id', { length: 64 }),
+    title: varchar('title', { length: 500 }).notNull(),
+    description: text('description').notNull().default(''),
+    status: requirementStatusEnum('status').notNull().default('draft'),
+    priority: taskPriorityEnum('priority').notNull().default('medium'),
+    source: requirementSourceEnum('source').notNull().default('user'),
+    createdBy: varchar('created_by', { length: 128 }).notNull(),
+    approvedBy: varchar('approved_by', { length: 128 }),
+    approvedAt: timestamp('approved_at'),
+    rejectedReason: text('rejected_reason'),
+    tags: jsonb('tags').default([]),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  t => [
+    index('idx_requirements_org').on(t.orgId),
+    index('idx_requirements_project').on(t.projectId),
+    index('idx_requirements_status').on(t.status),
+  ]
+);
 
 // ─── Governance: Projects & Iterations ───────────────────────────────────────
 

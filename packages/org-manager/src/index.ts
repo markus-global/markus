@@ -9,6 +9,7 @@ export { AuditService } from './audit-service.js';
 export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';
 export type { APIKey, UsageSummary, OrgPlan } from './billing-service.js';
 export { ProjectService } from './project-service.js';
+export { RequirementService } from './requirement-service.js';
 export { KnowledgeService } from './knowledge-service.js';
 export { ReportService } from './report-service.js';
 export { TrustService } from './trust-service.js';

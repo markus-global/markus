@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type RequirementInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -530,6 +530,270 @@ function ProjectSettingsPanel({ project, iterations, onIterationAction, onDelete
   );
 }
 
+// ─── Requirements Panel ─────────────────────────────────────────────────────────
+
+const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  draft:          { label: 'Draft',     cls: 'bg-gray-500/15 text-gray-400' },
+  pending_review: { label: 'Pending',   cls: 'bg-yellow-500/15 text-yellow-400' },
+  approved:       { label: 'Approved',  cls: 'bg-green-500/15 text-green-400' },
+  in_progress:    { label: 'Active',    cls: 'bg-indigo-500/15 text-indigo-400' },
+  completed:      { label: 'Completed', cls: 'bg-emerald-500/15 text-emerald-400' },
+  rejected:       { label: 'Rejected',  cls: 'bg-red-500/15 text-red-400' },
+  cancelled:      { label: 'Cancelled', cls: 'bg-gray-600/15 text-gray-500' },
+};
+
+function RequirementsPanel({
+  projectId,
+  onFlash,
+}: {
+  projectId?: string;
+  onFlash: (m: string) => void;
+}) {
+  const [reqs, setReqs] = useState<RequirementInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [title, setTitle] = useState('');
+  const [desc, setDesc] = useState('');
+  const [priority, setPriority] = useState('medium');
+  const [rejectId, setRejectId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const filters: Record<string, string> = {};
+      if (projectId) filters.projectId = projectId;
+      if (statusFilter) filters.status = statusFilter;
+      const { requirements } = await api.requirements.list(filters);
+      setReqs(requirements);
+    } catch { /* */ }
+    setLoading(false);
+  }, [projectId, statusFilter]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const handleCreate = async () => {
+    if (!title.trim()) return;
+    try {
+      await api.requirements.create({ title, description: desc, priority, projectId });
+      onFlash('Requirement created');
+      setTitle(''); setDesc(''); setShowCreate(false);
+      void refresh();
+    } catch (e) { onFlash(`Error: ${e}`); }
+  };
+
+  const handleApprove = async (id: string) => {
+    try {
+      await api.requirements.approve(id);
+      onFlash('Requirement approved');
+      void refresh();
+    } catch (e) { onFlash(`Error: ${e}`); }
+  };
+
+  const handleReject = async () => {
+    if (!rejectId) return;
+    try {
+      await api.requirements.reject(rejectId, rejectReason);
+      onFlash('Requirement rejected');
+      setRejectId(null); setRejectReason('');
+      void refresh();
+    } catch (e) { onFlash(`Error: ${e}`); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.requirements.delete(id);
+      onFlash('Requirement cancelled');
+      void refresh();
+    } catch (e) { onFlash(`Error: ${e}`); }
+  };
+
+  const pendingCount = reqs.filter(r => r.source === 'agent' && (r.status === 'draft' || r.status === 'pending_review')).length;
+
+  return (
+    <div className="p-6 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-gray-200">Requirements</h3>
+          {pendingCount > 0 && (
+            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full font-medium">
+              {pendingCount} pending review
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300"
+          >
+            <option value="">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="pending_review">Pending Review</option>
+            <option value="approved">Approved</option>
+            <option value="in_progress">In Progress</option>
+            <option value="completed">Completed</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
+          >
+            + New Requirement
+          </button>
+        </div>
+      </div>
+
+      {/* Create modal */}
+      {showCreate && (
+        <div className="bg-gray-800/80 border border-gray-700 rounded-xl p-4 space-y-3">
+          <input
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            placeholder="Requirement title..."
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none"
+            autoFocus
+          />
+          <textarea
+            value={desc}
+            onChange={e => setDesc(e.target.value)}
+            placeholder="Describe what is needed and why..."
+            rows={3}
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none"
+          />
+          <div className="flex items-center gap-3">
+            <select
+              value={priority}
+              onChange={e => setPriority(e.target.value)}
+              className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-xs text-gray-300"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+            <div className="flex-1" />
+            <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200">Cancel</button>
+            <button onClick={handleCreate} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Create</button>
+          </div>
+        </div>
+      )}
+
+      {/* Requirements list */}
+      {loading ? (
+        <div className="text-xs text-gray-500 text-center py-8">Loading...</div>
+      ) : reqs.length === 0 ? (
+        <div className="text-xs text-gray-500 text-center py-8">
+          No requirements yet. Create one to start tracking work.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {reqs.map(req => {
+            const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
+            const isAgent = req.source === 'agent';
+            const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
+            const isExpanded = expanded === req.id;
+            return (
+              <div
+                key={req.id}
+                className={`bg-gray-900 border rounded-xl p-3.5 transition-colors ${
+                  needsReview ? 'border-yellow-500/30' : 'border-gray-800'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                        isAgent ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'
+                      }`}>
+                        {isAgent ? 'Agent' : 'User'}
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${PRIORITY_COLORS[req.priority] ? 'bg-gray-800 text-gray-400' : ''}`}>
+                        {req.priority}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setExpanded(isExpanded ? null : req.id)}
+                      className="text-sm font-medium text-gray-200 hover:text-white text-left"
+                    >
+                      {req.title}
+                    </button>
+                    {isExpanded && (
+                      <div className="mt-2 space-y-2">
+                        <p className="text-xs text-gray-400 whitespace-pre-wrap">{req.description || 'No description.'}</p>
+                        <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                          <span>by {req.createdBy}</span>
+                          <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+                          {req.taskIds.length > 0 && <span>{req.taskIds.length} tasks</span>}
+                          {req.approvedBy && <span>approved by {req.approvedBy}</span>}
+                        </div>
+                        {req.rejectedReason && (
+                          <p className="text-xs text-red-400/80 mt-1">Rejected: {req.rejectedReason}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {needsReview && (
+                      <>
+                        <button
+                          onClick={() => handleApprove(req.id)}
+                          className="px-2.5 py-1 bg-green-600/20 hover:bg-green-600/30 text-green-400 text-[11px] rounded-lg font-medium"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => setRejectId(req.id)}
+                          className="px-2.5 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-[11px] rounded-lg font-medium"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                    {(req.status === 'draft' || req.status === 'approved') && (
+                      <button
+                        onClick={() => handleDelete(req.id)}
+                        className="px-2 py-1 text-gray-600 hover:text-red-400 text-[11px]"
+                        title="Cancel"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Reject modal */}
+      {rejectId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectId(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-96 space-y-3" onClick={e => e.stopPropagation()}>
+            <h4 className="text-sm font-semibold text-gray-200">Reject Requirement</h4>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Reason for rejection..."
+              rows={3}
+              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRejectId(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200">Cancel</button>
+              <button onClick={handleReject} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg">Reject</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function ProjectsPage() {
@@ -544,6 +808,7 @@ export function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [showRequirements, setShowRequirements] = useState(false);
 
   // Create modals
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -919,7 +1184,25 @@ export function ProjectsPage() {
             ) : null}
             {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
           </div>
-          <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">+ New Task</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setShowRequirements(false); setShowProjectSettings(false); }}
+              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                !showRequirements && !showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+              }`}
+            >
+              Board
+            </button>
+            <button
+              onClick={() => { setShowRequirements(true); setShowProjectSettings(false); }}
+              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                showRequirements ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+              }`}
+            >
+              Requirements
+            </button>
+            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">+ New Task</button>
+          </div>
         </div>
 
         {/* Active iteration banner (when viewing a project with an active iteration) */}
@@ -959,8 +1242,15 @@ export function ProjectsPage() {
           </div>
         )}
 
-        {/* Project settings panel */}
-        {showProjectSettings && selectedProject ? (
+        {/* Requirements panel */}
+        {showRequirements ? (
+          <div className="flex-1 overflow-y-auto">
+            <RequirementsPanel
+              projectId={viewMode === 'project' ? selectedProjectId ?? undefined : undefined}
+              onFlash={msg}
+            />
+          </div>
+        ) : showProjectSettings && selectedProject ? (
           <div className="flex-1 overflow-y-auto">
             <ProjectSettingsPanel
               project={selectedProject}

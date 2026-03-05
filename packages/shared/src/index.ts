@@ -6,6 +6,7 @@ export * from './types/compute.js';
 export * from './types/llm.js';
 export * from './types/governance.js';
 export * from './types/project.js';
+export * from './types/requirement.js';
 export * from './utils/logger.js';
 export * from './utils/config.js';
 export * from './utils/id.js';

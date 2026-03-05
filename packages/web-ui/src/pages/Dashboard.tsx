@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 
 export function Dashboard() {
@@ -8,12 +8,16 @@ export function Dashboard() {
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [ops, setOps] = useState<OpsDashboard | null>(null);
   const [opsPeriod, setOpsPeriod] = useState<'1h' | '24h' | '7d'>('24h');
+  const [pendingReqs, setPendingReqs] = useState<RequirementInfo[]>([]);
 
   const refresh = () => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
+    api.requirements.list({ source: 'agent' }).then(d => {
+      setPendingReqs(d.requirements.filter(r => r.status === 'draft' || r.status === 'pending_review'));
+    }).catch(() => {});
   };
 
   useEffect(() => {
@@ -190,6 +194,40 @@ export function Dashboard() {
 
           {/* Right: Activity Feed */}
           <div className="space-y-6">
+            {/* Pending Requirement Reviews */}
+            {pendingReqs.length > 0 && (
+              <div className="bg-gray-900 border border-yellow-500/30 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                    <h3 className="text-xs font-semibold text-yellow-400 uppercase tracking-wider">Pending Reviews</h3>
+                  </div>
+                  <button onClick={() => navBus.navigate('projects')} className="text-[10px] text-gray-600 hover:text-gray-400">Review →</button>
+                </div>
+                <div className="space-y-2">
+                  {pendingReqs.slice(0, 5).map(req => (
+                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-lg bg-gray-800/40 hover:bg-gray-800/60 transition-colors cursor-pointer" onClick={() => navBus.navigate('projects')}>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-gray-200 font-medium truncate">{req.title}</div>
+                        <div className="text-[10px] text-gray-500 mt-0.5">
+                          proposed by {req.createdBy} · {req.priority}
+                        </div>
+                      </div>
+                      <span className="text-[10px] bg-yellow-500/15 text-yellow-400 px-1.5 py-0.5 rounded-full shrink-0">
+                        {req.source === 'agent' ? 'Agent' : 'User'}
+                      </span>
+                    </div>
+                  ))}
+                  {pendingReqs.length > 5 && (
+                    <div className="text-[10px] text-gray-500 text-center pt-1">+{pendingReqs.length - 5} more</div>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-600 mt-3">
+                  Agents proposed {pendingReqs.length} requirement{pendingReqs.length > 1 ? 's' : ''} — review to authorize work.
+                </p>
+              </div>
+            )}
+
             {/* Recent Activity */}
             {ops && ops.taskKPI.recentActivity.length > 0 && (
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">

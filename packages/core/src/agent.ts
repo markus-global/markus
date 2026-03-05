@@ -1856,11 +1856,11 @@ export class Agent {
       '1. **Task Review**: Call `task_list` to see all your assigned tasks.',
       '2. **Start Pending Work**: For any task that is `assigned` (not yet started) and should be worked on, call `task_update` with status `in_progress`. The system will automatically launch a dedicated execution session for that task — you do NOT need to do the work yourself in this heartbeat.',
       '3. **Status Correction**: If any in_progress task has been completed or blocked, call `task_update` to reflect the correct status.',
-      '4. **Orphaned Work**: If there is work you are doing with no corresponding task, call `task_create` to register it.',
+      '4. **Propose Untracked Needs**: If you identify work that should be done but has no approved requirement, use `requirement_propose` to suggest it. Do NOT create tasks directly — all work must be authorized by an approved requirement.',
       '',
-      'IMPORTANT: Do NOT try to directly execute task work in this heartbeat. Your role here is only to review task statuses and trigger execution via `task_update(in_progress)`. Actual work happens in a separate dedicated session.',
+      'IMPORTANT: Do NOT try to directly execute task work in this heartbeat. Your role here is only to review task statuses, trigger execution via `task_update(in_progress)`, and propose requirements for untracked needs. Actual work happens in a separate dedicated session.',
       '',
-      'After completing your review, if you discovered anything noteworthy (status changes, blockers, new tasks created), call `memory_save` with a brief summary so you remember it in future sessions.',
+      'After completing your review, if you discovered anything noteworthy (status changes, blockers, proposed requirements), call `memory_save` with a brief summary so you remember it in future sessions.',
     ].join('\n');
 
     try {

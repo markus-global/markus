@@ -121,6 +121,7 @@ export interface AnnouncementInfo {
 export interface GovernancePolicyInfo {
   defaultApprovalTier: string;
   maxTasksPerAgent?: number;
+  requireRequirement?: boolean;
   rules?: Array<{ condition: string; approvalTier: string }>;
 }
 
@@ -300,6 +301,25 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface RequirementInfo {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  source: string;
+  createdBy: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  rejectedReason?: string;
+  taskIds: string[];
+  tags?: string[];
+  projectId?: string;
+  iterationId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TaskLogEntry {
@@ -584,6 +604,28 @@ export const api = {
     accept: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: 'human' }) }),
     revision: (id: string, reason: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
+  },
+  requirements: {
+    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; iterationId?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.orgId) params.set('orgId', filters.orgId);
+      if (filters?.status) params.set('status', filters.status);
+      if (filters?.source) params.set('source', filters.source);
+      if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
+      const qs = params.toString();
+      return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`);
+    },
+    get: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}`),
+    create: (data: { title: string; description: string; priority?: string; projectId?: string; iterationId?: string; tags?: string[] }) =>
+      request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[] }) =>
+      request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    approve: (id: string) =>
+      request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
+    reject: (id: string, reason: string) =>
+      request<{ requirement: RequirementInfo }>(`/requirements/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),

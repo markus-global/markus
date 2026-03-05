@@ -7,6 +7,8 @@ export interface TaskGovernancePolicy {
   maxPendingTasksPerAgent: number;
   maxTotalActiveTasks: number;
   requireApprovalForPriority: string[];
+  /** When true, top-level tasks must reference an approved requirement */
+  requireRequirement: boolean;
 }
 
 export type ApprovalTier = 'auto' | 'manager' | 'human';

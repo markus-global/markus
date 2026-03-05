@@ -24,3 +24,7 @@ export function envId(): string {
 export function msgId(): string {
   return generateId('msg');
 }
+
+export function requirementId(): string {
+  return generateId('req');
+}

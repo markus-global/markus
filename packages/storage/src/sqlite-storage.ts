@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   execution_mode TEXT,
   assigned_agent_id TEXT REFERENCES agents(id),
   parent_task_id TEXT,
+  requirement_id TEXT,
   result TEXT,
   notes TEXT DEFAULT '[]',
   project_id TEXT,
@@ -173,6 +174,28 @@ CREATE TABLE IF NOT EXISTS task_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, seq);
+
+CREATE TABLE IF NOT EXISTS requirements (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  project_id TEXT,
+  iteration_id TEXT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  source TEXT NOT NULL DEFAULT 'user',
+  created_by TEXT NOT NULL,
+  approved_by TEXT,
+  approved_at TEXT,
+  rejected_reason TEXT,
+  tags TEXT DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_requirements_org ON requirements(org_id);
+CREATE INDEX IF NOT EXISTS idx_requirements_project ON requirements(project_id);
+CREATE INDEX IF NOT EXISTS idx_requirements_status ON requirements(status);
 
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -536,6 +559,7 @@ export class SqliteTaskRepo {
     priority?: string;
     assignedAgentId?: string;
     parentTaskId?: string;
+    requirementId?: string;
     projectId?: string;
     iterationId?: string;
     createdBy?: string;
@@ -544,8 +568,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, project_id, iteration_id, created_by, due_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, requirement_id, project_id, iteration_id, created_by, due_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -555,6 +579,7 @@ export class SqliteTaskRepo {
         data.priority ?? 'medium',
         data.assignedAgentId ?? null,
         data.parentTaskId ?? null,
+        data.requirementId ?? null,
         data.projectId ?? null,
         data.iterationId ?? null,
         data.createdBy ?? null,
@@ -686,6 +711,7 @@ export class SqliteTaskRepo {
       executionMode: r['execution_mode'],
       assignedAgentId: r['assigned_agent_id'],
       parentTaskId: r['parent_task_id'],
+      requirementId: r['requirement_id'] as string | null,
       result: fromJson(r['result'] as string),
       notes: fromJson(r['notes'] as string),
       projectId: r['project_id'] as string | null,
@@ -697,6 +723,130 @@ export class SqliteTaskRepo {
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
       dueAt: toDate(r['due_at'] as string),
+    };
+  }
+}
+
+export class SqliteRequirementRepo {
+  constructor(private db: Database.Database) {}
+
+  async create(data: {
+    id: string;
+    orgId: string;
+    title: string;
+    description?: string;
+    status?: string;
+    priority?: string;
+    source: string;
+    createdBy: string;
+    projectId?: string;
+    iterationId?: string;
+    approvedBy?: string;
+    approvedAt?: Date;
+    tags?: string[];
+  }) {
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, iteration_id, approved_by, approved_at, tags, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        data.id,
+        data.orgId,
+        data.title,
+        data.description ?? '',
+        data.status ?? 'draft',
+        data.priority ?? 'medium',
+        data.source,
+        data.createdBy,
+        data.projectId ?? null,
+        data.iterationId ?? null,
+        data.approvedBy ?? null,
+        data.approvedAt?.toISOString() ?? null,
+        toJson(data.tags ?? []),
+        ts,
+        ts
+      );
+    return this.findById(data.id)!;
+  }
+
+  findById(id: string) {
+    const r = this.db.prepare('SELECT * FROM requirements WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._map(r) : undefined;
+  }
+
+  async updateStatus(id: string, status: string) {
+    this.db.prepare('UPDATE requirements SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+  }
+
+  async approve(id: string, approvedBy: string) {
+    const ts = now();
+    this.db
+      .prepare('UPDATE requirements SET status = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?')
+      .run('approved', approvedBy, ts, ts, id);
+  }
+
+  async reject(id: string, reason: string) {
+    this.db
+      .prepare('UPDATE requirements SET status = ?, rejected_reason = ?, updated_at = ? WHERE id = ?')
+      .run('rejected', reason, now(), id);
+  }
+
+  async update(
+    id: string,
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; iterationId?: string | null }
+  ) {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title); }
+    if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description); }
+    if (data.priority !== undefined) { sets.push('priority = ?'); vals.push(data.priority); }
+    if (data.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(data.tags)); }
+    if (data.projectId !== undefined) { sets.push('project_id = ?'); vals.push(data.projectId); }
+    if (data.iterationId !== undefined) { sets.push('iteration_id = ?'); vals.push(data.iterationId); }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    vals.push(now());
+    vals.push(id);
+    this.db.prepare(`UPDATE requirements SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string; iterationId?: string }) {
+    let q = 'SELECT * FROM requirements WHERE org_id = ?';
+    const vals: unknown[] = [orgId];
+    if (filters?.status) { q += ' AND status = ?'; vals.push(filters.status); }
+    if (filters?.source) { q += ' AND source = ?'; vals.push(filters.source); }
+    if (filters?.projectId) { q += ' AND project_id = ?'; vals.push(filters.projectId); }
+    if (filters?.iterationId) { q += ' AND iteration_id = ?'; vals.push(filters.iterationId); }
+    q += ' ORDER BY created_at DESC';
+    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async delete(id: string) {
+    this.db.prepare('DELETE FROM requirements WHERE id = ?').run(id);
+  }
+
+  private _map(r: Record<string, unknown>) {
+    return {
+      id: r['id'],
+      orgId: r['org_id'],
+      projectId: r['project_id'] as string | null,
+      iterationId: r['iteration_id'] as string | null,
+      title: r['title'],
+      description: r['description'],
+      status: r['status'],
+      priority: r['priority'],
+      source: r['source'],
+      createdBy: r['created_by'],
+      approvedBy: r['approved_by'] as string | null,
+      approvedAt: toDate(r['approved_at'] as string),
+      rejectedReason: r['rejected_reason'] as string | null,
+      tags: fromJson<string[]>(r['tags'] as string),
+      createdAt: toDate(r['created_at'] as string),
+      updatedAt: toDate(r['updated_at'] as string),
     };
   }
 }
