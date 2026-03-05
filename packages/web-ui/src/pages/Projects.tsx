@@ -147,11 +147,12 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailModal({
-  task, agents, projects, onClose, onRefresh,
+  task, agents, projects, requirements, onClose, onRefresh,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
   projects: ProjectInfo[];
+  requirements: RequirementInfo[];
   onClose: () => void;
   onRefresh: () => void;
 }) {
@@ -244,8 +245,6 @@ function TaskDetailModal({
   }, [task.id]);
 
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
-  const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
-  void assignedAgent;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
   const isCompleted = task.status === 'completed';
@@ -256,6 +255,8 @@ function TaskDetailModal({
   void isBlocked;
 
   const taskProject = projects.find(p => p.id === task.projectId);
+  const taskRequirement = requirements.find(r => r.id === task.requirementId);
+  const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
@@ -268,14 +269,33 @@ function TaskDetailModal({
 
         {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          {/* Description & project badge */}
-          {(task.description || taskProject) && (
-            <div className="px-6 pt-3 pb-3 border-b border-gray-800">
-              {task.description && <MarkdownMessage content={task.description} className="text-sm text-gray-400" />}
+          {/* Description */}
+          {task.description && (
+            <div className="px-6 pt-4 pb-3 border-b border-gray-800">
+              <MarkdownMessage content={task.description} className="text-sm text-gray-400 leading-relaxed" />
+            </div>
+          )}
+
+          {/* Context badges — project, requirement */}
+          {(taskProject || taskRequirement || task.parentTaskId) && (
+            <div className="px-6 py-2.5 border-b border-gray-800 flex flex-wrap items-center gap-2">
               {taskProject && (
-                <div className="flex items-center gap-1.5 mt-2">
-                  <span className="text-[10px] px-1.5 py-0.5 bg-indigo-900/30 text-indigo-300 rounded">{taskProject.name}</span>
-                </div>
+                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded-full">
+                  <span className="text-[9px] text-indigo-400/60">Project</span>
+                  {taskProject.name}
+                </span>
+              )}
+              {taskRequirement && (
+                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-purple-500/10 text-purple-300 rounded-full">
+                  <span className="text-[9px] text-purple-400/60">Req</span>
+                  {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
+                </span>
+              )}
+              {task.parentTaskId && (
+                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-gray-700/60 text-gray-400 rounded-full">
+                  <span className="text-[9px] text-gray-500">Subtask of</span>
+                  <span className="font-mono">{task.parentTaskId.slice(-8)}</span>
+                </span>
               )}
             </div>
           )}
@@ -301,6 +321,7 @@ function TaskDetailModal({
 
           {activeTab === 'details' && (
             <>
+              {/* Editable fields */}
               <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -336,8 +357,56 @@ function TaskDetailModal({
                     </select>
                   </div>
                 </div>
-                {task.parentTaskId && (
-                  <div className="text-xs text-gray-500">Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span></div>
+              </div>
+
+              {/* Requirement link */}
+              <div className="px-6 py-2.5 border-b border-gray-800/60">
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1">Requirement</p>
+                {taskRequirement ? (
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      taskRequirement.status === 'approved' ? 'bg-green-500/15 text-green-400' :
+                      taskRequirement.status === 'in_progress' ? 'bg-indigo-500/15 text-indigo-400' :
+                      'bg-gray-500/15 text-gray-400'
+                    }`}>{taskRequirement.status}</span>
+                    <span className="text-xs text-gray-300">{taskRequirement.title}</span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-500/70">Not linked to a requirement</p>
+                )}
+              </div>
+
+              {/* Read-only metadata */}
+              <div className="px-6 py-3 border-b border-gray-800/60 grid grid-cols-3 gap-x-4 gap-y-2.5">
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Created by</p>
+                  <p className="text-xs text-gray-400">{task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : <span className="text-gray-600">—</span>}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Assignee</p>
+                  <p className="text-xs text-gray-400">{assignedAgent ? assignedAgent.name : <span className="text-amber-500/70">Unassigned</span>}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Last updated by</p>
+                  <p className="text-xs text-gray-400">{task.updatedBy ? (agents.find(a => a.id === task.updatedBy)?.name ?? task.updatedBy) : <span className="text-gray-600">—</span>}</p>
+                </div>
+                {task.createdAt && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Created</p>
+                    <p className="text-xs text-gray-500">{new Date(task.createdAt).toLocaleString()}</p>
+                  </div>
+                )}
+                {task.updatedAt && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Updated</p>
+                    <p className="text-xs text-gray-500">{new Date(task.updatedAt).toLocaleString()}</p>
+                  </div>
+                )}
+                {task.startedAt && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Started</p>
+                    <p className="text-xs text-gray-500">{new Date(task.startedAt).toLocaleString()}</p>
+                  </div>
                 )}
               </div>
 
@@ -530,53 +599,59 @@ function ProjectSettingsPanel({ project, iterations, onIterationAction, onDelete
   );
 }
 
-// ─── Requirements Panel ─────────────────────────────────────────────────────────
+// ─── Inline Requirements (sits above the board) ─────────────────────────────────
 
 const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   draft:          { label: 'Draft',     cls: 'bg-gray-500/15 text-gray-400' },
   pending_review: { label: 'Pending',   cls: 'bg-yellow-500/15 text-yellow-400' },
   approved:       { label: 'Approved',  cls: 'bg-green-500/15 text-green-400' },
   in_progress:    { label: 'Active',    cls: 'bg-indigo-500/15 text-indigo-400' },
-  completed:      { label: 'Completed', cls: 'bg-emerald-500/15 text-emerald-400' },
+  completed:      { label: 'Done',      cls: 'bg-emerald-500/15 text-emerald-400' },
   rejected:       { label: 'Rejected',  cls: 'bg-red-500/15 text-red-400' },
   cancelled:      { label: 'Cancelled', cls: 'bg-gray-600/15 text-gray-500' },
 };
 
-function RequirementsPanel({
+function InlineRequirements({
   projectId,
+  projects,
   onFlash,
+  triggerCreate = 0,
 }: {
   projectId?: string;
+  projects: ProjectInfo[];
   onFlash: (m: string) => void;
+  triggerCreate?: number;
 }) {
   const [reqs, setReqs] = useState<RequirementInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [collapsed, setCollapsed] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [priority, setPriority] = useState('medium');
+  const [createProjectId, setCreateProjectId] = useState(projectId ?? '');
   const [rejectId, setRejectId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       const filters: Record<string, string> = {};
       if (projectId) filters.projectId = projectId;
-      if (statusFilter) filters.status = statusFilter;
       const { requirements } = await api.requirements.list(filters);
       setReqs(requirements);
     } catch { /* */ }
     setLoading(false);
-  }, [projectId, statusFilter]);
+  }, [projectId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { if (triggerCreate > 0) { setShowCreate(true); setCollapsed(false); setCreateProjectId(projectId ?? ''); } }, [triggerCreate, projectId]);
 
   const handleCreate = async () => {
     if (!title.trim()) return;
     try {
-      await api.requirements.create({ title, description: desc, priority, projectId });
+      await api.requirements.create({ title, description: desc, priority, projectId: createProjectId || undefined });
       onFlash('Requirement created');
       setTitle(''); setDesc(''); setShowCreate(false);
       void refresh();
@@ -609,183 +684,157 @@ function RequirementsPanel({
     } catch (e) { onFlash(`Error: ${e}`); }
   };
 
-  const pendingCount = reqs.filter(r => r.source === 'agent' && (r.status === 'draft' || r.status === 'pending_review')).length;
+  const pendingReqs = reqs.filter(r => r.source === 'agent' && (r.status === 'draft' || r.status === 'pending_review'));
+  const activeReqs = reqs.filter(r => r.status !== 'completed' && r.status !== 'rejected' && r.status !== 'cancelled');
+  const doneReqs = reqs.filter(r => r.status === 'completed' || r.status === 'rejected' || r.status === 'cancelled');
+  const displayReqs = showCompleted ? reqs : activeReqs;
+
+  if (loading) return null;
 
   return (
-    <div className="p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-gray-200">Requirements</h3>
-          {pendingCount > 0 && (
-            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full font-medium">
-              {pendingCount} pending review
+    <div className="border-b border-gray-800 bg-gray-900/40">
+      {/* Header row */}
+      <div className="px-6 py-2 flex items-center justify-between">
+        <button onClick={() => setCollapsed(!collapsed)} className="flex items-center gap-2 group">
+          <span className="text-[10px] text-gray-500 group-hover:text-gray-300 transition-transform inline-block" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▾</span>
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Requirements</span>
+          <span className="text-[10px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded-full">{activeReqs.length}</span>
+          {pendingReqs.length > 0 && (
+            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded-full font-medium animate-pulse">
+              {pendingReqs.length} to review
             </span>
           )}
-        </div>
+        </button>
         <div className="flex items-center gap-2">
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300"
-          >
-            <option value="">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="pending_review">Pending Review</option>
-            <option value="approved">Approved</option>
-            <option value="in_progress">In Progress</option>
-            <option value="completed">Completed</option>
-            <option value="rejected">Rejected</option>
-          </select>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
-          >
-            + New Requirement
-          </button>
+          {doneReqs.length > 0 && (
+            <button onClick={() => setShowCompleted(!showCompleted)} className="text-[10px] text-gray-600 hover:text-gray-400">
+              {showCompleted ? 'Hide' : 'Show'} closed ({doneReqs.length})
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Create modal */}
-      {showCreate && (
-        <div className="bg-gray-800/80 border border-gray-700 rounded-xl p-4 space-y-3">
-          <input
-            value={title}
-            onChange={e => setTitle(e.target.value)}
-            placeholder="Requirement title..."
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none"
-            autoFocus
-          />
-          <textarea
-            value={desc}
-            onChange={e => setDesc(e.target.value)}
-            placeholder="Describe what is needed and why..."
-            rows={3}
-            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none"
-          />
-          <div className="flex items-center gap-3">
-            <select
-              value={priority}
-              onChange={e => setPriority(e.target.value)}
-              className="px-2 py-1.5 bg-gray-900 border border-gray-700 rounded-lg text-xs text-gray-300"
-            >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-            <div className="flex-1" />
-            <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200">Cancel</button>
-            <button onClick={handleCreate} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Create</button>
-          </div>
-        </div>
-      )}
+      {/* Collapsible body */}
+      {!collapsed && (
+        <div className="px-6 pb-3 space-y-1.5">
+          {/* Empty state */}
+          {displayReqs.length === 0 && (
+            <div className="text-center py-4">
+              <p className="text-xs text-gray-500">
+                {reqs.length === 0
+                  ? 'No requirements yet — create one to tell agents what to work on.'
+                  : 'All requirements are done!'}
+              </p>
+            </div>
+          )}
 
-      {/* Requirements list */}
-      {loading ? (
-        <div className="text-xs text-gray-500 text-center py-8">Loading...</div>
-      ) : reqs.length === 0 ? (
-        <div className="text-xs text-gray-500 text-center py-8">
-          No requirements yet. Create one to start tracking work.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {reqs.map(req => {
+          {/* Requirement cards */}
+          {displayReqs.map(req => {
             const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
             const isAgent = req.source === 'agent';
             const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
-            const isExpanded = expanded === req.id;
+            const isOpen = expandedId === req.id;
+            const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
             return (
-              <div
-                key={req.id}
-                className={`bg-gray-900 border rounded-xl p-3.5 transition-colors ${
-                  needsReview ? 'border-yellow-500/30' : 'border-gray-800'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                        isAgent ? 'bg-purple-500/15 text-purple-400' : 'bg-blue-500/15 text-blue-400'
-                      }`}>
-                        {isAgent ? 'Agent' : 'User'}
-                      </span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${PRIORITY_COLORS[req.priority] ? 'bg-gray-800 text-gray-400' : ''}`}>
-                        {req.priority}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => setExpanded(isExpanded ? null : req.id)}
-                      className="text-sm font-medium text-gray-200 hover:text-white text-left"
-                    >
-                      {req.title}
-                    </button>
-                    {isExpanded && (
-                      <div className="mt-2 space-y-2">
-                        <p className="text-xs text-gray-400 whitespace-pre-wrap">{req.description || 'No description.'}</p>
-                        <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                          <span>by {req.createdBy}</span>
-                          <span>{new Date(req.createdAt).toLocaleDateString()}</span>
-                          {req.taskIds.length > 0 && <span>{req.taskIds.length} tasks</span>}
-                          {req.approvedBy && <span>approved by {req.approvedBy}</span>}
-                        </div>
-                        {req.rejectedReason && (
-                          <p className="text-xs text-red-400/80 mt-1">Rejected: {req.rejectedReason}</p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {needsReview && (
-                      <>
-                        <button
-                          onClick={() => handleApprove(req.id)}
-                          className="px-2.5 py-1 bg-green-600/20 hover:bg-green-600/30 text-green-400 text-[11px] rounded-lg font-medium"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => setRejectId(req.id)}
-                          className="px-2.5 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-[11px] rounded-lg font-medium"
-                        >
-                          Reject
-                        </button>
-                      </>
-                    )}
-                    {(req.status === 'draft' || req.status === 'approved') && (
-                      <button
-                        onClick={() => handleDelete(req.id)}
-                        className="px-2 py-1 text-gray-600 hover:text-red-400 text-[11px]"
-                        title="Cancel"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
+              <div key={req.id} className={`rounded-lg border transition-colors ${needsReview ? 'border-yellow-500/30 bg-yellow-500/[0.03]' : 'border-gray-800 bg-gray-900/60'}`}>
+                <div className="flex items-center gap-2 px-3 py-2">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${badge.cls}`}>{badge.label}</span>
+                  <button onClick={() => setExpandedId(isOpen ? null : req.id)} className="text-xs font-medium text-gray-200 hover:text-white truncate text-left flex-1">
+                    {req.title}
+                  </button>
+                  {isAgent && <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-400 shrink-0">Agent</span>}
+                  {reqProject && !projectId && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 shrink-0 truncate max-w-[80px]">{reqProject.name}</span>}
+                  {req.taskIds.length > 0 && <span className="text-[10px] text-gray-600 shrink-0">{req.taskIds.length} tasks</span>}
+                  {needsReview && (
+                    <>
+                      <button onClick={() => handleApprove(req.id)} className="px-2 py-0.5 bg-green-600/20 hover:bg-green-600/30 text-green-400 text-[10px] rounded font-medium shrink-0">Approve</button>
+                      <button onClick={() => setRejectId(req.id)} className="px-2 py-0.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-[10px] rounded font-medium shrink-0">Reject</button>
+                    </>
+                  )}
+                  {(req.status === 'draft' || req.status === 'approved') && !needsReview && (
+                    <button onClick={() => handleDelete(req.id)} className="text-gray-700 hover:text-red-400 text-[10px] shrink-0" title="Cancel">✕</button>
+                  )}
                 </div>
+                {isOpen && (
+                  <div className="px-3 pb-2.5 border-t border-gray-800/50 pt-2 space-y-1.5">
+                    <p className="text-[11px] text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description || 'No description.'}</p>
+                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
+                      <span>{req.priority}</span>
+                      <span>by {req.createdBy}</span>
+                      <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+                      {req.approvedBy && <span>approved by {req.approvedBy}</span>}
+                    </div>
+                    {req.rejectedReason && <p className="text-[11px] text-red-400/80">Rejected: {req.rejectedReason}</p>}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
+      {/* Create requirement modal */}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setShowCreate(false); setTitle(''); setDesc(''); }}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white">New Requirement</h3>
+            <p className="text-xs text-gray-500 -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Project</label>
+              <select value={createProjectId} onChange={e => setCreateProjectId(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                <option value="">No project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Title</label>
+              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Add user authentication"
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus
+                onKeyDown={e => { if (e.key === 'Enter' && title.trim()) void handleCreate(); }} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Description</label>
+              <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="What is needed and why..."
+                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
+              <select value={priority} onChange={e => setPriority(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-3 pt-1">
+              <button onClick={() => { setShowCreate(false); setTitle(''); setDesc(''); }} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => void handleCreate()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reject modal */}
       {rejectId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectId(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-96 space-y-3" onClick={e => e.stopPropagation()}>
-            <h4 className="text-sm font-semibold text-gray-200">Reject Requirement</h4>
-            <textarea
-              value={rejectReason}
-              onChange={e => setRejectReason(e.target.value)}
-              placeholder="Reason for rejection..."
-              rows={3}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none"
-              autoFocus
-            />
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setRejectId(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200">Cancel</button>
-              <button onClick={handleReject} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg">Reject</button>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white">Reject Requirement</h3>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Reason</label>
+              <textarea
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                placeholder="Why is this being rejected..."
+                rows={3}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setRejectId(null)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => void handleReject()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">Reject</button>
             </div>
           </div>
         </div>
@@ -805,10 +854,11 @@ export function ProjectsPage() {
   const [iterations, setIterations] = useState<IterationInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
-  const [showRequirements, setShowRequirements] = useState(false);
+  const [triggerCreateReq, setTriggerCreateReq] = useState(0);
 
   // Create modals
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -855,14 +905,18 @@ export function ProjectsPage() {
     try { const { agents: a } = await api.agents.list(); setAgents(a); } catch { /* */ }
   }, []);
 
+  const refreshRequirements = useCallback(async () => {
+    try { const { requirements: r } = await api.requirements.list({}); setAllRequirements(r); } catch { /* */ }
+  }, []);
+
   const loadIterations = useCallback(async (projectId: string) => {
     try { const { iterations: it } = await api.projects.listIterations(projectId); setIterations(it); } catch { setIterations([]); }
   }, []);
 
   const refresh = useCallback(async () => {
-    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents()]);
+    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshRequirements()]);
     setLoading(false);
-  }, [refreshProjects, refreshBoard, refreshAgents]);
+  }, [refreshProjects, refreshBoard, refreshAgents, refreshRequirements]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { refreshBoard(); }, [refreshBoard]);
@@ -1088,14 +1142,14 @@ export function ProjectsPage() {
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* ── Left: Project Sidebar ── */}
-      <div className="w-64 border-r border-gray-800 flex flex-col bg-gray-950 shrink-0">
-        <div className="p-4 border-b border-gray-800 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-300">Work</h2>
-          <button onClick={() => setShowCreateProject(true)} className="text-xs px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white">+ Project</button>
+      <div className="w-56 border-r border-gray-800 flex flex-col bg-gray-950 shrink-0">
+        <div className="px-4 h-12 border-b border-gray-800 flex items-center justify-between shrink-0">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Projects</span>
+          <button onClick={() => setShowCreateProject(true)} className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium">+ New</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {/* All Tasks */}
+          {/* All Work */}
           <button
             onClick={selectAllTasks}
             className={`w-full text-left p-2.5 rounded-lg transition-colors flex items-center justify-between ${
@@ -1103,8 +1157,8 @@ export function ProjectsPage() {
             }`}
           >
             <div className="flex items-center gap-2">
-              <span className="text-sm">☑</span>
-              <span className="text-sm font-medium text-gray-200">All Tasks</span>
+              <span className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center text-[10px] text-gray-400">⊞</span>
+              <span className="text-sm font-medium text-gray-200">All Work</span>
             </div>
             {totalTaskCount > 0 && (
               <span className="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full">{totalTaskCount}</span>
@@ -1141,7 +1195,17 @@ export function ProjectsPage() {
           })}
 
           {projects.length === 0 && (
-            <p className="text-xs text-gray-600 p-3 text-center">No projects yet.<br />Create one to organize tasks.</p>
+            <div className="p-3 pt-2">
+              <div className="rounded-lg border border-dashed border-gray-800 p-3 text-center space-y-1.5">
+                <p className="text-[11px] text-gray-500">No projects yet</p>
+                <button
+                  onClick={() => setShowCreateProject(true)}
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium"
+                >
+                  + Create project
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -1152,56 +1216,37 @@ export function ProjectsPage() {
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-emerald-900/50 text-emerald-300 text-xs rounded-lg">{flash}</div>}
 
         {/* Top bar */}
-        <div className="flex items-center justify-between px-6 h-14 border-b border-gray-800 bg-gray-900 shrink-0">
+        <div className="flex items-center justify-between px-6 h-12 border-b border-gray-800 bg-gray-900/80 shrink-0">
           <div className="flex items-center gap-3">
             {viewMode === 'all' ? (
-              <h2 className="text-base font-semibold">All Tasks</h2>
+              <h2 className="text-sm font-semibold text-gray-200">All Work</h2>
             ) : selectedProject ? (
-              <div className="flex items-center gap-3">
-                <h2 className="text-base font-semibold">{selectedProject.name}</h2>
-                {/* Iteration selector */}
+              <>
+                <h2 className="text-sm font-semibold text-gray-200">{selectedProject.name}</h2>
                 <select
                   value={selectedIterationId ?? ''}
                   onChange={e => setSelectedIterationId(e.target.value || null)}
-                  className="px-2 py-1 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 focus:border-indigo-500 outline-none"
+                  className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-[11px] text-gray-400 focus:border-indigo-500 outline-none"
                 >
                   <option value="">All iterations</option>
                   {iterations.map(it => (
                     <option key={it.id} value={it.id}>{it.name} ({it.status})</option>
                   ))}
                 </select>
-                {/* Settings toggle */}
                 <button
                   onClick={() => setShowProjectSettings(!showProjectSettings)}
-                  className={`px-2 py-1 text-xs rounded-lg transition-colors ${
+                  className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors text-xs ${
                     showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
                   }`}
                   title="Project settings"
-                >
-                  ⚙
-                </button>
-              </div>
+                >⚙</button>
+              </>
             ) : null}
             {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => { setShowRequirements(false); setShowProjectSettings(false); }}
-              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                !showRequirements && !showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-              }`}
-            >
-              Board
-            </button>
-            <button
-              onClick={() => { setShowRequirements(true); setShowProjectSettings(false); }}
-              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                showRequirements ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-              }`}
-            >
-              Requirements
-            </button>
-            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">+ New Task</button>
+            <button onClick={() => setTriggerCreateReq(c => c + 1)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-medium">+ Requirement</button>
+            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs rounded-lg hover:bg-gray-800 transition-colors">+ Task</button>
           </div>
         </div>
 
@@ -1220,8 +1265,8 @@ export function ProjectsPage() {
           </div>
         )}
 
-        {/* Agent filter bar */}
-        {agents.length > 0 && !showProjectSettings && (
+        {/* Agent filter bar — hide when board is empty */}
+        {agents.length > 0 && !showProjectSettings && totalTaskCount > 0 && (
           <div className="px-6 py-2 border-b border-gray-800 bg-gray-900/60 flex items-center gap-2 overflow-x-auto shrink-0">
             <span className="text-[10px] text-gray-600 uppercase tracking-wider shrink-0 mr-1">Filter</span>
             {agentFilter.size > 0 && (
@@ -1242,15 +1287,7 @@ export function ProjectsPage() {
           </div>
         )}
 
-        {/* Requirements panel */}
-        {showRequirements ? (
-          <div className="flex-1 overflow-y-auto">
-            <RequirementsPanel
-              projectId={viewMode === 'project' ? selectedProjectId ?? undefined : undefined}
-              onFlash={msg}
-            />
-          </div>
-        ) : showProjectSettings && selectedProject ? (
+        {showProjectSettings && selectedProject ? (
           <div className="flex-1 overflow-y-auto">
             <ProjectSettingsPanel
               project={selectedProject}
@@ -1261,66 +1298,107 @@ export function ProjectsPage() {
             />
           </div>
         ) : (
-          /* Kanban board */
-          <div className="flex-1 overflow-x-auto p-6">
-            <div className="flex gap-4 min-h-full">
-              {visibleColumns.map(col => {
-                const colTasks = getColumnTasks(col);
-                const isOver = dragOverCol === col.id;
-                return (
-                  <div key={col.id}
-                    className={`w-64 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
-                    onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
-                    <div className="flex justify-between items-center mb-3">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
-                      <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
-                    </div>
-                    <div className="space-y-2">
-                      {colTasks.map(task => {
-                        const subCount = task.subtaskIds?.length ?? 0;
-                        const badge = SUB_STATUS_BADGE[task.status];
-                        const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
-                        return (
-                          <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
-                            onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
-                            onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
-                            className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="text-sm font-medium leading-snug">{task.title}</div>
-                              {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
-                            </div>
-                            {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
-                            <div className="flex items-center justify-between mt-2">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs text-gray-600">{task.priority}</span>
-                                {taskProjName && (
-                                  <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[80px]">{taskProjName}</span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {subCount > 0 && <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
-                                {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>}
-                                {task.assignedAgentId && (
-                                  <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
-                                    <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
-                                    {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {isOver && (
-                      <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
-                        <span className="text-xs text-indigo-400/60">Drop here</span>
-                      </div>
-                    )}
+          <div className="flex-1 overflow-y-auto flex flex-col">
+            {/* Inline requirements */}
+            <InlineRequirements
+              projectId={viewMode === 'project' ? selectedProjectId ?? undefined : undefined}
+              projects={projects}
+              onFlash={msg}
+              triggerCreate={triggerCreateReq}
+            />
+
+            {/* Board or empty state */}
+            {totalTaskCount === 0 ? (
+              <div className="flex-1 flex items-center justify-center p-8">
+                <div className="max-w-sm w-full text-center space-y-3">
+                  <div className="w-10 h-10 mx-auto rounded-lg bg-gray-800 flex items-center justify-center">
+                    <span className="text-gray-500 text-lg">&#9744;</span>
                   </div>
-                );
-              })}
-            </div>
+                  <h3 className="text-sm font-medium text-gray-400">No tasks yet</h3>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    Create a requirement to tell agents what you need.<br />
+                    Once approved, tasks will appear here automatically.
+                  </p>
+                  <button onClick={() => setTriggerCreateReq(c => c + 1)} className="text-xs text-indigo-400 hover:text-indigo-300 font-medium">
+                    + Create a requirement
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 overflow-x-auto p-6">
+                <div className="flex gap-4 min-h-full">
+                  {visibleColumns.map(col => {
+                    const colTasks = getColumnTasks(col);
+                    const isOver = dragOverCol === col.id;
+                    return (
+                      <div key={col.id}
+                        className={`w-64 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
+                        onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
+                        <div className="flex justify-between items-center mb-3">
+                          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
+                          <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {colTasks.map(task => {
+                            const subCount = task.subtaskIds?.length ?? 0;
+                            const badge = SUB_STATUS_BADGE[task.status];
+                            const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
+                            const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
+                            const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
+                            return (
+                              <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
+                                onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
+                                onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
+                                className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="text-sm font-medium leading-snug">{task.title}</div>
+                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                </div>
+                                {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
+                                {/* Project / Requirement context */}
+                                {(taskProjName || taskReqTitle) && (
+                                  <div className="mt-1.5 flex flex-wrap gap-1">
+                                    {taskProjName && (
+                                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>
+                                    )}
+                                    {taskReqTitle && (
+                                      <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="flex items-center justify-between mt-2">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-gray-600">{task.priority}</span>
+                                    {taskCreatorName && (
+                                      <span className="text-[10px] text-gray-600" title={`Created by ${taskCreatorName}`}>by {taskCreatorName}</span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {subCount > 0 && <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
+                                    {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>}
+                                    {task.assignedAgentId && (
+                                      <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
+                                        {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {isOver && (
+                          <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
+                            <span className="text-xs text-indigo-400/60">Drop here</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1330,15 +1408,24 @@ export function ProjectsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateProject(false)}>
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">New Project</h3>
-            <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="Project name"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200" autoFocus />
-            <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="Description (optional)"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none" />
-            <input value={newProjRepo} onChange={e => setNewProjRepo(e.target.value)} placeholder="Repository URL (optional)"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200" />
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setShowCreateProject(false)} className="text-sm text-gray-500 hover:text-gray-300">Cancel</button>
-              <button onClick={() => void handleCreateProject()} className="text-sm px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create Project</button>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Name</label>
+              <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="e.g. My App"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Description</label>
+              <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="What is this project about? (optional)"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none focus:border-indigo-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Repository URL</label>
+              <input value={newProjRepo} onChange={e => setNewProjRepo(e.target.value)} placeholder="https://github.com/... (optional)"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 outline-none" />
+            </div>
+            <div className="flex justify-end gap-3 pt-1">
+              <button onClick={() => setShowCreateProject(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => void handleCreateProject()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
             </div>
           </div>
         </div>
@@ -1346,10 +1433,10 @@ export function ProjectsPage() {
 
       {/* ── Create Task Modal ── */}
       {showCreateTask && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowCreateTask(false)}>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-7 w-[480px] shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold mb-5">Create Task</h3>
-            <div className="mb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateTask(false)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white">New Task</h3>
+            <div>
               <label className="block text-sm text-gray-400 mb-1.5">Project</label>
               <select value={taskProjectId} onChange={e => setTaskProjectId(e.target.value)}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
@@ -1357,14 +1444,18 @@ export function ProjectsPage() {
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
-            <label className="block text-sm text-gray-400 mb-1.5">Title</label>
-            <input autoFocus value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none" />
-            <label className="block text-sm text-gray-400 mb-1.5">Description</label>
-            <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm mb-4 focus:border-indigo-500 outline-none resize-none" />
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Title</label>
+              <input autoFocus value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Description</label>
+              <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none resize-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
                 <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
@@ -1383,12 +1474,12 @@ export function ProjectsPage() {
                 </div>
               )}
             </div>
-            <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer mb-5">
+            <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
               <input type="checkbox" checked={taskAutoAssign} onChange={e => setTaskAutoAssign(e.target.checked)} className="rounded bg-gray-800 border-gray-700" />
               Auto-assign to best available agent
             </label>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+            <div className="flex justify-end gap-3 pt-1">
+              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
               <button onClick={() => void createTask()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
             </div>
           </div>
@@ -1401,6 +1492,7 @@ export function ProjectsPage() {
           task={selectedTask}
           agents={agents}
           projects={projects}
+          requirements={allRequirements}
           onClose={() => setSelectedTask(null)}
           onRefresh={handleTaskRefresh}
         />

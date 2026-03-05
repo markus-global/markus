@@ -22,6 +22,7 @@ export interface SSEMessageHandlerOptions {
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
   onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;
+  onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
 }
 
 /**
@@ -38,6 +39,7 @@ export class SSEHandler {
   private isComplete = false;
   private sseDisconnected = false;
   private cancelToken = { cancelled: false };
+  private sessionId: string | null = null;
 
   constructor(options: SSEMessageHandlerOptions) {
     this.options = options;
@@ -63,15 +65,18 @@ export class SSEHandler {
       this.sseBuffer.onClose(() => {
         if (!this.isComplete) {
           this.sseDisconnected = true;
-          log.warn('SSE client disconnected while agent is still processing', {
+          this.cancelToken.cancelled = true;
+          log.warn('SSE client disconnected — cancelling agent', {
             agentId: this.options.agentId,
           });
+          if (this.options.wsBroadcaster?.broadcastAgentUpdate) {
+            this.options.wsBroadcaster.broadcastAgentUpdate(this.options.agentId, 'idle');
+          }
         }
       });
 
-      let userMsgPersisted: string | null = null;
       if (this.options.persistUserMessage) {
-        userMsgPersisted = await this.options.persistUserMessage(
+        this.sessionId = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
           this.options.senderId
@@ -115,10 +120,10 @@ export class SSEHandler {
         }
       }
 
-      if (this.options.persistAssistantMessage && userMsgPersisted) {
+      if (this.options.persistAssistantMessage && this.sessionId) {
         const msgMeta = this.msgSegments.length > 0 ? { segments: this.msgSegments } : undefined;
         await this.options.persistAssistantMessage(
-          userMsgPersisted,
+          this.sessionId,
           this.options.agentId,
           reply,
           this.options.agent.getState().tokensUsedToday,
@@ -147,6 +152,25 @@ export class SSEHandler {
       });
       
       this.handleError(error, res);
+
+      // Persist error as assistant message so it survives page reloads
+      const errText = `⚠ ${String(error).slice(0, 500)}`;
+      if (this.textBuf) {
+        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.textBuf = '';
+      }
+      this.msgSegments.push({ type: 'text', content: errText });
+      const errMeta = { isError: true, segments: this.msgSegments };
+
+      if (this.options.persistAssistantMessage && this.sessionId) {
+        void this.options.persistAssistantMessage(
+          this.sessionId, this.options.agentId, errText, 0, errMeta,
+        ).catch(e => log.warn('Failed to persist error message', { error: String(e) }));
+      }
+      if (this.options.onError) {
+        void this.options.onError(error, this.msgSegments)
+          .catch(e => log.warn('onError callback failed', { error: String(e) }));
+      }
     } finally {
       this.isProcessing = false;
     }

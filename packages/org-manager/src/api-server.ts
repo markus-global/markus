@@ -791,7 +791,6 @@ export class APIServer {
         });
       } catch (err) {
         const raw = String(err);
-        // Extract a meaningful message from LLM errors (e.g., 402 Insufficient Balance)
         let detail = raw;
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
@@ -805,6 +804,25 @@ export class APIServer {
             /* keep raw */
           }
         }
+
+        // Persist error as a channel message so it survives page reloads
+        let errorMsg: ChannelMsg | undefined;
+        if (this.storage) {
+          try {
+            errorMsg = await this.storage.channelMessageRepo.append({
+              orgId,
+              channel,
+              senderId: routedAgentId,
+              senderType: 'system',
+              senderName: 'System',
+              text: `⚠ AI service error: ${detail.slice(0, 500)}`,
+              mentions: [],
+            });
+          } catch (e) {
+            log.warn('Failed to persist channel error message', { error: String(e) });
+          }
+        }
+
         const statusCode = raw.includes('402')
           ? 402
           : raw.includes('401')
@@ -814,7 +832,7 @@ export class APIServer {
               : 502;
         this.json(res, statusCode, {
           userMessage: userMsg ?? null,
-          agentMessage: null,
+          agentMessage: errorMsg ?? null,
           error: detail,
         });
         return;
@@ -944,7 +962,16 @@ export class APIServer {
         } else {
           const userText = body['text'] as string;
           const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
-          const reply = await agent.handleMessage(userText, senderId, senderInfo);
+          let reply: string;
+          try {
+            reply = await agent.handleMessage(userText, senderId, senderInfo);
+          } catch (err) {
+            const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
+            void this.persistAssistantMessage(
+              userMsgPersisted, agentId!, errText, 0, { isError: true },
+            );
+            throw err;
+          }
           this.ws.broadcastChat(agentId!, reply, 'agent');
           this.json(res, 200, { reply });
           void this.persistAssistantMessage(
@@ -1254,7 +1281,7 @@ export class APIServer {
           priority: body['priority'] as TaskPriority | undefined,
           projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
           iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
-        });
+        }, authUser?.userId);
         this.json(res, 200, { task });
         return;
       }
@@ -1909,7 +1936,6 @@ export class APIServer {
             // Tool event handling hook
           },
           onComplete: async (reply, segments, tokensUsed) => {
-            // 持久化助手消息
             const smartMeta = segments.length > 0 ? { segments } : undefined;
             void this.persistChatTurn(
               targetAgentId,
@@ -1920,7 +1946,6 @@ export class APIServer {
               smartMeta
             );
 
-            // Persist agent reply to smart channel
             if (this.storage) {
               void this.storage.channelMessageRepo
                 .append({
@@ -1936,6 +1961,21 @@ export class APIServer {
                   log.warn('Failed to persist smart agent reply', { error: String(err) })
                 );
             }
+          },
+          onError: async (error) => {
+            if (!this.storage) return;
+            const errText = `⚠ AI service error: ${String(error).slice(0, 500)}`;
+            void this.storage.channelMessageRepo
+              .append({
+                orgId: targetOrgId,
+                channel: 'smart:default',
+                senderId: targetAgentId,
+                senderType: 'system',
+                senderName: 'System',
+                text: errText,
+                mentions: [],
+              })
+              .catch(e => log.warn('Failed to persist smart error message', { error: String(e) }));
           },
         });
 
@@ -1956,7 +1996,26 @@ export class APIServer {
             })
             .catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
-        const reply = await agent.handleMessage(userText, senderId, senderInfo);
+        let reply: string;
+        try {
+          reply = await agent.handleMessage(userText, senderId, senderInfo);
+        } catch (err) {
+          const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
+          if (this.storage) {
+            void this.storage.channelMessageRepo
+              .append({
+                orgId: targetOrgId,
+                channel: 'smart:default',
+                senderId: targetAgentId,
+                senderType: 'system',
+                senderName: 'System',
+                text: errText,
+                mentions: [],
+              })
+              .catch(e => log.warn('Failed to persist smart error message', { error: String(e) }));
+          }
+          throw err;
+        }
         this.json(res, 200, { reply, agentId: targetAgentId });
         void this.persistChatTurn(
           targetAgentId,
@@ -1965,7 +2024,6 @@ export class APIServer {
           senderId,
           agent.getState().tokensUsedToday
         );
-        // Persist agent reply to smart channel
         if (this.storage) {
           void this.storage.channelMessageRepo
             .append({

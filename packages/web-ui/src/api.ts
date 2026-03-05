@@ -33,7 +33,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[] } | null;
+  metadata?: { segments?: StoredSegment[]; isError?: boolean } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -295,6 +295,7 @@ export interface TaskInfo {
   notes?: string[];
   projectId?: string;
   iterationId?: string;
+  requirementId?: string;
   createdBy?: string;
   updatedBy?: string;
   startedAt?: string;

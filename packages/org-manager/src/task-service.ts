@@ -13,6 +13,7 @@ import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
 import type { ProjectService } from './project-service.js';
+import type { RequirementService } from './requirement-service.js';
 
 const log = createLogger('task-service');
 
@@ -72,6 +73,7 @@ export class TaskService {
   private webhooks: TaskWebhook[] = [];
   private timeoutCheckInterval?: ReturnType<typeof setInterval>;
   private projectService?: ProjectService;
+  private requirementService?: RequirementService;
   private workspaceManager?: WorkspaceManager;
 
   setAgentManager(am: AgentManager): void {
@@ -96,6 +98,10 @@ export class TaskService {
 
   setProjectService(ps: ProjectService): void {
     this.projectService = ps;
+  }
+
+  setRequirementService(rs: RequirementService): void {
+    this.requirementService = rs;
   }
 
   setWorkspaceManager(wm: WorkspaceManager): void {
@@ -589,6 +595,29 @@ export class TaskService {
       }
     }
 
+    // ── Auto-inherit projectId/iterationId from the linked requirement ──
+    if (request.requirementId && this.requirementService) {
+      const req = this.requirementService.getRequirement(request.requirementId);
+      if (req) {
+        if (!request.projectId && req.projectId) {
+          request.projectId = req.projectId;
+        }
+        if (!request.iterationId && req.iterationId) {
+          request.iterationId = req.iterationId;
+        }
+      }
+    }
+
+    // ── Auto-inherit projectId from parent task for subtasks ──
+    if (request.parentTaskId && !request.projectId) {
+      const parent = this.tasks.get(request.parentTaskId);
+      if (parent) {
+        request.projectId = parent.projectId;
+        if (!request.iterationId) request.iterationId = parent.iterationId;
+        if (!request.requirementId) request.requirementId = parent.requirementId;
+      }
+    }
+
     // ── Governance: determine approval tier ──
     const approvalTier = this.determineApprovalTier(
       request,
@@ -1074,7 +1103,8 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null },
+    updatedBy?: string
   ): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -1084,6 +1114,7 @@ export class TaskService {
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
     if (data.iterationId !== undefined) task.iterationId = data.iterationId ?? undefined;
     task.updatedAt = new Date().toISOString();
+    if (updatedBy) task.updatedBy = updatedBy;
 
     if (this.taskRepo) {
       this.taskRepo
@@ -1235,11 +1266,18 @@ export class TaskService {
     creatorRole?: 'worker' | 'manager'
   ): ApprovalTier {
     const policy = this.governancePolicy;
-    if (!policy?.enabled) return 'auto';
 
-    // Human-created tasks and pre-approved plan tasks skip governance
+    // Human-created tasks and pre-approved plan tasks always skip governance
     if (request.creatorRole === 'human') return 'auto';
     if (request.approvedVia === 'plan_approval') return 'auto';
+
+    // Safe default when no policy is configured: agent-created tasks require human approval
+    if (!policy?.enabled) {
+      if (request.creatorRole === 'worker' || request.creatorRole === 'manager') {
+        return 'human';
+      }
+      return 'auto';
+    }
 
     if (request.priority && policy.requireApprovalForPriority.includes(request.priority)) {
       return 'human';

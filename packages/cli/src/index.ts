@@ -392,6 +392,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await requirementService.loadFromStorage('default');
 
   agentManager.setRequirementService(requirementService);
+  agentManager.setProjectService(projectService);
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
@@ -400,6 +401,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire WorkspaceManager and ProjectService into TaskService for worktree-based task execution
   const workspaceManager = new WorkspaceManager();
   taskService.setProjectService(projectService);
+  taskService.setRequirementService(requirementService);
   taskService.setWorkspaceManager(workspaceManager);
 
   // Expose LLM router to API server so settings can read/write it at runtime

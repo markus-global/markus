@@ -19,6 +19,7 @@ import { createManagerTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
+import { createProjectTools, type ProjectServiceBridge } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
@@ -72,6 +73,8 @@ export interface TaskServiceBridge {
     assignedAgentId?: string;
     parentTaskId?: string;
     requirementId?: string;
+    projectId?: string;
+    iterationId?: string;
     createdBy?: string;
     creatorRole?: string;
   }): { id: string; title: string; status: string };
@@ -135,6 +138,7 @@ export class AgentManager {
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
   private taskService?: TaskServiceBridge;
+  private projectService?: ProjectServiceBridge;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
     agentId: string,
@@ -240,6 +244,10 @@ export class AgentManager {
 
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
+  }
+
+  setProjectService(projectService: ProjectServiceBridge): void {
+    this.projectService = projectService;
   }
 
   setRequirementService(requirementService: RequirementServiceBridge): void {
@@ -389,6 +397,8 @@ export class AgentManager {
             assignedAgentId: params.assignedAgentId,
             parentTaskId: params.parentTaskId,
             requirementId: params.requirementId,
+            projectId: params.projectId,
+            iterationId: params.iterationId,
             createdBy: id,
             creatorRole: 'worker',
           });
@@ -401,7 +411,7 @@ export class AgentManager {
           });
         },
         updateTaskStatus: async (taskId, status) => {
-          return ts.updateTaskStatus(taskId, status);
+          return ts.updateTaskStatus(taskId, status, id);
         },
         getTask: async taskId => {
           return ts.getTask(taskId) ?? null;
@@ -468,6 +478,17 @@ export class AgentManager {
       });
 
       log.info(`Task tools injected for agent ${id}`);
+    }
+
+    // Project tools — every agent can list/view projects
+    if (this.projectService) {
+      for (const tool of createProjectTools({
+        agentId: id,
+        orgId: config.orgId,
+        projectService: this.projectService,
+      })) {
+        agent.registerTool(tool);
+      }
     }
 
     // If this is a manager agent, inject manager-specific tools
@@ -732,14 +753,14 @@ export class AgentManager {
       const taskCtx: AgentTaskContext = {
         agentId: id,
         agentName: config.name,
-        createTask: async params => ts.createTask({ orgId, ...params }),
+        createTask: async params => ts.createTask({ orgId, ...params, createdBy: id, creatorRole: 'worker' }),
         listTasks: async filter =>
           ts.listTasks({
             orgId,
             status: filter?.status,
             assignedAgentId: filter?.assignedToMe ? id : undefined,
           }),
-        updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status),
+        updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
         addTaskNote: async (taskId, note) => {
@@ -772,6 +793,16 @@ export class AgentManager {
           return [];
         }
       });
+    }
+
+    if (this.projectService) {
+      for (const tool of createProjectTools({
+        agentId: id,
+        orgId: config.orgId,
+        projectService: this.projectService,
+      })) {
+        agent.registerTool(tool);
+      }
     }
 
     if (config.agentRole === 'manager') {

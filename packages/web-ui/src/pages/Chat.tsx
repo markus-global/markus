@@ -26,6 +26,8 @@ interface ChatMsg {
   segments?: MsgSegment[];
   /** Legacy frozen activities for DB-loaded messages that predate the segments field */
   activities?: ActivityStep[];
+  /** True when this message represents a failed AI response */
+  isError?: boolean;
 }
 
 type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
@@ -39,7 +41,6 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     text: m.content,
     time: new Date(m.createdAt).toLocaleTimeString(),
   };
-  // Reconstruct interleaved segments from persisted metadata
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
     base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
       s.type === 'tool'
@@ -47,16 +48,21 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
         : { type: 'text' as const, content: s.content }
     );
   }
+  if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
+    base.isError = true;
+  }
   return base;
 }
 
 function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
+  const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
   return {
     id: m.id,
     sender: m.senderType === 'human' ? 'user' : 'agent',
     text: m.text,
     time: new Date(m.createdAt).toLocaleTimeString(),
-    agentName: m.senderType === 'agent' ? m.senderName : undefined,
+    agentName: m.senderType !== 'human' ? m.senderName : undefined,
+    isError,
   };
 }
 
@@ -153,6 +159,46 @@ function ToolSegmentRow({ seg, isLast }: { seg: Extract<MsgSegment, { type: 'too
           </svg>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Action toolbar shown on hover below a message bubble */
+function MessageActions({
+  msg, onCopy, onRetry, isCopied,
+}: {
+  msg: ChatMsg;
+  onCopy: (msg: ChatMsg) => void;
+  onRetry?: (msg: ChatMsg) => void;
+  isCopied: boolean;
+}) {
+  const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
+  return (
+    <div className="flex items-center gap-0.5 mt-1">
+      {/* Copy */}
+      <button
+        onClick={() => onCopy(msg)}
+        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-200 hover:bg-gray-700/60 transition-colors"
+        title="Copy"
+      >
+        {isCopied ? (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
+        ) : (
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
+        )}
+        {isCopied ? 'Copied' : 'Copy'}
+      </button>
+      {/* Retry — only for error messages */}
+      {isError && onRetry && (
+        <button
+          onClick={() => onRetry(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors"
+          title="Retry"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
+          Retry
+        </button>
+      )}
     </div>
   );
 }
@@ -564,8 +610,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     abortControllerRef.current = null;
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (retryText?: string) => {
+    const text = (retryText ?? input).trim();
     if (!text || sending) return;
     if (chatMode === 'direct' && !selectedAgent) return;
 
@@ -573,7 +619,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     // regardless of which conversation the user is currently viewing.
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
 
-    setInput('');
+    if (!retryText) setInput('');
     setMentionDropdown(false);
 
     // Mark this conv as sending (skip for DM — instant DB write, no LLM wait)
@@ -606,7 +652,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       } catch (e) {
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: `Error: ${String(e)}`,
-          time: new Date().toLocaleTimeString(), agentName: 'System',
+          time: new Date().toLocaleTimeString(), agentName: 'System', isError: true,
         }]);
       }
       sendingConvs.current.delete(sendKey);
@@ -635,7 +681,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         const friendly = friendlyAgentError(e) || `Error: ${String(e)}`;
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
-          time: new Date().toLocaleTimeString(), agentName: 'System',
+          time: new Date().toLocaleTimeString(), agentName: 'System', isError: true,
         }]);
       }
       sendingConvs.current.delete(sendKey);
@@ -737,7 +783,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
               const segs = u[idx]!.segments ?? [];
-              u[idx] = { ...u[idx]!, text: errText,
+              u[idx] = { ...u[idx]!, text: errText, isError: true,
                 segments: [...segs, { type: 'text', content: errText }] };
             }
             return u;
@@ -807,6 +853,35 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       setActivities([]);
     }
   };
+
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+
+  const handleCopy = useCallback((msg: ChatMsg) => {
+    const text = msg.segments
+      ? msg.segments.filter(s => s.type === 'text').map(s => (s as { content: string }).content).join('\n')
+      : msg.text;
+    void navigator.clipboard.writeText(text);
+    setCopiedMsgId(msg.id);
+    setTimeout(() => setCopiedMsgId(prev => prev === msg.id ? null : prev), 2000);
+  }, []);
+
+  const handleRetry = useCallback((errorMsg: ChatMsg) => {
+    const convKey = currentConvKeyRef.current;
+    const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
+    const errIdx = currentMsgs.findIndex(m => m.id === errorMsg.id);
+    if (errIdx < 0) return;
+    // Find the user message immediately before the error
+    const userMsg = errIdx > 0 && currentMsgs[errIdx - 1]?.sender === 'user'
+      ? currentMsgs[errIdx - 1]! : null;
+    const retryText = userMsg?.text ?? '';
+    if (!retryText) return;
+    // Remove error message (and the preceding user message)
+    updateConvMsgs(convKey, prev => prev.filter(m =>
+      m.id !== errorMsg.id && (userMsg ? m.id !== userMsg.id : true)
+    ));
+    void send(retryText);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, updateConvMsgs]);
 
   const switchSession = async (s: ChatSessionInfo) => {
     setActiveSessionId(s.id);
@@ -1075,31 +1150,40 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
           {chatMode === 'channel'
             ? messages.map(msg => (
-                <div key={msg.id} className="flex gap-3">
+                <div key={msg.id} className="group/msg flex gap-3">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
                     msg.sender === 'user' ? 'bg-indigo-600' : 'bg-gray-700'
                   }`}>
                     {msg.sender === 'user' ? (currentUserName?.[0] ?? 'Y') : (msg.agentName?.[0] ?? 'A')}
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
                       <span className="text-sm font-medium text-white">
                         {msg.sender === 'user' ? (currentUserName ?? 'You') : msg.agentName ?? 'Agent'}
                       </span>
                       <span className="text-xs text-gray-600">{msg.time}</span>
                     </div>
-                    {msg.sender === 'agent'
-                      ? <MarkdownMessage content={msg.text} className="text-sm text-gray-300 mt-0.5" />
-                      : <div className="text-sm text-gray-300 mt-0.5 whitespace-pre-wrap">{msg.text}</div>
-                    }
+                    <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
+                      ? 'mt-0.5 px-3 py-2 rounded-lg bg-red-900/20 border border-red-800/30'
+                      : 'mt-0.5'
+                    }>
+                      {msg.sender === 'agent'
+                        ? <MarkdownMessage content={msg.text} className={`text-sm ${msg.isError || msg.text.startsWith('⚠') ? 'text-red-200' : 'text-gray-300'}`} />
+                        : <div className="text-sm text-gray-300 whitespace-pre-wrap">{msg.text}</div>
+                      }
+                    </div>
+                    <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} isCopied={copiedMsgId === msg.id} />
+                    </div>
                   </div>
                 </div>
               ))
             : messages.map((msg, i) => {
                 const isPending = isLastPending && i === messages.length - 1;
                 const isStreamingMsg = isPending && sending;
+                const showActions = !isStreamingMsg;
                 return (
-                  <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={msg.id} className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className="max-w-[75%]">
                       <div className="text-xs text-gray-500 mb-1">
                         {msg.sender === 'user'
@@ -1110,7 +1194,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       <div className={`px-4 py-3 rounded-2xl text-sm ${
                         msg.sender === 'user'
                           ? 'bg-indigo-600 text-white rounded-br-sm'
-                          : 'bg-gray-800 text-gray-200 rounded-bl-sm'
+                          : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
+                            ? 'bg-red-900/30 border border-red-800/40 text-red-200 rounded-bl-sm'
+                            : 'bg-gray-800 text-gray-200 rounded-bl-sm'
                       }`}>
                         {msg.sender === 'user'
                           ? <span className="whitespace-pre-wrap leading-relaxed">{msg.text}</span>
@@ -1121,6 +1207,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                             />
                         }
                       </div>
+                      {showActions && (
+                        <div className={`opacity-0 group-hover/msg:opacity-100 transition-opacity ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} isCopied={copiedMsgId === msg.id} />
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

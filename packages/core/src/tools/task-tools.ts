@@ -116,6 +116,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Optional: parent task ID if this is a subtask',
           },
+          project_id: {
+            type: 'string',
+            description: 'Project ID this task belongs to. Typically inherited from the requirement.',
+          },
+          iteration_id: {
+            type: 'string',
+            description: 'Iteration ID this task belongs to (optional).',
+          },
         },
         required: ['title', 'description'],
       },
@@ -128,6 +136,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             assignedAgentId: args['assigned_agent_id'] as string | undefined,
             parentTaskId: args['parent_task_id'] as string | undefined,
             requirementId: args['requirement_id'] as string | undefined,
+            projectId: args['project_id'] as string | undefined,
+            iterationId: args['iteration_id'] as string | undefined,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title });
           if (task.status === 'pending_approval') {

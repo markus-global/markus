@@ -1024,11 +1024,24 @@ export class Agent {
       toolDefinitions: llmTools,
     });
 
+    // Link cancelToken to an AbortController so we can abort in-flight LLM calls
+    const abortController = new AbortController();
+    let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
+    if (cancelToken) {
+      cancelPollTimer = setInterval(() => {
+        if (cancelToken.cancelled && !abortController.signal.aborted) {
+          abortController.abort();
+        }
+      }, 500);
+    }
+
     try {
       const llmStart = Date.now();
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined },
-        onEvent
+        onEvent,
+        undefined,
+        abortController.signal,
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
@@ -1139,7 +1152,9 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.llmRouter.chatStream(
           { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
-          onEvent
+          onEvent,
+          undefined,
+          abortController.signal,
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
@@ -1172,6 +1187,11 @@ export class Agent {
 
       return reply;
     } catch (error) {
+      // If abort was triggered by cancel, treat as cancellation not error
+      if (cancelToken?.cancelled) {
+        if (this.activeTasks.size === 0) this.setStatus('idle');
+        return '[Stream cancelled]';
+      }
       if (this.activeTasks.size === 0) this.setStatus('error');
       this.emitAudit({
         type: 'error',
@@ -1181,6 +1201,8 @@ export class Agent {
       });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
+    } finally {
+      if (cancelPollTimer) clearInterval(cancelPollTimer);
     }
   }
 
@@ -1853,14 +1875,18 @@ export class Agent {
       '',
       '## Heartbeat Retrospective',
       'As part of this heartbeat, perform the following review (max 5 tool calls total):',
-      '1. **Task Review**: Call `task_list` to see all your assigned tasks.',
-      '2. **Start Pending Work**: For any task that is `assigned` (not yet started) and should be worked on, call `task_update` with status `in_progress`. The system will automatically launch a dedicated execution session for that task — you do NOT need to do the work yourself in this heartbeat.',
-      '3. **Status Correction**: If any in_progress task has been completed or blocked, call `task_update` to reflect the correct status.',
-      '4. **Propose Untracked Needs**: If you identify work that should be done but has no approved requirement, use `requirement_propose` to suggest it. Do NOT create tasks directly — all work must be authorized by an approved requirement.',
+      '1. **Task Review**: Call `task_list` to see all your assigned tasks and their current status.',
+      '2. **Status Correction ONLY**: If any `in_progress` task has been completed or blocked (based on work you already did in a previous session), call `task_update` to reflect the correct status.',
+      '3. **Propose Untracked Needs**: If you identify a gap that should be worked on but no requirement covers it, use `requirement_propose` to suggest it and wait for user approval.',
       '',
-      'IMPORTANT: Do NOT try to directly execute task work in this heartbeat. Your role here is only to review task statuses, trigger execution via `task_update(in_progress)`, and propose requirements for untracked needs. Actual work happens in a separate dedicated session.',
+      '⛔ ABSOLUTE RESTRICTIONS — violating these is a critical protocol breach:',
+      '- NEVER call `task_update` to set a task to `in_progress`. Tasks may ONLY be started by a human user clicking "Run" in the UI or sending you an explicit start instruction.',
+      '- NEVER create tasks (`task_create`) in a heartbeat. Task creation requires an approved requirement and explicit human authorization.',
+      '- NEVER execute actual work (writing code, making changes, calling external services) during a heartbeat.',
+      '- NEVER assume that a task assigned to you is authorized to start — "assigned" just means queued, not approved to run.',
+      '- Your ONLY allowed actions in a heartbeat: `task_list`, `task_update` (to fix stale completed/blocked statuses only), `requirement_propose`, `memory_save`.',
       '',
-      'After completing your review, if you discovered anything noteworthy (status changes, blockers, proposed requirements), call `memory_save` with a brief summary so you remember it in future sessions.',
+      'After completing your review, if you discovered anything noteworthy (status corrections made, requirements proposed), call `memory_save` with a brief summary.',
     ].join('\n');
 
     try {

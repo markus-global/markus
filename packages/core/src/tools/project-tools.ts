@@ -1,7 +1,30 @@
 import type { AgentToolHandler } from '../agent.js';
 
+export interface ProjectServiceBridge {
+  listProjects(orgId?: string): Array<{
+    id: string;
+    name: string;
+    description: string;
+    status: string;
+    iterationModel: string;
+    teamIds: string[];
+  }>;
+  getProject(id: string): {
+    id: string;
+    name: string;
+    description: string;
+    status: string;
+    iterationModel: string;
+    repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
+    teamIds: string[];
+    governancePolicy?: { enabled: boolean; defaultTier: string };
+  } | undefined;
+}
+
 export interface ProjectToolsContext {
   agentId: string;
+  orgId: string;
+  projectService?: ProjectServiceBridge;
   getProjectInfo?: (projectId?: string) => Promise<{
     id: string;
     name: string;
@@ -51,6 +74,58 @@ export interface ProjectToolsContext {
 
 export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[] {
   return [
+    ...(ctx.projectService
+      ? [
+          {
+            name: 'list_projects',
+            description:
+              'List all projects in the organization. Use this to discover available projects before taking action on a specific one.',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+            },
+            async execute(): Promise<string> {
+              try {
+                const projects = ctx.projectService!.listProjects(ctx.orgId);
+                return JSON.stringify({
+                  status: 'success',
+                  count: projects.length,
+                  projects: projects.map(p => ({
+                    id: p.id, name: p.name, description: p.description,
+                    status: p.status, iterationModel: p.iterationModel,
+                  })),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+          {
+            name: 'get_project',
+            description:
+              'Get detailed information about a specific project including repositories, teams, governance policy, and iteration model.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: {
+                  type: 'string',
+                  description: 'The project ID',
+                },
+              },
+              required: ['project_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const project = ctx.projectService!.getProject(args['project_id'] as string);
+                if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
+                return JSON.stringify({ status: 'success', project });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
     ...(ctx.getProjectInfo
       ? [
           {
