@@ -14,6 +14,7 @@ import type {
   MarketplaceSkillRepo,
   MarketplaceRatingRepo,
 } from '@markus/storage';
+import type { SqliteProjectRepo, SqliteIterationRepo } from '@markus/storage';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,6 +45,8 @@ export interface StorageBridge {
   marketplaceTemplateRepo: MarketplaceTemplateRepo;
   marketplaceSkillRepo: MarketplaceSkillRepo;
   marketplaceRatingRepo: MarketplaceRatingRepo;
+  projectRepo?: any;
+  iterationRepo?: any;
 }
 
 function isPostgresUrl(url: string): boolean {
@@ -122,6 +125,8 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       marketplaceTemplateRepo: new storage.SqliteMarketplaceTemplateRepo(db) as any,
       marketplaceSkillRepo: new storage.SqliteMarketplaceSkillRepo(db) as any,
       marketplaceRatingRepo: new storage.SqliteMarketplaceRatingRepo(db) as any,
+      projectRepo: new storage.SqliteProjectRepo(db),
+      iterationRepo: new storage.SqliteIterationRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

@@ -29,6 +29,7 @@ export class TaskRepo {
     parentTaskId?: string;
     projectId?: string;
     iterationId?: string;
+    createdBy?: string;
     dueAt?: Date;
   }) {
     const [row] = await this.db
@@ -44,6 +45,7 @@ export class TaskRepo {
         parentTaskId: data.parentTaskId ?? null,
         projectId: data.projectId ?? null,
         iterationId: data.iterationId ?? null,
+        createdBy: data.createdBy ?? null,
         dueAt: data.dueAt ?? null,
       })
       .returning();
@@ -55,8 +57,18 @@ export class TaskRepo {
     return row;
   }
 
-  async updateStatus(id: string, status: TaskStatus) {
-    await this.db.update(tasks).set({ status, updatedAt: new Date() }).where(eq(tasks.id, id));
+  async updateStatus(id: string, status: TaskStatus, updatedBy?: string) {
+    const now = new Date();
+    const updates: Record<string, unknown> = { status, updatedAt: now };
+    if (updatedBy) updates['updatedBy'] = updatedBy;
+    if (status === 'in_progress') {
+      // Only set startedAt if not already set (use raw SQL for conditional)
+      updates['startedAt'] = now;
+    }
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      updates['completedAt'] = now;
+    }
+    await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
   async assign(id: string, agentId: string | null) {

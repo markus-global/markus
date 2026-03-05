@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_task_id TEXT,
   result TEXT,
   notes TEXT DEFAULT '[]',
+  project_id TEXT,
+  iteration_id TEXT,
+  created_by TEXT,
+  updated_by TEXT,
+  started_at TEXT,
+  completed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -167,6 +173,39 @@ CREATE TABLE IF NOT EXISTS task_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, seq);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  name TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  iteration_model TEXT NOT NULL DEFAULT 'kanban',
+  repositories TEXT DEFAULT '[]',
+  team_ids TEXT DEFAULT '[]',
+  governance_policy TEXT,
+  archive_policy TEXT,
+  report_schedule TEXT,
+  onboarding_config TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id);
+
+CREATE TABLE IF NOT EXISTS iterations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planning',
+  goal TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  metrics TEXT,
+  review_report TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_iterations_project ON iterations(project_id);
 
 CREATE TABLE IF NOT EXISTS agent_knowledge (
   id TEXT PRIMARY KEY,
@@ -497,13 +536,16 @@ export class SqliteTaskRepo {
     priority?: string;
     assignedAgentId?: string;
     parentTaskId?: string;
+    projectId?: string;
+    iterationId?: string;
+    createdBy?: string;
     dueAt?: Date;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, due_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, project_id, iteration_id, created_by, due_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -513,6 +555,9 @@ export class SqliteTaskRepo {
         data.priority ?? 'medium',
         data.assignedAgentId ?? null,
         data.parentTaskId ?? null,
+        data.projectId ?? null,
+        data.iterationId ?? null,
+        data.createdBy ?? null,
         data.dueAt?.toISOString() ?? null,
         ts,
         ts
@@ -527,10 +572,21 @@ export class SqliteTaskRepo {
     return r ? this._map(r) : undefined;
   }
 
-  async updateStatus(id: string, status: string) {
-    this.db
-      .prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
-      .run(status, now(), id);
+  async updateStatus(id: string, status: string, updatedBy?: string) {
+    const ts = now();
+    const sets = ['status = ?', 'updated_at = ?'];
+    const vals: unknown[] = [status, ts];
+    if (updatedBy) { sets.push('updated_by = ?'); vals.push(updatedBy); }
+    if (status === 'in_progress') {
+      sets.push("started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END");
+      vals.push(ts);
+    }
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      sets.push('completed_at = ?');
+      vals.push(ts);
+    }
+    vals.push(id);
+    this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
   async assign(id: string, agentId: string | null) {
@@ -543,7 +599,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[] }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; projectId?: string | null; iterationId?: string | null }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -563,6 +619,14 @@ export class SqliteTaskRepo {
       sets.push('notes = ?');
       vals.push(toJson(data.notes));
     }
+    if (data.projectId !== undefined) {
+      sets.push('project_id = ?');
+      vals.push(data.projectId);
+    }
+    if (data.iterationId !== undefined) {
+      sets.push('iteration_id = ?');
+      vals.push(data.iterationId);
+    }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     vals.push(now());
@@ -576,7 +640,7 @@ export class SqliteTaskRepo {
       .run(toJson(result), now(), id);
   }
 
-  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string }) {
+  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
     const vals: unknown[] = [orgId];
     if (filters?.status) {
@@ -586,6 +650,14 @@ export class SqliteTaskRepo {
     if (filters?.assignedAgentId) {
       q += ' AND assigned_agent_id = ?';
       vals.push(filters.assignedAgentId);
+    }
+    if (filters?.projectId) {
+      q += ' AND project_id = ?';
+      vals.push(filters.projectId);
+    }
+    if (filters?.iterationId) {
+      q += ' AND iteration_id = ?';
+      vals.push(filters.iterationId);
     }
     q += ' ORDER BY created_at DESC';
     return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
@@ -616,9 +688,189 @@ export class SqliteTaskRepo {
       parentTaskId: r['parent_task_id'],
       result: fromJson(r['result'] as string),
       notes: fromJson(r['notes'] as string),
+      projectId: r['project_id'] as string | null,
+      iterationId: r['iteration_id'] as string | null,
+      createdBy: r['created_by'] as string | null,
+      updatedBy: r['updated_by'] as string | null,
+      startedAt: toDate(r['started_at'] as string),
+      completedAt: toDate(r['completed_at'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
       dueAt: toDate(r['due_at'] as string),
+    };
+  }
+}
+
+export class SqliteProjectRepo {
+  constructor(private db: Database.Database) {}
+
+  async create(data: {
+    id: string;
+    orgId: string;
+    name: string;
+    description?: string;
+    status?: string;
+    iterationModel?: string;
+    repositories?: unknown[];
+    teamIds?: string[];
+    governancePolicy?: unknown;
+    archivePolicy?: unknown;
+    reportSchedule?: unknown;
+    onboardingConfig?: unknown;
+  }) {
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO projects (id, org_id, name, description, status, iteration_model, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        data.id, data.orgId, data.name, data.description ?? '',
+        data.status ?? 'active', data.iterationModel ?? 'kanban',
+        toJson(data.repositories ?? []), toJson(data.teamIds ?? []),
+        toJson(data.governancePolicy), toJson(data.archivePolicy),
+        toJson(data.reportSchedule), toJson(data.onboardingConfig),
+        ts, ts
+      );
+    return this.findById(data.id)!;
+  }
+
+  findById(id: string) {
+    const r = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this._map(r) : undefined;
+  }
+
+  async update(id: string, data: Record<string, unknown>) {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const stringFields = ['name', 'description', 'status', 'iteration_model'] as const;
+    const jsonFields = ['repositories', 'team_ids', 'governance_policy', 'archive_policy', 'report_schedule', 'onboarding_config'] as const;
+    const fieldMap: Record<string, string> = {
+      name: 'name', description: 'description', status: 'status',
+      iterationModel: 'iteration_model', repositories: 'repositories',
+      teamIds: 'team_ids', governancePolicy: 'governance_policy',
+      archivePolicy: 'archive_policy', reportSchedule: 'report_schedule',
+      onboardingConfig: 'onboarding_config',
+    };
+    for (const [key, col] of Object.entries(fieldMap)) {
+      if (data[key] !== undefined) {
+        sets.push(`${col} = ?`);
+        vals.push(jsonFields.includes(col as any) ? toJson(data[key]) : data[key]);
+      }
+    }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    vals.push(now());
+    vals.push(id);
+    this.db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  async delete(id: string) {
+    this.db.prepare('DELETE FROM iterations WHERE project_id = ?').run(id);
+    this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  }
+
+  listByOrg(orgId: string) {
+    return (this.db.prepare('SELECT * FROM projects WHERE org_id = ? ORDER BY created_at DESC').all(orgId) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  listAll() {
+    return (this.db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  private _map(r: Record<string, unknown>) {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      name: r['name'] as string,
+      description: r['description'] as string | null,
+      status: r['status'] as string,
+      iterationModel: r['iteration_model'] as string,
+      repositories: fromJson<unknown[]>(r['repositories'] as string) ?? [],
+      teamIds: fromJson<string[]>(r['team_ids'] as string) ?? [],
+      governancePolicy: fromJson(r['governance_policy'] as string),
+      archivePolicy: fromJson(r['archive_policy'] as string),
+      reportSchedule: fromJson(r['report_schedule'] as string),
+      onboardingConfig: fromJson(r['onboarding_config'] as string),
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
+    };
+  }
+}
+
+export class SqliteIterationRepo {
+  constructor(private db: Database.Database) {}
+
+  async create(data: {
+    id: string;
+    projectId: string;
+    name: string;
+    status?: string;
+    goal?: string;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO iterations (id, project_id, name, status, goal, start_date, end_date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(data.id, data.projectId, data.name, data.status ?? 'planning', data.goal ?? null, data.startDate ?? null, data.endDate ?? null, ts, ts);
+    return this.findById(data.id)!;
+  }
+
+  findById(id: string) {
+    const r = this.db.prepare('SELECT * FROM iterations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this._map(r) : undefined;
+  }
+
+  async updateStatus(id: string, status: string) {
+    this.db.prepare('UPDATE iterations SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+  }
+
+  async update(id: string, data: Record<string, unknown>) {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const fieldMap: Record<string, string> = {
+      name: 'name', status: 'status', goal: 'goal',
+      startDate: 'start_date', endDate: 'end_date',
+      metrics: 'metrics', reviewReport: 'review_report',
+    };
+    for (const [key, col] of Object.entries(fieldMap)) {
+      if (data[key] !== undefined) {
+        sets.push(`${col} = ?`);
+        vals.push(['metrics', 'reviewReport'].includes(key) ? toJson(data[key]) : data[key]);
+      }
+    }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    vals.push(now());
+    vals.push(id);
+    this.db.prepare(`UPDATE iterations SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  listByProject(projectId: string) {
+    return (this.db.prepare('SELECT * FROM iterations WHERE project_id = ? ORDER BY created_at DESC').all(projectId) as Record<string, unknown>[]).map(r => this._map(r));
+  }
+
+  async delete(id: string) {
+    this.db.prepare('DELETE FROM iterations WHERE id = ?').run(id);
+  }
+
+  private _map(r: Record<string, unknown>) {
+    return {
+      id: r['id'] as string,
+      projectId: r['project_id'] as string,
+      name: r['name'] as string,
+      status: r['status'] as string,
+      goal: r['goal'] as string | null,
+      startDate: r['start_date'] as string | null,
+      endDate: r['end_date'] as string | null,
+      metrics: fromJson(r['metrics'] as string),
+      reviewReport: fromJson(r['review_report'] as string),
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
     };
   }
 }

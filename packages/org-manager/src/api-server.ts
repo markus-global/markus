@@ -1199,6 +1199,7 @@ export class APIServer {
     }
 
     if (path === '/api/tasks' && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       const task = this.taskService.createTask({
         orgId: (body['orgId'] as string) ?? 'default',
@@ -1210,17 +1211,19 @@ export class APIServer {
         autoAssign: body['autoAssign'] as boolean | undefined,
         projectId: body['projectId'] as string | undefined,
         iterationId: body['iterationId'] as string | undefined,
+        createdBy: authUser?.userId ?? 'unknown',
       });
       this.json(res, 201, { task });
       return;
     }
 
     if (path.startsWith('/api/tasks/') && req.method === 'PUT') {
+      const authUser = await this.getAuthUser(req);
       const taskId = path.split('/')[3]!;
       const body = await this.readBody(req);
 
       if (body['status']) {
-        const task = this.taskService.updateTaskStatus(taskId, body['status'] as TaskStatus);
+        const task = this.taskService.updateTaskStatus(taskId, body['status'] as TaskStatus, authUser?.userId);
         this.json(res, 200, { task });
         return;
       }

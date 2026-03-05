@@ -277,7 +277,7 @@ export class LLMRouter {
     }
   }
 
-  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string): Promise<LLMResponse> {
+  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal): Promise<LLMResponse> {
     const primary = this.selectProvider(request, providerName);
     const provider = this.providers.get(primary);
     if (!provider) {
@@ -297,13 +297,19 @@ export class LLMRouter {
 
     let lastError: unknown = null;
     try {
-      const response = await provider.chatStream(request, onEvent);
+      const response = await provider.chatStream(request, onEvent, signal);
       this.recordSuccess(primary);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       return response;
     } catch (error) {
       lastError = error;
       this.recordFailure(primary);
+      // If externally aborted, don't try fallbacks
+      if (signal?.aborted) {
+        span.setError(lastError instanceof Error ? lastError : String(lastError));
+        span.end();
+        throw lastError;
+      }
       log.error(`LLM stream request failed for ${primary}`, { error: String(error) });
 
       for (const fallbackName of this.getFallbacks(primary)) {
@@ -312,7 +318,7 @@ export class LLMRouter {
         try {
           let response: LLMResponse;
           if (fb.chatStream) {
-            response = await fb.chatStream(request, onEvent);
+            response = await fb.chatStream(request, onEvent, signal);
           } else {
             response = await fb.chat(request);
             if (response.content) onEvent({ type: 'text_delta', text: response.content });
@@ -325,6 +331,7 @@ export class LLMRouter {
         } catch (fbError) {
           lastError = fbError;
           this.recordFailure(fallbackName);
+          if (signal?.aborted) break;
           log.error(`Stream fallback ${fallbackName} failed`, { error: String(fbError) });
         }
       }

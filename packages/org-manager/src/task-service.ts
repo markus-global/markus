@@ -115,12 +115,15 @@ export class TaskService {
       'This task was previously worked on and paused/interrupted. Below is a record of what was already done.'
     );
     lines.push(
-      '**Continue from where the work stopped — do NOT repeat steps that are already marked as completed.**'
+      '**CRITICAL: Continue from where the work stopped. Do NOT repeat steps already completed (✓). Do NOT re-read files that were already read.**'
     );
     lines.push('');
 
     let runIndex = 0;
     let inRun = false;
+    const filesRead = new Set<string>();
+    const filesWritten = new Set<string>();
+    const completedSteps: string[] = [];
 
     for (const entry of logs) {
       if (entry.type === 'status' && entry.content === 'started') {
@@ -138,29 +141,55 @@ export class TaskService {
       if (!inRun) continue;
 
       if (entry.type === 'text') {
-        // Truncate long reasoning to avoid bloating context too much
-        const text = entry.content.length > 600 ? entry.content.slice(0, 600) + '…' : entry.content;
+        const text = entry.content.length > 800 ? entry.content.slice(0, 800) + '…' : entry.content;
         lines.push(text);
         lines.push('');
       } else if (entry.type === 'tool_start') {
-        const args = (entry.metadata as Record<string, unknown> | null)?.arguments;
-        const argStr = args ? ` (${JSON.stringify(args).slice(0, 120)})` : '';
+        const meta = entry.metadata as Record<string, unknown> | null;
+        const args = meta?.arguments as Record<string, unknown> | undefined;
+        const argStr = args ? ` (${JSON.stringify(args).slice(0, 200)})` : '';
         lines.push(`→ Calling: ${entry.content}${argStr}`);
+
+        if (args) {
+          const path = (args['path'] ?? args['file'] ?? args['filePath'] ?? args['filename']) as string | undefined;
+          if (path) {
+            if (entry.content === 'file_read' || entry.content === 'read_file') {
+              filesRead.add(path);
+            } else if (entry.content === 'file_write' || entry.content === 'write_file') {
+              filesWritten.add(path);
+            }
+          }
+        }
       } else if (entry.type === 'tool_end') {
         const meta = entry.metadata as Record<string, unknown> | null;
         const ok = meta?.success !== false;
-        const result = meta?.result ? ` → ${String(meta.result).slice(0, 200)}` : '';
+        const result = meta?.result ? ` → ${String(meta.result).slice(0, 400)}` : '';
         lines.push(`  ${ok ? '✓' : '✗'} ${entry.content}${result}`);
+        if (ok) completedSteps.push(entry.content);
       } else if (entry.type === 'error') {
         lines.push(`[ERROR] ${entry.content}`);
         lines.push('');
       }
     }
 
-    // If the last run didn't finish, add a note about where it stopped
     if (inRun) {
       lines.push('[interrupted — work was not completed]');
       lines.push('');
+    }
+
+    // Summary of files already accessed — prevents redundant re-reads
+    if (filesRead.size > 0 || filesWritten.size > 0) {
+      lines.push('### Files Already Accessed');
+      if (filesRead.size > 0) {
+        lines.push('**Files already read (do NOT re-read these):**');
+        for (const f of filesRead) lines.push(`- ${f}`);
+        lines.push('');
+      }
+      if (filesWritten.size > 0) {
+        lines.push('**Files already written/created:**');
+        for (const f of filesWritten) lines.push(`- ${f}`);
+        lines.push('');
+      }
     }
 
     lines.push('---');
@@ -390,6 +419,10 @@ export class TaskService {
     try {
       const rows = await this.taskRepo.listByOrg(orgId);
       for (const row of rows) {
+        const toIso = (v: unknown): string | undefined => {
+          if (!v) return undefined;
+          return v instanceof Date ? v.toISOString() : String(v);
+        };
         const task: Task = {
           id: row.id,
           orgId: row.orgId,
@@ -409,12 +442,11 @@ export class TaskService {
             row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
           projectId: row.projectId ?? undefined,
           iterationId: row.iterationId ?? undefined,
-          dueAt:
-            row.dueAt instanceof Date
-              ? row.dueAt.toISOString()
-              : row.dueAt
-                ? String(row.dueAt)
-                : undefined,
+          createdBy: (row as any).createdBy ?? undefined,
+          updatedBy: (row as any).updatedBy ?? undefined,
+          startedAt: toIso((row as any).startedAt),
+          completedAt: toIso((row as any).completedAt),
+          dueAt: toIso(row.dueAt),
         };
         this.tasks.set(task.id, task);
       }
@@ -540,6 +572,7 @@ export class TaskService {
           parentTaskId: task.parentTaskId,
           projectId: task.projectId,
           iterationId: task.iterationId,
+          createdBy: task.createdBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
         })
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
@@ -567,7 +600,7 @@ export class TaskService {
     return this.tasks.get(id);
   }
 
-  updateTaskStatus(id: string, status: TaskStatus): Task {
+  updateTaskStatus(id: string, status: TaskStatus, updatedBy?: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
 
@@ -579,11 +612,16 @@ export class TaskService {
     }
 
     const prevStatus = task.status;
+    const now = new Date().toISOString();
     task.status = status;
-    task.updatedAt = new Date().toISOString();
+    task.updatedAt = now;
+    if (updatedBy) task.updatedBy = updatedBy;
 
     if (status === 'in_progress' && !task.startedAt) {
-      task.startedAt = new Date().toISOString();
+      task.startedAt = now;
+    }
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      task.completedAt = now;
     }
 
     // If moving away from in_progress, cancel any running execution
@@ -599,7 +637,7 @@ export class TaskService {
     // Persist to DB
     if (this.taskRepo) {
       this.taskRepo
-        .updateStatus(id, status)
+        .updateStatus(id, status, updatedBy)
         .catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
     }
 

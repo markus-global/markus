@@ -1285,6 +1285,17 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
+    // AbortController linked to cancelToken so we can abort in-flight LLM calls
+    const abortController = new AbortController();
+    let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
+    if (cancelToken) {
+      cancelPollTimer = setInterval(() => {
+        if (cancelToken.cancelled && !abortController.signal.aborted) {
+          abortController.abort();
+        }
+      }, 500);
+    }
+
     // Isolated session for this task — does NOT share with chat session
     const session = this.memory.createSession(this.id);
     const sessionId = session.id;
@@ -1327,6 +1338,11 @@ export class Agent {
     };
 
     try {
+      if (cancelToken?.cancelled) {
+        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+        return;
+      }
+
       const messages = this.contextEngine.prepareMessages({
         systemPrompt,
         sessionMessages: this.memory.getRecentMessages(sessionId, 200),
@@ -1344,7 +1360,9 @@ export class Agent {
             textBuffer += event.text;
             emitDelta(event.text);
           }
-        }
+        },
+        undefined,
+        abortController.signal,
       );
       this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
 
@@ -1375,7 +1393,8 @@ export class Agent {
             emit('tool_end', tc.name, {
               success: !isErr,
               durationMs,
-              result: result.slice(0, 500),
+              arguments: tc.arguments,
+              result: result.slice(0, 2000),
             });
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
             this.memory.appendMessage(sessionId, {
@@ -1385,7 +1404,7 @@ export class Agent {
             });
           } catch (toolErr) {
             const durationMs = Date.now() - toolStart;
-            emit('tool_end', tc.name, { success: false, durationMs, error: String(toolErr) });
+            emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
             this.memory.appendMessage(sessionId, {
               role: 'tool',
@@ -1419,9 +1438,19 @@ export class Agent {
               textBuffer += event.text;
               emitDelta(event.text);
             }
-          }
+          },
+          undefined,
+          abortController.signal,
         );
         this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+      }
+
+      // Final cancel check after the tool loop exits
+      if (cancelToken?.cancelled) {
+        flushText();
+        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+        log.info('Task execution cancelled externally after completion', { taskId, agentId: this.id });
+        return;
       }
 
       flushText();
@@ -1432,6 +1461,13 @@ export class Agent {
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
       log.info(`Task execution completed`, { taskId, agentId: this.id });
     } catch (error) {
+      // If abort was triggered by cancel, treat as cancellation not error
+      if (cancelToken?.cancelled) {
+        flushText();
+        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+        log.info('Task execution cancelled (caught abort)', { taskId, agentId: this.id });
+        return;
+      }
       flushText();
       emit('error', String(error));
       this.metricsCollector.recordTaskCompletion(taskId, 'failed', Date.now() - taskStartMs);
@@ -1443,8 +1479,9 @@ export class Agent {
       });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
-      throw error; // 重新抛出错误，让TaskExecutor处理
+      throw error;
     } finally {
+      if (cancelPollTimer) clearInterval(cancelPollTimer);
       // 从活动任务中移除
       this.activeTasks.delete(taskId);
       this.notifyStateChange();

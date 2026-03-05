@@ -83,7 +83,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     return this.convertResponse(data);
   }
 
-  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void): Promise<LLMResponse> {
+  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
     const systemMsg = request.messages.find((m) => m.role === 'system');
     const messages = this.convertMessages(request.messages.filter((m) => m.role !== 'system'));
 
@@ -98,6 +98,10 @@ export class AnthropicProvider implements LLMProviderInterface {
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
+
     const res = await fetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
@@ -106,6 +110,7 @@ export class AnthropicProvider implements LLMProviderInterface {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -188,6 +193,8 @@ export class AnthropicProvider implements LLMProviderInterface {
         } catch { /* skip unparseable */ }
       }
     }
+
+    clearTimeout(timeout);
 
     const usage = { inputTokens, outputTokens };
     onEvent({ type: 'message_end', usage, finishReason });

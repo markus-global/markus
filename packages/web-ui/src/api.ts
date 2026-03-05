@@ -294,6 +294,10 @@ export interface TaskInfo {
   notes?: string[];
   projectId?: string;
   iterationId?: string;
+  createdBy?: string;
+  updatedBy?: string;
+  startedAt?: string;
+  completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }

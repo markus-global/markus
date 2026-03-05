@@ -371,6 +371,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setAuditService(auditService);
 
   const projectService = new ProjectService();
+  const storage = orgService.getStorage();
+  if (storage?.projectRepo) {
+    projectService.setProjectRepo(storage.projectRepo);
+  }
+  if (storage?.iterationRepo) {
+    projectService.setIterationRepo(storage.iterationRepo);
+  }
+  await projectService.loadFromDB('default');
   const knowledgeService = new KnowledgeService();
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();

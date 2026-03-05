@@ -38,6 +38,8 @@ export interface Task {
   timeoutMs?: number;
   /** Timestamp when the task started executing */
   startedAt?: string;
+  /** Timestamp when the task was completed/failed/cancelled */
+  completedAt?: string;
 
   // ── Governance fields ──
   projectId?: string;
@@ -45,6 +47,8 @@ export interface Task {
   repositoryPath?: string;
   /** Agent or user who created this task */
   createdBy?: string;
+  /** Agent or user who last updated this task */
+  updatedBy?: string;
   /** How this task was approved ('auto', 'manager', 'human', 'plan_approval') */
   approvedVia?: string;
   /** Report ID if created from an approved plan */

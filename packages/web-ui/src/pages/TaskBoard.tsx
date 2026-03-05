@@ -49,14 +49,93 @@ const STATUS_DOT: Record<string, string> = {
   archived: 'bg-gray-700',
 };
 
+// ─── Tool I/O Tooltip ────────────────────────────────────────────────────────
+
+function ToolIOTooltip({ metadata, type }: { metadata?: Record<string, unknown>; type: 'start' | 'end' }) {
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState<'above' | 'below'>('below');
+  const triggerRef = useRef<HTMLSpanElement>(null);
+
+  if (!metadata) return null;
+
+  const args = metadata.arguments as Record<string, unknown> | undefined;
+  const result = metadata.result as string | undefined;
+  const error = metadata.error as string | undefined;
+  const durationMs = metadata.durationMs as number | undefined;
+  const success = metadata.success as boolean | undefined;
+
+  const hasContent = (type === 'start' && args && Object.keys(args).length > 0) ||
+    (type === 'end' && (result || error || args));
+  if (!hasContent) return null;
+
+  const handleEnter = () => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos(rect.top > 300 ? 'above' : 'below');
+    }
+    setShow(true);
+  };
+
+  return (
+    <span
+      ref={triggerRef}
+      className="relative inline-flex items-center"
+      onMouseEnter={handleEnter}
+      onMouseLeave={() => setShow(false)}
+    >
+      <svg className="w-3 h-3 text-gray-500 hover:text-gray-300 cursor-help ml-1.5 shrink-0" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2.5a1 1 0 110 2 1 1 0 010-2zM6.5 7h2v4.5h-2V7h1z"/>
+      </svg>
+      {show && (
+        <div
+          className={`absolute left-0 z-50 w-80 max-h-64 overflow-auto bg-gray-900 border border-gray-600 rounded-lg shadow-xl text-xs p-3 ${
+            pos === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
+          }`}
+        >
+          {args && Object.keys(args).length > 0 && (
+            <div className="mb-2">
+              <div className="text-gray-400 font-semibold mb-1">Input</div>
+              <pre className="text-gray-300 whitespace-pre-wrap break-all bg-gray-800 rounded p-2 max-h-32 overflow-auto">
+                {JSON.stringify(args, null, 2).slice(0, 1500)}
+              </pre>
+            </div>
+          )}
+          {type === 'end' && result && (
+            <div className="mb-2">
+              <div className="text-gray-400 font-semibold mb-1">Output</div>
+              <pre className={`whitespace-pre-wrap break-all rounded p-2 max-h-32 overflow-auto ${
+                success === false ? 'text-red-300 bg-red-900/30' : 'text-gray-300 bg-gray-800'
+              }`}>
+                {result.slice(0, 1500)}
+              </pre>
+            </div>
+          )}
+          {type === 'end' && error && !result && (
+            <div className="mb-2">
+              <div className="text-gray-400 font-semibold mb-1">Error</div>
+              <pre className="text-red-300 whitespace-pre-wrap break-all bg-red-900/30 rounded p-2 max-h-32 overflow-auto">
+                {error}
+              </pre>
+            </div>
+          )}
+          {durationMs !== undefined && (
+            <div className="text-gray-500 mt-1">{durationMs}ms</div>
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
 function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
   if (entry.type === 'status') {
     const isCompleted = entry.content === 'completed';
     const isStarted = entry.content === 'started';
-    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : 'text-gray-500';
-    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : 'bg-gray-500';
+    const isCancelled = entry.content === 'cancelled';
+    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : isCancelled ? 'text-yellow-400' : 'text-gray-500';
+    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : isCancelled ? 'bg-yellow-400' : 'bg-gray-500';
     return (
       <div className="flex items-center gap-2 py-0.5 px-1">
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
@@ -79,20 +158,23 @@ function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
         </svg>
         <span className="text-xs text-indigo-300 font-medium">{entry.content}</span>
         <span className="text-xs text-gray-600">calling…</span>
+        <ToolIOTooltip metadata={entry.metadata} type="start" />
       </div>
     );
   }
   if (entry.type === 'tool_end') {
-    const success = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
+    const meta = entry.metadata as Record<string, unknown> | undefined;
+    const success = meta?.success !== false;
     return (
       <div className="flex items-center gap-2 py-0.5 px-1">
         <span className={`text-xs ${success ? 'text-green-400' : 'text-red-400'}`}>
           {success ? '✓' : '✗'}
         </span>
         <span className={`text-xs font-medium ${success ? 'text-green-300' : 'text-red-300'}`}>{entry.content}</span>
-        {!success && entry.metadata && (entry.metadata as Record<string, unknown>).error && (
-          <span className="text-xs text-red-400 truncate">{String((entry.metadata as Record<string, unknown>).error)}</span>
+        {!success && meta?.error && (
+          <span className="text-xs text-red-400 truncate max-w-[200px]">{String(meta.error)}</span>
         )}
+        <ToolIOTooltip metadata={entry.metadata} type="end" />
       </div>
     );
   }
@@ -493,6 +575,40 @@ function TaskDetailModal({
                   Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span>
                 </div>
               )}
+
+              {/* Metadata: creator, timestamps */}
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-3 pt-3 border-t border-gray-800/60">
+                {task.createdBy && (
+                  <div className="text-xs text-gray-500">
+                    Created by: <span className="text-gray-400">{task.createdBy}</span>
+                  </div>
+                )}
+                {task.createdAt && (
+                  <div className="text-xs text-gray-500">
+                    Created: <span className="text-gray-400">{new Date(task.createdAt).toLocaleString()}</span>
+                  </div>
+                )}
+                {task.updatedBy && (
+                  <div className="text-xs text-gray-500">
+                    Updated by: <span className="text-gray-400">{task.updatedBy}</span>
+                  </div>
+                )}
+                {task.updatedAt && (
+                  <div className="text-xs text-gray-500">
+                    Updated: <span className="text-gray-400">{new Date(task.updatedAt).toLocaleString()}</span>
+                  </div>
+                )}
+                {task.startedAt && (
+                  <div className="text-xs text-gray-500">
+                    Started: <span className="text-gray-400">{new Date(task.startedAt).toLocaleString()}</span>
+                  </div>
+                )}
+                {task.completedAt && (
+                  <div className="text-xs text-gray-500">
+                    Finished: <span className="text-gray-400">{new Date(task.completedAt).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Subtasks */}
@@ -623,13 +739,13 @@ function TaskDetailModal({
               </button>
             )}
 
-            {/* ── in_progress: Pause (status → assigned/pending, execution continues) */}
+            {/* ── in_progress: Pause (status → assigned/pending, aborts running agent) */}
             {isRunning && (
               <button
                 onClick={() => void pauseTask()}
                 disabled={busy}
                 className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5"
-                title="Change status to assigned/pending (does not abort running agent)"
+                title="Pause task and stop agent execution"
               >
                 <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
                   <rect x="2" y="1.5" width="3" height="9" rx="0.5" />

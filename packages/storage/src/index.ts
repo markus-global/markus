@@ -30,6 +30,8 @@ export {
   SqliteAgentRepo,
   SqliteTaskRepo,
   SqliteTaskLogRepo,
+  SqliteProjectRepo,
+  SqliteIterationRepo,
   SqliteMessageRepo,
   SqliteMemoryRepo,
   SqliteChatSessionRepo,

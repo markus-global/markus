@@ -84,7 +84,7 @@ export class OllamaProvider implements LLMProviderInterface {
     }
   }
 
-  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void): Promise<LLMResponse> {
+  async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
     const messages = this.convertMessages(request.messages);
 
     const body: Record<string, unknown> = {
@@ -104,6 +104,7 @@ export class OllamaProvider implements LLMProviderInterface {
     const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/api/chat`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
+    if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
 
     let res: Response;
     try {
