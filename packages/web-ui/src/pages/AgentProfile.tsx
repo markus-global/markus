@@ -3,6 +3,7 @@ import { api, wsClient } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
+import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
@@ -829,8 +830,9 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
       {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
       {streamingText && (
-        <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-          {streamingText}<span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+        <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+          <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
+          <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
         </div>
       )}
       <div ref={endRef} />

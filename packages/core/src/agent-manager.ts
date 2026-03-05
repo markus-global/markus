@@ -26,6 +26,7 @@ import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 const log = createLogger('agent-manager');
 
@@ -160,7 +161,7 @@ export class AgentManager {
   }) {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
-    this.dataDir = options.dataDir ?? join(process.cwd(), '.markus', 'agents');
+    this.dataDir = options.dataDir ?? join(homedir(), '.markus', 'agents');
     this.eventBus = options.eventBus ?? new EventBus();
     this.sandboxFactory = options.sandboxFactory;
     this.mcpManager = new MCPClientManager();

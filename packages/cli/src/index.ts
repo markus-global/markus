@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { parseArgs } from 'node:util';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { loadConfig, createLogger, type LLMProviderConfig } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry } from '@markus/core';
 import {
@@ -318,7 +319,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
-    dataDir: resolve(process.cwd(), '.markus', 'agents'),
+    dataDir: join(homedir(), '.markus', 'agents'),
     skillRegistry,
     taskService,
   });

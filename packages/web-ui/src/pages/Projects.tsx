@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type DragEvent } from 'react'
 import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
+import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -123,8 +124,8 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
     <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
       {visibleLogs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
       {streamingText && (
-        <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-          {streamingText}
+        <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+          <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
           <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
         </div>
       )}
@@ -262,7 +263,7 @@ function TaskDetailModal({
         <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-800">
           <div className="flex-1 min-w-0 pr-4">
             <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
-            {task.description && <p className="text-sm text-gray-400 mt-1">{task.description}</p>}
+            {task.description && <div className="mt-1"><MarkdownMessage content={task.description} className="text-sm text-gray-400" /></div>}
             {taskProject && (
               <div className="flex items-center gap-1.5 mt-2">
                 <span className="text-[10px] px-1.5 py-0.5 bg-indigo-900/30 text-indigo-300 rounded">{taskProject.name}</span>
@@ -357,7 +358,7 @@ function TaskDetailModal({
                 <div className="mt-5">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
                   <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                    {task.notes.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed">{note}</div>)}
+                    {task.notes.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
                   </div>
                 </div>
               )}

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { TaskLogEntry } from '../api.ts';
+import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 const TOOL_LABELS: Record<string, string> = {
   shell_execute: 'Shell',
@@ -292,8 +293,8 @@ export function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
   }
   if (entry.type === 'text') {
     return (
-      <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-        {entry.content}
+      <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+        <MarkdownMessage content={entry.content} className="text-sm text-gray-300" />
       </div>
     );
   }
