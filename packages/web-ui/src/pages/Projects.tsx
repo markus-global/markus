@@ -3,6 +3,54 @@ import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, typ
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { navBus } from '../navBus.ts';
+
+function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const agent = agents.find(a => a.id === agentId);
+  const displayName = agent?.name ?? agentId.slice(0, 10);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  return (
+    <span ref={ref} className="relative inline-block">
+      <button onClick={() => setOpen(!open)} className="text-indigo-400 hover:text-indigo-300 hover:underline cursor-pointer">
+        {displayName}
+      </button>
+      {open && agent && (
+        <div className="absolute left-0 bottom-full mb-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full bg-indigo-600/30 flex items-center justify-center text-[10px] font-bold text-indigo-300">
+              {agent.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-gray-200 font-medium truncate">{agent.name}</div>
+              <div className="text-[10px] text-gray-500">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+            </div>
+            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
+          </div>
+          <button
+            onClick={() => { setOpen(false); navBus.navigate('team', { agentId: agent.id }); }}
+            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+          >
+            View Profile →
+          </button>
+        </div>
+      )}
+      {open && !agent && (
+        <div className="absolute left-0 bottom-full mb-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-40 w-40 p-2">
+          <div className="text-[10px] text-gray-500">Agent not found: {agentId.slice(0, 12)}…</div>
+        </div>
+      )}
+    </span>
+  );
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -614,11 +662,13 @@ const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
 function InlineRequirements({
   projectId,
   projects,
+  agents,
   onFlash,
   triggerCreate = 0,
 }: {
   projectId?: string;
   projects: ProjectInfo[];
+  agents: AgentInfo[];
   onFlash: (m: string) => void;
   triggerCreate?: number;
 }) {
@@ -760,9 +810,9 @@ function InlineRequirements({
                     <p className="text-[11px] text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description || 'No description.'}</p>
                     <div className="flex items-center gap-3 text-[10px] text-gray-500">
                       <span>{req.priority}</span>
-                      <span>by {req.createdBy}</span>
+                      <span className="inline-flex items-center gap-0.5">by <AgentNameLink agentId={req.createdBy} agents={agents} /></span>
                       <span>{new Date(req.createdAt).toLocaleDateString()}</span>
-                      {req.approvedBy && <span>approved by {req.approvedBy}</span>}
+                      {req.approvedBy && <span className="inline-flex items-center gap-0.5">approved by <AgentNameLink agentId={req.approvedBy} agents={agents} /></span>}
                     </div>
                     {req.rejectedReason && <p className="text-[11px] text-red-400/80">Rejected: {req.rejectedReason}</p>}
                   </div>
@@ -1304,6 +1354,7 @@ export function ProjectsPage() {
             <InlineRequirements
               projectId={viewMode === 'project' ? selectedProjectId ?? undefined : undefined}
               projects={projects}
+              agents={agents}
               onFlash={msg}
               triggerCreate={triggerCreateReq}
             />

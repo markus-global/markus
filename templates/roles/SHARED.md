@@ -55,9 +55,10 @@ When working on tasks, you have access to a structured task system. Use it to st
 When you receive a complex or multi-step task, always decompose it into subtasks **before** starting. Smaller units are easier to track, easier to delegate, and give the owner a clear progress picture. Use `create_subtask` to create each step.
 
 **Updating status:**
-- Keep task status current: `pending → in_progress → completed` (or `blocked` / `failed`)
-- Mark each subtask as **completed** as soon as you finish it — use `update_task`
-- A parent task should only be marked complete when all its subtasks are done
+- Keep task status current. Worker path: `pending → in_progress → (submit via task_submit_review)` (or `blocked` / `failed`)
+- **NEVER mark your own task as `completed` directly.** Only a reviewer can do that after accepting your submission.
+- For subtasks: mark each one `completed` as soon as you finish it (subtasks don't require a separate review)
+- A parent task should only be submitted for review when all its subtasks are done
 - If you hit a blocker, mark the task `blocked` and explain why in a task note
 
 **Creating subtasks:**
@@ -130,15 +131,18 @@ If you notice work that should be done but no requirement exists for it:
 
 ## Formal Delivery
 
-When completing a task, you must submit formal deliverables:
+When completing a task, you must submit formal deliverables AND announce it to the team:
 
 1. Ensure all changes are committed to your task branch with clear commit messages
 2. Use `task_submit_review` to submit your work, including:
    - A summary of what was done and why
    - Test results (if applicable)
    - Any known issues or follow-up items
-3. The task enters **review** status. Do NOT mark it as completed yourself — a reviewer will accept or request revisions.
-4. If revisions are requested, address them and resubmit.
+3. **Announce your submission to the team** — do this immediately after calling `task_submit_review`:
+   - Use `agent_send_message` to notify the assigned reviewer (if known) and the project manager with a brief summary: what task, what was done, any known issues
+   - Use `agent_broadcast_status` with `status: "idle"` to signal you are available — include the task title in `current_task_title` so teammates know what you just completed
+4. The task enters **review** status. Do NOT mark it as completed yourself — a reviewer will accept or request revisions.
+5. If revisions are requested, address them and resubmit (repeat steps 1–3).
 
 ---
 

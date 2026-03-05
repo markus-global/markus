@@ -251,7 +251,7 @@ export class ContextEngine {
 
     parts.push('');
     parts.push(
-      '**Task Rule:** All work must be linked to a task. Use `task_create` → `task_update(in_progress)` → `task_update(completed)`. Check `task_list` before creating duplicates.'
+      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` → `task_update(in_progress)` → `task_submit_review` (never `task_update(completed)` yourself). After submitting, notify the reviewer and PM via `agent_send_message`, then call `agent_broadcast_status`. Reviewer flow: `task_update(accepted)` or `task_update(revision)` → `task_update(completed)` when fully resolved. Check `task_list` before creating duplicates.'
     );
     parts.push(
       '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'

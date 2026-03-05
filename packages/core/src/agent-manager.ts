@@ -27,8 +27,9 @@ import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
+import type { HeartbeatTask, RoleTemplate } from '@markus/shared';
 
 const log = createLogger('agent-manager');
 
@@ -182,6 +183,71 @@ export class AgentManager {
     >;
   };
 
+  private managerHeartbeatCache?: HeartbeatTask[];
+
+  /**
+   * Load and parse the base MANAGER_HEARTBEAT.md template.
+   * Cached after first load.
+   */
+  private getManagerHeartbeatTasks(): HeartbeatTask[] {
+    if (this.managerHeartbeatCache) return this.managerHeartbeatCache;
+
+    const candidates = this.roleLoader.getTemplateDirs();
+    const searchDirs = [
+      ...candidates,
+      join(process.cwd(), 'templates', 'roles'),
+    ];
+
+    for (const dir of searchDirs) {
+      const filePath = join(dir, 'MANAGER_HEARTBEAT.md');
+      if (existsSync(filePath)) {
+        const content = readFileSync(filePath, 'utf-8');
+        const tasks = this.parseHeartbeatTasks(content);
+        this.managerHeartbeatCache = tasks;
+        log.info('Loaded manager heartbeat template', { taskCount: tasks.length, path: filePath });
+        return tasks;
+      }
+    }
+
+    log.warn('MANAGER_HEARTBEAT.md not found in any template directory');
+    this.managerHeartbeatCache = [];
+    return [];
+  }
+
+  private parseHeartbeatTasks(content: string): HeartbeatTask[] {
+    const tasks: HeartbeatTask[] = [];
+    const sections = content.split(/^##\s+/m).filter(Boolean);
+    for (const section of sections) {
+      const lines = section.split('\n');
+      const name = lines[0]?.trim();
+      if (!name || name.startsWith('#')) continue;
+      const description = lines.slice(1).map(l => l.trim()).filter(Boolean).join(' ');
+      tasks.push({ name, description, enabled: true });
+    }
+    return tasks;
+  }
+
+  /**
+   * For manager agents: ensure the role has heartbeat tasks.
+   * If the role already has heartbeat tasks, merge manager tasks (dedup by name).
+   * If the role has no heartbeat tasks, use manager heartbeat as-is.
+   * Returns a new role object (does not mutate the original).
+   */
+  private ensureManagerHeartbeat(role: RoleTemplate): RoleTemplate {
+    const managerTasks = this.getManagerHeartbeatTasks();
+    if (managerTasks.length === 0) return role;
+
+    const existingNames = new Set(role.defaultHeartbeatTasks.map(t => t.name));
+    const toAdd = managerTasks.filter(t => !existingNames.has(t.name));
+
+    if (toAdd.length === 0) return role;
+
+    return {
+      ...role,
+      defaultHeartbeatTasks: [...role.defaultHeartbeatTasks, ...toAdd],
+    };
+  }
+
   constructor(options: {
     llmRouter: LLMRouter;
     roleLoader?: RoleLoader;
@@ -257,7 +323,10 @@ export class AgentManager {
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
     const id = genAgentId();
-    const role = this.roleLoader.loadRole(request.roleName);
+    let role = this.roleLoader.loadRole(request.roleName);
+    if (request.agentRole === 'manager') {
+      role = this.ensureManagerHeartbeat(role);
+    }
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 
@@ -621,7 +690,7 @@ export class AgentManager {
     const id = row.id;
     // Try loading role by: 1) roleId (template folder name for new agents),
     // 2) roleName (display name stored by older agents), 3) display-name→folder lookup
-    const role = (() => {
+    let role = (() => {
       // Try roleId first (it stores the folder name for agents hired after this fix)
       try {
         return this.roleLoader.loadRole(row.roleId);
@@ -649,13 +718,18 @@ export class AgentManager {
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 
+    const agentRole = (row.agentRole as 'manager' | 'worker') ?? 'worker';
+    if (agentRole === 'manager') {
+      role = this.ensureManagerHeartbeat(role);
+    }
+
     const config: AgentConfig = {
       id,
       name: row.name,
       roleId: row.roleId,
       orgId: row.orgId,
       teamId: row.teamId ?? undefined,
-      agentRole: (row.agentRole as 'manager' | 'worker') ?? 'worker',
+      agentRole,
       skills: Array.isArray(row.skills) ? (row.skills as string[]) : role.defaultSkills,
       profile: row.profile as AgentProfile | undefined,
       llmConfig: (row.llmConfig as AgentConfig['llmConfig']) ?? { primary: 'anthropic' },

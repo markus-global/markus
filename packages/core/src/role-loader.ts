@@ -18,6 +18,10 @@ export class RoleLoader {
     this.templateDirs = templateDirs ?? [resolve(process.cwd(), 'templates', 'roles')];
   }
 
+  getTemplateDirs(): string[] {
+    return this.templateDirs;
+  }
+
   listAvailableRoles(): string[] {
     const roles: string[] = [];
     for (const dir of this.templateDirs) {

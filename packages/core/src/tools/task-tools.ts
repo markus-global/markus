@@ -248,10 +248,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       name: 'task_update',
       description: [
         'Update the status of a task, optionally adding a progress note.',
-        'Use this to advance your assigned task through its lifecycle:',
-        'assigned → in_progress → completed (or blocked/failed).',
-        'Always update task status when you start, finish, or get blocked on a task.',
-        'Include a progress note to explain what was done or why the status changed.',
+        'Worker lifecycle: assigned → in_progress → (submit via task_submit_review when done).',
+        'Reviewer lifecycle: review → accepted (approve) or revision (request changes) → completed (after all revisions resolved).',
+        'IMPORTANT: Workers MUST NOT set status to "completed" directly.',
+        'When your work is done, use task_submit_review instead — a reviewer must verify before the task closes.',
+        'Always include a progress note explaining what changed.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -259,8 +260,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           task_id: { type: 'string', description: 'The task ID to update' },
           status: {
             type: 'string',
-            enum: ['in_progress', 'blocked', 'completed', 'failed', 'cancelled'],
-            description: 'New status for the task',
+            enum: ['in_progress', 'blocked', 'revision', 'accepted', 'completed', 'failed', 'cancelled'],
+            description: 'New status. Workers: use only in_progress/blocked/failed/cancelled. Reviewers: use accepted/revision/completed.',
           },
           note: {
             type: 'string',
@@ -384,8 +385,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       ? [
           {
             name: 'task_submit_review',
-            description:
-              'Submit your completed work for review. Provide a summary of changes, the branch name with your commits, and any test results. The task will enter review status and a reviewer will evaluate your work.',
+            description: [
+              'Submit your completed work for review.',
+              'Provide a summary of changes, the branch name with your commits, and any test results.',
+              'The task enters review status and a reviewer will evaluate your deliverables.',
+              'After calling this tool, you MUST notify the team: use agent_send_message to inform the reviewer and the project manager,',
+              'and use agent_broadcast_status to let all colleagues know you have submitted work and are now available.',
+            ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {

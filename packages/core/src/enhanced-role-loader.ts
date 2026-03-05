@@ -31,6 +31,10 @@ export class EnhancedRoleLoader {
     this.openclawParser = new OpenClawConfigParser();
   }
 
+  getTemplateDirs(): string[] {
+    return this.templateDirs;
+  }
+
   /**
    * List all available roles, including OpenClaw configurations
    */
