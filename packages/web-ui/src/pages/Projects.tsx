@@ -260,122 +260,129 @@ function TaskDetailModal({
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-800 rounded-xl w-[600px] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-gray-800">
-          <div className="flex-1 min-w-0 pr-4">
-            <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
-            {task.description && <div className="mt-1"><MarkdownMessage content={task.description} className="text-sm text-gray-400" /></div>}
-            {taskProject && (
-              <div className="flex items-center gap-1.5 mt-2">
-                <span className="text-[10px] px-1.5 py-0.5 bg-indigo-900/30 text-indigo-300 rounded">{taskProject.name}</span>
-              </div>
-            )}
-          </div>
+        {/* Header – title & close only */}
+        <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-800 shrink-0">
+          <h3 className="text-base font-semibold leading-snug flex-1 min-w-0 pr-4">{task.title}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg shrink-0">×</button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 px-6 pt-3 border-b border-gray-800 shrink-0">
-          <button onClick={() => setActiveTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>Details</button>
-          <button onClick={() => setActiveTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
-            Execution Log
-            {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
-          </button>
-        </div>
-
-        {/* Logs tab */}
-        <div className={`flex-1 flex flex-col overflow-hidden ${activeTab !== 'logs' ? 'hidden' : ''}`}>
-          {runError && (
-            <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
-              <span className="font-medium">Failed to start:</span> {runError}
+        {/* Scrollable content area */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {/* Description & project badge */}
+          {(task.description || taskProject) && (
+            <div className="px-6 pt-3 pb-3 border-b border-gray-800">
+              {task.description && <MarkdownMessage content={task.description} className="text-sm text-gray-400" />}
+              {taskProject && (
+                <div className="flex items-center gap-1.5 mt-2">
+                  <span className="text-[10px] px-1.5 py-0.5 bg-indigo-900/30 text-indigo-300 rounded">{taskProject.name}</span>
+                </div>
+              )}
             </div>
           )}
-          <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} isRunning={task.status === 'in_progress'} />
-        </div>
 
-        {activeTab === 'details' && (
-          <>
-            <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</label>
-                  <select value={task.status} onChange={e => void updateStatus(task.id, e.target.value)} disabled={busy}
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
-                    {ALL_STATUSES.map(s => <option key={s} value={s}>{COLUMN_LABELS[s]}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Priority</label>
-                  <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={busy}
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
-                    <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
-                  <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
-                    <option value="">Unassigned</option>
-                    {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Project</label>
-                  <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
-                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
-                    <option value="">No Project</option>
-                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              {task.parentTaskId && (
-                <div className="text-xs text-gray-500">Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span></div>
-              )}
-            </div>
+          {/* Tabs */}
+          <div className="flex gap-1 px-6 pt-3 border-b border-gray-800 sticky top-0 z-10 bg-gray-900">
+            <button onClick={() => setActiveTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>Details</button>
+            <button onClick={() => setActiveTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+              Execution Log
+              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
+            </button>
+          </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-gray-500 font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
-                </span>
-                <button onClick={() => setAddingSubtask(true)} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">+ Add subtask</button>
+          {/* Logs tab */}
+          <div className={activeTab !== 'logs' ? 'hidden' : ''}>
+            {runError && (
+              <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
+                <span className="font-medium">Failed to start:</span> {runError}
               </div>
-              {subtasks.length > 0 && (
-                <div className="space-y-1.5 mb-3">
-                  {subtasks.map(sub => (
-                    <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/50 transition-colors">
-                      <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-indigo-500'}`}>
-                        {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-                      </button>
-                      <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-300'}`}>{sub.title}</span>
-                      <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all text-xs">✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-gray-600 text-center py-4">No subtasks yet.</div>}
-              {addingSubtask && (
-                <div className="flex gap-2 mt-2">
-                  <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
-                    placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none" />
-                  <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add</button>
-                  <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
-                </div>
-              )}
-              {task.notes && task.notes.length > 0 && (
-                <div className="mt-5">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
-                  <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                    {task.notes.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+            )}
+            <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} isRunning={task.status === 'in_progress'} />
+          </div>
+
+          {activeTab === 'details' && (
+            <>
+              <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</label>
+                    <select value={task.status} onChange={e => void updateStatus(task.id, e.target.value)} disabled={busy}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      {ALL_STATUSES.map(s => <option key={s} value={s}>{COLUMN_LABELS[s]}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Priority</label>
+                    <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={busy}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+                    </select>
                   </div>
                 </div>
-              )}
-            </div>
-          </>
-        )}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
+                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      <option value="">Unassigned</option>
+                      {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Project</label>
+                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
+                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      <option value="">No Project</option>
+                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {task.parentTaskId && (
+                  <div className="text-xs text-gray-500">Parent: <span className="font-mono text-gray-400">{task.parentTaskId.slice(-8)}</span></div>
+                )}
+              </div>
+
+              <div className="px-6 py-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-gray-500 font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
+                  </span>
+                  <button onClick={() => setAddingSubtask(true)} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">+ Add subtask</button>
+                </div>
+                {subtasks.length > 0 && (
+                  <div className="space-y-1.5 mb-3">
+                    {subtasks.map(sub => (
+                      <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/50 transition-colors">
+                        <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-indigo-500'}`}>
+                          {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                        </button>
+                        <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-300'}`}>{sub.title}</span>
+                        <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all text-xs">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-gray-600 text-center py-4">No subtasks yet.</div>}
+                {addingSubtask && (
+                  <div className="flex gap-2 mt-2">
+                    <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
+                      placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none" />
+                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add</button>
+                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
+                  </div>
+                )}
+                {task.notes && task.notes.length > 0 && (
+                  <div className="mt-5">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
+                    <div className="space-y-1.5">
+                      {task.notes.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Actions */}
         <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
