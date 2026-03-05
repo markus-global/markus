@@ -1061,13 +1061,15 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority }
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null }
   ): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (data.title !== undefined) task.title = data.title;
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
+    if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
+    if (data.iterationId !== undefined) task.iterationId = data.iterationId ?? undefined;
     task.updatedAt = new Date().toISOString();
 
     if (this.taskRepo) {
@@ -1075,6 +1077,8 @@ export class TaskService {
         .update(id, data)
         .catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
     }
+
+    this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title });
 
     return task;
   }

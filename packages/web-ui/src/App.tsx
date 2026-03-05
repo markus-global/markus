@@ -72,7 +72,7 @@ export function App() {
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,
     builder: <AgentBuilder />,
-    prompts: <AgentBuilder initialTab="prompts" />,
+    prompts: <AgentBuilder />,
     governance: <GovernancePage />,
     projects: <ProjectsPage />,
     knowledge: <KnowledgePage />,

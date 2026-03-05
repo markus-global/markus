@@ -562,7 +562,7 @@ export const api = {
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
     create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string) =>
       request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId }) }),
-    update: (id: string, data: { title?: string; description?: string; priority?: string }) =>
+    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -683,7 +683,34 @@ export const api = {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
   },
   skills: {
-    list: () => request<{ skills: Array<{ name: string; version: string; description?: string; tools?: string[] }> }>('/skills'),
+    list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[] }> }>('/skills'),
+    registry: (source?: string) => request<{ skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }>; source: string; cached: boolean }>(`/skills/registry${source ? `?source=${source}` : ''}`),
+    registrySkillsmp: (q: string, page?: number, limit?: number) =>
+      request<{ success: boolean; data?: { results: Array<{ name: string; description: string; owner: string; repo: string; stars: number; url: string }>; total: number } }>(`/skills/registry/skillsmp?q=${encodeURIComponent(q)}&page=${page ?? 1}&limit=${limit ?? 20}`),
+    registrySkillssh: (q?: string) =>
+      request<{ skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }>; cached: boolean }>(`/skills/registry/skillssh${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+    import: (name: string, sourceUrl?: string, description?: string, category?: string) =>
+      request('/skills/import', { method: 'POST', body: JSON.stringify({ name, sourceUrl, description, category }) }),
+  },
+  marketplace: {
+    skills: (opts?: { source?: string; category?: string; q?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.source) params.set('source', opts.source);
+      if (opts?.category) params.set('category', opts.category);
+      if (opts?.q) params.set('q', opts.q);
+      const qs = params.toString();
+      return request<{ skills: Array<{ id: string; name: string; description: string; source: string; status: string; version: string; authorName: string; category: string; tags: string[]; tools: Array<{ name: string; description: string }>; readme: string | null; downloadCount: number; avgRating: number; ratingCount: number }>; total: number }>(`/marketplace/skills${qs ? `?${qs}` : ''}`);
+    },
+    installSkill: (skillId: string) =>
+      request(`/marketplace/skills/${skillId}/install`, { method: 'POST' }),
+    publishSkill: (data: { name: string; description: string; authorName: string; category: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; readme?: string; requiredPermissions?: string[]; requiredEnv?: string[]; publish?: boolean }) =>
+      request('/marketplace/skills', { method: 'POST', body: JSON.stringify(data) }),
+  },
+  builder: {
+    chat: (mode: 'agent' | 'team' | 'skill', messages: Array<{ role: string; content: string }>) =>
+      request<{ reply: string; artifact: Record<string, unknown> | null; mode: string }>('/builder/chat', { method: 'POST', body: JSON.stringify({ mode, messages }) }),
+    create: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
+      request('/builder/create', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
   },
   auth: {
     login: (email: string, password: string) =>

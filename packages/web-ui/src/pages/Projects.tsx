@@ -179,6 +179,7 @@ function TaskDetailModal({
   const updateStatus = (taskId: string, status: string) => doUpdate(() => api.tasks.updateStatus(taskId, status));
   const updatePriority = (priority: string) => doUpdate(() => api.tasks.update(task.id, { priority }));
   const assignAgent = (agentId: string) => doUpdate(() => api.tasks.assign(task.id, agentId || null));
+  const updateProject = (projectId: string) => doUpdate(() => api.tasks.update(task.id, { projectId: projectId || null }));
 
   const startTask = async () => {
     if (busy) return; setBusy(true);
@@ -295,7 +296,7 @@ function TaskDetailModal({
         {activeTab === 'details' && (
           <>
             <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</label>
                   <select value={task.status} onChange={e => void updateStatus(task.id, e.target.value)} disabled={busy}
@@ -310,12 +311,22 @@ function TaskDetailModal({
                     <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                   </select>
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
                   <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
                     className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
                     <option value="">Unassigned</option>
                     {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Project</label>
+                  <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
+                    className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                    <option value="">No Project</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
               </div>

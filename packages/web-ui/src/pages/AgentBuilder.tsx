@@ -1,149 +1,367 @@
-import { useState, useCallback, useEffect } from 'react';
-import { api, type AgentInfo } from '../api.ts';
-import { PromptStudioPage } from './PromptStudio.tsx';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { api } from '../api.ts';
+import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
-type BuilderTab = 'template' | 'workflow' | 'team' | 'prompts';
+type BuilderTab = 'agent' | 'team' | 'skill';
 
-interface TemplateForm {
-  name: string;
-  description: string;
-  roleId: string;
-  agentRole: 'manager' | 'worker';
-  skills: string;
-  tags: string;
-  category: string;
-  systemPrompt: string;
-  starterTasks: Array<{ title: string; description: string; priority: 'low' | 'medium' | 'high' }>;
-  llmProvider: string;
-  llmModel: string;
-  temperature: number;
-  maxTokensPerDay: number;
-  toolWhitelist: string[];
-  requiredEnv: string[];
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  artifact?: Record<string, unknown> | null;
 }
 
-interface WorkflowStepForm {
-  id: string;
-  name: string;
-  type: 'agent_task' | 'condition' | 'transform' | 'delay';
-  agentId: string;
-  dependsOn: string[];
-  prompt: string;
-}
-
-interface WorkflowForm {
-  name: string;
-  description: string;
-  steps: WorkflowStepForm[];
-}
-
-interface TeamMemberForm {
-  templateId: string;
-  name: string;
-  count: number;
-  role: 'manager' | 'worker';
-}
-
-interface TeamForm {
-  name: string;
-  description: string;
-  members: TeamMemberForm[];
-  tags: string;
-  category: string;
-}
-
-interface AvailableTemplate {
-  id: string;
-  name: string;
-  agentRole: string;
-  category: string;
-  description?: string;
-}
-
-const CATEGORIES = ['development', 'devops', 'management', 'productivity', 'general'];
-
-const AVAILABLE_TOOLS = [
-  { group: 'File & Shell', tools: ['shell_execute', 'file_read', 'file_write', 'file_edit'] },
-  { group: 'Web', tools: ['web_fetch', 'web_search'] },
-  { group: 'Git', tools: ['git_status', 'git_diff', 'git_commit', 'git_log'] },
-  { group: 'Collaboration', tools: ['a2a_send', 'a2a_list_colleagues', 'task_create', 'task_update', 'task_list'] },
-  { group: 'Memory', tools: ['memory_save', 'memory_search', 'memory_list'] },
-  { group: 'MCP', tools: ['mcp_call'] },
+const TAB_CONFIG: Array<{ key: BuilderTab; label: string; icon: string; desc: string; greeting: string }> = [
+  {
+    key: 'agent',
+    label: 'Agent Father',
+    icon: '✦',
+    desc: 'AI agent architect',
+    greeting: "I'm **Agent Father** — your AI agent architect. Tell me what kind of agent you need, and I'll design it for you.\n\nFor example:\n- *\"A senior full-stack developer who specializes in React and Node.js\"*\n- *\"A DevOps engineer for CI/CD pipeline management\"*\n- *\"A code reviewer who enforces best practices\"*\n\nWhat agent would you like to create?",
+  },
+  {
+    key: 'team',
+    label: 'Team Factory',
+    icon: '◈',
+    desc: 'AI team composer',
+    greeting: "I'm **Team Factory** — your AI team composition expert. Describe the team you need, and I'll design the optimal lineup.\n\nFor example:\n- *\"A web development team with a PM, two developers, and a QA engineer\"*\n- *\"A content team for a tech blog with editor, writers, and SEO specialist\"*\n- *\"A data engineering squad\"*\n\nWhat team would you like to build?",
+  },
+  {
+    key: 'skill',
+    label: 'Skill Architect',
+    icon: '⬡',
+    desc: 'AI skill designer',
+    greeting: "I'm **Skill Architect** — your AI skill designer. Tell me what capability you want to create, and I'll design the skill manifest.\n\nFor example:\n- *\"A skill that analyzes Git repos and generates changelogs\"*\n- *\"A web scraping skill that extracts structured data from URLs\"*\n- *\"A database migration tool with rollback support\"*\n\nWhat skill would you like to create?",
+  },
 ];
 
-const ENV_OPTIONS = [
-  { id: 'git', label: 'Git', icon: '⌥' },
-  { id: 'node', label: 'Node.js', icon: '⬢' },
-  { id: 'python3', label: 'Python', icon: '⬡' },
-  { id: 'docker', label: 'Docker', icon: '▣' },
-  { id: 'browser', label: 'Browser', icon: '◉' },
-  { id: 'pnpm', label: 'pnpm', icon: '▪' },
-  { id: 'java', label: 'Java', icon: '♦' },
-  { id: 'go', label: 'Go', icon: '▸' },
-];
+// ─── Chat-Based Creator Agent ────────────────────────────────────────────────
 
-const LLM_PROVIDERS = [
-  { id: 'anthropic', label: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'] },
-  { id: 'openai', label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'] },
-  { id: 'google', label: 'Google', models: ['gemini-2.0-flash', 'gemini-2.5-pro'] },
-  { id: 'ollama', label: 'Ollama (local)', models: ['llama3', 'codellama', 'deepseek-coder'] },
-];
+function CreatorAgent({ mode, greeting }: { mode: BuilderTab; greeting: string }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: 'assistant', content: greeting },
+  ]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [flash, setFlash] = useState('');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-const STEP_TYPES: Record<string, { label: string; icon: string; hint: string; color: string }> = {
-  agent_task: { label: 'Agent Task', icon: '⊕', hint: 'An agent executes a task', color: 'bg-blue-500/15 text-blue-400 border-blue-500/20' },
-  condition: { label: 'Condition', icon: '◇', hint: 'Branch based on a condition', color: 'bg-amber-500/15 text-amber-400 border-amber-500/20' },
-  transform: { label: 'Transform', icon: '⟳', hint: 'Transform data between steps', color: 'bg-green-500/15 text-green-400 border-green-500/20' },
-  delay: { label: 'Delay', icon: '◔', hint: 'Pause for a duration', color: 'bg-gray-500/15 text-gray-400 border-gray-500/20' },
-};
-
-const TAB_CONFIG = [
-  { key: 'template' as const, label: 'Agent Template', icon: '⊕', desc: 'Create reusable agent blueprints' },
-  { key: 'workflow' as const, label: 'Workflow', icon: '⇢', desc: 'Build multi-step pipelines' },
-  { key: 'team' as const, label: 'Team', icon: '◎', desc: 'Compose agent teams' },
-  { key: 'prompts' as const, label: 'Prompt Studio', icon: '✎', desc: 'Design, version, and test prompts' },
-];
-
-function emptyStep(index: number): WorkflowStepForm {
-  return { id: `step_${index}`, name: '', type: 'agent_task', agentId: '', dependsOn: [], prompt: '' };
-}
-
-export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
-  const [tab, setTab] = useState<BuilderTab>(initialTab ?? 'template');
-  const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [availableTemplates, setAvailableTemplates] = useState<AvailableTemplate[]>([]);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-
-  const [tplForm, setTplForm] = useState<TemplateForm>({
-    name: '', description: '', roleId: '', agentRole: 'worker',
-    skills: '', tags: '', category: 'development', systemPrompt: '',
-    starterTasks: [],
-    llmProvider: '', llmModel: '', temperature: 0.7, maxTokensPerDay: 100000,
-    toolWhitelist: [], requiredEnv: [],
-  });
-
-  const [wfForm, setWfForm] = useState<WorkflowForm>({
-    name: '', description: '', steps: [emptyStep(0)],
-  });
-
-  const [teamForm, setTeamForm] = useState<TeamForm>({
-    name: '', description: '',
-    members: [{ templateId: '', name: '', count: 1, role: 'worker' }],
-    tags: '', category: 'development',
-  });
+  // Latest artifact from the conversation
+  const latestArtifact = [...messages].reverse().find(m => m.artifact)?.artifact ?? null;
 
   useEffect(() => {
-    fetch('/api/templates')
-      .then(r => r.json())
-      .then((d: { templates: AvailableTemplate[] }) => setAvailableTemplates(d.templates ?? []))
-      .catch(() => {});
-    api.agents.list()
-      .then(d => setAgents(d.agents))
-      .catch(() => {});
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
 
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [mode]);
+
+  const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 5000); };
+
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    setInput('');
+    const userMsg: ChatMessage = { role: 'user', content: text };
+    const updated = [...messages, userMsg];
+    setMessages(updated);
+    setSending(true);
+
+    try {
+      const apiMessages = updated
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({ role: m.role, content: m.content }))
+        .slice(1); // skip the greeting (generated client-side)
+
+      const resp = await api.builder.chat(mode, apiMessages);
+      setMessages(prev => [...prev, { role: 'assistant', content: resp.reply, artifact: resp.artifact }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${String(err)}. Please try again.` }]);
+    } finally {
+      setSending(false);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [input, sending, messages, mode]);
+
+  const handleCreate = useCallback(async () => {
+    if (!latestArtifact || creating) return;
+    setCreating(true);
+    try {
+      await api.builder.create(mode, latestArtifact);
+      const labels = { agent: 'Agent template', team: 'Team template', skill: 'Skill' };
+      msg(`${labels[mode]} created successfully!`);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `Done! The ${labels[mode].toLowerCase()} **${(latestArtifact.name as string) ?? ''}** has been created and saved. You can find it in the marketplace. Would you like to create another one?`,
+      }]);
+    } catch (err) {
+      msg(`Creation failed: ${String(err)}`);
+    } finally {
+      setCreating(false);
+    }
+  }, [latestArtifact, creating, mode]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
+  };
+
+  return (
+    <div className="flex h-full">
+      {/* Chat Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {flash && (
+          <div className="mx-4 mt-2 px-3 py-1.5 bg-emerald-900/50 text-emerald-300 text-xs rounded-lg border border-emerald-700/30">{flash}</div>
+        )}
+
+        {/* Messages */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          {messages.map((m, i) => (
+            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[80%] rounded-xl px-4 py-3 ${
+                m.role === 'user'
+                  ? 'bg-indigo-600/20 border border-indigo-500/20 text-gray-200'
+                  : 'bg-gray-800/60 border border-gray-700/30 text-gray-300'
+              }`}>
+                <MarkdownMessage content={m.content} className="text-sm leading-relaxed" />
+              </div>
+            </div>
+          ))}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-gray-800/60 border border-gray-700/30 rounded-xl px-4 py-3">
+                <span className="text-sm text-gray-500 animate-pulse">Thinking...</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Input */}
+        <div className="border-t border-gray-800 px-4 py-3">
+          <div className="flex gap-2 items-end">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Describe what you need..."
+              rows={2}
+              className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none"
+              disabled={sending}
+            />
+            <button
+              onClick={() => void send()}
+              disabled={sending || !input.trim()}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg disabled:opacity-50 shrink-0 h-fit"
+            >
+              Send
+            </button>
+          </div>
+          <div className="text-[10px] text-gray-600 mt-1.5">Press Enter to send, Shift+Enter for new line</div>
+        </div>
+      </div>
+
+      {/* Artifact Sidebar */}
+      <div className="w-80 border-l border-gray-800 flex flex-col bg-gray-950 shrink-0">
+        <div className="px-4 py-3 border-b border-gray-800">
+          <h3 className="text-sm font-semibold text-gray-300">
+            {mode === 'agent' ? 'Agent Config' : mode === 'team' ? 'Team Config' : 'Skill Manifest'}
+          </h3>
+          <p className="text-[10px] text-gray-600 mt-0.5">Generated configuration appears here</p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {latestArtifact ? (
+            <ArtifactPreview artifact={latestArtifact} mode={mode} />
+          ) : (
+            <div className="text-center text-gray-600 text-xs py-12">
+              <div className="text-3xl mb-3 opacity-20">
+                {mode === 'agent' ? '✦' : mode === 'team' ? '◈' : '⬡'}
+              </div>
+              <div>Start the conversation and the AI will generate<br />a configuration for you.</div>
+            </div>
+          )}
+        </div>
+
+        {latestArtifact && (
+          <div className="p-4 border-t border-gray-800 space-y-2">
+            <button
+              onClick={() => void handleCreate()}
+              disabled={creating}
+              className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+            >
+              {creating ? 'Creating...' : `Create ${mode === 'agent' ? 'Agent' : mode === 'team' ? 'Team' : 'Skill'}`}
+            </button>
+            <button
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(latestArtifact, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${(latestArtifact.name as string) ?? mode}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="w-full px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg border border-gray-700"
+            >
+              Export JSON
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Artifact Preview ────────────────────────────────────────────────────────
+
+function ArtifactPreview({ artifact, mode }: { artifact: Record<string, unknown>; mode: BuilderTab }) {
+  if (mode === 'agent') {
+    return (
+      <div className="space-y-3 text-sm">
+        <Field label="Name" value={artifact.name as string} />
+        <Field label="Description" value={artifact.description as string} />
+        <div className="flex gap-2">
+          <Badge label="Role" value={artifact.agentRole as string} color={artifact.agentRole === 'manager' ? 'purple' : 'cyan'} />
+          <Badge label="Category" value={artifact.category as string} color="indigo" />
+        </div>
+        {artifact.systemPrompt && (
+          <div>
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">System Prompt</span>
+            <pre className="mt-1 text-xs text-gray-400 bg-gray-800/50 rounded-lg p-2 whitespace-pre-wrap max-h-[150px] overflow-y-auto">{artifact.systemPrompt as string}</pre>
+          </div>
+        )}
+        {Array.isArray(artifact.toolWhitelist) && (artifact.toolWhitelist as string[]).length > 0 && (
+          <div>
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Tools</span>
+            <div className="flex flex-wrap gap-1 mt-1">
+              {(artifact.toolWhitelist as string[]).map(t => (
+                <span key={t} className="px-1.5 py-0.5 text-[10px] bg-indigo-500/10 text-indigo-400 rounded font-mono">{t}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {artifact.skills && (
+          <Field label="Skills" value={artifact.skills as string} />
+        )}
+        {artifact.temperature !== undefined && (
+          <Field label="Temperature" value={String(artifact.temperature)} />
+        )}
+      </div>
+    );
+  }
+
+  if (mode === 'team') {
+    const members = Array.isArray(artifact.members) ? artifact.members as Array<Record<string, unknown>> : [];
+    return (
+      <div className="space-y-3 text-sm">
+        <Field label="Name" value={artifact.name as string} />
+        <Field label="Description" value={artifact.description as string} />
+        <Badge label="Category" value={artifact.category as string} color="indigo" />
+        <div>
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Members ({members.length})</span>
+          <div className="mt-1.5 space-y-1.5">
+            {members.map((m, i) => (
+              <div key={i} className="flex items-center gap-2 bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
+                <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
+                  m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
+                }`}>
+                  {m.role === 'manager' ? '★' : (i + 1)}
+                </span>
+                <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
+                <span className="text-[10px] text-gray-500">×{String(m.count ?? 1)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // skill
+  const tools = Array.isArray(artifact.tools) ? artifact.tools as Array<Record<string, unknown>> : [];
+  return (
+    <div className="space-y-3 text-sm">
+      <Field label="Name" value={artifact.name as string} />
+      <Field label="Description" value={artifact.description as string} />
+      <div className="flex gap-2">
+        <Badge label="Category" value={artifact.category as string} color="indigo" />
+        {artifact.version && <Badge label="Version" value={artifact.version as string} color="gray" />}
+      </div>
+      {tools.length > 0 && (
+        <div>
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Tools ({tools.length})</span>
+          <div className="mt-1.5 space-y-1">
+            {tools.map((t, i) => (
+              <div key={i} className="bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
+                <div className="text-xs text-indigo-400 font-medium">{t.name as string}</div>
+                {t.description && <div className="text-[10px] text-gray-500 mt-0.5">{t.description as string}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {Array.isArray(artifact.requiredPermissions) && (artifact.requiredPermissions as string[]).length > 0 && (
+        <div>
+          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Permissions</span>
+          <div className="flex flex-wrap gap-1 mt-1">
+            {(artifact.requiredPermissions as string[]).map(p => (
+              <span key={p} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-400 rounded">{p}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {Array.isArray(artifact.tags) && (artifact.tags as string[]).length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {(artifact.tags as string[]).map(t => (
+            <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div>
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</span>
+      <div className="text-xs text-gray-300 mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function Badge({ label, value, color }: { label: string; value?: string; color: string }) {
+  if (!value) return null;
+  const colors: Record<string, string> = {
+    purple: 'bg-purple-500/15 text-purple-400',
+    cyan: 'bg-cyan-500/15 text-cyan-400',
+    indigo: 'bg-indigo-500/15 text-indigo-400',
+    gray: 'bg-gray-500/15 text-gray-400',
+    emerald: 'bg-emerald-500/15 text-emerald-400',
+  };
+  return (
+    <div>
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</span>
+      <div className={`mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${colors[color] ?? colors.gray} capitalize inline-block`}>{value}</div>
+    </div>
+  );
+}
+
+// ─── Main Page ──────────────────────────────────────────────────────────────────
+
+export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
+  const [tab, setTab] = useState<BuilderTab>(initialTab ?? 'agent');
+
+  useEffect(() => {
     const applyNavTab = () => {
       const t = localStorage.getItem('markus_nav_tab');
-      if (t && ['template', 'workflow', 'team', 'prompts'].includes(t)) {
+      if (t && ['agent', 'team', 'skill'].includes(t)) {
         setTab(t as BuilderTab);
         localStorage.removeItem('markus_nav_tab');
       }
@@ -157,778 +375,36 @@ export function AgentBuilder({ initialTab }: { initialTab?: BuilderTab } = {}) {
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
 
-  const showResult = useCallback((ok: boolean, message: string) => {
-    setResult({ ok, message });
-    setTimeout(() => setResult(null), 5000);
-  }, []);
-
-  const saveTemplate = useCallback(async () => {
-    if (!tplForm.name.trim()) { showResult(false, 'Name is required'); return; }
-    if (!tplForm.description.trim()) { showResult(false, 'Description is required'); return; }
-    setSaving(true);
-    try {
-      const payload = {
-        name: tplForm.name,
-        description: tplForm.description,
-        roleId: tplForm.roleId || tplForm.name.toLowerCase().replace(/\s+/g, '-'),
-        agentRole: tplForm.agentRole,
-        skills: tplForm.skills.split(',').map(s => s.trim()).filter(Boolean),
-        tags: tplForm.tags.split(',').map(s => s.trim()).filter(Boolean),
-        category: tplForm.category,
-        source: 'custom',
-        systemPrompt: tplForm.systemPrompt,
-        starterTasks: tplForm.starterTasks,
-        llmProvider: tplForm.llmProvider || undefined,
-        config: {
-          llmModel: tplForm.llmModel || undefined,
-          temperature: tplForm.temperature,
-          maxTokensPerDay: tplForm.maxTokensPerDay,
-          toolWhitelist: tplForm.toolWhitelist.length > 0 ? tplForm.toolWhitelist : undefined,
-          requiredEnv: tplForm.requiredEnv.length > 0 ? tplForm.requiredEnv : undefined,
-        },
-      };
-      const resp = await fetch('/api/marketplace/templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (resp.ok) {
-        showResult(true, 'Template created! Find it in the Template Marketplace.');
-        setTplForm({ name: '', description: '', roleId: '', agentRole: 'worker', skills: '', tags: '', category: 'development', systemPrompt: '', starterTasks: [], llmProvider: '', llmModel: '', temperature: 0.7, maxTokensPerDay: 100000, toolWhitelist: [], requiredEnv: [] });
-      } else {
-        const data = await resp.json() as { error?: string };
-        showResult(false, data.error ?? 'Failed to create template');
-      }
-    } catch (err) {
-      showResult(false, String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [tplForm, showResult]);
-
-  const validateWorkflow = useCallback(async () => {
-    const workflow = buildWorkflowPayload(wfForm);
-    try {
-      const resp = await fetch('/api/workflows', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'validate', workflow }),
-      });
-      const data = await resp.json() as { valid: boolean; errors: string[] };
-      if (data.valid) showResult(true, 'Workflow is valid and ready to run!');
-      else showResult(false, `Validation errors: ${data.errors.join(', ')}`);
-    } catch (err) {
-      showResult(false, String(err));
-    }
-  }, [wfForm, showResult]);
-
-  const runWorkflow = useCallback(async () => {
-    if (!wfForm.name.trim()) { showResult(false, 'Workflow name is required'); return; }
-    if (wfForm.steps.every(s => !s.name.trim())) { showResult(false, 'At least one step needs a name'); return; }
-    setSaving(true);
-    try {
-      const workflow = buildWorkflowPayload(wfForm);
-      const resp = await fetch('/api/workflows', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow, inputs: {} }),
-      });
-      const data = await resp.json() as { executionId?: string; status?: string; error?: string };
-      if (resp.ok) showResult(true, `Workflow started: ${data.executionId} (${data.status})`);
-      else showResult(false, data.error ?? 'Failed to start workflow');
-    } catch (err) {
-      showResult(false, String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [wfForm, showResult]);
-
-  const saveTeam = useCallback(async () => {
-    if (!teamForm.name.trim()) { showResult(false, 'Team name is required'); return; }
-    const validMembers = teamForm.members.filter(m => m.templateId);
-    if (validMembers.length === 0) { showResult(false, 'Add at least one member with a template'); return; }
-    setSaving(true);
-    try {
-      const payload = {
-        name: teamForm.name,
-        description: teamForm.description,
-        members: validMembers,
-        tags: teamForm.tags.split(',').map(s => s.trim()).filter(Boolean),
-        category: teamForm.category,
-      };
-      const resp = await fetch('/api/team-templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (resp.ok) {
-        showResult(true, 'Team template created! Find it in the Template Marketplace under Team Templates.');
-        setTeamForm({ name: '', description: '', members: [{ templateId: '', name: '', count: 1, role: 'worker' }], tags: '', category: 'development' });
-      } else {
-        const data = await resp.json() as { error?: string };
-        showResult(false, data.error ?? 'Failed to create team');
-      }
-    } catch (err) {
-      showResult(false, String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [teamForm, showResult]);
-
-  function updateStep(index: number, patch: Partial<WorkflowStepForm>) {
-    setWfForm(f => ({
-      ...f,
-      steps: f.steps.map((s, i) => i === index ? { ...s, ...patch } : s),
-    }));
-  }
-
-  function toggleStepDep(stepIndex: number, depId: string) {
-    setWfForm(f => ({
-      ...f,
-      steps: f.steps.map((s, i) => {
-        if (i !== stepIndex) return s;
-        const deps = s.dependsOn.includes(depId)
-          ? s.dependsOn.filter(d => d !== depId)
-          : [...s.dependsOn, depId];
-        return { ...s, dependsOn: deps };
-      }),
-    }));
-  }
+  const currentTab = TAB_CONFIG.find(t => t.key === tab)!;
 
   return (
-    <div className="h-full overflow-y-auto p-6 bg-gray-950">
-      <div className="max-w-4xl mx-auto">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-white mb-1">Builder</h1>
-          <p className="text-gray-500 text-sm">Create custom agent templates, workflows, and team compositions</p>
-        </div>
-
-        {result && (
-          <div className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center gap-2 ${
-            result.ok
-              ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/50'
-              : 'bg-red-900/40 text-red-300 border border-red-700/50'
-          }`}>
-            <span className="text-lg">{result.ok ? '✓' : '!'}</span>
-            <span>{result.message}</span>
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div className="flex gap-2 mb-6">
+    <div className="flex-1 overflow-hidden flex flex-col">
+      {/* Header with tabs */}
+      <div className="flex items-center gap-4 px-5 h-14 border-b border-gray-800 bg-gray-900 shrink-0">
+        <h2 className="text-lg font-semibold mr-2">Builder</h2>
+        <div className="flex gap-1.5">
           {TAB_CONFIG.map(t => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`flex-1 p-3 rounded-xl text-left transition-all border ${
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2 ${
                 tab === t.key
-                  ? 'bg-indigo-600/15 border-indigo-500/40 text-white'
-                  : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-300'
+                  ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800 border border-transparent'
               }`}
             >
-              <div className="flex items-center gap-2">
-                <span className="text-lg">{t.icon}</span>
-                <span className="text-sm font-medium">{t.label}</span>
+              <span className="text-sm">{t.icon}</span>
+              <div className="text-left">
+                <div>{t.label}</div>
+                <div className="text-[9px] opacity-60">{t.desc}</div>
               </div>
-              <div className="text-xs mt-0.5 opacity-60">{t.desc}</div>
             </button>
           ))}
         </div>
-
-        {/* ── TEMPLATE BUILDER ─────────────────────────────────────────── */}
-        {tab === 'template' && (
-          <div className="space-y-5">
-            <Card title="Basic Information">
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="Name" required>
-                  <input className="input-field" value={tplForm.name} onChange={e => setTplForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Senior Backend Developer" />
-                </FormRow>
-                <FormRow label="Agent Role">
-                  <div className="flex gap-2">
-                    {(['worker', 'manager'] as const).map(r => (
-                      <button
-                        key={r}
-                        onClick={() => setTplForm(f => ({ ...f, agentRole: r }))}
-                        className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium border transition-colors capitalize ${
-                          tplForm.agentRole === r
-                            ? r === 'manager' ? 'bg-purple-500/15 text-purple-400 border-purple-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'
-                            : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
-                        }`}
-                      >
-                        {r === 'manager' ? '★ Manager' : '◆ Worker'}
-                      </button>
-                    ))}
-                  </div>
-                </FormRow>
-              </div>
-              <FormRow label="Description" required>
-                <textarea className="input-field min-h-[70px]" value={tplForm.description} onChange={e => setTplForm(f => ({ ...f, description: e.target.value }))} placeholder="What does this agent specialize in? Describe its expertise and responsibilities..." />
-              </FormRow>
-              <FormRow label="Category">
-                <div className="flex gap-1.5 flex-wrap">
-                  {CATEGORIES.map(c => (
-                    <button key={c} onClick={() => setTplForm(f => ({ ...f, category: c }))}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize ${
-                        tplForm.category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
-                      }`}>{c}</button>
-                  ))}
-                </div>
-              </FormRow>
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="Skills" hint="comma-separated">
-                  <input className="input-field" value={tplForm.skills} onChange={e => setTplForm(f => ({ ...f, skills: e.target.value }))} placeholder="git, code-analysis" />
-                </FormRow>
-                <FormRow label="Tags" hint="comma-separated">
-                  <input className="input-field" value={tplForm.tags} onChange={e => setTplForm(f => ({ ...f, tags: e.target.value }))} placeholder="senior, backend" />
-                </FormRow>
-              </div>
-            </Card>
-
-            <Card title="System Prompt" hint="The core instructions that define this agent's behavior">
-              <textarea
-                className="input-field min-h-[140px] font-mono text-xs leading-relaxed"
-                value={tplForm.systemPrompt}
-                onChange={e => setTplForm(f => ({ ...f, systemPrompt: e.target.value }))}
-                placeholder={"You are a senior backend developer specialized in:\n- Node.js / TypeScript microservices\n- PostgreSQL database design\n- REST & GraphQL API development\n\nYou write clean, well-tested code and always consider edge cases..."}
-              />
-            </Card>
-
-            <Card title="LLM Configuration" hint="Model selection and parameters">
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="LLM Provider">
-                  <select className="input-field" value={tplForm.llmProvider} onChange={e => {
-                    const provider = LLM_PROVIDERS.find(p => p.id === e.target.value);
-                    setTplForm(f => ({ ...f, llmProvider: e.target.value, llmModel: provider?.models[0] ?? '' }));
-                  }}>
-                    <option value="">Default (system)</option>
-                    {LLM_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-                  </select>
-                </FormRow>
-                <FormRow label="Model">
-                  <select className="input-field" value={tplForm.llmModel} onChange={e => setTplForm(f => ({ ...f, llmModel: e.target.value }))}>
-                    <option value="">Default</option>
-                    {(LLM_PROVIDERS.find(p => p.id === tplForm.llmProvider)?.models ?? []).map(m => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </FormRow>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="Temperature" hint={tplForm.temperature.toFixed(1)}>
-                  <input type="range" min="0" max="1" step="0.1" className="w-full accent-indigo-500" value={tplForm.temperature} onChange={e => setTplForm(f => ({ ...f, temperature: parseFloat(e.target.value) }))} />
-                </FormRow>
-                <FormRow label="Daily Token Budget">
-                  <div className="flex items-center gap-2">
-                    <input type="number" min={1000} step={10000} className="input-field flex-1" value={tplForm.maxTokensPerDay} onChange={e => setTplForm(f => ({ ...f, maxTokensPerDay: parseInt(e.target.value) || 100000 }))} />
-                    <span className="text-xs text-gray-500 whitespace-nowrap">~${(tplForm.maxTokensPerDay * 0.000003 * 30).toFixed(2)}/mo</span>
-                  </div>
-                </FormRow>
-              </div>
-            </Card>
-
-            <Card title="Tool Access" hint="Select which tools this agent can use">
-              <div className="space-y-3">
-                {AVAILABLE_TOOLS.map(group => (
-                  <div key={group.group}>
-                    <div className="text-[11px] text-gray-500 mb-1.5 font-medium uppercase tracking-wider">{group.group}</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {group.tools.map(tool => {
-                        const selected = tplForm.toolWhitelist.includes(tool);
-                        return (
-                          <button key={tool} onClick={() => setTplForm(f => ({
-                            ...f,
-                            toolWhitelist: selected ? f.toolWhitelist.filter(t => t !== tool) : [...f.toolWhitelist, tool],
-                          }))} className={`px-2.5 py-1 rounded-lg text-xs font-mono border transition-colors ${
-                            selected ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600'
-                          }`}>
-                            {selected ? '✓ ' : ''}{tool}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-                {tplForm.toolWhitelist.length === 0 && (
-                  <div className="text-xs text-gray-600">No tools selected = all tools available (default)</div>
-                )}
-              </div>
-            </Card>
-
-            <Card title="Environment Requirements" hint="What tools must be installed on the host machine">
-              <div className="flex flex-wrap gap-2">
-                {ENV_OPTIONS.map(env => {
-                  const selected = tplForm.requiredEnv.includes(env.id);
-                  return (
-                    <button key={env.id} onClick={() => setTplForm(f => ({
-                      ...f,
-                      requiredEnv: selected ? f.requiredEnv.filter(e => e !== env.id) : [...f.requiredEnv, env.id],
-                    }))} className={`px-3 py-2 rounded-xl text-xs font-medium border transition-all flex items-center gap-1.5 ${
-                      selected ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
-                    }`}>
-                      <span>{env.icon}</span>
-                      <span>{env.label}</span>
-                      {selected && <span className="text-emerald-400">✓</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            </Card>
-
-            <Card title="Starter Tasks" hint="Pre-defined tasks for onboarding — shown when the agent is first hired">
-              {tplForm.starterTasks.map((task, i) => (
-                <div key={i} className="flex gap-2 mb-2 items-center">
-                  <input className="input-field flex-1" value={task.title} placeholder="e.g. Set up project scaffolding" onChange={e => {
-                    const tasks = [...tplForm.starterTasks];
-                    tasks[i] = { ...tasks[i]!, title: e.target.value };
-                    setTplForm(f => ({ ...f, starterTasks: tasks }));
-                  }} />
-                  <div className="flex gap-1">
-                    {(['low', 'medium', 'high'] as const).map(p => (
-                      <button key={p} onClick={() => {
-                        const tasks = [...tplForm.starterTasks];
-                        tasks[i] = { ...tasks[i]!, priority: p };
-                        setTplForm(f => ({ ...f, starterTasks: tasks }));
-                      }} className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${
-                        task.priority === p
-                          ? p === 'high' ? 'bg-red-500/15 text-red-400 border-red-500/30' : p === 'medium' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-gray-700/50 text-gray-400 border-gray-600'
-                          : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600'
-                      }`}>{p}</button>
-                    ))}
-                  </div>
-                  <button onClick={() => setTplForm(f => ({ ...f, starterTasks: f.starterTasks.filter((_, j) => j !== i) }))} className="text-red-400 hover:text-red-300 px-1.5 text-lg">&times;</button>
-                </div>
-              ))}
-              <button
-                onClick={() => setTplForm(f => ({ ...f, starterTasks: [...f.starterTasks, { title: '', description: '', priority: 'medium' }] }))}
-                className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-              >
-                + Add Starter Task
-              </button>
-            </Card>
-
-            <ActionBar>
-              <button onClick={() => {
-                const json = JSON.stringify(tplForm, null, 2);
-                const blob = new Blob([json], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `${tplForm.name || 'template'}.json`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }} className="btn-secondary">Export JSON</button>
-              <label className="btn-secondary cursor-pointer inline-flex items-center">
-                Import JSON
-                <input type="file" accept=".json" className="hidden" onChange={e => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const reader = new FileReader();
-                  reader.onload = ev => {
-                    try {
-                      const data = JSON.parse(ev.target?.result as string);
-                      setTplForm(f => ({ ...f, ...data }));
-                      showResult(true, 'Template imported!');
-                    } catch { showResult(false, 'Invalid JSON file'); }
-                  };
-                  reader.readAsText(file);
-                  e.target.value = '';
-                }} />
-              </label>
-              <button onClick={saveTemplate} disabled={saving} className="btn-primary">
-                {saving ? 'Creating...' : 'Create Template'}
-              </button>
-            </ActionBar>
-          </div>
-        )}
-
-        {/* ── WORKFLOW BUILDER ──────────────────────────────────────────── */}
-        {tab === 'workflow' && (
-          <div className="space-y-5">
-            <Card title="Workflow Definition">
-              <div className="grid grid-cols-2 gap-4">
-                <FormRow label="Name" required>
-                  <input className="input-field" value={wfForm.name} onChange={e => setWfForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Code Review Pipeline" />
-                </FormRow>
-                <FormRow label="Description">
-                  <input className="input-field" value={wfForm.description} onChange={e => setWfForm(f => ({ ...f, description: e.target.value }))} placeholder="What does this workflow accomplish?" />
-                </FormRow>
-              </div>
-            </Card>
-
-            <Card title={`Steps (${wfForm.steps.length})`} hint="Define each step. Steps can depend on others to form a pipeline.">
-              {wfForm.steps.map((step, i) => (
-                <div key={step.id} className="bg-gray-800/30 rounded-xl p-4 mb-3 border border-gray-700/30">
-                  {/* Step header */}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-7 h-7 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs font-bold">{i + 1}</span>
-                      <span className="text-xs font-mono text-gray-600">{step.id}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {/* Step type selector — visual toggle instead of dropdown */}
-                      {Object.entries(STEP_TYPES).map(([val, info]) => (
-                        <button
-                          key={val}
-                          onClick={() => updateStep(i, { type: val as WorkflowStepForm['type'] })}
-                          title={info.hint}
-                          className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors ${
-                            step.type === val ? info.color : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600'
-                          }`}
-                        >
-                          {info.icon} {info.label}
-                        </button>
-                      ))}
-                      {wfForm.steps.length > 1 && (
-                        <button onClick={() => setWfForm(f => ({ ...f, steps: f.steps.filter((_, j) => j !== i) }))} className="text-red-400/50 hover:text-red-300 text-xs ml-2">&times;</button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Step body */}
-                  <div className="grid grid-cols-2 gap-3 mb-3">
-                    <FormRow label="Step Name">
-                      <input className="input-field" value={step.name} onChange={e => updateStep(i, { name: e.target.value })} placeholder={
-                        step.type === 'agent_task' ? 'e.g. Analyze code' : step.type === 'condition' ? 'e.g. Check approval' : step.type === 'delay' ? 'e.g. Wait for review' : 'e.g. Format output'
-                      } />
-                    </FormRow>
-                    {step.type === 'agent_task' ? (
-                      <FormRow label="Assigned Agent">
-                        <select
-                          className="input-field"
-                          value={step.agentId}
-                          onChange={e => updateStep(i, { agentId: e.target.value })}
-                        >
-                          <option value="">Select an agent...</option>
-                          {agents.map(a => (
-                            <option key={a.id} value={a.id}>{a.name} — {a.role}</option>
-                          ))}
-                        </select>
-                      </FormRow>
-                    ) : (
-                      <FormRow label={step.type === 'delay' ? 'Duration' : 'Expression'}>
-                        <input
-                          className="input-field font-mono text-xs"
-                          value={step.type === 'delay' ? step.prompt : ''}
-                          onChange={e => updateStep(i, { prompt: e.target.value })}
-                          placeholder={step.type === 'delay' ? '5000 (ms)' : ''}
-                          disabled={step.type !== 'delay'}
-                        />
-                      </FormRow>
-                    )}
-                  </div>
-
-                  {/* Dependencies — clickable chips */}
-                  {i > 0 && (
-                    <div className="mb-3">
-                      <label className="text-[11px] text-gray-500 mb-1.5 block">Depends on</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {wfForm.steps.slice(0, i).map((prev, pi) => {
-                          const isSelected = step.dependsOn.includes(prev.id);
-                          return (
-                            <button
-                              key={prev.id}
-                              onClick={() => toggleStepDep(i, prev.id)}
-                              className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
-                                isSelected
-                                  ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30'
-                                  : 'bg-gray-800 text-gray-600 border-gray-700 hover:border-gray-600 hover:text-gray-400'
-                              }`}
-                            >
-                              {isSelected ? '✓ ' : ''}{pi + 1}. {prev.name || prev.id}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Task prompt — only for agent_task, condition, transform */}
-                  {step.type !== 'delay' && (
-                    <FormRow label={step.type === 'condition' ? 'Condition Expression' : step.type === 'transform' ? 'Transform Expression' : 'Task Prompt'}>
-                      <textarea
-                        className="input-field min-h-[60px] font-mono text-xs"
-                        value={step.prompt}
-                        onChange={e => updateStep(i, { prompt: e.target.value })}
-                        placeholder={
-                          step.type === 'condition' ? 'steps.step_0.output.approved === true'
-                          : step.type === 'transform' ? '({ summary: steps.step_0.output.result })'
-                          : 'Describe what the agent should do in this step...'
-                        }
-                      />
-                    </FormRow>
-                  )}
-                </div>
-              ))}
-              <button
-                onClick={() => setWfForm(f => ({ ...f, steps: [...f.steps, emptyStep(f.steps.length)] }))}
-                className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-              >
-                + Add Step
-              </button>
-            </Card>
-
-            {/* Pipeline Preview */}
-            <Card title="Pipeline Preview">
-              <div className="bg-gray-800/20 rounded-lg p-4 min-h-[50px]">
-                {wfForm.steps.length === 0 ? (
-                  <div className="text-center text-gray-600 text-sm py-2">Add steps to see the pipeline</div>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    {wfForm.steps.map((step, i) => {
-                      const info = STEP_TYPES[step.type];
-                      const agent = agents.find(a => a.id === step.agentId);
-                      return (
-                        <div key={step.id} className="flex items-center gap-2">
-                          {i > 0 && <span className="text-gray-600 text-lg">→</span>}
-                          <div className={`px-3 py-2 rounded-lg border text-xs ${info?.color ?? 'bg-gray-800 text-gray-400'}`}>
-                            <div className="font-medium">{step.name || step.id}</div>
-                            {agent && <div className="text-[10px] opacity-60 mt-0.5">@{agent.name}</div>}
-                            {step.dependsOn.length > 1 && <div className="text-[10px] opacity-50 mt-0.5">waits for {step.dependsOn.length} steps</div>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </Card>
-
-            <ActionBar>
-              <button onClick={validateWorkflow} className="btn-secondary">Validate</button>
-              <button onClick={runWorkflow} disabled={saving} className="btn-primary">
-                {saving ? 'Starting...' : 'Start Workflow'}
-              </button>
-            </ActionBar>
-          </div>
-        )}
-
-        {/* ── TEAM BUILDER ─────────────────────────────────────────────── */}
-        {tab === 'team' && (
-          <div className="space-y-5">
-            <Card title="Team Definition">
-              <FormRow label="Team Name" required>
-                <input className="input-field" value={teamForm.name} onChange={e => setTeamForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Marketing Department" />
-              </FormRow>
-              <FormRow label="Category">
-                <div className="flex gap-1.5 flex-wrap">
-                  {CATEGORIES.map(c => (
-                    <button key={c} onClick={() => setTeamForm(f => ({ ...f, category: c }))}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors capitalize ${
-                        teamForm.category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
-                      }`}>{c}</button>
-                  ))}
-                </div>
-              </FormRow>
-              <FormRow label="Description">
-                <textarea className="input-field min-h-[60px]" value={teamForm.description} onChange={e => setTeamForm(f => ({ ...f, description: e.target.value }))} placeholder="What is this team responsible for?" />
-              </FormRow>
-              <FormRow label="Tags" hint="comma-separated">
-                <input className="input-field" value={teamForm.tags} onChange={e => setTeamForm(f => ({ ...f, tags: e.target.value }))} placeholder="marketing, content, seo" />
-              </FormRow>
-            </Card>
-
-            <Card title={`Members (${teamForm.members.filter(m => m.templateId).length})`} hint="Click a template below to add it, or configure members manually.">
-              {/* Quick-add palette */}
-              {availableTemplates.length > 0 && (
-                <div className="mb-4 p-3 bg-gray-800/20 rounded-lg border border-gray-700/20">
-                  <div className="text-[11px] text-gray-500 mb-2 font-medium uppercase tracking-wider">Quick Add</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {availableTemplates.map(t => (
-                      <button
-                        key={t.id}
-                        onClick={() => setTeamForm(f => ({ ...f, members: [...f.members, { templateId: t.id, name: t.name, count: 1, role: (t.agentRole === 'manager' ? 'manager' : 'worker') as 'manager' | 'worker' }] }))}
-                        className="px-2.5 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 rounded-lg border border-gray-700 hover:border-gray-600 transition-colors"
-                      >
-                        + {t.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {teamForm.members.map((member, i) => (
-                <div key={i} className="bg-gray-800/20 rounded-xl p-4 mb-2.5 border border-gray-700/20">
-                  <div className="flex items-center gap-3">
-                    {/* Number + role badge */}
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-                      member.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
-                    }`}>
-                      {member.role === 'manager' ? '★' : (i + 1)}
-                    </div>
-
-                    {/* Template selector */}
-                    <div className="flex-1 min-w-0">
-                      {availableTemplates.length > 0 ? (
-                        <select
-                          className="input-field"
-                          value={member.templateId}
-                          onChange={e => {
-                            const sel = availableTemplates.find(t => t.id === e.target.value);
-                            const members = [...teamForm.members];
-                            members[i] = {
-                              ...members[i]!,
-                              templateId: e.target.value,
-                              name: sel?.name ?? members[i]!.name,
-                              role: (sel?.agentRole === 'manager' ? 'manager' : 'worker') as 'manager' | 'worker',
-                            };
-                            setTeamForm(f => ({ ...f, members }));
-                          }}
-                        >
-                          <option value="">Select template...</option>
-                          {availableTemplates.map(t => (
-                            <option key={t.id} value={t.id}>{t.name}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input className="input-field" value={member.templateId} placeholder="tpl-developer" onChange={e => {
-                          const members = [...teamForm.members];
-                          members[i] = { ...members[i]!, templateId: e.target.value };
-                          setTeamForm(f => ({ ...f, members }));
-                        }} />
-                      )}
-                    </div>
-
-                    {/* Display name */}
-                    <input className="input-field w-36" value={member.name} placeholder="Display name" onChange={e => {
-                      const members = [...teamForm.members];
-                      members[i] = { ...members[i]!, name: e.target.value };
-                      setTeamForm(f => ({ ...f, members }));
-                    }} />
-
-                    {/* Count */}
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-gray-600">×</span>
-                      <input type="number" min={1} max={10} className="input-field w-14 text-center" value={member.count} onChange={e => {
-                        const members = [...teamForm.members];
-                        members[i] = { ...members[i]!, count: Math.max(1, Number(e.target.value) || 1) };
-                        setTeamForm(f => ({ ...f, members }));
-                      }} />
-                    </div>
-
-                    {/* Role toggle */}
-                    <button
-                      onClick={() => {
-                        const members = [...teamForm.members];
-                        members[i] = { ...members[i]!, role: member.role === 'manager' ? 'worker' : 'manager' };
-                        setTeamForm(f => ({ ...f, members }));
-                      }}
-                      className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${
-                        member.role === 'manager' ? 'bg-purple-500/15 text-purple-400 border-purple-500/20' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20'
-                      }`}
-                      title="Click to toggle role"
-                    >
-                      {member.role}
-                    </button>
-
-                    {/* Remove */}
-                    {teamForm.members.length > 1 && (
-                      <button onClick={() => setTeamForm(f => ({ ...f, members: f.members.filter((_, j) => j !== i) }))} className="text-red-400/50 hover:text-red-300 text-sm">&times;</button>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <button
-                onClick={() => setTeamForm(f => ({ ...f, members: [...f.members, { templateId: '', name: '', count: 1, role: 'worker' }] }))}
-                className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-              >
-                + Add Member
-              </button>
-            </Card>
-
-            {/* Team Summary */}
-            {teamForm.members.some(m => m.templateId) && (
-              <Card title="Team Summary">
-                <div className="flex items-center gap-4 text-sm">
-                  <div className="text-gray-400">
-                    <span className="text-white font-semibold">{teamForm.members.reduce((s, m) => s + (m.templateId ? m.count : 0), 0)}</span> agents
-                  </div>
-                  {teamForm.members.some(m => m.role === 'manager') && (
-                    <div className="text-purple-400 text-xs">
-                      ★ {teamForm.members.filter(m => m.role === 'manager' && m.templateId).map(m => m.name || m.templateId).join(', ')}
-                    </div>
-                  )}
-                  <div className="ml-auto flex flex-wrap gap-1">
-                    {teamForm.members.filter(m => m.templateId).map((m, i) => (
-                      <span key={i} className={`px-2 py-0.5 text-[10px] rounded-full border ${
-                        m.role === 'manager' ? 'bg-purple-500/10 text-purple-400 border-purple-500/15' : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/15'
-                      }`}>
-                        {m.name || m.templateId}{m.count > 1 ? ` ×${m.count}` : ''}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </Card>
-            )}
-
-            <ActionBar>
-              <button onClick={saveTeam} disabled={saving} className="btn-primary">
-                {saving ? 'Creating...' : 'Create Team Template'}
-              </button>
-            </ActionBar>
-          </div>
-        )}
-
-        {/* ── PROMPT STUDIO ─────────────────────────────────────────────── */}
-        {tab === 'prompts' && (
-          <div className="-mx-6 -mb-6">
-            <PromptStudioPage embedded />
-          </div>
-        )}
       </div>
-    </div>
-  );
-}
 
-function buildWorkflowPayload(form: WorkflowForm) {
-  return {
-    id: `wf-custom-${Date.now()}`,
-    name: form.name,
-    description: form.description,
-    version: '1.0.0',
-    author: 'user',
-    steps: form.steps.map(s => ({
-      id: s.id,
-      name: s.name,
-      type: s.type,
-      agentId: s.agentId || undefined,
-      dependsOn: s.dependsOn,
-      taskConfig: s.type === 'agent_task' && s.prompt ? { prompt: s.prompt } : undefined,
-      condition: s.type === 'condition' && s.prompt ? { expression: s.prompt, trueBranch: [], falseBranch: [] } : undefined,
-      transform: s.type === 'transform' ? s.prompt : undefined,
-      delayMs: s.type === 'delay' ? (Number(s.prompt) || 1000) : undefined,
-    })),
-  };
-}
-
-function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
-      <div className="mb-4">
-        <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
-        {hint && <p className="text-xs text-gray-600 mt-0.5">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function FormRow({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }) {
-  return (
-    <div className="mb-3">
-      <label className="text-xs text-gray-400 mb-1.5 block">
-        {label}
-        {required && <span className="text-red-400 ml-0.5">*</span>}
-        {hint && <span className="text-gray-600 ml-1.5 font-normal">{hint}</span>}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-function ActionBar({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex justify-end gap-3 pb-6">
-      {children}
+      {/* Creator Agent */}
+      <CreatorAgent key={tab} mode={tab} greeting={currentTab.greeting} />
     </div>
   );
 }

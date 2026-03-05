@@ -166,6 +166,7 @@ export class APIServer {
   private llmRouter?: LLMRouter;
   private gateway?: ExternalAgentGateway;
   private reviewService?: ReviewService;
+  private registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
@@ -1238,16 +1239,20 @@ export class APIServer {
         return;
       }
 
-      // General field update (title/description/priority)
+      // General field update (title/description/priority/projectId/iterationId)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
-        body['priority'] !== undefined
+        body['priority'] !== undefined ||
+        body['projectId'] !== undefined ||
+        body['iterationId'] !== undefined
       ) {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
           description: body['description'] as string | undefined,
           priority: body['priority'] as TaskPriority | undefined,
+          projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
+          iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
         });
         this.json(res, 200, { task });
         return;
@@ -2003,6 +2008,380 @@ export class APIServer {
         inputSchema: (t as unknown as { inputSchema?: unknown }).inputSchema,
       }));
       this.json(res, 200, { skill: { ...manifest, toolDetails } });
+      return;
+    }
+
+    // Third-party skill registry — fetch from GitHub repos and cache
+    if (path === '/api/skills/registry' && req.method === 'GET') {
+      const source = url.searchParams.get('source') ?? 'openclaw';
+      const now = Date.now();
+      const cacheKey = `skill-registry-${source}`;
+      const cached = this.registryCache?.get(cacheKey);
+      if (cached && now - cached.ts < 600_000) {
+        this.json(res, 200, { skills: cached.data, source, cached: true });
+        return;
+      }
+
+      try {
+        let skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }> = [];
+
+        if (source === 'openclaw') {
+          const resp = await fetch('https://raw.githubusercontent.com/LeoYeAI/openclaw-master-skills/main/README.md');
+          if (resp.ok) {
+            const readme = await resp.text();
+            const tableLines = readme.split('\n').filter(l => l.startsWith('| ['));
+            for (const line of tableLines) {
+              const cols = line.split('|').map(c => c.trim()).filter(Boolean);
+              if (cols.length >= 4) {
+                const nameMatch = cols[0]?.match(/\[([^\]]+)\]/);
+                const name = nameMatch?.[1] ?? '';
+                const description = cols[1]?.replace(/\.\.\.$/, '').trim() ?? '';
+                const category = cols[2]?.trim() ?? 'Other';
+                const srcMatch = cols[3]?.match(/\[GitHub\]\(([^)]+)\)/);
+                const addedAt = cols[4]?.trim();
+                if (name) {
+                  skills.push({
+                    name,
+                    description,
+                    category,
+                    source: 'openclaw',
+                    sourceUrl: srcMatch?.[1] ?? `https://github.com/LeoYeAI/openclaw-master-skills/tree/main/skills/${name}`,
+                    author: 'Community',
+                    addedAt,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        if (!this.registryCache) this.registryCache = new Map();
+        this.registryCache.set(cacheKey, { data: skills, ts: now });
+        this.json(res, 200, { skills, source, cached: false });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to fetch registry: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Import a skill from external source
+    if (path === '/api/skills/import' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const skillName = body['name'] as string;
+      const sourceUrl = body['sourceUrl'] as string;
+      const description = body['description'] as string | undefined;
+      const category = body['category'] as string | undefined;
+
+      if (!skillName) {
+        this.json(res, 400, { error: 'name is required' });
+        return;
+      }
+
+      // Save to marketplace DB if storage is available
+      if (this.storage) {
+        try {
+          const id = generateId('mkt-skill');
+          const skill = await this.storage.marketplaceSkillRepo.create({
+            id,
+            name: skillName,
+            description: description ?? `Imported skill: ${skillName}`,
+            source: 'community',
+            status: 'published',
+            version: '1.0.0',
+            authorName: 'Community',
+            category: category ?? 'custom',
+            tags: ['imported'],
+            tools: [],
+          });
+          this.json(res, 201, { skill, imported: true, sourceUrl });
+          return;
+        } catch (err) {
+          this.json(res, 500, { error: `Import failed: ${String(err)}` });
+          return;
+        }
+      }
+      this.json(res, 200, { imported: true, name: skillName, sourceUrl });
+      return;
+    }
+
+    // Builder: Unified AI chat endpoint for agent/team/skill creation
+    if (path === '/api/builder/chat' && req.method === 'POST') {
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not configured' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const mode = body['mode'] as string;
+      const userMessages = body['messages'] as Array<{ role: string; content: string }>;
+      if (!mode || !['agent', 'team', 'skill'].includes(mode)) {
+        this.json(res, 400, { error: 'mode must be one of: agent, team, skill' });
+        return;
+      }
+      if (!Array.isArray(userMessages) || userMessages.length === 0) {
+        this.json(res, 400, { error: 'messages array is required' });
+        return;
+      }
+
+      const templates = this.templateRegistry
+        ? this.templateRegistry.search({}).map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }))
+        : [];
+
+      const SYSTEM_PROMPTS: Record<string, string> = {
+        agent: `You are Agent Father — an expert AI agent architect. You help users design and create powerful AI agents through natural conversation.
+
+Your job:
+1. Understand what the user needs — ask clarifying questions about the agent's purpose, expertise, and tools
+2. Design the agent — suggest optimal configuration, system prompt, tools, and environment
+3. When the user is satisfied, output the final configuration as a JSON block
+
+Throughout the conversation, be helpful, proactive, and suggest best practices. When you have enough information, generate the configuration.
+
+When outputting the final configuration, wrap it in a JSON code block with these fields:
+\`\`\`json
+{
+  "name": "Agent Name",
+  "description": "What this agent does",
+  "agentRole": "manager" | "worker",
+  "category": "development" | "devops" | "management" | "productivity" | "general",
+  "skills": "comma-separated skills",
+  "tags": "comma-separated tags",
+  "systemPrompt": "Detailed system prompt...",
+  "llmProvider": "anthropic" | "openai" | "google" | "",
+  "llmModel": "model name or empty",
+  "temperature": 0.7,
+  "toolWhitelist": ["shell_execute", "file_read", "file_write", "file_edit", "web_fetch", "web_search", "git_status", "git_diff", "git_commit", "git_log", "a2a_send", "a2a_list_colleagues", "task_create", "task_update", "task_list", "memory_save", "memory_search", "memory_list", "mcp_call"],
+  "requiredEnv": ["git", "node", "python3", "docker", "browser", "pnpm", "java", "go"]
+}
+\`\`\`
+
+Always be conversational first. Only output the JSON when you have enough context. If the user's first message is already very detailed, you may output the JSON right away along with your explanation.`,
+
+        team: `You are Team Factory — an expert AI team composition architect. You help users design optimal agent teams through natural conversation.
+
+Available agent templates: ${JSON.stringify(templates)}
+
+Your job:
+1. Understand the team's purpose — ask about goals, domain, scale, and coordination needs
+2. Recommend team composition — suggest roles, responsibilities, and how agents should collaborate
+3. When ready, output the final team configuration as a JSON block
+
+When outputting the final configuration, wrap it in a JSON code block:
+\`\`\`json
+{
+  "name": "Team Name",
+  "description": "Team purpose",
+  "category": "development" | "devops" | "management" | "productivity" | "general",
+  "tags": "comma-separated tags",
+  "members": [
+    { "templateId": "template-id or role-name", "name": "Display Name", "count": 1, "role": "manager" | "worker" }
+  ]
+}
+\`\`\`
+
+Use templateId from available templates when possible. Every team needs exactly one manager and at least one worker. Be conversational and proactive in suggesting optimal team structures.`,
+
+        skill: `You are Skill Architect — an expert AI skill designer. You help users create new agent skills through natural conversation.
+
+Your job:
+1. Understand what capability the user wants to create — ask about use cases, inputs/outputs, and integrations
+2. Design the skill — suggest tool definitions, permissions, and implementation approach
+3. When ready, output the final skill manifest as a JSON block
+
+When outputting the final configuration, wrap it in a JSON code block:
+\`\`\`json
+{
+  "name": "skill-name-kebab-case",
+  "version": "1.0.0",
+  "description": "What this skill does",
+  "author": "Author Name",
+  "category": "development" | "devops" | "communication" | "data" | "productivity" | "browser" | "custom",
+  "tags": ["tag1", "tag2"],
+  "tools": [
+    { "name": "tool_name", "description": "What this tool does", "inputSchema": { "type": "object", "properties": {} } }
+  ],
+  "requiredPermissions": ["shell", "file", "network", "browser"],
+  "requiredEnv": ["git", "node", "python3", "docker"]
+}
+\`\`\`
+
+Be conversational. Help the user think through tool design, edge cases, and permission requirements. If the user's request is clear, generate the manifest immediately along with your explanation.`,
+      };
+
+      try {
+        const llmMessages = [
+          { role: 'system' as const, content: SYSTEM_PROMPTS[mode]! },
+          ...userMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        ];
+
+        const response = await this.llmRouter.chat({
+          messages: llmMessages,
+          maxTokens: 4000,
+          temperature: 0.7,
+        });
+
+        const reply = response.content?.trim() ?? '';
+
+        // Try to extract JSON artifact from the reply
+        let artifact: Record<string, unknown> | null = null;
+        const jsonMatch = reply.match(/```json\s*\n([\s\S]*?)\n```/);
+        if (jsonMatch?.[1]) {
+          try { artifact = JSON.parse(jsonMatch[1]); } catch { /* no valid JSON */ }
+        }
+
+        this.json(res, 200, { reply, artifact, mode });
+      } catch (err) {
+        this.json(res, 500, { error: `Chat failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Builder: Create artifact from chat (actually saves the agent/team/skill)
+    if (path === '/api/builder/create' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const mode = body['mode'] as string;
+      const artifact = body['artifact'] as Record<string, unknown>;
+      if (!mode || !artifact) {
+        this.json(res, 400, { error: 'mode and artifact are required' });
+        return;
+      }
+
+      try {
+        if (mode === 'agent') {
+          const resp = await fetch(`http://localhost:${this.port}/api/marketplace/templates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: artifact.name,
+              description: artifact.description,
+              roleId: ((artifact.name as string) ?? '').toLowerCase().replace(/\s+/g, '-'),
+              agentRole: artifact.agentRole ?? 'worker',
+              skills: typeof artifact.skills === 'string' ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean) : [],
+              tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
+              category: artifact.category ?? 'general',
+              source: 'ai-generated',
+              systemPrompt: artifact.systemPrompt ?? '',
+              config: {
+                llmModel: artifact.llmModel || undefined,
+                temperature: artifact.temperature ?? 0.7,
+                toolWhitelist: artifact.toolWhitelist || undefined,
+                requiredEnv: artifact.requiredEnv || undefined,
+              },
+            }),
+          });
+          const data = await resp.json();
+          this.json(res, resp.ok ? 201 : 500, data);
+        } else if (mode === 'team') {
+          const resp = await fetch(`http://localhost:${this.port}/api/team-templates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: artifact.name,
+              description: artifact.description,
+              members: artifact.members ?? [],
+              tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
+              category: artifact.category ?? 'general',
+            }),
+          });
+          const data = await resp.json();
+          this.json(res, resp.ok ? 201 : 500, data);
+        } else if (mode === 'skill') {
+          if (!this.storage) {
+            this.json(res, 503, { error: 'Database not configured' });
+            return;
+          }
+          const id = generateId('mkt-skill');
+          const skill = await this.storage.marketplaceSkillRepo.create({
+            id,
+            name: (artifact.name as string) ?? 'unnamed-skill',
+            description: (artifact.description as string) ?? '',
+            source: 'ai-generated',
+            status: 'published',
+            version: (artifact.version as string) ?? '1.0.0',
+            authorName: (artifact.author as string) ?? 'AI Generated',
+            category: (artifact.category as string) ?? 'custom',
+            tags: Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
+            tools: Array.isArray(artifact.tools) ? artifact.tools as Array<{ name: string; description: string }> : [],
+          });
+          this.json(res, 201, { skill });
+        } else {
+          this.json(res, 400, { error: `Unknown mode: ${mode}` });
+        }
+      } catch (err) {
+        this.json(res, 500, { error: `Create failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Skills registry: Proxy search to skillsmp.com
+    if (path === '/api/skills/registry/skillsmp' && req.method === 'GET') {
+      const q = url.searchParams.get('q') ?? '';
+      const page = url.searchParams.get('page') ?? '1';
+      const limit = url.searchParams.get('limit') ?? '20';
+      if (!q) {
+        this.json(res, 400, { error: 'q query parameter is required' });
+        return;
+      }
+      try {
+        const apiUrl = `https://skillsmp.com/api/v1/skills/search?q=${encodeURIComponent(q)}&page=${page}&limit=${limit}`;
+        const resp = await fetch(apiUrl);
+        if (resp.ok) {
+          const data = await resp.json();
+          this.json(res, 200, data);
+        } else {
+          this.json(res, resp.status, { error: `SkillsMP API error: ${resp.statusText}` });
+        }
+      } catch (err) {
+        this.json(res, 500, { error: `SkillsMP fetch failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Skills registry: Proxy fetch from skills.sh leaderboard
+    if (path === '/api/skills/registry/skillssh' && req.method === 'GET') {
+      const q = url.searchParams.get('q') ?? '';
+      const cacheKey = `skillssh-${q || 'leaderboard'}`;
+      const now = Date.now();
+      const cached = this.registryCache?.get(cacheKey);
+      if (cached && now - cached.ts < 600_000) {
+        this.json(res, 200, { skills: cached.data, cached: true });
+        return;
+      }
+      try {
+        const fetchUrl = q
+          ? `https://skills.sh/search?q=${encodeURIComponent(q)}`
+          : 'https://skills.sh/';
+        const resp = await fetch(fetchUrl);
+        if (!resp.ok) {
+          this.json(res, 502, { error: `skills.sh returned ${resp.status}` });
+          return;
+        }
+        const html = await resp.text();
+        const skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }> = [];
+        const skillRegex = /###\s+(.+?)\n\n\[.*?([\w-]+\/[\w-]+(?:\/[\w-]+)?)[\d.K]*\]\(https:\/\/skills\.sh\/(.*?)\)/g;
+        let match: RegExpExecArray | null;
+        while ((match = skillRegex.exec(html)) !== null) {
+          const name = match[1]?.trim() ?? '';
+          const pathParts = (match[3] ?? '').split('/');
+          const author = pathParts[0] ?? '';
+          const repo = pathParts.slice(0, 2).join('/');
+          skills.push({ name, author, repo, installs: '', url: `https://skills.sh/${match[3]}` });
+        }
+        // Fallback: parse simpler patterns from the HTML
+        if (skills.length === 0) {
+          const linkRegex = /href="\/([^"]+?\/[^"]+?\/[^"]+?)"/g;
+          while ((match = linkRegex.exec(html)) !== null) {
+            const parts = match[1]!.split('/');
+            if (parts.length >= 3) {
+              skills.push({ name: parts[2]!, author: parts[0]!, repo: `${parts[0]}/${parts[1]}`, installs: '', url: `https://skills.sh/${match[1]}` });
+            }
+          }
+        }
+        if (!this.registryCache) this.registryCache = new Map();
+        this.registryCache.set(cacheKey, { data: skills, ts: now });
+        this.json(res, 200, { skills, cached: false });
+      } catch (err) {
+        this.json(res, 500, { error: `skills.sh fetch failed: ${String(err)}` });
+      }
       return;
     }
 
