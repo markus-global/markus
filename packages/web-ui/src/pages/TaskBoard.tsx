@@ -2,7 +2,19 @@ import { useEffect, useState, useCallback, useRef, type DragEvent } from 'react'
 import { api, wsClient, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
+// All backend statuses (used in detail modal dropdown)
 const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
+
+// Grouped board columns — reduces 13 statuses to 6 visual columns
+const BOARD_COLUMNS = [
+  { id: 'approval',    label: 'Approval',    statuses: ['pending_approval'],                  accent: 'border-t-yellow-500', dropStatus: 'pending_approval' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending', 'assigned'],               accent: 'border-t-gray-500',   dropStatus: 'pending' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],            accent: 'border-t-indigo-500', dropStatus: 'in_progress' },
+  { id: 'review',      label: 'Review',      statuses: ['review', 'revision', 'accepted'],    accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'Done',        statuses: ['completed'],                         accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],               accent: 'border-t-red-500',    dropStatus: 'cancelled' },
+] as const;
+
 const COLUMN_LABELS: Record<string, string> = {
   pending: 'Pending',
   pending_approval: 'Awaiting Approval',
@@ -17,19 +29,15 @@ const COLUMN_LABELS: Record<string, string> = {
   cancelled: 'Cancelled',
   archived: 'Archived',
 };
-const COLUMN_ACCENT: Record<string, string> = {
-  pending: 'border-t-gray-500',
-  pending_approval: 'border-t-yellow-500',
-  assigned: 'border-t-blue-500',
-  in_progress: 'border-t-indigo-500',
-  blocked: 'border-t-amber-500',
-  review: 'border-t-purple-500',
-  revision: 'border-t-orange-500',
-  accepted: 'border-t-teal-500',
-  completed: 'border-t-green-500',
-  failed: 'border-t-red-500',
-  cancelled: 'border-t-gray-600',
-  archived: 'border-t-gray-700',
+
+// Sub-status badges shown on task cards when the column groups multiple statuses
+const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending_approval: { label: 'Awaiting',  cls: 'bg-yellow-500/15 text-yellow-400' },
+  assigned:         { label: 'Assigned',  cls: 'bg-blue-500/15 text-blue-400' },
+  blocked:          { label: 'Blocked',   cls: 'bg-amber-500/15 text-amber-400' },
+  revision:         { label: 'Revision',  cls: 'bg-orange-500/15 text-orange-400' },
+  accepted:         { label: 'Accepted',  cls: 'bg-teal-500/15 text-teal-400' },
+  failed:           { label: 'Failed',    cls: 'bg-red-500/15 text-red-400' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500',
@@ -39,6 +47,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 const STATUS_DOT: Record<string, string> = {
   pending: 'bg-gray-400',
+  pending_approval: 'bg-yellow-400',
   assigned: 'bg-blue-400',
   in_progress: 'bg-indigo-400',
   blocked: 'bg-amber-400',
@@ -1049,13 +1058,17 @@ export function TaskBoard() {
     }
   };
 
-  const onDrop = async (e: DragEvent<HTMLDivElement>, col: string) => {
+  const onDrop = async (e: DragEvent<HTMLDivElement>, colId: string) => {
     e.preventDefault();
     setDragOverCol(null);
     const task = dragTaskRef.current;
-    if (!task || task.status === col) return;
+    if (!task) return;
+    const targetCol = BOARD_COLUMNS.find(c => c.id === colId);
+    if (!targetCol) return;
+    const targetStatus = targetCol.dropStatus;
+    if (task.status === targetStatus) return;
     try {
-      await api.tasks.updateStatus(task.id, col);
+      await api.tasks.updateStatus(task.id, targetStatus);
       refresh();
     } catch { /* ok */ }
   };
@@ -1080,9 +1093,12 @@ export function TaskBoard() {
     return result;
   };
 
-  const visibleColumns = ALL_STATUSES.filter(col => {
-    const tasks = filterTasks(board[col] ?? []);
-    if (col === 'failed' || col === 'cancelled') return tasks.length > 0;
+  const getColumnTasks = (col: typeof BOARD_COLUMNS[number]) =>
+    col.statuses.flatMap(s => filterTasks(board[s] ?? []));
+
+  const visibleColumns = BOARD_COLUMNS.filter(col => {
+    const tasks = getColumnTasks(col);
+    if (col.id === 'closed' || col.id === 'approval') return tasks.length > 0;
     return true;
   });
 
@@ -1128,25 +1144,26 @@ export function TaskBoard() {
       <div className="flex-1 overflow-x-auto p-7">
         <div className="flex gap-4 min-h-full">
           {visibleColumns.map((col) => {
-            const colTasks = filterTasks(board[col] ?? []);
-            const isOver = dragOverCol === col;
+            const colTasks = getColumnTasks(col);
+            const isOver = dragOverCol === col.id;
             return (
               <div
-                key={col}
-                className={`w-64 shrink-0 rounded-xl p-4 border-t-2 transition-colors ${COLUMN_ACCENT[col]} ${
+                key={col.id}
+                className={`w-72 shrink-0 rounded-xl p-4 border-t-2 transition-colors ${col.accent} ${
                   isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'
                 }`}
-                onDragOver={e => onDragOver(e, col)}
-                onDragLeave={e => onDragLeave(e, col)}
-                onDrop={e => void onDrop(e, col)}
+                onDragOver={e => onDragOver(e, col.id)}
+                onDragLeave={e => onDragLeave(e, col.id)}
+                onDrop={e => void onDrop(e, col.id)}
               >
                 <div className="flex justify-between items-center mb-3">
-                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{COLUMN_LABELS[col]}</span>
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
                   <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
                 </div>
                 <div className="space-y-2">
                   {colTasks.map((task) => {
                     const subCount = task.subtaskIds?.length ?? 0;
+                    const badge = SUB_STATUS_BADGE[task.status];
                     return (
                       <div
                         key={task.id}
@@ -1160,7 +1177,10 @@ export function TaskBoard() {
                         onKeyDown={(e) => e.key === 'Enter' && setSelectedTask(task)}
                         className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}
                       >
-                        <div className="text-sm font-medium leading-snug">{task.title}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-sm font-medium leading-snug">{task.title}</div>
+                          {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                        </div>
                         {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
                         <div className="flex items-center justify-between mt-2">
                           <span className="text-xs text-gray-600">{task.priority}</span>
