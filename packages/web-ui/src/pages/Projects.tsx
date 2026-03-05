@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -42,59 +43,6 @@ const STATUS_DOT: Record<string, string> = {
 type ViewMode = 'all' | 'project';
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
-
-function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
-  if (entry.type === 'status') {
-    const isCompleted = entry.content === 'completed';
-    const isStarted = entry.content === 'started';
-    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : 'text-gray-500';
-    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : 'bg-gray-500';
-    return (
-      <div className="flex items-center gap-2 py-0.5 px-1">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-        <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
-      </div>
-    );
-  }
-  if (entry.type === 'text') {
-    return (
-      <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-        {entry.content}
-      </div>
-    );
-  }
-  if (entry.type === 'tool_start') {
-    return (
-      <div className="flex items-center gap-2 py-1 px-1">
-        <svg className="w-3 h-3 text-indigo-400 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" strokeLinecap="round" />
-        </svg>
-        <span className="text-xs text-indigo-300 font-medium">{entry.content}</span>
-        <span className="text-xs text-gray-600">calling…</span>
-      </div>
-    );
-  }
-  if (entry.type === 'tool_end') {
-    const success = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
-    return (
-      <div className="flex items-center gap-2 py-0.5 px-1">
-        <span className={`text-xs ${success ? 'text-green-400' : 'text-red-400'}`}>{success ? '✓' : '✗'}</span>
-        <span className={`text-xs font-medium ${success ? 'text-green-300' : 'text-red-300'}`}>{entry.content}</span>
-        {!success && entry.metadata && (entry.metadata as Record<string, unknown>).error && (
-          <span className="text-xs text-red-400 truncate">{String((entry.metadata as Record<string, unknown>).error)}</span>
-        )}
-      </div>
-    );
-  }
-  if (entry.type === 'error') {
-    return (
-      <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
-        <span className="font-medium">Error:</span> {entry.content}
-      </div>
-    );
-  }
-  return null;
-}
 
 function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
   const matchedStartIndices = new Set<number>();

@@ -3,6 +3,7 @@ import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type 
 import { AgentProfile } from './AgentProfile.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { navBus } from '../navBus.ts';
+import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 
 const ROLE_ICONS: Record<string, string> = {
   'developer': '💻', 'software-engineer': '💻',
@@ -1228,27 +1229,6 @@ function BusyAgentModal({ agentName, taskId, onClose, onGoToTask }: {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  const renderLogEntry = (entry: TaskLogEntry) => {
-    if (entry.type === 'status') {
-      const color = entry.content === 'completed' ? 'text-green-400' : entry.content === 'started' ? 'text-blue-400' : 'text-gray-500';
-      return <div className={`text-xs ${color} capitalize`}>● {entry.content}</div>;
-    }
-    if (entry.type === 'text') {
-      return <div className="text-xs text-gray-300 whitespace-pre-wrap bg-gray-800/50 rounded px-2.5 py-2 leading-relaxed">{entry.content}</div>;
-    }
-    if (entry.type === 'tool_start') {
-      return <div className="text-xs text-indigo-300 flex items-center gap-1.5"><span className="animate-spin">⟳</span> {entry.content}</div>;
-    }
-    if (entry.type === 'tool_end') {
-      const ok = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
-      return <div className={`text-xs ${ok ? 'text-green-400' : 'text-red-400'}`}>{ok ? '✓' : '✗'} {entry.content}</div>;
-    }
-    if (entry.type === 'error') {
-      return <div className="text-xs text-red-400 bg-red-500/10 rounded px-2 py-1.5">Error: {entry.content}</div>;
-    }
-    return null;
-  };
-
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-gray-900 border border-gray-800 rounded-xl w-[540px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1276,7 +1256,7 @@ function BusyAgentModal({ agentName, taskId, onClose, onGoToTask }: {
           ) : (
             <>
               {logs.slice(-50).map((entry, i) => (
-                <div key={`${entry.seq}-${i}`}>{renderLogEntry(entry)}</div>
+                <div key={`${entry.seq}-${i}`}><LogEntryRow entry={entry} /></div>
               ))}
               <div className="flex items-center gap-2 px-2 py-1 text-xs text-gray-500">
                 <span className="flex gap-0.5">

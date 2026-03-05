@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
@@ -826,7 +827,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
 
   return (
     <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
-      {logs.map((entry, i) => <LogEntry key={`${entry.seq}-${i}`} entry={entry} />)}
+      {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
       {streamingText && (
         <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
           {streamingText}<span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
@@ -837,19 +838,6 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   );
 }
 
-function LogEntry({ entry }: { entry: TaskLogEntry }) {
-  if (entry.type === 'status') {
-    const c = entry.content === 'completed' ? 'text-green-400' : entry.content === 'started' ? 'text-blue-400' : 'text-gray-500';
-    return <div className={`flex items-center gap-2 py-0.5 px-1 text-xs capitalize ${c}`}><span className={`w-1.5 h-1.5 rounded-full ${entry.content === 'completed' ? 'bg-green-400' : 'bg-gray-500'}`} />{entry.content}</div>;
-  }
-  if (entry.type === 'text') return <div className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">{entry.content}</div>;
-  if (entry.type === 'tool_end') {
-    const success = (entry.metadata as Record<string, unknown> | undefined)?.success !== false;
-    return <div className={`flex items-center gap-2 py-0.5 px-1 text-xs ${success ? 'text-green-300' : 'text-red-300'}`}>{success ? '✓' : '✗'} {entry.content}</div>;
-  }
-  if (entry.type === 'error') return <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1">Error: {entry.content}</div>;
-  return null;
-}
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
 
