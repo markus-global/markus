@@ -4310,7 +4310,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
     // ── Governance: Governance Policy ─────────────────────────────────────
 
     if (path === '/api/governance/policy' && req.method === 'GET') {
-      this.json(res, 200, { policy: this.taskService.getGovernancePolicy() ?? null });
+      this.json(res, 200, { policy: this.taskService.getGovernancePolicy() });
       return;
     }
 

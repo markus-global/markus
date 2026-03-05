@@ -1247,7 +1247,15 @@ export class TaskService {
 
   // ─── Governance: Task Approval ─────────────────────────────────────────────
 
-  private governancePolicy?: TaskGovernancePolicy;
+  private governancePolicy: TaskGovernancePolicy = {
+    enabled: true,
+    defaultTier: 'human',
+    maxPendingTasksPerAgent: 10,
+    maxTotalActiveTasks: 20,
+    requireApprovalForPriority: ['critical', 'high'],
+    requireRequirement: true,
+    rules: [],
+  };
 
   setGovernancePolicy(policy: TaskGovernancePolicy): void {
     this.governancePolicy = policy;
@@ -1257,7 +1265,7 @@ export class TaskService {
     });
   }
 
-  getGovernancePolicy(): TaskGovernancePolicy | undefined {
+  getGovernancePolicy(): TaskGovernancePolicy {
     return this.governancePolicy;
   }
 
