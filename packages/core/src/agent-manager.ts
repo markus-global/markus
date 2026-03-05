@@ -6,6 +6,7 @@ import {
   type IdentityContext,
   type HumanUser,
   type SystemAnnouncement,
+  type TaskDeliverable,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -70,6 +71,7 @@ export interface TaskServiceBridge {
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string): void;
+  submitForReview(taskId: string, deliverables: TaskDeliverable[]): { id: string; status: string };
 }
 
 export interface MCPServerConfig {
@@ -377,6 +379,18 @@ export class AgentManager {
         addTaskNote: async (taskId, note) => {
           ts.addTaskNote(taskId, note);
         },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues) => {
+          const deliverables: TaskDeliverable[] = [{
+            type: 'branch',
+            reference: branchName ?? `task/${taskId}`,
+            summary,
+            ...(testResults ? { testResults: { passed: 0, failed: 0, skipped: 0 } } : {}),
+          }];
+          if (knownIssues) {
+            deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
+          }
+          return ts.submitForReview(taskId, deliverables);
+        },
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
@@ -674,6 +688,18 @@ export class AgentManager {
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
         addTaskNote: async (taskId, note) => {
           ts.addTaskNote(taskId, note);
+        },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues) => {
+          const deliverables: TaskDeliverable[] = [{
+            type: 'branch',
+            reference: branchName ?? `task/${taskId}`,
+            summary,
+            ...(testResults ? { testResults: { passed: 0, failed: 0, skipped: 0 } } : {}),
+          }];
+          if (knownIssues) {
+            deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
+          }
+          return ts.submitForReview(taskId, deliverables);
         },
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);

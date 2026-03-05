@@ -3702,7 +3702,7 @@ export class APIServer {
     if (path.match(/^\/api\/tasks\/[^/]+\/accept$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       try {
-        const task = this.taskService.acceptTask(taskId);
+        const task = await this.taskService.acceptTask(taskId);
         this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });

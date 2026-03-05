@@ -8,10 +8,11 @@ import {
   type ApprovalTier,
   type TaskDeliverable,
 } from '@markus/shared';
-import type { AgentManager } from '@markus/core';
+import type { AgentManager, WorkspaceManager, TaskWorkspace } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
+import type { ProjectService } from './project-service.js';
 
 const log = createLogger('task-service');
 
@@ -69,6 +70,8 @@ export class TaskService {
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   private webhooks: TaskWebhook[] = [];
   private timeoutCheckInterval?: ReturnType<typeof setInterval>;
+  private projectService?: ProjectService;
+  private workspaceManager?: WorkspaceManager;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -88,6 +91,14 @@ export class TaskService {
 
   setHITLService(hitl: HITLService): void {
     this.hitlService = hitl;
+  }
+
+  setProjectService(ps: ProjectService): void {
+    this.projectService = ps;
+  }
+
+  setWorkspaceManager(wm: WorkspaceManager): void {
+    this.workspaceManager = wm;
   }
 
   onTaskEvent(webhook: TaskWebhook): void {
@@ -254,6 +265,41 @@ export class TaskService {
       ? `${prevContext}${task.title}\n\n${task.description}`
       : `${task.title}\n\n${task.description}`;
 
+    // Create git worktree for project-bound tasks
+    let taskWorkspace: TaskWorkspace | undefined;
+    if (task.projectId) {
+      const project = this.projectService?.getProject(task.projectId);
+      const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
+      if (repo && this.workspaceManager) {
+        try {
+          const worktreePath = await this.workspaceManager.createWorktreeForTask(task, [repo]);
+          taskWorkspace = {
+            worktreePath,
+            branch: `task/${task.id}`,
+            baseBranch: repo.defaultBranch,
+            projectContext: project ? {
+              project: {
+                id: project.id,
+                name: project.name,
+                description: project.description,
+                status: project.status,
+              },
+              repositories: project.repositories?.map(r => ({
+                localPath: r.localPath,
+                defaultBranch: r.defaultBranch,
+                role: r.role,
+              })),
+            } : undefined,
+          };
+          log.info('Task workspace created via worktree', { taskId, worktreePath, branch: taskWorkspace.branch });
+        } catch (err) {
+          log.warn('Failed to create worktree for task, falling back to agent default workspace', {
+            taskId, projectId: task.projectId, error: String(err),
+          });
+        }
+      }
+    }
+
     let seq = 0;
     const agentId = task.assignedAgentId;
     const taskLogRepo = this.taskLogRepo;
@@ -387,7 +433,8 @@ export class TaskService {
             });
           }
         },
-        cancelToken
+        cancelToken,
+        taskWorkspace
       )
       .catch(err => {
         // Promise-level rejection (rare — usually executeTask catches internally)
@@ -1262,7 +1309,7 @@ export class TaskService {
     return task;
   }
 
-  acceptTask(taskId: string): Task {
+  async acceptTask(taskId: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
@@ -1283,6 +1330,30 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.updatedAt,
     });
+
+    // Merge task branch and clean up worktree for project-bound tasks
+    if (task.projectId && this.workspaceManager) {
+      const project = this.projectService?.getProject(task.projectId);
+      const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
+      if (repo) {
+        try {
+          const result = await this.workspaceManager.mergeTaskBranch(repo.localPath, task.id, repo.defaultBranch);
+          if (result.success) {
+            await this.workspaceManager.removeWorktree(repo.localPath, task.id);
+            await this.workspaceManager.deleteBranch(repo.localPath, task.id);
+            log.info('Task branch merged and worktree cleaned up', {
+              taskId, branch: `task/${task.id}`, target: repo.defaultBranch,
+            });
+          } else {
+            log.warn('Task branch merge failed', {
+              taskId, message: result.message, conflicts: result.conflicts,
+            });
+          }
+        } catch (err) {
+          log.error('Error merging task branch', { taskId, error: String(err) });
+        }
+      }
+    }
 
     log.info(`Task accepted: ${task.title}`, { id: task.id });
     return task;

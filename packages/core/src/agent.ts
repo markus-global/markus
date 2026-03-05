@@ -25,6 +25,7 @@ import { detectEnvironment, type EnvironmentProfile } from './environment-profil
 import { ToolSelector } from './tool-selector.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createBuiltinTools } from './tools/builtin.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
@@ -65,6 +66,17 @@ export interface SandboxHandle {
   readFile(path: string): Promise<string>;
   stop(): Promise<void>;
   destroy(): Promise<void>;
+}
+
+export interface TaskWorkspace {
+  worktreePath: string;
+  branch: string;
+  baseBranch: string;
+  projectContext?: {
+    project: { id: string; name: string; description: string; status: string };
+    iteration?: { id: string; name: string; goal?: string; status: string; endDate?: string };
+    repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
+  };
 }
 
 export interface AgentOptions {
@@ -1193,9 +1205,10 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean }
+    cancelToken?: { cancelled: boolean },
+    taskWorkspace?: TaskWorkspace
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskWorkspace);
   }
 
   /**
@@ -1212,7 +1225,8 @@ export class Agent {
       persist: boolean;
     }) => void,
     cancelToken?: { cancelled: boolean },
-    priority: TaskPriority = TaskPriority.MEDIUM
+    priority: TaskPriority = TaskPriority.MEDIUM,
+    taskWorkspace?: TaskWorkspace
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -1222,7 +1236,7 @@ export class Agent {
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
       async () => {
-        return this._executeTaskInternal(taskId, description, onLog, cancelToken);
+        return this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace);
       },
       {
         priority,
@@ -1258,7 +1272,8 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean }
+    cancelToken?: { cancelled: boolean },
+    taskWorkspace?: TaskWorkspace
   ): Promise<void> {
     if (
       this.config.profile?.maxConcurrentTasks !== undefined &&
@@ -1284,6 +1299,22 @@ export class Agent {
     };
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
+
+    // Rebind tools to worktree path for project-bound tasks
+    let savedTools: Map<string, AgentToolHandler> | undefined;
+    if (taskWorkspace) {
+      savedTools = new Map(this.tools);
+      const worktreeTools = createBuiltinTools({
+        agentId: this.id,
+        workspacePath: taskWorkspace.worktreePath,
+      });
+      for (const tool of worktreeTools) {
+        this.tools.set(tool.name, tool);
+      }
+      log.info('Tools rebound to worktree workspace', {
+        taskId, agentId: this.id, worktreePath: taskWorkspace.worktreePath,
+      });
+    }
 
     // AbortController linked to cancelToken so we can abort in-flight LLM calls
     const abortController = new AbortController();
@@ -1325,6 +1356,14 @@ export class Agent {
       assignedTasks: this.tasksFetcher?.(),
       knowledgeContext: this.getKnowledgeContext(taskPrompt),
       environment: this.environmentProfile,
+      ...(taskWorkspace ? {
+        currentWorkspace: {
+          branch: taskWorkspace.branch,
+          worktreePath: taskWorkspace.worktreePath,
+          baseBranch: taskWorkspace.baseBranch,
+        },
+        projectContext: taskWorkspace.projectContext,
+      } : {}),
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
@@ -1482,11 +1521,16 @@ export class Agent {
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
-      // 从活动任务中移除
+
+      // Restore original tools if they were rebound for a worktree
+      if (savedTools) {
+        this.tools = savedTools;
+        log.info('Tools restored to agent default workspace', { taskId, agentId: this.id });
+      }
+
       this.activeTasks.delete(taskId);
       this.notifyStateChange();
 
-      // 如果没有活动任务，设置状态为idle
       if (this.activeTasks.size === 0) {
         this.setStatus('idle');
       }
