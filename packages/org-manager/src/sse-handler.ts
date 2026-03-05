@@ -31,7 +31,7 @@ export interface SSEMessageHandlerOptions {
 export class SSEHandler {
   private options: SSEMessageHandlerOptions;
   private sseBuffer: SSEBuffer | null = null;
-  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> = [];
+  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; error?: string; durationMs?: number}> = [];
   private textBuf = '';
   private totalTokens = 0;
   private processedTokens = 0;
@@ -217,7 +217,11 @@ export class SSEHandler {
         this.msgSegments.push({ 
           type: 'tool', 
           tool: event.tool, 
-          status: event.success === false ? 'error' : 'done' 
+          status: event.success === false ? 'error' : 'done',
+          arguments: event.arguments,
+          result: event.result,
+          error: event.error,
+          durationMs: event.durationMs,
         });
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
       }

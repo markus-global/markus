@@ -18,7 +18,7 @@ export interface AgentTaskContext {
     iterationId?: string;
   }) => Promise<{ id: string; title: string; status: string }>;
   /** List tasks — defaults to tasks assigned to this agent */
-  listTasks: (filter?: { assignedToMe?: boolean; status?: string }) => Promise<
+  listTasks: (filter?: { assignedToMe?: boolean; status?: string; requirementId?: string; projectId?: string }) => Promise<
     Array<{
       id: string;
       title: string;
@@ -26,6 +26,7 @@ export interface AgentTaskContext {
       status: string;
       priority: string;
       assignedAgentId?: string;
+      requirementId?: string;
     }>
   >;
   /** Update a task's status (e.g. in_progress, blocked, completed, failed) */
@@ -90,6 +91,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Top-level tasks MUST reference an approved requirement_id.',
         'Subtasks (with parent_task_id) inherit the requirement from their parent.',
         'If you want to propose new work, use requirement_propose instead.',
+        'IMPORTANT: assigned_agent_id is required in almost all cases — call team_list first to find the right agent.',
+        'Only omit assigned_agent_id when it is genuinely unclear who should own the task, and provide reason_unassigned explaining why.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -110,7 +113,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           },
           assigned_agent_id: {
             type: 'string',
-            description: 'Optional: agent ID to assign this task to. Omit to leave unassigned.',
+            description: 'Agent ID to assign this task to. REQUIRED in almost all cases. Call team_list first to find the right agent by role/skills. Only omit if it is genuinely unclear who should own this — and then you MUST provide reason_unassigned.',
+          },
+          reason_unassigned: {
+            type: 'string',
+            description: 'Required when assigned_agent_id is omitted. Explain why no specific agent can be assigned at this time (e.g. "Waiting for new hire", "Requires cross-team decision"). Do not use vague reasons.',
           },
           parent_task_id: {
             type: 'string',
@@ -129,17 +136,28 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
+          const assignedAgentId = args['assigned_agent_id'] as string | undefined;
+          const reasonUnassigned = args['reason_unassigned'] as string | undefined;
+
+          // Enforce: unassigned tasks must have an explicit reason
+          if (!assignedAgentId && !reasonUnassigned) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'assigned_agent_id is required. If you genuinely cannot assign this task yet, provide reason_unassigned explaining why. Call team_list first to find the right agent.',
+            });
+          }
+
           const task = await ctx.createTask({
             title: args['title'] as string,
             description: args['description'] as string,
             priority: args['priority'] as string | undefined,
-            assignedAgentId: args['assigned_agent_id'] as string | undefined,
+            assignedAgentId,
             parentTaskId: args['parent_task_id'] as string | undefined,
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
             iterationId: args['iteration_id'] as string | undefined,
           });
-          log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title });
+          log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId, reasonUnassigned });
           if (task.status === 'pending_approval') {
             return JSON.stringify({
               status: 'pending_approval',
@@ -164,6 +182,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       description: [
         'List tasks from the team task board.',
         'By default shows tasks assigned to you. Use filters to see all tasks or by status.',
+        'Use requirement_id to see all tasks belonging to a specific requirement.',
+        'Use project_id to see all tasks in a project.',
         'Check this regularly to know what you should be working on.',
       ].join(' '),
       inputSchema: {
@@ -187,20 +207,36 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             ],
             description: 'Filter by status (optional)',
           },
+          requirement_id: {
+            type: 'string',
+            description: 'Filter tasks by requirement ID. Use this to see all tasks under a specific requirement.',
+          },
+          project_id: {
+            type: 'string',
+            description: 'Filter tasks by project ID. Use this to see all tasks in a project.',
+          },
         },
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
-          const assignedToMe = (args['assigned_to_me'] as boolean) ?? true;
+          const requirementId = args['requirement_id'] as string | undefined;
+          const projectId = args['project_id'] as string | undefined;
+          // When filtering by requirement or project, default assigned_to_me to false
+          const assignedToMeDefault = !requirementId && !projectId;
+          const assignedToMe = args['assigned_to_me'] !== undefined
+            ? (args['assigned_to_me'] as boolean)
+            : assignedToMeDefault;
           const tasks = await ctx.listTasks({
             assignedToMe,
             status: args['status'] as string | undefined,
+            requirementId,
+            projectId,
           });
           return JSON.stringify({
             status: 'success',
             tasks,
             count: tasks.length,
-            summary: tasks.map(t => `[${t.status}] ${t.id}: ${t.title} (${t.priority})`).join('\n'),
+            summary: tasks.map(t => `[${t.status}] ${t.id}: ${t.title} (${t.priority})${t.requirementId ? ` req:${t.requirementId}` : ''}`).join('\n'),
           });
         } catch (error) {
           return JSON.stringify({ status: 'error', error: String(error) });

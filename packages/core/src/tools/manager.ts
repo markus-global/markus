@@ -60,23 +60,32 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
     },
     {
       name: 'create_task',
-      description: 'Create a new task and optionally assign it to a team member.',
+      description: 'Create a new task and assign it to a team member. IMPORTANT: assigned_agent_id is required in almost all cases — use team_list first to find the right agent. Only omit if genuinely unclear who should own the task, and then provide reason_unassigned.',
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Task title' },
           description: { type: 'string', description: 'Detailed task description' },
-          assigned_agent_id: { type: 'string', description: 'Optional: ID of the agent to assign this task to' },
+          assigned_agent_id: { type: 'string', description: 'Agent ID to assign this task to. REQUIRED in almost all cases. Use team_list to find the right agent by role/skills.' },
+          reason_unassigned: { type: 'string', description: 'Required when assigned_agent_id is omitted. Explain why no agent can be assigned right now.' },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Task priority' },
         },
         required: ['title', 'description'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
+          const assignedAgentId = args['assigned_agent_id'] as string | undefined;
+          const reasonUnassigned = args['reason_unassigned'] as string | undefined;
+          if (!assignedAgentId && !reasonUnassigned) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'assigned_agent_id is required. If you cannot assign this task yet, provide reason_unassigned. Use team_list to find the right agent.',
+            });
+          }
           const taskId = ctx.createTask(
             args['title'] as string,
             args['description'] as string,
-            args['assigned_agent_id'] as string | undefined,
+            assignedAgentId,
             args['priority'] as string | undefined,
           );
           return JSON.stringify({ status: 'success', taskId });

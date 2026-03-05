@@ -19,6 +19,22 @@ export interface ProjectServiceBridge {
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
   } | undefined;
+  getActiveIteration(projectId: string): {
+    id: string;
+    name: string;
+    goal?: string;
+    status: string;
+    startDate?: string;
+    endDate?: string;
+  } | undefined;
+  listIterations(projectId: string): Array<{
+    id: string;
+    name: string;
+    status: string;
+    goal?: string;
+    startDate?: string;
+    endDate?: string;
+  }>;
 }
 
 export interface ProjectToolsContext {
@@ -90,10 +106,17 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 return JSON.stringify({
                   status: 'success',
                   count: projects.length,
-                  projects: projects.map(p => ({
-                    id: p.id, name: p.name, description: p.description,
-                    status: p.status, iterationModel: p.iterationModel,
-                  })),
+                  projects: projects.map(p => {
+                    const activeIteration = ctx.projectService!.getActiveIteration(p.id);
+                    return {
+                      id: p.id, name: p.name, description: p.description,
+                      status: p.status, iterationModel: p.iterationModel,
+                      activeIteration: activeIteration
+                        ? { id: activeIteration.id, name: activeIteration.name, goal: activeIteration.goal, status: activeIteration.status }
+                        : null,
+                    };
+                  }),
+                  hint: 'Use requirement_list with project_id to see requirements, then task_list with requirement_id for tasks.',
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -116,9 +139,12 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const project = ctx.projectService!.getProject(args['project_id'] as string);
+                const projectId = args['project_id'] as string;
+                const project = ctx.projectService!.getProject(projectId);
                 if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
-                return JSON.stringify({ status: 'success', project });
+                const activeIteration = ctx.projectService!.getActiveIteration(projectId);
+                const iterations = ctx.projectService!.listIterations(projectId);
+                return JSON.stringify({ status: 'success', project, activeIteration: activeIteration ?? null, iterations });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

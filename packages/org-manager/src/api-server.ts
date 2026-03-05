@@ -1290,6 +1290,30 @@ export class APIServer {
       return;
     }
 
+    // Task approve/reject — the only way to transition out of pending_approval.
+    // If the UI changed the assignee before approving, that's already on the task object.
+    if (path.match(/^\/api\/tasks\/[^/]+\/approve$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.approveTask(taskId);
+        this.json(res, 200, { task });
+      } catch (err: unknown) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/reject$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.rejectTask(taskId);
+        this.json(res, 200, { task });
+      } catch (err: unknown) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     if (path.startsWith('/api/tasks/') && req.method === 'DELETE') {
       const taskId = path.split('/')[3]!;
       this.taskService.deleteTask(taskId);
@@ -2182,7 +2206,7 @@ export class APIServer {
       }
 
       const templates = this.templateRegistry
-        ? this.templateRegistry.search({}).map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }))
+        ? this.templateRegistry.search({}).templates.map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }))
         : [];
 
       const SYSTEM_PROMPTS: Record<string, string> = {
@@ -2317,7 +2341,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
               skills: typeof artifact.skills === 'string' ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean) : [],
               tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
               category: artifact.category ?? 'general',
-              source: 'ai-generated',
+              source: 'community',
               systemPrompt: artifact.systemPrompt ?? '',
               config: {
                 llmModel: artifact.llmModel || undefined,
@@ -2353,7 +2377,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
             id,
             name: (artifact.name as string) ?? 'unnamed-skill',
             description: (artifact.description as string) ?? '',
-            source: 'ai-generated',
+            source: 'community',
             status: 'published',
             version: (artifact.version as string) ?? '1.0.0',
             authorName: (artifact.author as string) ?? 'AI Generated',

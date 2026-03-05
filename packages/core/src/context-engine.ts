@@ -253,6 +253,20 @@ export class ContextEngine {
     parts.push(
       '**Task Rule:** All work must be linked to a task. Use `task_create` → `task_update(in_progress)` → `task_update(completed)`. Check `task_list` before creating duplicates.'
     );
+    parts.push(
+      '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'
+    );
+
+    parts.push('\n## Work Discovery (Project → Requirement → Task)');
+    parts.push(
+      'To understand the full scope of work, navigate the hierarchy in order:'
+    );
+    parts.push('1. `list_projects` — See all projects in the organization');
+    parts.push('2. `requirement_list` with `project_id` — See approved requirements for a project');
+    parts.push('3. `task_list` with `requirement_id` — See all tasks under a specific requirement');
+    parts.push(
+      '**Never browse the filesystem to discover project structure.** Always use these tools first.'
+    );
 
     parts.push('\n## Memory & Tools');
     parts.push(

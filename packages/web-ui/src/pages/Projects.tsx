@@ -326,7 +326,7 @@ function TaskDetailModal({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Status</label>
-                    <select value={task.status} onChange={e => void updateStatus(task.id, e.target.value)} disabled={busy}
+                    <select value={task.status} onChange={e => void updateStatus(task.id, e.target.value)} disabled={busy || task.status === 'pending_approval'}
                       className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
                       {ALL_STATUSES.map(s => <option key={s} value={s}>{COLUMN_LABELS[s]}</option>)}
                     </select>
@@ -458,8 +458,8 @@ function TaskDetailModal({
           <div className="flex gap-2 flex-wrap">
             {task.status === 'pending_approval' && (
               <>
-                <button onClick={() => void updateStatus(task.id, 'pending')} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
-                <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
               </>
             )}
             {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && (
@@ -1074,6 +1074,7 @@ export function ProjectsPage() {
     if (!targetCol) return;
     const targetStatus = targetCol.dropStatus;
     if (task.status === targetStatus) return;
+    if (task.status === 'pending_approval') return; // locked state — use Approve/Reject buttons
     try { await api.tasks.updateStatus(task.id, targetStatus); refreshBoard(); } catch { /* */ }
   };
 

@@ -78,15 +78,16 @@ export interface TaskServiceBridge {
     createdBy?: string;
     creatorRole?: string;
   }): { id: string; title: string; status: string };
-  listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string }): Array<{
+  listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string; requirementId?: string; projectId?: string }): Array<{
     id: string;
     title: string;
     description: string;
     status: string;
     priority: string;
     assignedAgentId?: string;
+    requirementId?: string;
   }>;
-  updateTaskStatus(id: string, status: string): { id: string; title: string; status: string };
+  updateTaskStatus(id: string, status: string, updatedBy?: string): { id: string; title: string; status: string };
   getTask(
     id: string
   ):
@@ -408,6 +409,8 @@ export class AgentManager {
             orgId,
             status: filter?.status,
             assignedAgentId: filter?.assignedToMe ? id : undefined,
+            requirementId: filter?.requirementId,
+            projectId: filter?.projectId,
           });
         },
         updateTaskStatus: async (taskId, status) => {
@@ -759,6 +762,8 @@ export class AgentManager {
             orgId,
             status: filter?.status,
             assignedAgentId: filter?.assignedToMe ? id : undefined,
+            requirementId: filter?.requirementId,
+            projectId: filter?.projectId,
           }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
@@ -778,6 +783,29 @@ export class AgentManager {
           }
           return ts.submitForReview(taskId, deliverables);
         },
+        proposeRequirement: this.requirementService
+          ? async params => {
+              return this.requirementService!.proposeRequirement({
+                orgId,
+                title: params.title,
+                description: params.description,
+                priority: params.priority,
+                source: 'agent',
+                createdBy: id,
+                projectId: params.projectId,
+                tags: params.tags,
+              });
+            }
+          : undefined,
+        listRequirements: this.requirementService
+          ? async filter => {
+              return this.requirementService!.listRequirements({
+                orgId,
+                status: filter?.status,
+                projectId: filter?.projectId,
+              });
+            }
+          : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
       agent.setTasksFetcher(() => {

@@ -92,4 +92,8 @@ export interface LLMStreamEvent {
   tool?: string;
   phase?: 'start' | 'end';
   success?: boolean;
+  arguments?: unknown;
+  result?: string;
+  error?: string;
+  durationMs?: number;
 }

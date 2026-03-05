@@ -4,6 +4,10 @@ export interface AgentToolEvent {
   tool: string;
   phase: 'start' | 'end';
   success?: boolean;
+  arguments?: unknown;
+  result?: string;
+  error?: string;
+  durationMs?: number;
 }
 
 export interface AuthUser {
@@ -25,7 +29,7 @@ export interface ChatSessionInfo {
 
 export type StoredSegment =
   | { type: 'text'; content: string }
-  | { type: 'tool'; tool: string; status: 'done' | 'error' };
+  | { type: 'tool'; tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; error?: string; durationMs?: number };
 
 export interface ChatMessageInfo {
   id: string;
@@ -525,7 +529,7 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; toolCall?: { id?: string; name?: string } };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
@@ -541,7 +545,7 @@ export const api = {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
                   // Only propagate 'end' from agent_tool to avoid double 'start'
-                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success });
+                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 }
               } catch { /* skip */ }
             }
@@ -589,6 +593,8 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
     assign: (id: string, agentId: string | null) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
+    approve: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST' }),
+    reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
     delete: (id: string) => request(`/tasks/${id}`, { method: 'DELETE' }),
     board: (filters?: { projectId?: string; iterationId?: string }) => {
       const params = new URLSearchParams();
@@ -668,7 +674,7 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; toolCall?: { id?: string; name?: string } };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
@@ -683,7 +689,7 @@ export const api = {
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success });
+                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 }
               } catch { /* skip */ }
             }

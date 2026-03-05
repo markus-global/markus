@@ -648,7 +648,9 @@ export class TaskService {
       description: request.description,
       status: initialStatus,
       priority: request.priority ?? 'medium',
-      assignedAgentId: needsApproval ? undefined : assignedAgentId,
+      // Keep assignedAgentId even in pending_approval — it represents the proposed assignee.
+      // The human reviewer can see and change it before approving. Status is the gate, not the field.
+      assignedAgentId: assignedAgentId,
       parentTaskId: request.parentTaskId,
       requirementId: request.requirementId,
       subtaskIds: [],
@@ -720,37 +722,55 @@ export class TaskService {
         type: 'custom',
         title: `Task approval (${approvalTier}): ${task.title}`,
         description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}). Approval tier: ${approvalTier}.`,
-        details: { taskId: task.id, approvalTier, priority: task.priority, requestedAssignee: assignedAgentId },
+        details: { taskId: task.id, approvalTier, priority: task.priority },
       }).then(approved => {
+        const current = this.tasks.get(task.id);
+        if (!current || current.status !== 'pending_approval') {
+          // Task was already approved or rejected via another path (e.g. direct API call)
+          return;
+        }
         if (approved) {
-          this.approveTask(task.id, assignedAgentId, approvalTier);
+          // Use the task's current assignedAgentId — the human may have changed it during review
+          this.approveTask(task.id, approvalTier);
         } else {
           this.rejectTask(task.id);
         }
       }).catch(err => {
         log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
-        this.rejectTask(task.id);
+        const current = this.tasks.get(task.id);
+        if (current?.status === 'pending_approval') {
+          this.rejectTask(task.id);
+        }
       });
     }
 
     return task;
   }
 
-  /** Approve a pending_approval task and transition it to normal flow. */
-  approveTask(taskIdStr: string, assignedAgentId?: string, approvalTier?: string): Task {
+  /** Approve a pending_approval task and transition it to normal flow.
+   * Uses the task's current assignedAgentId (the human reviewer may have changed it).
+   * Optionally resolves the associated HITL promise to prevent double-fire. */
+  approveTask(taskIdStr: string, approvalTier?: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (task.status !== 'pending_approval') {
       throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot approve`);
     }
 
+    // Resolve the HITL promise if one is pending, so the .then() handler skips
+    if (this.hitlService) {
+      const pending = this.hitlService.listApprovals('pending');
+      const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['taskId'] === taskIdStr);
+      if (hitl) this.hitlService.respondToApproval(hitl.id, true, 'direct');
+    }
+
+    const finalAssignee = task.assignedAgentId;
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0;
-    task.status = hasBlockers ? 'blocked' : assignedAgentId ? 'assigned' : 'pending';
-    task.assignedAgentId = assignedAgentId;
+    task.status = hasBlockers ? 'blocked' : finalAssignee ? 'assigned' : 'pending';
     task.approvedVia = approvalTier ?? 'human';
     task.updatedAt = new Date().toISOString();
 
-    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId: finalAssignee });
     this.emitTaskEvent({
       type: 'status_changed',
       taskId: task.id,
@@ -758,7 +778,7 @@ export class TaskService {
       orgId: task.orgId,
       status: task.status,
       previousStatus: 'pending_approval',
-      agentId: task.assignedAgentId,
+      agentId: finalAssignee,
       timestamp: task.updatedAt,
     });
     log.info(`Task approved: ${task.title}`, { id: task.id, status: task.status, approvedVia: task.approvedVia });
@@ -771,6 +791,13 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (task.status !== 'pending_approval') {
       throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot reject`);
+    }
+
+    // Resolve the HITL promise so the .then() handler skips
+    if (this.hitlService) {
+      const pending = this.hitlService.listApprovals('pending');
+      const hitl = pending.find(a => (a.details as Record<string, unknown>)?.['taskId'] === taskIdStr);
+      if (hitl) this.hitlService.respondToApproval(hitl.id, false, 'direct');
     }
 
     task.status = 'cancelled';
@@ -799,16 +826,16 @@ export class TaskService {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
 
+    // pending_approval is a locked state — only approveTask() / rejectTask() can exit it
+    if (task.status === 'pending_approval') {
+      throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint to change its status.`);
+    }
+
     // Prevent starting a blocked task
     if (status === 'in_progress' && task.status === 'blocked') {
       if (!this.areBlockersSatisfied(task)) {
         throw new Error(`Task ${id} is blocked by unfinished dependencies`);
       }
-    }
-
-    // When a human approves a pending_approval task via status change, record it
-    if (task.status === 'pending_approval' && status !== 'cancelled') {
-      task.approvedVia = 'human';
     }
 
     const prevStatus = task.status;
@@ -889,6 +916,17 @@ export class TaskService {
   assignTask(id: string, agentId: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+    if (task.status === 'pending_approval') {
+      // While awaiting approval, only update the proposed assignee — status stays pending_approval.
+      // The human reviewer can see and adjust the assignee before clicking Approve.
+      task.assignedAgentId = agentId;
+      task.updatedAt = new Date().toISOString();
+      if (this.taskRepo) {
+        this.taskRepo.assign(id, agentId).catch(err => log.warn('Failed to persist proposed assignee', { error: String(err) }));
+      }
+      log.info(`Proposed assignee updated (pending_approval)`, { taskId: id, agentId });
+      return task;
+    }
     task.assignedAgentId = agentId;
     task.status = 'assigned';
     task.updatedAt = new Date().toISOString();
@@ -949,6 +987,7 @@ export class TaskService {
     priority?: TaskPriority;
     projectId?: string;
     iterationId?: string;
+    requirementId?: string;
   }): Task[] {
     let result = [...this.tasks.values()];
     if (filters?.orgId) result = result.filter(t => t.orgId === filters.orgId);
@@ -958,6 +997,7 @@ export class TaskService {
     if (filters?.priority) result = result.filter(t => t.priority === filters.priority);
     if (filters?.projectId) result = result.filter(t => t.projectId === filters.projectId);
     if (filters?.iterationId) result = result.filter(t => t.iterationId === filters.iterationId);
+    if (filters?.requirementId) result = result.filter(t => t.requirementId === filters.requirementId);
     return result;
   }
 

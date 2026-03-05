@@ -1095,29 +1095,31 @@ export class Agent {
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
-              onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start' });
+              onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start', arguments: tc.arguments });
               try {
                 let result = await this.executeTool(tc);
                 result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
+                const durationMs = Date.now() - toolStart;
                 this.emitAudit({
                   type: 'tool_call',
                   action: tc.name,
-                  durationMs: Date.now() - toolStart,
+                  durationMs,
                   success: !isToolError,
                   detail: JSON.stringify(tc.arguments).slice(0, 200),
                 });
-                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError, arguments: tc.arguments, result: result.slice(0, 2000), durationMs });
                 return { toolCallId: tc.id, content: result };
               } catch (toolErr) {
+                const durationMs = Date.now() - toolStart;
                 this.emitAudit({
                   type: 'tool_call',
                   action: tc.name,
-                  durationMs: Date.now() - toolStart,
+                  durationMs,
                   success: false,
                   detail: String(toolErr).slice(0, 200),
                 });
-                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: String(toolErr).slice(0, 500), durationMs });
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
               }
             })

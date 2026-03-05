@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, type RefObject } from 'react';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo,
@@ -14,7 +14,7 @@ import { navBus } from '../navBus.ts';
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
   | { type: 'text'; content: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' };
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error'; args?: unknown; result?: string; error?: string; durationMs?: number };
 
 interface ChatMsg {
   id: string;
@@ -28,6 +28,8 @@ interface ChatMsg {
   activities?: ActivityStep[];
   /** True when this message represents a failed AI response */
   isError?: boolean;
+  /** True when this message was stopped by the user mid-stream */
+  isStopped?: boolean;
 }
 
 type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
@@ -44,7 +46,7 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
     base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
       s.type === 'tool'
-        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status }
+        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs }
         : { type: 'text' as const, content: s.content }
     );
   }
@@ -132,34 +134,195 @@ function toolMeta(tool: string) {
 // ─── AgentMessageBody ──────────────────────────────────────────────────────────
 // Renders an agent message with tool calls and text interleaved in chronological order.
 
-function ToolSegmentRow({ seg, isLast }: { seg: Extract<MsgSegment, { type: 'tool' }>; isLast: boolean }) {
-  const meta = toolMeta(seg.tool);
+// ── Tool segment tooltip/modal helpers ────────────────────────────────────────
+
+function formatSegArgs(args: unknown): string {
+  if (!args || typeof args !== 'object') return '';
+  const obj = args as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null) continue;
+    const val = typeof v === 'string' ? v : JSON.stringify(v);
+    const trimmed = val.length > 60 ? val.slice(0, 60) + '…' : val;
+    parts.push(`${k}: ${trimmed}`);
+  }
+  return parts.join(', ');
+}
+
+function formatSegArgsDetail(args: unknown): Array<{ key: string; value: string }> {
+  if (!args || typeof args !== 'object') return [];
+  const obj = args as Record<string, unknown>;
+  return Object.entries(obj)
+    .filter(([, v]) => v != null)
+    .map(([k, v]) => ({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }));
+}
+
+function formatDurationMs(ms: number | undefined): string {
+  if (ms == null) return '';
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function SegTooltip({ seg, anchorRef }: { seg: Extract<MsgSegment, { type: 'tool' }>; anchorRef: RefObject<HTMLElement | null> }) {
+  const [position, setPosition] = useState<'above' | 'below'>('above');
+
+  useEffect(() => {
+    if (anchorRef.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      setPosition(rect.top > 200 ? 'above' : 'below');
+    }
+  }, [anchorRef]);
+
+  const argSummary = formatSegArgs(seg.args);
+  const success = seg.status !== 'error';
+
   return (
-    <div className={`flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-gray-700/30 pb-1.5 mb-0.5' : ''}`}>
-      <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
-        <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-          seg.status === 'running' ? 'border-indigo-500 bg-indigo-950 animate-pulse' :
-          seg.status === 'error'   ? 'border-red-600 bg-red-950 text-red-400' :
-                                     'border-gray-600 bg-gray-800 text-gray-400'
-        }`}>
-          {seg.status === 'done' ? '✓' : seg.status === 'error' ? '✗' : ''}
+    <div className={`absolute z-50 left-0 ${position === 'above' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} w-80 max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs pointer-events-none`}>
+      <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+        <span className="font-medium text-gray-200">{toolMeta(seg.tool).label}</span>
+        <div className="flex items-center gap-2">
+          {seg.durationMs != null && <span className="text-gray-500">{formatDurationMs(seg.durationMs)}</span>}
+          <span className={success ? 'text-green-400' : 'text-red-400'}>{success ? '✓ ok' : '✗ failed'}</span>
         </div>
       </div>
-      <div className={`flex items-center gap-1 text-xs leading-snug ${
-        seg.status === 'running' ? 'text-indigo-300' :
-        seg.status === 'error'   ? 'text-red-400 line-through opacity-50' :
-                                   'text-gray-500'
-      }`}>
-        <span className="opacity-60">{meta.icon}</span>
-        <span>{meta.label}{seg.status === 'running' ? '…' : ''}</span>
-        {seg.status === 'running' && (
-          <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-        )}
+      {argSummary && (
+        <div className="px-3 py-1.5 border-b border-gray-800">
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
+          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{argSummary}</div>
+        </div>
+      )}
+      {seg.result && (
+        <div className="px-3 py-1.5">
+          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
+          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{seg.result.length > 300 ? seg.result.slice(0, 300) + '…' : seg.result}</div>
+        </div>
+      )}
+      {seg.error && (
+        <div className="px-3 py-1.5">
+          <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
+          <div className="text-red-400 font-mono text-[11px] break-all line-clamp-3">{seg.error.length > 300 ? seg.error.slice(0, 300) + '…' : seg.error}</div>
+        </div>
+      )}
+      {!argSummary && !seg.result && !seg.error && (
+        <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
+      )}
+      <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600">Click to expand full details</div>
+    </div>
+  );
+}
+
+function SegDetailModal({ seg, onClose }: { seg: Extract<MsgSegment, { type: 'tool' }>; onClose: () => void }) {
+  const argEntries = formatSegArgsDetail(seg.args);
+  const success = seg.status !== 'error';
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div
+        className="relative bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="opacity-60 text-sm">{toolMeta(seg.tool).icon}</span>
+            <span className={`text-sm font-semibold ${success ? 'text-gray-100' : 'text-red-300'}`}>
+              {toolMeta(seg.tool).label}
+            </span>
+            <span className={`text-xs px-1.5 py-0.5 rounded ${success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
+              {success ? 'Success' : 'Failed'}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            {seg.durationMs != null && <span className="text-xs text-gray-500">{formatDurationMs(seg.durationMs)}</span>}
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          {argEntries.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Arguments</h4>
+              <div className="space-y-2">
+                {argEntries.map(({ key, value }) => (
+                  <div key={key}>
+                    <div className="text-[11px] text-indigo-400 font-medium mb-0.5">{key}</div>
+                    <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{value}</pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {seg.result && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
+              <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{seg.result}</pre>
+            </div>
+          )}
+          {seg.error && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
+              <pre className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{seg.error}</pre>
+            </div>
+          )}
+          {!argEntries.length && !seg.result && !seg.error && (
+            <div className="text-sm text-gray-600 italic py-4 text-center">No detailed data recorded for this tool call.</div>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function ToolSegmentRow({ seg, isLast }: { seg: Extract<MsgSegment, { type: 'tool' }>; isLast: boolean }) {
+  const meta = toolMeta(seg.tool);
+  const [hovered, setHovered] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const isDone = seg.status !== 'running';
+
+  return (
+    <>
+      <div
+        ref={rowRef}
+        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-gray-700/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-gray-800/30 transition-colors' : ''}`}
+        onMouseEnter={() => isDone && setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onClick={() => isDone && setExpanded(true)}
+      >
+        <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
+          <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
+            seg.status === 'running' ? 'border-indigo-500 bg-indigo-950 animate-pulse' :
+            seg.status === 'error'   ? 'border-red-600 bg-red-950 text-red-400' :
+                                       'border-gray-600 bg-gray-800 text-gray-400'
+          }`}>
+            {seg.status === 'done' ? '✓' : seg.status === 'error' ? '✗' : ''}
+          </div>
+        </div>
+        <div className={`flex items-center gap-1 text-xs leading-snug ${
+          seg.status === 'running' ? 'text-indigo-300' :
+          seg.status === 'error'   ? 'text-red-400 line-through opacity-50' :
+                                     'text-gray-500'
+        }`}>
+          <span className="opacity-60">{meta.icon}</span>
+          <span>{meta.label}{seg.status === 'running' ? '…' : ''}</span>
+          {seg.status === 'running' && (
+            <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          )}
+          {seg.durationMs != null && seg.status !== 'running' && (
+            <span className="text-[10px] text-gray-600 ml-0.5">{formatDurationMs(seg.durationMs)}</span>
+          )}
+        </div>
+        {hovered && <SegTooltip seg={seg} anchorRef={rowRef} />}
+      </div>
+      {expanded && <SegDetailModal seg={seg} onClose={() => setExpanded(false)} />}
+    </>
   );
 }
 
@@ -173,6 +336,7 @@ function MessageActions({
   isCopied: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
+  const isStopped = msg.isStopped;
   return (
     <div className="flex items-center gap-0.5 mt-1">
       {/* Copy */}
@@ -188,8 +352,19 @@ function MessageActions({
         )}
         {isCopied ? 'Copied' : 'Copy'}
       </button>
+      {/* Re-ask — for stopped messages */}
+      {isStopped && onRetry && (
+        <button
+          onClick={() => onRetry(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-indigo-400 hover:text-indigo-300 hover:bg-indigo-900/30 transition-colors"
+          title="Re-ask"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
+          Re-ask
+        </button>
+      )}
       {/* Retry — only for error messages */}
-      {isError && onRetry && (
+      {isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors"
@@ -229,6 +404,7 @@ function AgentMessageBody({
   liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
 }) {
   const segments = msg.segments;
+  const isStopped = msg.isStopped;
 
   // Messages with segment data: render interleaved
   if (segments !== undefined) {
@@ -276,6 +452,14 @@ function AgentMessageBody({
             <ThinkingDots label="Processing" />
           </div>
         )}
+
+        {/* Stopped indicator */}
+        {isStopped && (
+          <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-gray-500">
+            <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+            <span>Stopped</span>
+          </div>
+        )}
       </div>
     );
   }
@@ -292,6 +476,12 @@ function AgentMessageBody({
         />
       )}
       {msg.text ? <MarkdownMessage content={msg.text} /> : null}
+      {isStopped && (
+        <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-gray-500">
+          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+          <span>Stopped</span>
+        </div>
+      )}
     </>
   );
 }
@@ -608,6 +798,12 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const stopSending = () => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    // Immediately unblock the UI — don't wait for the async send() to catch the abort
+    const sendKey = currentConvKeyRef.current;
+    sendingConvs.current.delete(sendKey);
+    actBuffers.current.delete(sendKey);
+    setSending(false);
+    setActivities([]);
   };
 
   const send = async (retryText?: string) => {
@@ -721,7 +917,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
             const segs = u[idx]!.segments ?? [];
-            u[idx] = { ...u[idx]!, segments: [...segs, { type: 'tool', key: toolKey, tool: event.tool, status: 'running' }] };
+            u[idx] = { ...u[idx]!, segments: [...segs, { type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments }] };
             return u;
           });
         } else {
@@ -735,7 +931,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             for (let i = segs.length - 1; i >= 0; i--) {
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, status: event.success === false ? 'error' : 'done' };
+                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs };
                 break;
               }
             }
@@ -789,8 +985,21 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             return u;
           });
         } else {
-          // User cancelled — remove the empty agent bubble
-          updateConvMsgs(sendKey, prev => prev.filter(m => m.id !== agentMsgId));
+          // User cancelled — keep partial content and mark as stopped
+          updateConvMsgs(sendKey, prev => {
+            const u = [...prev];
+            const idx = u.findIndex(m => m.id === agentMsgId);
+            if (idx >= 0) {
+              const msg = u[idx]!;
+              const hasContent = msg.text || (msg.segments && msg.segments.some(s => s.type === 'text' && (s as { content: string }).content));
+              if (!hasContent) {
+                // No content at all — remove the bubble silently
+                return prev.filter(m => m.id !== agentMsgId);
+              }
+              u[idx] = { ...msg, isStopped: true };
+            }
+            return u;
+          });
         }
       }
 
@@ -807,11 +1016,30 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         return u;
       });
 
+      // If stream was aborted by user (api resolves rather than rejects on abort) —
+      // keep partial content and mark as stopped. The catch block handles the rejection path.
+      if (abortCtrl.signal.aborted) {
+        updateConvMsgs(sendKey, prev => {
+          const u = [...prev];
+          const idx = u.findIndex(m => m.id === agentMsgId);
+          if (idx >= 0) {
+            const msg = u[idx]!;
+            const hasContent = msg.text || (msg.segments && msg.segments.some(s => s.type === 'text' && (s as { content: string }).content));
+            if (!hasContent) {
+              return prev.filter(m => m.id !== agentMsgId);
+            }
+            u[idx] = { ...msg, isStopped: true };
+          }
+          return u;
+        });
+      }
+
       // Fallback: if the agent message is empty (SSE connection may have dropped),
       // poll the latest session messages to recover the persisted reply.
+      // Skip if user aborted — no need to poll.
       const currentMsgs = msgBuffers.current.get(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
-      if (agentMsg && !agentMsg.text && chatMode === 'direct' && selectedAgent) {
+      if (agentMsg && !agentMsg.text && chatMode === 'direct' && selectedAgent && !abortCtrl.signal.aborted) {
         const pollForReply = async (retries: number, delayMs: number) => {
           for (let i = 0; i < retries; i++) {
             await new Promise(r => setTimeout(r, delayMs));
@@ -870,12 +1098,12 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
     const errIdx = currentMsgs.findIndex(m => m.id === errorMsg.id);
     if (errIdx < 0) return;
-    // Find the user message immediately before the error
+    // Find the user message immediately before the error/stopped bubble
     const userMsg = errIdx > 0 && currentMsgs[errIdx - 1]?.sender === 'user'
       ? currentMsgs[errIdx - 1]! : null;
     const retryText = userMsg?.text ?? '';
     if (!retryText) return;
-    // Remove error message (and the preceding user message)
+    // Remove the error/stopped agent bubble (and the preceding user message so it re-appears cleanly)
     updateConvMsgs(convKey, prev => prev.filter(m =>
       m.id !== errorMsg.id && (userMsg ? m.id !== userMsg.id : true)
     ));
@@ -1181,7 +1409,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             : messages.map((msg, i) => {
                 const isPending = isLastPending && i === messages.length - 1;
                 const isStreamingMsg = isPending && sending;
-                const showActions = !isStreamingMsg;
+                // Always show actions for stopped/error messages, otherwise only when not streaming
+                const showActions = !isStreamingMsg || msg.isStopped;
                 return (
                   <div key={msg.id} className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className="max-w-[75%]">
@@ -1208,7 +1437,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                         }
                       </div>
                       {showActions && (
-                        <div className={`opacity-0 group-hover/msg:opacity-100 transition-opacity ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
+                        <div className={`transition-opacity ${msg.isStopped ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
                           <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} isCopied={copiedMsgId === msg.id} />
                         </div>
                       )}
