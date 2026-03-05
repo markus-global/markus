@@ -4,23 +4,37 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
-const ALL_STATUSES = ['pending', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
+const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
+
+const BOARD_COLUMNS = [
+  { id: 'approval',    label: 'Approval',    statuses: ['pending_approval'],                  accent: 'border-t-yellow-500', dropStatus: 'pending_approval' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending', 'assigned'],               accent: 'border-t-gray-500',   dropStatus: 'pending' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],            accent: 'border-t-indigo-500', dropStatus: 'in_progress' },
+  { id: 'review',      label: 'Review',      statuses: ['review', 'revision', 'accepted'],    accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'Done',        statuses: ['completed'],                         accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],               accent: 'border-t-red-500',    dropStatus: 'cancelled' },
+] as const;
+
 const COLUMN_LABELS: Record<string, string> = {
-  pending: 'Pending', assigned: 'Assigned', in_progress: 'In Progress', blocked: 'Blocked',
+  pending: 'Pending', pending_approval: 'Awaiting Approval', assigned: 'Assigned',
+  in_progress: 'In Progress', blocked: 'Blocked',
   review: 'In Review', revision: 'Needs Revision', accepted: 'Accepted', completed: 'Completed',
   failed: 'Failed', cancelled: 'Cancelled', archived: 'Archived',
 };
-const COLUMN_ACCENT: Record<string, string> = {
-  pending: 'border-t-gray-500', assigned: 'border-t-blue-500', in_progress: 'border-t-indigo-500',
-  blocked: 'border-t-amber-500', review: 'border-t-purple-500', revision: 'border-t-orange-500',
-  accepted: 'border-t-teal-500', completed: 'border-t-green-500', failed: 'border-t-red-500',
-  cancelled: 'border-t-gray-600', archived: 'border-t-gray-700',
+const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending_approval: { label: 'Awaiting',  cls: 'bg-yellow-500/15 text-yellow-400' },
+  assigned:         { label: 'Assigned',  cls: 'bg-blue-500/15 text-blue-400' },
+  blocked:          { label: 'Blocked',   cls: 'bg-amber-500/15 text-amber-400' },
+  revision:         { label: 'Revision',  cls: 'bg-orange-500/15 text-orange-400' },
+  accepted:         { label: 'Accepted',  cls: 'bg-teal-500/15 text-teal-400' },
+  failed:           { label: 'Failed',    cls: 'bg-red-500/15 text-red-400' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
 const STATUS_DOT: Record<string, string> = {
-  pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-indigo-400', blocked: 'bg-amber-400',
+  pending: 'bg-gray-400', pending_approval: 'bg-yellow-400', assigned: 'bg-blue-400',
+  in_progress: 'bg-indigo-400', blocked: 'bg-amber-400',
   review: 'bg-purple-400', revision: 'bg-orange-400', accepted: 'bg-teal-400', completed: 'bg-green-400',
   failed: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-gray-700',
 };
@@ -406,7 +420,13 @@ function TaskDetailModal({
         {/* Actions */}
         <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {task.assignedAgentId && !isRunning && !isTerminal && (
+            {task.status === 'pending_approval' && (
+              <>
+                <button onClick={() => void updateStatus(task.id, 'pending')} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+              </>
+            )}
+            {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && (
               <button onClick={() => void runWithAgent()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                 {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run with Agent</>}
               </button>
@@ -433,8 +453,8 @@ function TaskDetailModal({
               <button onClick={() => void updateStatus(task.id, 'review')} disabled={busy} className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50">Submit for Review</button>
             )}
             {isTerminal && <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>}
-            {!isTerminal && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
-            {!isTerminal && <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>}
+            {!isTerminal && task.status !== 'pending_approval' && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
+            {!isTerminal && task.status !== 'pending_approval' && <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>}
           </div>
           <button onClick={() => setPendingDeleteParent(true)} className="px-3 py-1.5 text-xs text-gray-500 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors">Delete</button>
         </div>
@@ -760,11 +780,15 @@ export function ProjectsPage() {
       if (dragOverCol === col) setDragOverCol(null);
     }
   };
-  const onDrop = async (e: DragEvent<HTMLDivElement>, col: string) => {
+  const onDrop = async (e: DragEvent<HTMLDivElement>, colId: string) => {
     e.preventDefault(); setDragOverCol(null);
     const task = dragTaskRef.current;
-    if (!task || task.status === col) return;
-    try { await api.tasks.updateStatus(task.id, col); refreshBoard(); } catch { /* */ }
+    if (!task) return;
+    const targetCol = BOARD_COLUMNS.find(c => c.id === colId);
+    if (!targetCol) return;
+    const targetStatus = targetCol.dropStatus;
+    if (task.status === targetStatus) return;
+    try { await api.tasks.updateStatus(task.id, targetStatus); refreshBoard(); } catch { /* */ }
   };
 
   const toggleAgentFilter = (id: string) => {
@@ -794,9 +818,12 @@ export function ProjectsPage() {
     return result;
   };
 
-  const visibleColumns = ALL_STATUSES.filter(col => {
-    const tasks = filterTasks(board[col] ?? []);
-    if (col === 'failed' || col === 'cancelled') return tasks.length > 0;
+  const getColumnTasks = (col: typeof BOARD_COLUMNS[number]) =>
+    col.statuses.flatMap(s => filterTasks(board[s] ?? []));
+
+  const visibleColumns = BOARD_COLUMNS.filter(col => {
+    const tasks = getColumnTasks(col);
+    if (col.id === 'closed' || col.id === 'approval') return tasks.length > 0;
     return true;
   });
 
@@ -981,26 +1008,30 @@ export function ProjectsPage() {
           <div className="flex-1 overflow-x-auto p-6">
             <div className="flex gap-4 min-h-full">
               {visibleColumns.map(col => {
-                const colTasks = filterTasks(board[col] ?? []);
-                const isOver = dragOverCol === col;
+                const colTasks = getColumnTasks(col);
+                const isOver = dragOverCol === col.id;
                 return (
-                  <div key={col}
-                    className={`w-60 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${COLUMN_ACCENT[col]} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
-                    onDragOver={e => onDragOver(e, col)} onDragLeave={e => onDragLeave(e, col)} onDrop={e => void onDrop(e, col)}>
+                  <div key={col.id}
+                    className={`w-64 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
+                    onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
                     <div className="flex justify-between items-center mb-3">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{COLUMN_LABELS[col]}</span>
+                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
                       <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
                     </div>
                     <div className="space-y-2">
                       {colTasks.map(task => {
                         const subCount = task.subtaskIds?.length ?? 0;
+                        const badge = SUB_STATUS_BADGE[task.status];
                         const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
                         return (
                           <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
                             onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
                             onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
                             className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
-                            <div className="text-sm font-medium leading-snug">{task.title}</div>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="text-sm font-medium leading-snug">{task.title}</div>
+                              {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                            </div>
                             {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
                             <div className="flex items-center justify-between mt-2">
                               <div className="flex items-center gap-1.5">
