@@ -785,36 +785,55 @@ function InlineRequirements({
             const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
             const isOpen = expandedId === req.id;
             const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
+            const creatorAgent = agents.find(a => a.id === req.createdBy);
             return (
               <div key={req.id} className={`rounded-lg border transition-colors ${needsReview ? 'border-yellow-500/30 bg-yellow-500/[0.03]' : 'border-gray-800 bg-gray-900/60'}`}>
-                <div className="flex items-center gap-2 px-3 py-2">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${badge.cls}`}>{badge.label}</span>
-                  <button onClick={() => setExpandedId(isOpen ? null : req.id)} className="text-xs font-medium text-gray-200 hover:text-white truncate text-left flex-1">
-                    {req.title}
-                  </button>
-                  {isAgent && <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/10 text-purple-400 shrink-0">Agent</span>}
-                  {reqProject && !projectId && <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700/60 text-gray-400 shrink-0 truncate max-w-[80px]">{reqProject.name}</span>}
-                  {req.taskIds.length > 0 && <span className="text-[10px] text-gray-600 shrink-0">{req.taskIds.length} tasks</span>}
-                  {needsReview && (
-                    <>
-                      <button onClick={() => handleApprove(req.id)} className="px-2 py-0.5 bg-green-600/20 hover:bg-green-600/30 text-green-400 text-[10px] rounded font-medium shrink-0">Approve</button>
-                      <button onClick={() => setRejectId(req.id)} className="px-2 py-0.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-[10px] rounded font-medium shrink-0">Reject</button>
-                    </>
-                  )}
-                  {(req.status === 'draft' || req.status === 'approved') && !needsReview && (
-                    <button onClick={() => handleDelete(req.id)} className="text-gray-700 hover:text-red-400 text-[10px] shrink-0" title="Cancel">✕</button>
-                  )}
-                </div>
-                {isOpen && (
-                  <div className="px-3 pb-2.5 border-t border-gray-800/50 pt-2 space-y-1.5">
-                    <p className="text-[11px] text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description || 'No description.'}</p>
-                    <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                      <span>{req.priority}</span>
-                      <span className="inline-flex items-center gap-0.5">by <AgentNameLink agentId={req.createdBy} agents={agents} /></span>
+                {/* Header row: status + title + close button */}
+                <button onClick={() => setExpandedId(isOpen ? null : req.id)} className="w-full text-left px-3 py-2.5 flex items-start gap-2 group">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 mt-0.5 ${badge.cls}`}>{badge.label}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs font-medium text-gray-200 group-hover:text-white leading-snug">{req.title}</span>
+                    <div className="flex items-center gap-2 mt-1 text-[10px] text-gray-500">
+                      {isAgent && <span className="inline-flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-purple-400" />Agent</span>}
+                      {reqProject && !projectId && <span className="truncate max-w-[100px]">{reqProject.name}</span>}
+                      <span>{creatorAgent?.name ?? req.createdBy.slice(0, 10)}</span>
+                      <span>·</span>
                       <span>{new Date(req.createdAt).toLocaleDateString()}</span>
-                      {req.approvedBy && <span className="inline-flex items-center gap-0.5">approved by <AgentNameLink agentId={req.approvedBy} agents={agents} /></span>}
+                      {req.priority === 'high' || req.priority === 'urgent'
+                        ? <span className={`font-medium ${req.priority === 'urgent' ? 'text-red-400' : 'text-orange-400'}`}>{req.priority}</span>
+                        : null}
+                      {req.taskIds.length > 0 && <span>{req.taskIds.length} tasks</span>}
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-gray-600 group-hover:text-gray-400 mt-1 transition-transform" style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▾</span>
+                </button>
+
+                {/* Expanded detail */}
+                {isOpen && (
+                  <div className="px-3 pb-3 space-y-3">
+                    <div className="border-t border-gray-800/50 pt-2.5">
+                      <p className="text-[11px] text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description || 'No description.'}</p>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                      <span className="inline-flex items-center gap-0.5">by <AgentNameLink agentId={req.createdBy} agents={agents} /></span>
+                      {req.approvedBy && <><span>·</span><span className="inline-flex items-center gap-0.5">approved by <AgentNameLink agentId={req.approvedBy} agents={agents} /></span></>}
                     </div>
                     {req.rejectedReason && <p className="text-[11px] text-red-400/80">Rejected: {req.rejectedReason}</p>}
+
+                    {/* Action buttons — visually separated from metadata */}
+                    {(needsReview || ((req.status === 'draft' || req.status === 'approved') && !needsReview)) && (
+                      <div className="flex items-center gap-2 pt-1 border-t border-gray-800/30">
+                        {needsReview && (
+                          <>
+                            <button onClick={() => handleApprove(req.id)} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] rounded-lg font-medium transition-colors">Approve</button>
+                            <button onClick={() => setRejectId(req.id)} className="px-3 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-[11px] rounded-lg font-medium transition-colors">Reject</button>
+                          </>
+                        )}
+                        {(req.status === 'draft' || req.status === 'approved') && !needsReview && (
+                          <button onClick={() => handleDelete(req.id)} className="px-3 py-1 text-gray-500 hover:text-red-400 text-[11px] transition-colors">Cancel</button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
