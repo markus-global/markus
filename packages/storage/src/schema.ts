@@ -19,6 +19,7 @@ export const agentStatusEnum = pgEnum('agent_status', [
 ]);
 export const taskStatusEnum = pgEnum('task_status', [
   'pending',
+  'pending_approval',
   'assigned',
   'in_progress',
   'blocked',

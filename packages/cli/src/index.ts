@@ -391,7 +391,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setLLMRouter(llmRouter);
 
   // Wire storage for chat persistence and auth
-  const storage = orgService.getStorage();
   const firstOrgId = 'default';
   if (storage) {
     apiServer.setStorage(storage);

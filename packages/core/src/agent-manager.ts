@@ -43,6 +43,8 @@ export interface TaskServiceBridge {
     priority?: string;
     assignedAgentId?: string;
     parentTaskId?: string;
+    createdBy?: string;
+    creatorRole?: string;
   }): { id: string; title: string; status: string };
   listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string }): Array<{
     id: string;

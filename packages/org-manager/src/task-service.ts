@@ -879,6 +879,7 @@ export class TaskService {
   getTaskBoard(orgId: string, filters?: { projectId?: string; iterationId?: string }): Record<TaskStatus, Task[]> {
     const board: Record<TaskStatus, Task[]> = {
       pending: [],
+      pending_approval: [],
       assigned: [],
       in_progress: [],
       blocked: [],
@@ -919,6 +920,7 @@ export class TaskService {
 
     const statusCounts: Record<TaskStatus, number> = {
       pending: 0,
+      pending_approval: 0,
       assigned: 0,
       in_progress: 0,
       blocked: 0,

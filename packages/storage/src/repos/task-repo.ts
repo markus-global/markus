@@ -4,6 +4,7 @@ import { tasks } from '../schema.js';
 
 type TaskStatus =
   | 'pending'
+  | 'pending_approval'
   | 'assigned'
   | 'in_progress'
   | 'blocked'
