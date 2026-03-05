@@ -11,6 +11,7 @@ import {
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType } from '@markus/storage';
+import type { HITLService } from './hitl-service.js';
 
 const log = createLogger('task-service');
 
@@ -30,6 +31,7 @@ export interface CreateTaskRequest {
   projectId?: string;
   iterationId?: string;
   createdBy?: string;
+  creatorRole?: 'worker' | 'manager' | 'human';
   approvedVia?: string;
   planReportId?: string;
   reviewerAgentId?: string;
@@ -62,6 +64,7 @@ export class TaskService {
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
+  private hitlService?: HITLService;
   /** Cancel tokens for active task executions — keyed by taskId */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   private webhooks: TaskWebhook[] = [];
@@ -81,6 +84,10 @@ export class TaskService {
 
   setTaskLogRepo(repo: TaskLogRepo): void {
     this.taskLogRepo = repo;
+  }
+
+  setHITLService(hitl: HITLService): void {
+    this.hitlService = hitl;
   }
 
   onTaskEvent(webhook: TaskWebhook): void {
@@ -518,6 +525,19 @@ export class TaskService {
   }
 
   createTask(request: CreateTaskRequest): Task {
+    // ── Governance: check task limits ──
+    const limitCheck = this.checkTaskLimits(request);
+    if (!limitCheck.allowed) {
+      throw new Error(`Task creation blocked by governance: ${limitCheck.reason}`);
+    }
+
+    // ── Governance: determine approval tier ──
+    const approvalTier = this.determineApprovalTier(
+      request,
+      request.creatorRole === 'human' ? undefined : request.creatorRole
+    );
+    const needsApproval = approvalTier !== 'auto';
+
     let assignedAgentId = request.assignedAgentId;
 
     if (!assignedAgentId && request.autoAssign && this.agentManager) {
@@ -525,7 +545,14 @@ export class TaskService {
     }
 
     const hasBlockers = request.blockedBy && request.blockedBy.length > 0;
-    const initialStatus = hasBlockers ? 'blocked' : assignedAgentId ? 'assigned' : 'pending';
+    let initialStatus: TaskStatus;
+    if (needsApproval) {
+      initialStatus = 'pending_approval';
+    } else if (hasBlockers) {
+      initialStatus = 'blocked';
+    } else {
+      initialStatus = assignedAgentId ? 'assigned' : 'pending';
+    }
 
     const task: Task = {
       id: taskId(),
@@ -534,7 +561,7 @@ export class TaskService {
       description: request.description,
       status: initialStatus,
       priority: request.priority ?? 'medium',
-      assignedAgentId,
+      assignedAgentId: needsApproval ? undefined : assignedAgentId,
       parentTaskId: request.parentTaskId,
       subtaskIds: [],
       blockedBy: request.blockedBy,
@@ -545,7 +572,7 @@ export class TaskService {
       projectId: request.projectId,
       iterationId: request.iterationId,
       createdBy: request.createdBy,
-      approvedVia: request.approvedVia,
+      approvedVia: needsApproval ? undefined : (request.approvedVia ?? 'auto'),
       planReportId: request.planReportId,
       reviewerAgentId: request.reviewerAgentId,
     };
@@ -591,8 +618,87 @@ export class TaskService {
     log.info(`Task created: ${task.title}`, {
       id: task.id,
       status: task.status,
+      approvalTier,
       assignedTo: assignedAgentId,
     });
+
+    // ── Governance: request approval asynchronously if needed ──
+    if (needsApproval && this.hitlService) {
+      const creatorName = request.createdBy ?? 'unknown agent';
+      this.hitlService.requestApprovalAndWait({
+        agentId: request.createdBy ?? 'system',
+        agentName: creatorName,
+        type: 'custom',
+        title: `Task approval (${approvalTier}): ${task.title}`,
+        description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}). Approval tier: ${approvalTier}.`,
+        details: { taskId: task.id, approvalTier, priority: task.priority, requestedAssignee: assignedAgentId },
+      }).then(approved => {
+        if (approved) {
+          this.approveTask(task.id, assignedAgentId, approvalTier);
+        } else {
+          this.rejectTask(task.id);
+        }
+      }).catch(err => {
+        log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
+        this.rejectTask(task.id);
+      });
+    }
+
+    return task;
+  }
+
+  /** Approve a pending_approval task and transition it to normal flow. */
+  approveTask(taskIdStr: string, assignedAgentId?: string, approvalTier?: string): Task {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) throw new Error(`Task not found: ${taskIdStr}`);
+    if (task.status !== 'pending_approval') {
+      throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot approve`);
+    }
+
+    const hasBlockers = task.blockedBy && task.blockedBy.length > 0;
+    task.status = hasBlockers ? 'blocked' : assignedAgentId ? 'assigned' : 'pending';
+    task.assignedAgentId = assignedAgentId;
+    task.approvedVia = approvalTier ?? 'human';
+    task.updatedAt = new Date().toISOString();
+
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId });
+    this.emitTaskEvent({
+      type: 'status_changed',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: task.status,
+      previousStatus: 'pending_approval',
+      agentId: task.assignedAgentId,
+      timestamp: task.updatedAt,
+    });
+    log.info(`Task approved: ${task.title}`, { id: task.id, status: task.status, approvedVia: task.approvedVia });
+    return task;
+  }
+
+  /** Reject a pending_approval task and transition it to cancelled. */
+  rejectTask(taskIdStr: string): Task {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) throw new Error(`Task not found: ${taskIdStr}`);
+    if (task.status !== 'pending_approval') {
+      throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot reject`);
+    }
+
+    task.status = 'cancelled';
+    task.updatedAt = new Date().toISOString();
+    task.completedAt = task.updatedAt;
+
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title });
+    this.emitTaskEvent({
+      type: 'status_changed',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: task.status,
+      previousStatus: 'pending_approval',
+      timestamp: task.updatedAt,
+    });
+    log.info(`Task rejected: ${task.title}`, { id: task.id });
     return task;
   }
 
@@ -609,6 +715,11 @@ export class TaskService {
       if (!this.areBlockersSatisfied(task)) {
         throw new Error(`Task ${id} is blocked by unfinished dependencies`);
       }
+    }
+
+    // When a human approves a pending_approval task via status change, record it
+    if (task.status === 'pending_approval' && status !== 'cancelled') {
+      task.approvedVia = 'human';
     }
 
     const prevStatus = task.status;
@@ -1060,6 +1171,8 @@ export class TaskService {
     const policy = this.governancePolicy;
     if (!policy?.enabled) return 'auto';
 
+    // Human-created tasks and pre-approved plan tasks skip governance
+    if (request.creatorRole === 'human') return 'auto';
     if (request.approvedVia === 'plan_approval') return 'auto';
 
     if (request.priority && policy.requireApprovalForPriority.includes(request.priority)) {

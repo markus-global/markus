@@ -120,7 +120,7 @@ export function ReportsPage() {
               </div>
               <div className="flex gap-2">
                 <button onClick={() => setShowFeedback(true)} className="text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300">+ Feedback</button>
-                {selected.plan && selected.plan.status === 'pending' && (
+                {selected.plan && (selected.plan.status === 'pending' || selected.plan.status === 'pending_approval') && (
                   <button onClick={handleApprovePlan} className="text-xs px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white">Approve Plan</button>
                 )}
               </div>

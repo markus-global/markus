@@ -2,6 +2,7 @@ import type { TaskDeliverable } from './governance.js';
 
 export type TaskStatus =
   | 'pending'
+  | 'pending_approval'
   | 'assigned'
   | 'in_progress'
   | 'blocked'

@@ -332,6 +332,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   orgService.addHumanUser('default', 'Owner', 'owner', { id: 'default' });
 
   const hitlService = new HITLService();
+  taskService.setHITLService(hitlService);
   const billingService = new BillingService();
   billingService.setOrgPlan('default', 'free');
   const auditService = new AuditService();

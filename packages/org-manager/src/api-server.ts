@@ -1212,6 +1212,7 @@ export class APIServer {
         projectId: body['projectId'] as string | undefined,
         iterationId: body['iterationId'] as string | undefined,
         createdBy: authUser?.userId ?? 'unknown',
+        creatorRole: 'human',
       });
       this.json(res, 201, { task });
       return;

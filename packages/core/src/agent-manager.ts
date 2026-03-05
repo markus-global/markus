@@ -182,11 +182,14 @@ export class AgentManager {
           description: delegation.description,
           priority: delegation.priority ?? 'medium',
           assignedAgentId: envelope.to,
+          createdBy: envelope.from,
+          creatorRole: 'manager',
         });
         log.info('Delegation created real task', {
           taskId: task.id,
           delegatedTo: envelope.to,
           from: envelope.from,
+          status: task.status,
         });
       } else {
         // No task service — send as a direct message to the agent
@@ -348,6 +351,8 @@ export class AgentManager {
             priority: params.priority,
             assignedAgentId: params.assignedAgentId,
             parentTaskId: params.parentTaskId,
+            createdBy: id,
+            creatorRole: 'worker',
           });
         },
         listTasks: async filter => {
@@ -409,7 +414,6 @@ export class AgentManager {
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
         createTask: (title, description, assignedAgentId, priority) => {
-          // Use real TaskService if available, otherwise fall back to temp ID
           if (this.taskService) {
             const task = this.taskService.createTask({
               orgId: config.orgId,
@@ -417,6 +421,8 @@ export class AgentManager {
               description,
               priority: priority ?? 'medium',
               assignedAgentId,
+              createdBy: id,
+              creatorRole: 'manager',
             });
             return task.id;
           }

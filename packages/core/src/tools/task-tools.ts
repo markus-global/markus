@@ -100,6 +100,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             parentTaskId: args['parent_task_id'] as string | undefined,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title });
+          if (task.status === 'pending_approval') {
+            return JSON.stringify({
+              status: 'pending_approval',
+              task,
+              message: `Task "${task.title}" (ID: ${task.id}) is awaiting approval. Do NOT start working on it. You will be notified when it is approved or rejected.`,
+            });
+          }
           return JSON.stringify({
             status: 'success',
             task,

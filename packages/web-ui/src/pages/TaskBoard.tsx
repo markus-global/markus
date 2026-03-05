@@ -2,9 +2,10 @@ import { useEffect, useState, useCallback, useRef, type DragEvent } from 'react'
 import { api, wsClient, type TaskInfo, type AgentInfo, type TaskLogEntry } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
-const ALL_STATUSES = ['pending', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
+const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
 const COLUMN_LABELS: Record<string, string> = {
   pending: 'Pending',
+  pending_approval: 'Awaiting Approval',
   assigned: 'Assigned',
   in_progress: 'In Progress',
   blocked: 'Blocked',
@@ -18,6 +19,7 @@ const COLUMN_LABELS: Record<string, string> = {
 };
 const COLUMN_ACCENT: Record<string, string> = {
   pending: 'border-t-gray-500',
+  pending_approval: 'border-t-yellow-500',
   assigned: 'border-t-blue-500',
   in_progress: 'border-t-indigo-500',
   blocked: 'border-t-amber-500',
@@ -716,8 +718,28 @@ function TaskDetailModal({
         <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
 
+            {/* ── pending_approval: Approve / Reject */}
+            {task.status === 'pending_approval' && (
+              <>
+                <button
+                  onClick={() => void updateStatus(task.id, 'pending')}
+                  disabled={busy}
+                  className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => void updateStatus(task.id, 'cancelled')}
+                  disabled={busy}
+                  className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </>
+            )}
+
             {/* ── pending / assigned / blocked: Run with Agent (triggers LLM execution) */}
-            {task.assignedAgentId && !isRunning && !isTerminal && (
+            {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && (
               <button
                 onClick={() => void runWithAgent()}
                 disabled={running}
@@ -861,8 +883,8 @@ function TaskDetailModal({
               </button>
             )}
 
-            {/* ── all non-terminal: Complete */}
-            {!isTerminal && (
+            {/* ── all non-terminal (except pending_approval): Complete */}
+            {!isTerminal && task.status !== 'pending_approval' && (
               <button
                 onClick={() => void updateStatus(task.id, 'completed')}
                 disabled={busy}
@@ -872,8 +894,8 @@ function TaskDetailModal({
               </button>
             )}
 
-            {/* ── all non-terminal: Cancel */}
-            {!isTerminal && (
+            {/* ── all non-terminal (except pending_approval): Cancel */}
+            {!isTerminal && task.status !== 'pending_approval' && (
               <button
                 onClick={() => void updateStatus(task.id, 'cancelled')}
                 disabled={busy}
