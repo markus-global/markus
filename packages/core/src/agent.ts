@@ -145,7 +145,7 @@ export class Agent {
   private stateManager?: AgentStateManager;
   private stateChangeCallback?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
   ) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
@@ -622,7 +622,7 @@ export class Agent {
   setStateChangeCallback(
     cb: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
     ) => void
   ): void {
     this.stateChangeCallback = cb;
@@ -1611,7 +1611,15 @@ export class Agent {
   }
 
   getState(): AgentState {
-    return { ...this.state };
+    const state = { ...this.state };
+    if (state.status === 'error' && !state.lastError) {
+      const lastErr = this.metricsCollector.getLastError();
+      if (lastErr) {
+        state.lastError = lastErr.message;
+        state.lastErrorAt = new Date(lastErr.timestamp).toISOString();
+      }
+    }
+    return state;
   }
 
   getEventBus(): EventBus {

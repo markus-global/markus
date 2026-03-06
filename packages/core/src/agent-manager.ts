@@ -160,7 +160,7 @@ export class AgentManager {
   ) => Promise<boolean>;
   private stateChangeHandler?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
   ) => void;
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
@@ -1131,7 +1131,7 @@ export class AgentManager {
   setStateChangeHandler(
     handler: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[] }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
     ) => void
   ): void {
     this.stateChangeHandler = handler;

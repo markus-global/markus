@@ -982,7 +982,8 @@ export class APIServer {
           );
         }
 
-        this.ws.broadcastAgentUpdate(agentId!, agent.getState().status);
+        const _st = agent.getState();
+        this.ws.broadcastAgentUpdate(agentId!, _st.status, { lastError: _st.lastError, lastErrorAt: _st.lastErrorAt });
         return;
       }
     }
@@ -2062,7 +2063,8 @@ export class APIServer {
             .catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
         }
       }
-      this.ws.broadcastAgentUpdate(targetAgentId, agent.getState().status);
+      const _st2 = agent.getState();
+      this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt });
       return;
     }
 

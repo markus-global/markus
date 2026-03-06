@@ -37,6 +37,7 @@ interface AuditEvent {
   tokensUsed?: number;
   durationMs?: number;
   success: boolean;
+  detail?: string;
   timestamp: number;
 }
 
@@ -79,10 +80,21 @@ export class AgentMetricsCollector {
     tokensUsed?: number;
     durationMs?: number;
     success: boolean;
+    detail?: string;
   }): void {
     this.auditEvents.push({ ...event, timestamp: Date.now() });
     this.trimEvents(this.auditEvents);
     this.scheduleSave();
+  }
+
+  getLastError(): { message: string; timestamp: number } | null {
+    for (let i = this.auditEvents.length - 1; i >= 0; i--) {
+      const e = this.auditEvents[i]!;
+      if (e.type === 'error' && e.detail) {
+        return { message: e.detail, timestamp: e.timestamp };
+      }
+    }
+    return null;
   }
 
   recordTaskCompletion(
