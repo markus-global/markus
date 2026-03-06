@@ -51,6 +51,9 @@ export interface AgentState {
   containerId?: string;
   memoryUsageMb?: number;
   tokensUsedToday: number;
+  /** Most recent error message (set when status transitions to 'error') */
+  lastError?: string;
+  lastErrorAt?: string;
 }
 
 export interface AgentProfile {

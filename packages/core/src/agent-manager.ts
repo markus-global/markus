@@ -1149,6 +1149,9 @@ export class AgentManager {
     skills: string[];
     activeTaskCount: number;
     teamId?: string;
+    lastError?: string;
+    lastErrorAt?: string;
+    currentTaskId?: string;
   }> {
     return [...this.agents.values()].map(a => {
       const state = a.getState();
@@ -1161,6 +1164,9 @@ export class AgentManager {
         skills: a.config.skills,
         activeTaskCount: state.activeTaskCount ?? 0,
         teamId: a.config.teamId,
+        lastError: state.lastError,
+        lastErrorAt: state.lastErrorAt,
+        currentTaskId: state.currentTaskId,
       };
     });
   }

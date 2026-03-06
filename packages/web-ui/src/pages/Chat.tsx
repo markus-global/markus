@@ -75,6 +75,86 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
+function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }: {
+  agent: AgentInfo;
+  selected: boolean;
+  tasks: TaskInfo[];
+  onSelect: () => void;
+  onViewProfile: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
+  const statusLabel = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
+
+  const activeTask = a.status === 'working' && a.currentTaskId ? tasks.find(t => t.id === a.currentTaskId) : undefined;
+
+  return (
+    <div ref={ref} className="relative mb-0.5" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+      <button
+        onClick={onSelect}
+        className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs transition-colors ${
+          selected ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
+        }`}
+      >
+        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+          selected ? 'bg-indigo-600' : 'bg-gray-700'
+        }`}>
+          {agentInitials(a.name)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="truncate">{a.name}</div>
+          <div className="text-gray-600 truncate">{a.role}</div>
+        </div>
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
+      </button>
+
+      {hovered && (a.status === 'error' || a.status === 'working' || a.status === 'paused') && (
+        <div className="absolute left-full top-0 ml-2 z-50 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} />
+            <span className={`text-xs font-medium ${a.status === 'error' ? 'text-red-400' : a.status === 'working' ? 'text-yellow-400' : 'text-amber-400'}`}>
+              {statusLabel}
+            </span>
+            <span className="text-[10px] text-gray-600 ml-auto">{a.role}</span>
+          </div>
+
+          {a.status === 'error' && a.lastError && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2">
+              <div className="text-[10px] text-red-400 font-medium mb-0.5">Error Details</div>
+              <div className="text-[10px] text-red-300/80 leading-relaxed line-clamp-3 break-all">{a.lastError}</div>
+              {a.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1">{new Date(a.lastErrorAt).toLocaleString()}</div>}
+            </div>
+          )}
+
+          {a.status === 'working' && activeTask && (
+            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-2">
+              <div className="text-[10px] text-indigo-400 font-medium mb-0.5">Current Task</div>
+              <div className="text-[10px] text-gray-300 leading-relaxed truncate">{activeTask.title}</div>
+              <div className="text-[9px] text-gray-500 mt-0.5">{activeTask.status.replace(/_/g, ' ')} · {activeTask.priority}</div>
+            </div>
+          )}
+          {a.status === 'working' && !activeTask && (
+            <div className="text-[10px] text-gray-500">Processing a task...</div>
+          )}
+
+          {a.status === 'paused' && (
+            <div className="text-[10px] text-amber-400/80">Agent is paused. Check profile for details.</div>
+          )}
+
+          <button
+            onClick={(e) => { e.stopPropagation(); onViewProfile(); }}
+            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+          >
+            View Profile →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChatAgentLink({ name, agentId, agents }: { name: string; agentId?: string; agents: AgentInfo[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
@@ -107,7 +187,7 @@ function ChatAgentLink({ name, agentId, agents }: { name: string; agentId?: stri
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
-            onClick={() => { setOpen(false); navBus.navigate('team', { agentId: agent.id }); }}
+            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
@@ -1259,28 +1339,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
           )}
           {agents.map(a => (
-            <button
+            <AgentSidebarItem
               key={a.id}
-              onClick={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
-              className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
-                chatMode === 'direct' && selectedAgent === a.id
-                  ? 'bg-indigo-600/20 text-indigo-300'
-                  : 'text-gray-400 hover:bg-gray-800'
-              }`}
-            >
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                chatMode === 'direct' && selectedAgent === a.id ? 'bg-indigo-600' : 'bg-gray-700'
-              }`}>
-                {agentInitials(a.name)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="truncate">{a.name}</div>
-                <div className="text-gray-600 truncate">{a.role}</div>
-              </div>
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500' : 'bg-gray-600'
-              }`} />
-            </button>
+              agent={a}
+              selected={chatMode === 'direct' && selectedAgent === a.id}
+              tasks={tasks}
+              onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
+              onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
+            />
           ))}
 
           {/* People — human-to-human DMs + personal notepad */}

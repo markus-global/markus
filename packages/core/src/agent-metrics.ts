@@ -131,6 +131,64 @@ export class AgentMetricsCollector {
   }
 
   /**
+   * Returns persistent usage stats for the Usage page.
+   * Provides both all-time and today-only aggregates.
+   */
+  getUsageStats(): {
+    totalTokens: number;
+    promptTokens: number;
+    completionTokens: number;
+    requestCount: number;
+    toolCalls: number;
+    tokensToday: number;
+    requestsToday: number;
+    toolCallsToday: number;
+    estimatedCost: number;
+  } {
+    const todayCutoff = Date.now() - 86400_000;
+
+    let totalTokens = 0;
+    let requestCount = 0;
+    let toolCalls = 0;
+    let tokensToday = 0;
+    let requestsToday = 0;
+    let toolCallsToday = 0;
+
+    for (const e of this.auditEvents) {
+      if (e.type === 'llm_request') {
+        const tokens = e.tokensUsed ?? 0;
+        totalTokens += tokens;
+        requestCount++;
+        if (e.timestamp >= todayCutoff) {
+          tokensToday += tokens;
+          requestsToday++;
+        }
+      } else if (e.type === 'tool_call') {
+        toolCalls++;
+        if (e.timestamp >= todayCutoff) {
+          toolCallsToday++;
+        }
+      }
+    }
+
+    const input = Math.round(totalTokens * 0.7);
+    const output = totalTokens - input;
+    const estimatedCost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
+
+    return {
+      totalTokens,
+      promptTokens: input,
+      completionTokens: output,
+      requestCount,
+      toolCalls,
+      tokensToday,
+      requestsToday,
+      toolCallsToday,
+      estimatedCost: Math.round(estimatedCost * 10000) / 10000,
+    };
+  }
+
+  /**
    * Health score algorithm (0-100):
    * - 40% heartbeat success rate
    * - 30% task completion rate (completed / (completed + failed))

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type RequirementInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
@@ -36,7 +36,7 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
-            onClick={() => { setOpen(false); navBus.navigate('team', { agentId: agent.id }); }}
+            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
@@ -647,7 +647,7 @@ function ProjectSettingsPanel({ project, iterations, onIterationAction, onDelete
   );
 }
 
-// ─── Inline Requirements (sits above the board) ─────────────────────────────────
+// ─── Requirement → Board Column Mapping ──────────────────────────────────────
 
 const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   draft:          { label: 'Draft',     cls: 'bg-gray-500/15 text-gray-400' },
@@ -659,258 +659,14 @@ const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   cancelled:      { label: 'Cancelled', cls: 'bg-gray-600/15 text-gray-500' },
 };
 
-function InlineRequirements({
-  projectId,
-  projects,
-  agents,
-  onFlash,
-  triggerCreate = 0,
-}: {
-  projectId?: string;
-  projects: ProjectInfo[];
-  agents: AgentInfo[];
-  onFlash: (m: string) => void;
-  triggerCreate?: number;
-}) {
-  const [reqs, setReqs] = useState<RequirementInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [collapsed, setCollapsed] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [title, setTitle] = useState('');
-  const [desc, setDesc] = useState('');
-  const [priority, setPriority] = useState('medium');
-  const [createProjectId, setCreateProjectId] = useState(projectId ?? '');
-  const [rejectId, setRejectId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [showCompleted, setShowCompleted] = useState(false);
+const REQ_COLUMN_MAP: Record<string, string> = {
+  draft: 'approval', pending_review: 'approval',
+  approved: 'todo',
+  in_progress: 'in_progress',
+  completed: 'done',
+  rejected: 'closed', cancelled: 'closed',
+};
 
-  const refresh = useCallback(async () => {
-    try {
-      const filters: Record<string, string> = {};
-      if (projectId) filters.projectId = projectId;
-      const { requirements } = await api.requirements.list(filters);
-      setReqs(requirements);
-    } catch { /* */ }
-    setLoading(false);
-  }, [projectId]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => { if (triggerCreate > 0) { setShowCreate(true); setCollapsed(false); setCreateProjectId(projectId ?? ''); } }, [triggerCreate, projectId]);
-
-  const handleCreate = async () => {
-    if (!title.trim()) return;
-    try {
-      await api.requirements.create({ title, description: desc, priority, projectId: createProjectId || undefined });
-      onFlash('Requirement created');
-      setTitle(''); setDesc(''); setShowCreate(false);
-      void refresh();
-    } catch (e) { onFlash(`Error: ${e}`); }
-  };
-
-  const handleApprove = async (id: string) => {
-    try {
-      await api.requirements.approve(id);
-      onFlash('Requirement approved');
-      void refresh();
-    } catch (e) { onFlash(`Error: ${e}`); }
-  };
-
-  const handleReject = async () => {
-    if (!rejectId) return;
-    try {
-      await api.requirements.reject(rejectId, rejectReason);
-      onFlash('Requirement rejected');
-      setRejectId(null); setRejectReason('');
-      void refresh();
-    } catch (e) { onFlash(`Error: ${e}`); }
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      await api.requirements.delete(id);
-      onFlash('Requirement cancelled');
-      void refresh();
-    } catch (e) { onFlash(`Error: ${e}`); }
-  };
-
-  const pendingReqs = reqs.filter(r => r.source === 'agent' && (r.status === 'draft' || r.status === 'pending_review'));
-  const activeReqs = reqs.filter(r => r.status !== 'completed' && r.status !== 'rejected' && r.status !== 'cancelled');
-  const doneReqs = reqs.filter(r => r.status === 'completed' || r.status === 'rejected' || r.status === 'cancelled');
-  const displayReqs = showCompleted ? reqs : activeReqs;
-
-  if (loading) return null;
-
-  return (
-    <div className="border-b border-gray-800 bg-gray-900/40">
-      {/* Header row */}
-      <div className="px-6 py-2 flex items-center justify-between">
-        <button onClick={() => setCollapsed(!collapsed)} className="flex items-center gap-2 group">
-          <span className="text-[10px] text-gray-500 group-hover:text-gray-300 transition-transform inline-block" style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▾</span>
-          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Requirements</span>
-          <span className="text-[10px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded-full">{activeReqs.length}</span>
-          {pendingReqs.length > 0 && (
-            <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1.5 py-0.5 rounded-full font-medium animate-pulse">
-              {pendingReqs.length} to review
-            </span>
-          )}
-        </button>
-        <div className="flex items-center gap-2">
-          {doneReqs.length > 0 && (
-            <button onClick={() => setShowCompleted(!showCompleted)} className="text-[10px] text-gray-600 hover:text-gray-400">
-              {showCompleted ? 'Hide' : 'Show'} closed ({doneReqs.length})
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Collapsible body */}
-      {!collapsed && (
-        <div className="px-6 pb-3 space-y-1.5">
-          {/* Empty state */}
-          {displayReqs.length === 0 && (
-            <div className="text-center py-4">
-              <p className="text-xs text-gray-500">
-                {reqs.length === 0
-                  ? 'No requirements yet — create one to tell agents what to work on.'
-                  : 'All requirements are done!'}
-              </p>
-            </div>
-          )}
-
-          {/* Requirement cards */}
-          {displayReqs.map(req => {
-            const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
-            const isAgent = req.source === 'agent';
-            const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
-            const isOpen = expandedId === req.id;
-            const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
-            const creatorAgent = agents.find(a => a.id === req.createdBy);
-            return (
-              <div key={req.id} className={`rounded-lg border transition-colors ${needsReview ? 'border-yellow-500/30 bg-yellow-500/[0.03]' : 'border-gray-800 bg-gray-900/60'}`}>
-                {/* Header row: status + title + close button */}
-                <button onClick={() => setExpandedId(isOpen ? null : req.id)} className="w-full text-left px-3 py-2.5 flex items-start gap-2 group">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 mt-0.5 ${badge.cls}`}>{badge.label}</span>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs font-medium text-gray-200 group-hover:text-white leading-snug">{req.title}</span>
-                    <div className="flex items-center gap-2 mt-1 text-[10px] text-gray-500">
-                      {isAgent && <span className="inline-flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-purple-400" />Agent</span>}
-                      {reqProject && !projectId && <span className="truncate max-w-[100px]">{reqProject.name}</span>}
-                      <span>{creatorAgent?.name ?? req.createdBy.slice(0, 10)}</span>
-                      <span>·</span>
-                      <span>{new Date(req.createdAt).toLocaleDateString()}</span>
-                      {req.priority === 'high' || req.priority === 'urgent'
-                        ? <span className={`font-medium ${req.priority === 'urgent' ? 'text-red-400' : 'text-orange-400'}`}>{req.priority}</span>
-                        : null}
-                      {req.taskIds.length > 0 && <span>{req.taskIds.length} tasks</span>}
-                    </div>
-                  </div>
-                  <span className="text-[10px] text-gray-600 group-hover:text-gray-400 mt-1 transition-transform" style={{ transform: isOpen ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▾</span>
-                </button>
-
-                {/* Expanded detail */}
-                {isOpen && (
-                  <div className="px-3 pb-3 space-y-3">
-                    <div className="border-t border-gray-800/50 pt-2.5">
-                      <p className="text-[11px] text-gray-400 whitespace-pre-wrap leading-relaxed">{req.description || 'No description.'}</p>
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                      <span className="inline-flex items-center gap-0.5">by <AgentNameLink agentId={req.createdBy} agents={agents} /></span>
-                      {req.approvedBy && <><span>·</span><span className="inline-flex items-center gap-0.5">approved by <AgentNameLink agentId={req.approvedBy} agents={agents} /></span></>}
-                    </div>
-                    {req.rejectedReason && <p className="text-[11px] text-red-400/80">Rejected: {req.rejectedReason}</p>}
-
-                    {/* Action buttons — visually separated from metadata */}
-                    {(needsReview || ((req.status === 'draft' || req.status === 'approved') && !needsReview)) && (
-                      <div className="flex items-center gap-2 pt-1 border-t border-gray-800/30">
-                        {needsReview && (
-                          <>
-                            <button onClick={() => handleApprove(req.id)} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] rounded-lg font-medium transition-colors">Approve</button>
-                            <button onClick={() => setRejectId(req.id)} className="px-3 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-[11px] rounded-lg font-medium transition-colors">Reject</button>
-                          </>
-                        )}
-                        {(req.status === 'draft' || req.status === 'approved') && !needsReview && (
-                          <button onClick={() => handleDelete(req.id)} className="px-3 py-1 text-gray-500 hover:text-red-400 text-[11px] transition-colors">Cancel</button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Create requirement modal */}
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setShowCreate(false); setTitle(''); setDesc(''); }}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-white">New Requirement</h3>
-            <p className="text-xs text-gray-500 -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Project</label>
-              <select value={createProjectId} onChange={e => setCreateProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
-                <option value="">No project</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Title</label>
-              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Add user authentication"
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus
-                onKeyDown={e => { if (e.key === 'Enter' && title.trim()) void handleCreate(); }} />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Description</label>
-              <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="What is needed and why..."
-                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none" />
-            </div>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
-              <select value={priority} onChange={e => setPriority(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </div>
-            <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => { setShowCreate(false); setTitle(''); setDesc(''); }} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
-              <button onClick={() => void handleCreate()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Reject modal */}
-      {rejectId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectId(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-white">Reject Requirement</h3>
-            <div>
-              <label className="block text-sm text-gray-400 mb-1.5">Reason</label>
-              <textarea
-                value={rejectReason}
-                onChange={e => setRejectReason(e.target.value)}
-                placeholder="Why is this being rejected..."
-                rows={3}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none"
-                autoFocus
-              />
-            </div>
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setRejectId(null)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
-              <button onClick={() => void handleReject()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">Reject</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
@@ -944,9 +700,19 @@ export function ProjectsPage() {
   const [taskProjectId, setTaskProjectId] = useState<string>('');
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
+  const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const dragTaskRef = useRef<TaskInfo | null>(null);
+
+  // Requirement create/reject modals
+  const [showCreateReq, setShowCreateReq] = useState(false);
+  const [reqTitle, setReqTitle] = useState('');
+  const [reqDesc, setReqDesc] = useState('');
+  const [reqPriority, setReqPriority] = useState('medium');
+  const [reqProjectId, setReqProjectId] = useState('');
+  const [rejectReqId, setRejectReqId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
@@ -996,16 +762,16 @@ export function ProjectsPage() {
   }, [selectedProjectId, loadIterations]);
 
   useEffect(() => {
-    const i = setInterval(() => { refreshBoard(); refreshAgents(); }, 15000);
+    const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, 15000);
     const unsub = wsClient.on('task:update', (event) => {
-      refreshBoard();
+      refreshBoard(); refreshRequirements();
       const p = event?.payload as { taskId?: string; status?: string } | undefined;
       if (p?.taskId && p.status) {
         setSelectedTask(prev => prev && prev.id === p.taskId ? { ...prev, status: p.status as string } : prev);
       }
     });
     return () => { clearInterval(i); unsub(); };
-  }, [refreshBoard, refreshAgents]);
+  }, [refreshBoard, refreshAgents, refreshRequirements]);
 
   // Open task from navigation params (e.g. from Dashboard)
   useEffect(() => {
@@ -1112,6 +878,38 @@ export function ProjectsPage() {
     }
   };
 
+  // ── Requirement actions ──
+
+  useEffect(() => {
+    if (triggerCreateReq > 0) {
+      setShowCreateReq(true);
+      setReqProjectId(selectedProjectId ?? '');
+    }
+  }, [triggerCreateReq, selectedProjectId]);
+
+  const handleCreateReq = async () => {
+    if (!reqTitle.trim()) return;
+    try {
+      await api.requirements.create({ title: reqTitle, description: reqDesc, priority: reqPriority, projectId: reqProjectId || undefined });
+      msg('Requirement created');
+      setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
+      refreshRequirements();
+    } catch (e) { msg(`Error: ${e}`); }
+  };
+
+  const handleApproveReq = async (id: string) => {
+    try { await api.requirements.approve(id); msg('Requirement approved'); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+  };
+
+  const handleRejectReq = async () => {
+    if (!rejectReqId) return;
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); setRejectReqId(null); setRejectReason(''); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+  };
+
+  const handleDeleteReq = async (id: string) => {
+    try { await api.requirements.delete(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+  };
+
   // ── Drag handlers ──
 
   const onDragStart = (e: DragEvent<HTMLDivElement>, task: TaskInfo) => {
@@ -1177,9 +975,21 @@ export function ProjectsPage() {
   const getColumnTasks = (col: typeof BOARD_COLUMNS[number]) =>
     col.statuses.flatMap(s => filterTasks(board[s] ?? []));
 
+  const filteredReqs = useMemo(() => {
+    let list = allRequirements;
+    if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
+    if (viewMode === 'project' && selectedIterationId) list = list.filter(r => r.iterationId === selectedIterationId);
+    if (agentFilter.size > 0) list = list.filter(r => agentFilter.has(r.createdBy));
+    return list;
+  }, [allRequirements, viewMode, selectedProjectId, selectedIterationId, agentFilter]);
+
+  const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS[number]) =>
+    filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
+
   const visibleColumns = BOARD_COLUMNS.filter(col => {
     const tasks = getColumnTasks(col);
-    if (col.id === 'closed' || col.id === 'approval') return tasks.length > 0;
+    const reqs = getColumnReqs(col);
+    if (col.id === 'closed' || col.id === 'approval') return tasks.length + reqs.length > 0;
     return true;
   });
 
@@ -1336,7 +1146,7 @@ export function ProjectsPage() {
         )}
 
         {/* Agent filter bar — hide when board is empty */}
-        {agents.length > 0 && !showProjectSettings && totalTaskCount > 0 && (
+        {agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-2 border-b border-gray-800 bg-gray-900/60 flex items-center gap-2 overflow-x-auto shrink-0">
             <span className="text-[10px] text-gray-600 uppercase tracking-wider shrink-0 mr-1">Filter</span>
             {agentFilter.size > 0 && (
@@ -1367,109 +1177,136 @@ export function ProjectsPage() {
               onCreateIteration={handleCreateIteration}
             />
           </div>
+        ) : totalTaskCount === 0 && filteredReqs.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-sm w-full text-center space-y-3">
+              <div className="w-10 h-10 mx-auto rounded-lg bg-gray-800 flex items-center justify-center">
+                <span className="text-gray-500 text-lg">&#9744;</span>
+              </div>
+              <h3 className="text-sm font-medium text-gray-400">No items yet</h3>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                Create a requirement to tell agents what you need.<br />
+                Once approved, tasks will appear here automatically.
+              </p>
+              <button onClick={() => setTriggerCreateReq(c => c + 1)} className="text-xs text-indigo-400 hover:text-indigo-300 font-medium">
+                + Create a requirement
+              </button>
+            </div>
+          </div>
         ) : (
-          <div className="flex-1 overflow-y-auto flex flex-col">
-            {/* Inline requirements */}
-            <InlineRequirements
-              projectId={viewMode === 'project' ? selectedProjectId ?? undefined : undefined}
-              projects={projects}
-              agents={agents}
-              onFlash={msg}
-              triggerCreate={triggerCreateReq}
-            />
-
-            {/* Board or empty state */}
-            {totalTaskCount === 0 ? (
-              <div className="flex-1 flex items-center justify-center p-8">
-                <div className="max-w-sm w-full text-center space-y-3">
-                  <div className="w-10 h-10 mx-auto rounded-lg bg-gray-800 flex items-center justify-center">
-                    <span className="text-gray-500 text-lg">&#9744;</span>
-                  </div>
-                  <h3 className="text-sm font-medium text-gray-400">No tasks yet</h3>
-                  <p className="text-xs text-gray-600 leading-relaxed">
-                    Create a requirement to tell agents what you need.<br />
-                    Once approved, tasks will appear here automatically.
-                  </p>
-                  <button onClick={() => setTriggerCreateReq(c => c + 1)} className="text-xs text-indigo-400 hover:text-indigo-300 font-medium">
-                    + Create a requirement
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex-1 overflow-x-auto p-6">
-                <div className="flex gap-4 min-h-full">
-                  {visibleColumns.map(col => {
-                    const colTasks = getColumnTasks(col);
-                    const isOver = dragOverCol === col.id;
-                    return (
-                      <div key={col.id}
-                        className={`w-64 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
-                        onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
-                        <div className="flex justify-between items-center mb-3">
-                          <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
-                          <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{colTasks.length}</span>
-                        </div>
-                        <div className="space-y-2">
-                          {colTasks.map(task => {
-                            const subCount = task.subtaskIds?.length ?? 0;
-                            const badge = SUB_STATUS_BADGE[task.status];
-                            const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
-                            const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
-                            const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
-                            return (
-                              <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
-                                onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
-                                onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
-                                className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="text-sm font-medium leading-snug">{task.title}</div>
-                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
-                                </div>
-                                {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
-                                {/* Project / Requirement context */}
-                                {(taskProjName || taskReqTitle) && (
-                                  <div className="mt-1.5 flex flex-wrap gap-1">
-                                    {taskProjName && (
-                                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>
-                                    )}
-                                    {taskReqTitle && (
-                                      <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>
-                                    )}
-                                  </div>
-                                )}
-                                <div className="flex items-center justify-between mt-2">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-xs text-gray-600">{task.priority}</span>
-                                    {taskCreatorName && (
-                                      <span className="text-[10px] text-gray-600" title={`Created by ${taskCreatorName}`}>by {taskCreatorName}</span>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    {subCount > 0 && <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
-                                    {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>}
-                                    {task.assignedAgentId && (
-                                      <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
-                                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
-                                        {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
+          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-auto p-6">
+            <div className="flex gap-4 h-full">
+              {visibleColumns.map(col => {
+                const colTasks = getColumnTasks(col);
+                const colReqs = getColumnReqs(col);
+                const itemCount = colTasks.length + colReqs.length;
+                const isOver = dragOverCol === col.id;
+                return (
+                  <div key={col.id}
+                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
+                    onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
+                    <div className="flex justify-between items-center mb-3">
+                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
+                      <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{itemCount}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {/* ── Requirement cards ── */}
+                      {colReqs.map(req => {
+                        const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
+                        const isAgent = req.source === 'agent';
+                        const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
+                        const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
+                        const creatorName = agents.find(a => a.id === req.createdBy)?.name ?? req.createdBy.slice(0, 10);
+                        return (
+                          <div key={`req-${req.id}`} role="button" tabIndex={0}
+                            onClick={() => setSelectedReq(req)} onKeyDown={e => e.key === 'Enter' && setSelectedReq(req)}
+                            className={`bg-purple-500/[0.06] border rounded-lg p-3 border-l-[3px] border-l-purple-500 transition-colors cursor-pointer ${needsReview ? 'border-yellow-500/40 ring-1 ring-yellow-500/20' : 'border-purple-500/20'} hover:border-purple-400/50`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-[9px] font-bold text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded shrink-0">REQ</span>
+                                <span className="text-sm font-medium leading-snug truncate">{req.title}</span>
                               </div>
-                            );
-                          })}
-                        </div>
-                        {isOver && (
-                          <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
-                            <span className="text-xs text-indigo-400/60">Drop here</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>
+                            </div>
+                            {req.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{req.description}</div>}
+                            {reqProject && (
+                              <div className="mt-1.5">
+                                <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[120px]" title={reqProject.name}>{reqProject.name}</span>
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between mt-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-600">{req.priority}</span>
+                                <span className="text-[10px] text-gray-600">by {creatorName}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                {req.taskIds.length > 0 && <span className="text-[10px] text-purple-400/60 bg-purple-500/10 px-1.5 py-0.5 rounded">{req.taskIds.length} tasks</span>}
+                              </div>
+                            </div>
+                            {needsReview && (
+                              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-purple-500/10">
+                                <button onClick={e => { e.stopPropagation(); handleApproveReq(req.id); }}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] rounded-md font-medium transition-colors">Approve</button>
+                                <button onClick={e => { e.stopPropagation(); setRejectReqId(req.id); }}
+                                  className="px-2.5 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-[10px] rounded-md font-medium transition-colors">Reject</button>
+                              </div>
+                            )}
                           </div>
-                        )}
+                        );
+                      })}
+
+                      {/* ── Task cards ── */}
+                      {colTasks.map(task => {
+                        const subCount = task.subtaskIds?.length ?? 0;
+                        const badge = SUB_STATUS_BADGE[task.status];
+                        const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
+                        const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
+                        const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
+                        return (
+                          <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
+                            onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
+                            onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
+                            className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="text-sm font-medium leading-snug">{task.title}</div>
+                              {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                            </div>
+                            {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
+                            {(taskProjName || taskReqTitle) && (
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
+                                {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>}
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between mt-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-600">{task.priority}</span>
+                                {taskCreatorName && <span className="text-[10px] text-gray-600" title={`Created by ${taskCreatorName}`}>by {taskCreatorName}</span>}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {subCount > 0 && <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
+                                {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>}
+                                {task.assignedAgentId && (
+                                  <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                    <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
+                                    {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {isOver && (
+                      <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
+                        <span className="text-xs text-indigo-400/60">Drop here</span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -1568,6 +1405,207 @@ export function ProjectsPage() {
           onRefresh={handleTaskRefresh}
         />
       )}
+
+      {/* ── Create Requirement Modal ── */}
+      {showCreateReq && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white">New Requirement</h3>
+            <p className="text-xs text-gray-500 -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Project</label>
+              <select value={reqProjectId} onChange={e => setReqProjectId(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                <option value="">No project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Title</label>
+              <input value={reqTitle} onChange={e => setReqTitle(e.target.value)} placeholder="e.g. Add user authentication"
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus
+                onKeyDown={e => { if (e.key === 'Enter' && reqTitle.trim()) void handleCreateReq(); }} />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Description</label>
+              <textarea value={reqDesc} onChange={e => setReqDesc(e.target.value)} placeholder="What is needed and why..."
+                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none" />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
+              <select value={reqPriority} onChange={e => setReqPriority(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-3 pt-1">
+              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => void handleCreateReq()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reject Requirement Modal ── */}
+      {rejectReqId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectReqId(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-white">Reject Requirement</h3>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Reason</label>
+              <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Why is this being rejected..."
+                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none" autoFocus />
+            </div>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => void handleRejectReq()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">Reject</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Requirement Detail Modal ── */}
+      {selectedReq && (
+        <RequirementDetailModal
+          req={selectedReq}
+          agents={agents}
+          projects={projects}
+          allTasks={Object.values(board).flat()}
+          onClose={() => setSelectedReq(null)}
+          onApprove={id => { handleApproveReq(id); setSelectedReq(null); }}
+          onReject={id => { setRejectReqId(id); setSelectedReq(null); }}
+          onCancel={id => { handleDeleteReq(id); setSelectedReq(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Requirement Detail Modal ────────────────────────────────────────────────────
+
+function RequirementDetailModal({
+  req, agents, projects, allTasks, onClose, onApprove, onReject, onCancel,
+}: {
+  req: RequirementInfo;
+  agents: AgentInfo[];
+  projects: ProjectInfo[];
+  allTasks: TaskInfo[];
+  onClose: () => void;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  onCancel: (id: string) => void;
+}) {
+  const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
+  const isAgent = req.source === 'agent';
+  const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
+  const canCancel = req.status === 'draft' || req.status === 'approved';
+  const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
+  const creatorAgent = agents.find(a => a.id === req.createdBy);
+  const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[36rem] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 p-5 pb-0">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-bold text-purple-400 bg-purple-500/15 px-2 py-0.5 rounded">REQ</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
+              {req.priority === 'high' || req.priority === 'urgent' ? (
+                <span className={`text-[10px] font-medium ${req.priority === 'urgent' ? 'text-red-400' : 'text-orange-400'}`}>{req.priority}</span>
+              ) : (
+                <span className="text-[10px] text-gray-500">{req.priority}</span>
+              )}
+            </div>
+            <h2 className="text-lg font-semibold text-white leading-snug">{req.title}</h2>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xl leading-none shrink-0 mt-1">&times;</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {req.description && (
+            <div>
+              <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Description</label>
+              <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{req.description}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <span className="text-[10px] text-gray-500 block mb-1">Created by</span>
+              <span className="text-gray-300">{creatorAgent?.name ?? req.createdBy.slice(0, 12)}</span>
+              {isAgent && <span className="text-[10px] text-purple-400 ml-1.5">(Agent)</span>}
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <span className="text-[10px] text-gray-500 block mb-1">Created</span>
+              <span className="text-gray-300">{new Date(req.createdAt).toLocaleString()}</span>
+            </div>
+            {reqProject && (
+              <div className="bg-gray-800/60 rounded-lg p-2.5">
+                <span className="text-[10px] text-gray-500 block mb-1">Project</span>
+                <span className="text-gray-300">{reqProject.name}</span>
+              </div>
+            )}
+            {req.approvedBy && (
+              <div className="bg-gray-800/60 rounded-lg p-2.5">
+                <span className="text-[10px] text-gray-500 block mb-1">Approved by</span>
+                <span className="text-gray-300"><AgentNameLink agentId={req.approvedBy} agents={agents} /></span>
+                {req.approvedAt && <span className="text-[10px] text-gray-500 ml-1">{new Date(req.approvedAt).toLocaleDateString()}</span>}
+              </div>
+            )}
+          </div>
+
+          {req.rejectedReason && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+              <span className="text-[10px] font-semibold text-red-400 uppercase tracking-wider block mb-1">Rejection Reason</span>
+              <p className="text-sm text-red-300/80">{req.rejectedReason}</p>
+            </div>
+          )}
+
+          {req.tags && req.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {req.tags.map(tag => <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">#{tag}</span>)}
+            </div>
+          )}
+
+          {linkedTasks.length > 0 && (
+            <div>
+              <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2 block">Linked Tasks ({linkedTasks.length})</label>
+              <div className="space-y-1.5">
+                {linkedTasks.map(t => {
+                  const sb = SUB_STATUS_BADGE[t.status];
+                  return (
+                    <div key={t.id} className="flex items-center gap-2 bg-gray-800/60 rounded-lg px-3 py-2">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
+                      <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
+                      {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        {(needsReview || canCancel) && (
+          <div className="flex items-center gap-2 p-5 pt-3 border-t border-gray-800">
+            {needsReview && (
+              <>
+                <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg font-medium transition-colors">Approve</button>
+                <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-sm rounded-lg font-medium transition-colors">Reject</button>
+              </>
+            )}
+            {canCancel && !needsReview && (
+              <button onClick={() => onCancel(req.id)} className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors">Cancel Requirement</button>
+            )}
+            <div className="flex-1" />
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Close</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

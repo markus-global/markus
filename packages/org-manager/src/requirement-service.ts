@@ -96,10 +96,26 @@ export class RequirementService {
     return req;
   }
 
+  private static readonly MAX_PENDING_PROPOSALS_PER_AGENT = 3;
+
   /**
    * Agent proposes a requirement draft — needs user approval.
+   * Each agent can have at most 3 pending (draft/pending_review) proposals at a time.
    */
   proposeRequirement(request: CreateRequirementRequest): Requirement {
+    const pendingCount = [...this.requirements.values()].filter(
+      r =>
+        r.source === 'agent' &&
+        r.createdBy === request.createdBy &&
+        (r.status === 'draft' || r.status === 'pending_review')
+    ).length;
+
+    if (pendingCount >= RequirementService.MAX_PENDING_PROPOSALS_PER_AGENT) {
+      throw new Error(
+        `Agent ${request.createdBy} already has ${pendingCount} pending requirement proposals (max ${RequirementService.MAX_PENDING_PROPOSALS_PER_AGENT}). Wait for existing proposals to be reviewed before proposing more.`
+      );
+    }
+
     return this.createRequirement({ ...request, source: 'agent' });
   }
 

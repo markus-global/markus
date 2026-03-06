@@ -223,13 +223,20 @@ export class Agent {
   /**
    * Set agent status and emit status change event
    */
-  private setStatus(status: AgentState['status']): void {
+  private setStatus(status: AgentState['status'], errorMessage?: string): void {
     const oldStatus = this.state.status;
-    if (oldStatus === status) return;
+    if (oldStatus === status && status !== 'error') return;
 
     this.state.status = status;
 
-    // 同步状态到stateManager
+    if (status === 'error' && errorMessage) {
+      this.state.lastError = errorMessage;
+      this.state.lastErrorAt = new Date().toISOString();
+    } else if (status !== 'error') {
+      this.state.lastError = undefined;
+      this.state.lastErrorAt = undefined;
+    }
+
     if (this.stateManager) {
       this.stateManager.updateState({ status });
     }
@@ -586,6 +593,10 @@ export class Agent {
 
   getMetrics(period: '1h' | '24h' | '7d' = '24h'): AgentMetricsSnapshot {
     return this.metricsCollector.getMetrics(period);
+  }
+
+  getUsageStats() {
+    return this.metricsCollector.getUsageStats();
   }
 
   private emitAudit(event: {
@@ -956,7 +967,7 @@ export class Agent {
 
       return reply;
     } catch (error) {
-      if (this.activeTasks.size === 0) this.setStatus('error');
+      if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
         type: 'error',
         action: 'handle_message',
@@ -1194,7 +1205,7 @@ export class Agent {
         if (this.activeTasks.size === 0) this.setStatus('idle');
         return '[Stream cancelled]';
       }
-      if (this.activeTasks.size === 0) this.setStatus('error');
+      if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
         type: 'error',
         action: 'handle_message_stream',
@@ -1879,7 +1890,7 @@ export class Agent {
       'As part of this heartbeat, perform the following review (max 5 tool calls total):',
       '1. **Task Review**: Call `task_list` to see all your assigned tasks and their current status.',
       '2. **Status Correction ONLY**: If any `in_progress` task has been completed or blocked (based on work you already did in a previous session), call `task_update` to reflect the correct status.',
-      '3. **Propose Untracked Needs**: If you identify a gap that should be worked on but no requirement covers it, use `requirement_propose` to suggest it and wait for user approval.',
+      '3. **Propose Untracked Needs**: If you identify a gap that should be worked on but no requirement covers it, use `requirement_propose` to suggest it and wait for user approval. You may propose at most 3 requirements total that are still pending review — if you already have 3 unreviewed proposals, do NOT propose more.',
       '',
       '⛔ ABSOLUTE RESTRICTIONS — violating these is a critical protocol breach:',
       '- NEVER call `task_update` to set a task to `in_progress`. Tasks may ONLY be started by a human user clicking "Run" in the UI or sending you an explicit start instruction.',

@@ -3132,51 +3132,89 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
-    // Billing: Usage
+    // Billing: Usage — computed from persisted agent metrics for restart-safety
     if (path === '/api/usage' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
-      const period = url.searchParams.get('period') ?? undefined;
-      const summary = this.billingService?.getUsageSummary(orgId, period);
       const plan = this.billingService?.getOrgPlan(orgId);
-      this.json(res, 200, { usage: summary, plan });
+
+      const agentManager = this.orgService.getAgentManager();
+      const allAgents = agentManager.listAgents();
+      let llmTokens = 0;
+      let toolCalls = 0;
+      let messages = 0;
+
+      for (const a of allAgents) {
+        try {
+          const agent = agentManager.getAgent(a.id);
+          const stats = agent.getUsageStats();
+          llmTokens += stats.totalTokens;
+          toolCalls += stats.toolCallsToday;
+          messages += stats.requestsToday;
+        } catch { /* agent not loaded */ }
+      }
+
+      // Supplement with billing service data if available (for current-session records)
+      const billingSummary = this.billingService?.getUsageSummary(orgId);
+      if (billingSummary) {
+        llmTokens = Math.max(llmTokens, billingSummary.llmTokens);
+        toolCalls = Math.max(toolCalls, billingSummary.toolCalls);
+        messages = Math.max(messages, billingSummary.messages);
+      }
+
+      this.json(res, 200, {
+        usage: {
+          orgId,
+          period: new Date().toISOString().slice(0, 7),
+          llmTokens,
+          toolCalls,
+          messages,
+          storageBytes: billingSummary?.storageBytes ?? 0,
+        },
+        plan,
+      });
       return;
     }
 
-    // Billing: Per-agent usage breakdown
+    // Billing: Per-agent usage — computed from persisted agent metrics
     if (path === '/api/usage/agents' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? 'default';
-      const agentList = this.orgService.getAgentManager().listAgents();
-      const tokenUsage = this.auditService?.getTokenUsage(orgId) ?? [];
-      const billingRecords = this.billingService?.getAgentBreakdown(orgId) ?? [];
+      const agentManager = this.orgService.getAgentManager();
+      const agentList = agentManager.listAgents();
 
       const agentUsage = agentList.map(a => {
-        const tokenData = tokenUsage.find(t => t.agentId === a.id);
-        const billingData = billingRecords.find(b => b.agentId === a.id);
-        return {
-          agentId: a.id,
-          agentName: a.name,
-          role: a.role,
-          status: a.status,
-          tokensUsedToday: 0,
-          totalTokens: tokenData?.totalTokens ?? 0,
-          promptTokens: tokenData?.promptTokens ?? 0,
-          completionTokens: tokenData?.completionTokens ?? 0,
-          requestCount: tokenData?.requestCount ?? 0,
-          toolCalls: billingData?.toolCalls ?? 0,
-          messages: billingData?.messages ?? 0,
-          estimatedCost: (tokenData?.totalTokens ?? 0) * 0.000003,
-        };
-      });
-
-      // Also try to fill tokensUsedToday from live agent state
-      for (const au of agentUsage) {
         try {
-          const agent = this.orgService.getAgentManager().getAgent(au.agentId);
-          au.tokensUsedToday = agent.getTokensUsedToday();
+          const agent = agentManager.getAgent(a.id);
+          const stats = agent.getUsageStats();
+          return {
+            agentId: a.id,
+            agentName: a.name,
+            role: a.role,
+            status: a.status,
+            tokensUsedToday: stats.tokensToday,
+            totalTokens: stats.totalTokens,
+            promptTokens: stats.promptTokens,
+            completionTokens: stats.completionTokens,
+            requestCount: stats.requestCount,
+            toolCalls: stats.toolCalls,
+            messages: stats.requestsToday,
+            estimatedCost: stats.estimatedCost,
+          };
         } catch {
-          /* agent offline */
+          return {
+            agentId: a.id,
+            agentName: a.name,
+            role: a.role,
+            status: a.status,
+            tokensUsedToday: 0,
+            totalTokens: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            requestCount: 0,
+            toolCalls: 0,
+            messages: 0,
+            estimatedCost: 0,
+          };
         }
-      }
+      });
 
       this.json(res, 200, { agents: agentUsage });
       return;

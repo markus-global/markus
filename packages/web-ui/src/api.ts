@@ -247,6 +247,9 @@ export interface AgentInfo {
   activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
+  lastError?: string;
+  lastErrorAt?: string;
+  currentTaskId?: string;
 }
 
 export interface HumanUserInfo {
@@ -403,6 +406,8 @@ export interface AgentDetail {
     currentTaskId?: string;
     containerId?: string;
     lastHeartbeat?: string;
+    lastError?: string;
+    lastErrorAt?: string;
   };
 }
 

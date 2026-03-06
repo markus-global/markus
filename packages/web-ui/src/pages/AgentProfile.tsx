@@ -164,11 +164,42 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
 
       <Card title="Runtime Status">
         <div className="grid grid-cols-4 gap-4">
-          <StatBox label="Status" value={agent.state.status} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'indigo' : 'gray'} />
+          <StatBox label="Status" value={agent.state.status} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'indigo' : agent.state.status === 'error' ? 'red' : 'gray'} />
           <StatBox label="Tokens Today" value={String(agent.state.tokensUsedToday)} />
           <StatBox label="Active Tasks" value={String(agent.state.activeTaskIds?.length ?? 0)} />
           <StatBox label="Last Heartbeat" value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : 'Never'} />
         </div>
+
+        {agent.state.status === 'error' && agent.state.lastError && (
+          <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+              <span className="text-xs font-medium text-red-400">Error Details</span>
+              {agent.state.lastErrorAt && <span className="text-[10px] text-red-400/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
+            </div>
+            <pre className="text-[11px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">{agent.state.lastError}</pre>
+          </div>
+        )}
+
+        {agent.state.status === 'working' && (agent.state.activeTaskIds?.length ?? 0) > 0 && (
+          <div className="mt-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+              <span className="text-xs font-medium text-indigo-400">Currently Working</span>
+              <span className="text-[10px] text-indigo-400/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
+            </div>
+            <div className="space-y-1">
+              {recentTasks.filter(t => agent.state.activeTaskIds?.includes(t.id)).map(t => (
+                <div key={t.id} className="flex items-center gap-2 text-[11px]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+                  <span className="text-gray-300 truncate flex-1">{t.title}</span>
+                  <span className="text-gray-500 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2 mt-4 pt-3 border-t border-gray-800/50">
           <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors">
             {agent.state.status === 'offline' ? '▶ Start' : '⏹ Stop'}
