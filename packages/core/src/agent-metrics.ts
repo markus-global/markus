@@ -301,6 +301,14 @@ export class AgentMetricsCollector {
     }
   }
 
+  flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.saveToDisk();
+  }
+
   private scheduleSave(): void {
     if (!this.dataDir || this.saveTimer) return;
     this.saveTimer = setTimeout(() => {

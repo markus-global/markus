@@ -611,7 +611,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   process.on('SIGINT', () => {
     console.log('\nShutting down...');
     apiServer.stop();
-    messageRouter.disconnectAll().then(() => process.exit(0));
+    agentManager.shutdown()
+      .then(() => messageRouter.disconnectAll())
+      .then(() => process.exit(0))
+      .catch(() => process.exit(1));
   });
 
   // Keep alive

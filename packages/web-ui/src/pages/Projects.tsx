@@ -57,12 +57,11 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
 const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
-  { id: 'approval',    label: 'Approval',    statuses: ['pending_approval'],                  accent: 'border-t-yellow-500', dropStatus: 'pending_approval' },
-  { id: 'todo',        label: 'To Do',       statuses: ['pending', 'assigned'],               accent: 'border-t-gray-500',   dropStatus: 'pending' },
-  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],            accent: 'border-t-indigo-500', dropStatus: 'in_progress' },
-  { id: 'review',      label: 'Review',      statuses: ['review', 'revision', 'accepted'],    accent: 'border-t-purple-500', dropStatus: 'review' },
-  { id: 'done',        label: 'Done',        statuses: ['completed'],                         accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],               accent: 'border-t-red-500',    dropStatus: 'cancelled' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending_approval', 'pending', 'assigned'], accent: 'border-t-blue-500',   dropStatus: 'pending' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],                  accent: 'border-t-indigo-500', dropStatus: 'in_progress' },
+  { id: 'review',      label: 'In Review',   statuses: ['review', 'revision', 'accepted'],          accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'Done',        statuses: ['completed'],                               accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],                     accent: 'border-t-red-500',    dropStatus: 'cancelled' },
 ] as const;
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -660,11 +659,19 @@ const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 const REQ_COLUMN_MAP: Record<string, string> = {
-  draft: 'approval', pending_review: 'approval',
+  draft: 'todo', pending_review: 'todo',
   approved: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
   rejected: 'closed', cancelled: 'closed',
+};
+
+const REQ_DROP_STATUS: Record<string, string> = {
+  todo: 'approved',
+  in_progress: 'in_progress',
+  review: 'approved',
+  done: 'completed',
+  closed: 'cancelled',
 };
 
 
@@ -704,6 +711,7 @@ export function ProjectsPage() {
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const dragTaskRef = useRef<TaskInfo | null>(null);
+  const dragReqRef = useRef<RequirementInfo | null>(null);
 
   // Requirement create/reject modals
   const [showCreateReq, setShowCreateReq] = useState(false);
@@ -910,17 +918,23 @@ export function ProjectsPage() {
     try { await api.requirements.delete(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
   };
 
-  // ── Drag handlers ──
+  // ── Drag handlers (tasks + requirements) ──
 
-  const onDragStart = (e: DragEvent<HTMLDivElement>, task: TaskInfo) => {
-    dragTaskRef.current = task;
+  const onDragStartTask = (e: DragEvent<HTMLDivElement>, task: TaskInfo) => {
+    dragTaskRef.current = task; dragReqRef.current = null;
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', task.id);
+    e.dataTransfer.setData('text/plain', `task:${task.id}`);
+    (e.currentTarget as HTMLElement).style.opacity = '0.4';
+  };
+  const onDragStartReq = (e: DragEvent<HTMLDivElement>, req: RequirementInfo) => {
+    dragReqRef.current = req; dragTaskRef.current = null;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `req:${req.id}`);
     (e.currentTarget as HTMLElement).style.opacity = '0.4';
   };
   const onDragEnd = (e: DragEvent<HTMLDivElement>) => {
     (e.currentTarget as HTMLElement).style.opacity = '1';
-    dragTaskRef.current = null; setDragOverCol(null);
+    dragTaskRef.current = null; dragReqRef.current = null; setDragOverCol(null);
   };
   const onDragOver = (e: DragEvent<HTMLDivElement>, col: string) => {
     e.preventDefault(); e.dataTransfer.dropEffect = 'move';
@@ -935,14 +949,23 @@ export function ProjectsPage() {
   };
   const onDrop = async (e: DragEvent<HTMLDivElement>, colId: string) => {
     e.preventDefault(); setDragOverCol(null);
+
     const task = dragTaskRef.current;
-    if (!task) return;
-    const targetCol = BOARD_COLUMNS.find(c => c.id === colId);
-    if (!targetCol) return;
-    const targetStatus = targetCol.dropStatus;
-    if (task.status === targetStatus) return;
-    if (task.status === 'pending_approval') return; // locked state — use Approve/Reject buttons
-    try { await api.tasks.updateStatus(task.id, targetStatus); refreshBoard(); } catch { /* */ }
+    const req = dragReqRef.current;
+
+    if (task) {
+      const targetCol = BOARD_COLUMNS.find(c => c.id === colId);
+      if (!targetCol) return;
+      const targetStatus = targetCol.dropStatus;
+      if (task.status === targetStatus) return;
+      if (task.status === 'pending_approval') return;
+      try { await api.tasks.updateStatus(task.id, targetStatus); refreshBoard(); } catch { /* */ }
+    } else if (req) {
+      const targetReqStatus = REQ_DROP_STATUS[colId];
+      if (!targetReqStatus) return;
+      if (req.status === targetReqStatus) return;
+      try { await api.requirements.updateStatus(req.id, targetReqStatus); refreshRequirements(); } catch { /* */ }
+    }
   };
 
   const toggleAgentFilter = (id: string) => {
@@ -987,9 +1010,11 @@ export function ProjectsPage() {
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
 
   const visibleColumns = BOARD_COLUMNS.filter(col => {
-    const tasks = getColumnTasks(col);
-    const reqs = getColumnReqs(col);
-    if (col.id === 'closed' || col.id === 'approval') return tasks.length + reqs.length > 0;
+    if (col.id === 'closed') {
+      const tasks = getColumnTasks(col);
+      const reqs = getColumnReqs(col);
+      return tasks.length + reqs.length > 0;
+    }
     return true;
   });
 
@@ -1210,17 +1235,22 @@ export function ProjectsPage() {
                       <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{itemCount}</span>
                     </div>
                     <div className="space-y-2">
-                      {/* ── Requirement cards ── */}
-                      {colReqs.map(req => {
+                      {/* ── Requirement cards (approval-needed first) ── */}
+                      {[...colReqs].sort((a, b) => {
+                        const aNeed = (a.status === 'draft' || a.status === 'pending_review') ? 0 : 1;
+                        const bNeed = (b.status === 'draft' || b.status === 'pending_review') ? 0 : 1;
+                        return aNeed - bNeed;
+                      }).map(req => {
                         const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
                         const isAgent = req.source === 'agent';
                         const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
                         const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
                         const creatorName = agents.find(a => a.id === req.createdBy)?.name ?? req.createdBy.slice(0, 10);
                         return (
-                          <div key={`req-${req.id}`} role="button" tabIndex={0}
+                          <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
+                            onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
                             onClick={() => setSelectedReq(req)} onKeyDown={e => e.key === 'Enter' && setSelectedReq(req)}
-                            className={`bg-purple-500/[0.06] border rounded-lg p-3 border-l-[3px] border-l-purple-500 transition-colors cursor-pointer ${needsReview ? 'border-yellow-500/40 ring-1 ring-yellow-500/20' : 'border-purple-500/20'} hover:border-purple-400/50`}>
+                            className={`bg-purple-500/[0.06] border rounded-lg p-3 border-l-[3px] border-l-purple-500 transition-colors cursor-grab active:cursor-grabbing ${needsReview ? 'border-yellow-500/40 ring-1 ring-yellow-500/20' : 'border-purple-500/20'} hover:border-purple-400/50`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <span className="text-[9px] font-bold text-purple-400 bg-purple-500/15 px-1.5 py-0.5 rounded shrink-0">REQ</span>
@@ -1255,18 +1285,27 @@ export function ProjectsPage() {
                         );
                       })}
 
-                      {/* ── Task cards ── */}
-                      {colTasks.map(task => {
+                      {/* ── Task cards (approval-needed first in To Do) ── */}
+                      {(col.id === 'todo' ? [...colTasks].sort((a, b) => {
+                        const aN = a.status === 'pending_approval' ? 0 : 1;
+                        const bN = b.status === 'pending_approval' ? 0 : 1;
+                        return aN - bN;
+                      }) : colTasks).map(task => {
                         const subCount = task.subtaskIds?.length ?? 0;
                         const badge = SUB_STATUS_BADGE[task.status];
+                        const isApprovalTask = task.status === 'pending_approval';
                         const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
                         const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
                         const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
                         return (
-                          <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable
-                            onDragStart={e => onDragStart(e, task)} onDragEnd={onDragEnd}
+                          <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
+                            onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
                             onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
-                            className={`bg-gray-800 border border-gray-700 rounded-lg p-3 border-l-[3px] ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 transition-colors cursor-grab active:cursor-grabbing`}>
+                            className={`border rounded-lg p-3 border-l-[3px] transition-colors ${
+                              isApprovalTask
+                                ? 'bg-yellow-500/[0.04] border-yellow-500/30 border-l-yellow-500 cursor-pointer'
+                                : `bg-gray-800 border-gray-700 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 cursor-grab active:cursor-grabbing`
+                            }`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="text-sm font-medium leading-snug">{task.title}</div>
                               {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
@@ -1528,7 +1567,7 @@ function RequirementDetailModal({
           {req.description && (
             <div>
               <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1 block">Description</label>
-              <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{req.description}</p>
+              <MarkdownMessage content={req.description} className="text-sm text-gray-300 leading-relaxed" />
             </div>
           )}
 

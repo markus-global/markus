@@ -4167,6 +4167,27 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
+    if (path.match(/^\/api\/requirements\/[^/]+\/status$/) && req.method === 'POST') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
+      try {
+        const requirement = this.requirementService.updateRequirementStatus(
+          reqId,
+          body['status'] as string as import('@markus/shared').RequirementStatus,
+          authUser?.userId ?? 'unknown'
+        );
+        this.json(res, 200, { requirement });
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/requirements\/[^/]+\/approve$/) && req.method === 'POST') {
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {

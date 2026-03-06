@@ -633,6 +633,8 @@ export const api = {
       request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[] }) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updateStatus: (id: string, status: string) =>
+      request<{ requirement: RequirementInfo }>(`/requirements/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) }),
     approve: (id: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
     reject: (id: string, reason: string) =>

@@ -232,7 +232,7 @@ export class Agent {
     if (status === 'error') {
       this.state.lastError = errorMessage || this.state.lastError || 'Unknown error';
       this.state.lastErrorAt = new Date().toISOString();
-    } else if (status !== 'error') {
+    } else {
       this.state.lastError = undefined;
       this.state.lastErrorAt = undefined;
     }
@@ -289,6 +289,7 @@ export class Agent {
       clearInterval(this.memoryConsolidationTimer);
       this.memoryConsolidationTimer = undefined;
     }
+    this.metricsCollector.flush();
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`);

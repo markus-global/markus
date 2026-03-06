@@ -1291,6 +1291,15 @@ export class AgentManager {
     log.info('Emergency mode cleared');
   }
 
+  async shutdown(): Promise<void> {
+    for (const [, agent] of this.agents) {
+      try {
+        await agent.stop();
+      } catch { /* best effort */ }
+    }
+    log.info('AgentManager shutdown complete — all metrics flushed');
+  }
+
   // ─── System Announcements ────────────────────────────────────────────────
 
   private announcements: SystemAnnouncement[] = [];

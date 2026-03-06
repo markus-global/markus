@@ -179,6 +179,54 @@ export class RequirementService {
   }
 
   /**
+   * Update requirement status via drag-and-drop or manual action.
+   * Handles side-effects (clearing rejection, setting approval, etc.)
+   */
+  updateRequirementStatus(
+    id: string,
+    newStatus: RequirementStatus,
+    userId?: string
+  ): Requirement {
+    const req = this.requirements.get(id);
+    if (!req) throw new Error(`Requirement ${id} not found`);
+    if (req.status === newStatus) return req;
+
+    const now = new Date().toISOString();
+    const oldStatus = req.status;
+    req.status = newStatus;
+    req.updatedAt = now;
+
+    if (newStatus === 'approved' && oldStatus !== 'approved') {
+      req.approvedBy = userId ?? req.approvedBy ?? 'unknown';
+      req.approvedAt = now;
+      req.rejectedReason = undefined;
+    } else if (newStatus === 'rejected') {
+      if (!req.rejectedReason) req.rejectedReason = 'Moved to closed';
+    } else if (
+      newStatus === 'draft' ||
+      newStatus === 'pending_review'
+    ) {
+      req.rejectedReason = undefined;
+    }
+
+    if (this.requirementRepo) {
+      this.requirementRepo
+        .updateStatus(id, newStatus)
+        .catch((e: unknown) =>
+          log.error('Failed to persist requirement status update', {
+            id,
+            error: String(e),
+          })
+        );
+    }
+
+    this.broadcast('requirement:updated', req);
+    log.info('Requirement status updated', { id, from: oldStatus, to: newStatus });
+
+    return req;
+  }
+
+  /**
    * Update a requirement's fields (title, description, priority, etc.)
    */
   updateRequirement(
