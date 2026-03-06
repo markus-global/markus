@@ -170,14 +170,16 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
           <StatBox label="Last Heartbeat" value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : 'Never'} />
         </div>
 
-        {agent.state.status === 'error' && agent.state.lastError && (
+        {agent.state.status === 'error' && (
           <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-red-500" />
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
               <span className="text-xs font-medium text-red-400">Error Details</span>
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-400/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
-            <pre className="text-[11px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">{agent.state.lastError}</pre>
+            <pre className="text-[11px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
+              {agent.state.lastError || 'Agent encountered an error. Check logs for more details.'}
+            </pre>
           </div>
         )}
 

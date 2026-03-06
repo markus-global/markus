@@ -229,8 +229,8 @@ export class Agent {
 
     this.state.status = status;
 
-    if (status === 'error' && errorMessage) {
-      this.state.lastError = errorMessage;
+    if (status === 'error') {
+      this.state.lastError = errorMessage || this.state.lastError || 'Unknown error';
       this.state.lastErrorAt = new Date().toISOString();
     } else if (status !== 'error') {
       this.state.lastError = undefined;
@@ -634,6 +634,8 @@ export class Agent {
         status: this.state.status,
         tokensUsedToday: this.state.tokensUsedToday,
         activeTaskIds: [...this.activeTasks],
+        lastError: this.state.lastError,
+        lastErrorAt: this.state.lastErrorAt,
       });
     }
   }
@@ -1323,6 +1325,7 @@ export class Agent {
     this.activeTasks.add(taskId);
     this.notifyStateChange();
     const taskStartMs = Date.now();
+    let taskFailed = '';
 
     let seq = 0;
     const emit = (type: string, content: string, metadata?: unknown) => {
@@ -1553,6 +1556,7 @@ export class Agent {
       });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
+      taskFailed = String(error).slice(0, 500);
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
@@ -1567,7 +1571,11 @@ export class Agent {
       this.notifyStateChange();
 
       if (this.activeTasks.size === 0) {
-        this.setStatus('idle');
+        if (taskFailed) {
+          this.setStatus('error', taskFailed);
+        } else {
+          this.setStatus('idle');
+        }
       }
     }
   }

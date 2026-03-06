@@ -85,45 +85,55 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
   const [hovered, setHovered] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
+  const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500 animate-pulse' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
   const statusLabel = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
+  const isError = a.status === 'error';
 
   const activeTask = a.status === 'working' && a.currentTaskId ? tasks.find(t => t.id === a.currentTaskId) : undefined;
+  const errorPreview = a.lastError ? (a.lastError.length > 60 ? a.lastError.slice(0, 60) + '…' : a.lastError) : 'Unknown error';
 
   return (
     <div ref={ref} className="relative mb-0.5" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
       <button
         onClick={onSelect}
         className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs transition-colors ${
-          selected ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
+          selected ? 'bg-indigo-600/20 text-indigo-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-gray-800'
         }`}
       >
         <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-          selected ? 'bg-indigo-600' : 'bg-gray-700'
+          isError ? 'bg-red-900/60 text-red-300' : selected ? 'bg-indigo-600' : 'bg-gray-700'
         }`}>
           {agentInitials(a.name)}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="truncate">{a.name}</div>
-          <div className="text-gray-600 truncate">{a.role}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate">{a.name}</span>
+            {isError && <span className="text-[9px] px-1.5 py-0 rounded bg-red-500/20 text-red-400 font-medium shrink-0">error</span>}
+          </div>
+          {isError
+            ? <div className="text-red-400/60 truncate text-[10px]">{errorPreview}</div>
+            : <div className="text-gray-600 truncate">{a.role}</div>
+          }
         </div>
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
       </button>
 
       {hovered && (a.status === 'error' || a.status === 'working' || a.status === 'paused') && (
-        <div className="absolute left-full top-0 ml-2 z-50 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-3 space-y-2">
+        <div className="absolute left-full top-0 ml-2 z-50 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-3 space-y-2">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} />
-            <span className={`text-xs font-medium ${a.status === 'error' ? 'text-red-400' : a.status === 'working' ? 'text-yellow-400' : 'text-amber-400'}`}>
+            <span className={`text-xs font-medium ${isError ? 'text-red-400' : a.status === 'working' ? 'text-yellow-400' : 'text-amber-400'}`}>
               {statusLabel}
             </span>
             <span className="text-[10px] text-gray-600 ml-auto">{a.role}</span>
           </div>
 
-          {a.status === 'error' && a.lastError && (
+          {isError && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2">
               <div className="text-[10px] text-red-400 font-medium mb-0.5">Error Details</div>
-              <div className="text-[10px] text-red-300/80 leading-relaxed line-clamp-3 break-all">{a.lastError}</div>
+              <div className="text-[10px] text-red-300/80 leading-relaxed line-clamp-5 break-all font-mono">
+                {a.lastError || 'Agent encountered an error. Click "View Profile" for details.'}
+              </div>
               {a.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1">{new Date(a.lastErrorAt).toLocaleString()}</div>}
             </div>
           )}
@@ -145,7 +155,11 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
 
           <button
             onClick={(e) => { e.stopPropagation(); onViewProfile(); }}
-            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+            className={`w-full text-center text-[10px] border rounded-lg py-1 transition-colors ${
+              isError
+                ? 'text-red-400 hover:text-red-300 border-red-500/30 hover:border-red-500/50 hover:bg-red-500/10'
+                : 'text-indigo-400 hover:text-indigo-300 border-gray-700 hover:border-gray-600'
+            }`}
           >
             View Profile →
           </button>
@@ -1627,7 +1641,7 @@ function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
 
-  const dotColor = isError ? 'bg-red-400' : isWorking ? 'bg-yellow-400 animate-pulse' : 'bg-green-400';
+  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-yellow-400 animate-pulse' : 'bg-green-400';
   const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
 
   return (
@@ -1636,6 +1650,23 @@ function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
         <span className={`text-xs ${isError ? 'text-red-400' : isWorking ? 'text-yellow-400' : 'text-green-400'}`}>{label}</span>
       </div>
+      {hover && isError && (
+        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+          <p className="text-[10px] text-red-400 uppercase font-semibold">Error Details</p>
+          <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
+            <pre className="text-[10px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
+              {agent.lastError || 'Agent encountered an error. Check profile for details.'}
+            </pre>
+            {agent.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
+          </div>
+          <button
+            onClick={() => navBus.navigate('team', { selectAgent: agent.id })}
+            className="w-full text-center text-[10px] text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
+          >
+            View Agent Profile →
+          </button>
+        </div>
+      )}
       {hover && isWorking && (
         <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-30 w-72 p-3">
           <p className="text-[10px] text-gray-500 uppercase font-semibold mb-2">Current Activity</p>
