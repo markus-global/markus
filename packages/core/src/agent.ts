@@ -133,6 +133,8 @@ export class Agent {
     description: string;
     status: string;
     priority: string;
+    assignedAgentId?: string;
+    assignedAgentName?: string;
   }>;
   private consecutiveFailures = 0;
   private metricsCollector: AgentMetricsCollector;
@@ -653,7 +655,7 @@ export class Agent {
     }
   }
 
-  /** Inject a function that returns this agent's currently assigned tasks for system prompt context */
+  /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
   setTasksFetcher(
     fetcher: () => Array<{
       id: string;
@@ -661,6 +663,8 @@ export class Agent {
       description: string;
       status: string;
       priority: string;
+      assignedAgentId?: string;
+      assignedAgentName?: string;
     }>
   ): void {
     this.tasksFetcher = fetcher;

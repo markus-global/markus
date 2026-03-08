@@ -64,6 +64,8 @@ export class ContextEngine {
       description: string;
       status: string;
       priority: string;
+      assignedAgentId?: string;
+      assignedAgentName?: string;
     }>;
     knowledgeContext?: string;
     environment?: EnvironmentProfile;
@@ -225,28 +227,48 @@ export class ContextEngine {
     }
 
     if (opts.assignedTasks && opts.assignedTasks.length > 0) {
-      const activeTasks = opts.assignedTasks.filter(
-        t => !['completed', 'cancelled', 'failed'].includes(t.status)
-      );
-      const doneTasks = opts.assignedTasks.filter(t =>
-        ['completed', 'cancelled', 'failed'].includes(t.status)
-      );
-      parts.push('\n## Your Task Board');
-      if (activeTasks.length > 0) {
-        parts.push('### Active Tasks (work on these):');
-        for (const t of activeTasks) {
+      const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
+      const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
+
+      const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+      const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+
+      parts.push('\n## Task Board');
+
+      parts.push('### My Tasks (assigned to you):');
+      if (myActive.length > 0) {
+        for (const t of myActive) {
           parts.push(
             `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
           );
           if (t.description) parts.push(`  ${t.description.slice(0, 200)}`);
         }
+      } else {
+        parts.push('No active tasks assigned to you.');
       }
-      if (doneTasks.length > 0) {
-        parts.push(`### Completed/Closed (${doneTasks.length} tasks)`);
+      if (myDone.length > 0) {
+        parts.push(`_(${myDone.length} completed/closed tasks)_`);
+      }
+
+      if (otherTasks.length > 0) {
+        const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+        const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+        if (otherActive.length > 0) {
+          parts.push('### Team Tasks (assigned to others):');
+          for (const t of otherActive) {
+            const owner = t.assignedAgentName ?? t.assignedAgentId ?? 'unassigned';
+            parts.push(
+              `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, assignee: ${owner}, priority: ${t.priority})`
+            );
+          }
+        }
+        if (otherDone.length > 0) {
+          parts.push(`_(${otherDone.length} other completed/closed tasks)_`);
+        }
       }
     } else {
       parts.push('\n## Task Board');
-      parts.push('No tasks currently assigned.');
+      parts.push('No tasks on the board.');
     }
 
     parts.push('');

@@ -63,6 +63,17 @@ export interface RequirementServiceBridge {
     source: string;
     taskIds: string[];
   }>;
+  updateRequirementStatus(
+    id: string,
+    status: string,
+    userId?: string
+  ): { id: string; title: string; status: string };
+  rejectRequirement(
+    id: string,
+    userId: string,
+    reason: string
+  ): { id: string; title: string; status: string };
+  cancelRequirement(id: string): { id: string; title: string; status: string };
 }
 
 export interface TaskServiceBridge {
@@ -533,20 +544,35 @@ export class AgentManager {
               });
             }
           : undefined,
+        updateRequirementStatus: this.requirementService
+          ? async (reqId, status, reason) => {
+              if (status === 'rejected') {
+                return this.requirementService!.rejectRequirement(reqId, id, reason ?? '');
+              }
+              if (status === 'cancelled') {
+                return this.requirementService!.cancelRequirement(reqId);
+              }
+              return this.requirementService!.updateRequirementStatus(reqId, status, id);
+            }
+          : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
       }
 
-      // Wire tasks fetcher so system prompt shows this agent's assigned tasks
+      // Wire tasks fetcher — show all org tasks so agents have full board visibility
       agent.setTasksFetcher(() => {
         try {
-          return ts.listTasks({ orgId, assignedAgentId: id }).map(t => ({
+          return ts.listTasks({ orgId }).map(t => ({
             id: t.id,
             title: t.title,
             description: t.description,
             status: t.status,
             priority: t.priority,
+            assignedAgentId: t.assignedAgentId,
+            assignedAgentName: t.assignedAgentId
+              ? this.agents.get(t.assignedAgentId)?.config.name
+              : undefined,
           }));
         } catch {
           return [];
@@ -893,16 +919,31 @@ export class AgentManager {
               });
             }
           : undefined,
+        updateRequirementStatus: this.requirementService
+          ? async (reqId, status, reason) => {
+              if (status === 'rejected') {
+                return this.requirementService!.rejectRequirement(reqId, id, reason ?? '');
+              }
+              if (status === 'cancelled') {
+                return this.requirementService!.cancelRequirement(reqId);
+              }
+              return this.requirementService!.updateRequirementStatus(reqId, status, id);
+            }
+          : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
       agent.setTasksFetcher(() => {
         try {
-          return ts.listTasks({ orgId, assignedAgentId: id }).map(t => ({
+          return ts.listTasks({ orgId }).map(t => ({
             id: t.id,
             title: t.title,
             description: t.description,
             status: t.status,
             priority: t.priority,
+            assignedAgentId: t.assignedAgentId,
+            assignedAgentName: t.assignedAgentId
+              ? this.agents.get(t.assignedAgentId)?.config.name
+              : undefined,
           }));
         } catch {
           return [];

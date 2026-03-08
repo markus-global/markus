@@ -259,7 +259,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (siliconflowKey) {
     providerConfigs['siliconflow'] = {
       provider: 'siliconflow',
-      model: process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen2.5-72B-Instruct',
+      model: process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
       apiKey: siliconflowKey,
       baseUrl:
         process.env['SILICONFLOW_BASE_URL'] ??

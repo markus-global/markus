@@ -80,6 +80,12 @@ export interface AgentTaskContext {
       taskIds: string[];
     }>
   >;
+  /** Update a requirement's status (cancel, reject, etc.) */
+  updateRequirementStatus?: (
+    id: string,
+    status: string,
+    reason?: string
+  ) => Promise<{ id: string; title: string; status: string }>;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -547,6 +553,63 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     .join('\n'),
                 });
               } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.updateRequirementStatus
+      ? [
+          {
+            name: 'requirement_update_status',
+            description: [
+              'Update the status of a requirement (需求). Supports: cancelled, rejected.',
+              'WARNING: Only use this when absolutely necessary or when explicitly instructed by a human administrator.',
+              'Do NOT change the status of existing requirements without a very strong reason.',
+              'Valid reasons include: the requirement is no longer relevant, it duplicates another requirement,',
+              'or a human admin explicitly asked you to cancel/reject it.',
+              'Always provide a clear reason explaining why the status change is needed.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                requirement_id: {
+                  type: 'string',
+                  description: 'The requirement ID to update',
+                },
+                status: {
+                  type: 'string',
+                  enum: ['cancelled', 'rejected'],
+                  description: 'New status. Use "cancelled" to cancel a requirement, or "rejected" to reject a proposed requirement.',
+                },
+                reason: {
+                  type: 'string',
+                  description: 'Required: clear explanation of why this status change is necessary',
+                },
+              },
+              required: ['requirement_id', 'status', 'reason'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const req = await ctx.updateRequirementStatus!(
+                  args['requirement_id'] as string,
+                  args['status'] as string,
+                  args['reason'] as string
+                );
+                log.info(`Requirement status updated by agent ${ctx.agentId}`, {
+                  requirementId: req.id,
+                  newStatus: req.status,
+                  reason: args['reason'],
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  requirement: req,
+                  message: `Requirement "${req.title}" (ID: ${req.id}) status changed to ${req.status}.`,
+                });
+              } catch (error) {
+                log.error('requirement_update_status failed', { error: String(error) });
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
             },
