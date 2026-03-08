@@ -221,6 +221,18 @@ export class Agent {
   }
 
   /**
+   * Resolve the LLM provider name for this agent.
+   * In 'custom' mode returns the agent-specific provider; in 'default' mode
+   * returns undefined so the router uses the current system default.
+   */
+  private getEffectiveProvider(): string | undefined {
+    if (this.config.llmConfig.modelMode === 'custom') {
+      return this.config.llmConfig.primary;
+    }
+    return undefined;
+  }
+
+  /**
    * Set agent status and emit status change event
    */
   private setStatus(status: AgentState['status'], errorMessage?: string): void {
@@ -779,7 +791,7 @@ export class Agent {
       let response = await this.llmRouter.chat({
         messages,
         tools: llmTools.length > 0 ? llmTools : undefined,
-      });
+      }, this.getEffectiveProvider());
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
@@ -926,7 +938,7 @@ export class Agent {
         response = await this.llmRouter.chat({
           messages: updatedMessages,
           tools: llmTools.length > 0 ? llmTools : undefined,
-        });
+        }, this.getEffectiveProvider());
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
@@ -1054,7 +1066,7 @@ export class Agent {
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined },
         onEvent,
-        undefined,
+        this.getEffectiveProvider(),
         abortController.signal,
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
@@ -1169,7 +1181,7 @@ export class Agent {
         response = await this.llmRouter.chatStream(
           { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
           onEvent,
-          undefined,
+          this.getEffectiveProvider(),
           abortController.signal,
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
@@ -1439,7 +1451,7 @@ export class Agent {
             emitDelta(event.text);
           }
         },
-        undefined,
+        this.getEffectiveProvider(),
         abortController.signal,
       );
       this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
@@ -1517,7 +1529,7 @@ export class Agent {
               emitDelta(event.text);
             }
           },
-          undefined,
+          this.getEffectiveProvider(),
           abortController.signal,
         );
         this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);

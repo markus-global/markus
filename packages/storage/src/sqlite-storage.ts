@@ -522,6 +522,18 @@ export class SqliteAgentRepo {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
 
+  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; heartbeatIntervalMs?: number }) {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now()];
+    if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
+    if (data.agentRole !== undefined) { sets.push('agent_role = ?'); vals.push(data.agentRole); }
+    if (data.skills !== undefined) { sets.push('skills = ?'); vals.push(toJson(data.skills)); }
+    if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
+    if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
+    vals.push(id);
+    this.db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
   private _map(r: Record<string, unknown>) {
     return {
       id: r['id'],

@@ -18,6 +18,8 @@ export interface AgentConfig {
 }
 
 export interface LLMAssignment {
+  /** 'default' follows system default provider; 'custom' uses a fixed provider */
+  modelMode: 'default' | 'custom';
   primary: string;
   fallback?: string;
   maxTokensPerRequest?: number;

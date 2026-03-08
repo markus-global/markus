@@ -1442,6 +1442,22 @@ export class APIServer {
         }
         if (body['heartbeatIntervalMs'] !== undefined)
           cfg.heartbeatIntervalMs = body['heartbeatIntervalMs'];
+
+        // Persist config changes to DB
+        if (this.storage) {
+          try {
+            await this.storage.agentRepo.updateConfig(agentId, {
+              name: body['name'] as string | undefined,
+              agentRole: body['agentRole'] as string | undefined,
+              skills: body['skills'] as unknown,
+              llmConfig: cfg.llmConfig,
+              heartbeatIntervalMs: body['heartbeatIntervalMs'] as number | undefined,
+            });
+          } catch (persistErr) {
+            log.warn('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
+          }
+        }
+
         this.json(res, 200, { ok: true, config: agent.config });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });

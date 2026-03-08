@@ -126,6 +126,8 @@ export interface CreateAgentRequest {
   mcpServers?: Record<string, MCPServerConfig>;
   securityPolicy?: SecurityPolicy;
   profile?: AgentProfile;
+  /** Override model config: when provided with modelMode 'custom', agent uses this provider */
+  llmProvider?: string;
 }
 
 export class AgentManager {
@@ -340,7 +342,9 @@ export class AgentManager {
       agentRole: request.agentRole ?? 'worker',
       skills: request.skills ?? role.defaultSkills,
       profile: request.profile,
-      llmConfig: { primary: this.llmRouter.defaultProviderName },
+      llmConfig: request.llmProvider
+        ? { modelMode: 'custom' as const, primary: request.llmProvider }
+        : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       computeConfig: { type: 'docker' },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? 30 * 60 * 1000,
@@ -732,7 +736,16 @@ export class AgentManager {
       agentRole,
       skills: Array.isArray(row.skills) ? (row.skills as string[]) : role.defaultSkills,
       profile: row.profile as AgentProfile | undefined,
-      llmConfig: (row.llmConfig as AgentConfig['llmConfig']) ?? { primary: 'anthropic' },
+      llmConfig: (() => {
+        const raw = (row.llmConfig ?? {}) as Record<string, unknown>;
+        return {
+          modelMode: (raw.modelMode as 'default' | 'custom') ?? 'default',
+          primary: (raw.primary as string) ?? 'anthropic',
+          fallback: raw.fallback as string | undefined,
+          maxTokensPerRequest: raw.maxTokensPerRequest as number | undefined,
+          maxTokensPerDay: raw.maxTokensPerDay as number | undefined,
+        };
+      })(),
       computeConfig: { type: 'docker' },
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? 30 * 60 * 1000,
@@ -1227,6 +1240,7 @@ export class AgentManager {
     const template = this.templateRegistry.get(request.templateId);
     if (!template) throw new Error(`Template not found: ${request.templateId}`);
 
+    const llmProvider = request.overrides?.llmProvider ?? template.llmProvider;
     return this.createAgent({
       name: request.name,
       roleName: template.roleId,
@@ -1235,6 +1249,7 @@ export class AgentManager {
       agentRole: template.agentRole,
       skills: request.overrides?.skills ?? template.skills,
       heartbeatIntervalMs: request.overrides?.heartbeatIntervalMs ?? template.heartbeatIntervalMs,
+      llmProvider,
     });
   }
 

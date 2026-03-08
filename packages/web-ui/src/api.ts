@@ -368,7 +368,7 @@ export interface AgentHeartbeatInfo {
 }
 
 export interface AgentConfigInfo {
-  llmConfig: { primary: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
+  llmConfig: { modelMode?: 'default' | 'custom'; primary: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
   computeConfig: { type: string; image?: string; cpu?: number; memoryMb?: number };
   channels: Array<{ platform: string; channelId: string; role: string }>;
   heartbeatIntervalMs: number;
