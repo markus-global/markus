@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { loadConfig, createLogger, type LLMProviderConfig } from '@markus/shared';
+import { loadConfig, getDefaultConfigPath, createLogger, type LLMProviderConfig } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager } from '@markus/core';
 import {
   OrganizationService,
@@ -249,7 +249,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
         config.llm.providers['deepseek']?.baseUrl ??
         'https://api.deepseek.com',
     };
-    if (!anthropicKey || config.llm.defaultProvider === 'deepseek') {
+    if (config.llm.defaultProvider === 'deepseek') {
       defaultProvider = 'deepseek';
     }
   }
@@ -285,6 +285,14 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     };
     if (config.llm.defaultProvider === 'openrouter') {
       defaultProvider = 'openrouter';
+    }
+  }
+
+  // If the configured default provider has no API key, fall back to the first available one
+  if (!providerConfigs[defaultProvider]) {
+    const available = Object.keys(providerConfigs);
+    if (available.length > 0) {
+      defaultProvider = available[0];
     }
   }
 
@@ -406,6 +414,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
+  apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
 
   // Wire storage for chat persistence and auth
   const firstOrgId = 'default';

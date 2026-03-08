@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
-import { createLogger, generateId, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { createLogger, generateId, saveConfig, type TaskStatus, type TaskPriority } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -165,6 +165,7 @@ export class APIServer {
   private auditService?: AuditService;
   private storage?: StorageBridge;
   private llmRouter?: LLMRouter;
+  private markusConfigPath?: string;
   private gateway?: ExternalAgentGateway;
   private reviewService?: ReviewService;
   private registryCache?: Map<string, { data: unknown; ts: number }>;
@@ -311,6 +312,10 @@ export class APIServer {
 
   setLLMRouter(router: LLMRouter): void {
     this.llmRouter = router;
+  }
+
+  setConfigPath(configPath: string): void {
+    this.markusConfigPath = configPath;
   }
 
   initWorkflowEngine(): WorkflowEngine {
@@ -3370,6 +3375,11 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       }
       try {
         this.llmRouter.setDefaultProvider(defaultProvider);
+        try {
+          saveConfig({ llm: { defaultProvider } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist defaultProvider to config file', e);
+        }
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {
         this.json(res, 400, { error: String(err) });

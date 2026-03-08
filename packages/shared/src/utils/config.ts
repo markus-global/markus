@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export interface MarkusConfig {
@@ -44,13 +44,34 @@ const DEFAULT_CONFIG: MarkusConfig = {
   server: { apiPort: 3001, webPort: 3000 },
 };
 
+export function getDefaultConfigPath(): string {
+  return resolve(process.cwd(), 'markus.json');
+}
+
 export function loadConfig(configPath?: string): MarkusConfig {
-  const p = configPath ?? resolve(process.cwd(), 'markus.json');
+  const p = configPath ?? getDefaultConfigPath();
   if (!existsSync(p)) return DEFAULT_CONFIG;
 
   const raw = readFileSync(p, 'utf-8');
   const parsed = JSON.parse(raw) as Partial<MarkusConfig>;
   return deepMerge(DEFAULT_CONFIG as unknown as Obj, parsed as unknown as Obj) as unknown as MarkusConfig;
+}
+
+/**
+ * Merge partial updates into the on-disk markus.json (creates it if absent).
+ */
+export function saveConfig(updates: Partial<MarkusConfig>, configPath?: string): void {
+  const p = configPath ?? getDefaultConfigPath();
+  let existing: Obj = {};
+  if (existsSync(p)) {
+    try {
+      existing = JSON.parse(readFileSync(p, 'utf-8')) as Obj;
+    } catch {
+      existing = {};
+    }
+  }
+  const merged = deepMerge(existing, updates as unknown as Obj);
+  writeFileSync(p, JSON.stringify(merged, null, 2) + '\n', 'utf-8');
 }
 
 type Obj = Record<string, unknown>;
