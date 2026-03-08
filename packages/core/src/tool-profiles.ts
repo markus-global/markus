@@ -13,7 +13,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:fs': ['file_read', 'file_write', 'file_edit', 'apply_patch', 'grep_search', 'glob_find', 'list_directory'],
   'group:runtime': ['shell_execute', 'background_exec', 'process'],
   'group:memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
-  'group:web': ['web_search', 'web_fetch'],
+  'group:web': ['web_search', 'web_fetch', 'web_extract'],
   'group:messaging': ['message', 'send_message'],
   'group:a2a': ['delegate_task', 'query_agent', 'team_broadcast'],
   'group:ui': ['gui_screenshot', 'gui_analyze', 'gui_mouse', 'gui_keyboard', 'gui_find_element'],

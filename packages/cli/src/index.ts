@@ -322,6 +322,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
     taskService.setTaskLogRepo(storage.taskLogRepo);
+    if (storage.taskCommentRepo) {
+      taskService.setTaskCommentRepo(storage.taskCommentRepo);
+    }
     await taskService.loadFromDB('default');
   }
 

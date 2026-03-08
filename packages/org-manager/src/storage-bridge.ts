@@ -3,6 +3,7 @@ import type {
   OrgRepo,
   TaskRepo,
   TaskLogRepo,
+  TaskCommentRepo,
   AgentRepo,
   TeamRepo,
   MessageRepo,
@@ -45,6 +46,7 @@ export interface StorageBridge {
   marketplaceTemplateRepo: MarketplaceTemplateRepo;
   marketplaceSkillRepo: MarketplaceSkillRepo;
   marketplaceRatingRepo: MarketplaceRatingRepo;
+  taskCommentRepo?: TaskCommentRepo | any;
   requirementRepo?: RequirementRepo | any;
   projectRepo?: any;
   iterationRepo?: any;
@@ -97,6 +99,7 @@ async function initPostgresStorage(url: string): Promise<StorageBridge | null> {
       marketplaceTemplateRepo: new storage.MarketplaceTemplateRepo(db),
       marketplaceSkillRepo: new storage.MarketplaceSkillRepo(db),
       marketplaceRatingRepo: new storage.MarketplaceRatingRepo(db),
+      taskCommentRepo: new storage.TaskCommentRepo(db),
       requirementRepo: new storage.RequirementRepo(db),
     };
     log.info('PostgreSQL storage initialized');
@@ -127,6 +130,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       marketplaceTemplateRepo: new storage.SqliteMarketplaceTemplateRepo(db) as any,
       marketplaceSkillRepo: new storage.SqliteMarketplaceSkillRepo(db) as any,
       marketplaceRatingRepo: new storage.SqliteMarketplaceRatingRepo(db) as any,
+      taskCommentRepo: new storage.SqliteTaskCommentRepo(db) as any,
       requirementRepo: new storage.SqliteRequirementRepo(db) as any,
       projectRepo: new storage.SqliteProjectRepo(db),
       iterationRepo: new storage.SqliteIterationRepo(db),

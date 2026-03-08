@@ -3,6 +3,7 @@ import { createShellTool, type ShellAgentMeta } from './shell.js';
 import { createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 import { WebFetchTool } from './web-fetch.js';
 import { WebSearchTool } from './web-search.js';
+import { WebExtractTool } from './web-extract.js';
 import { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 import { createPatchTool } from './patch.js';
 import { createBackgroundExecTool, createProcessTool } from './process-manager.js';
@@ -35,6 +36,7 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
     createListDirectoryTool(opts?.workspacePath),
     WebFetchTool,
     WebSearchTool,
+    WebExtractTool,
   ];
 
   if (opts?.enableBackgroundExec !== false) {

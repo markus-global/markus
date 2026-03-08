@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type RequirementInfo } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -107,18 +107,50 @@ function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
   return logs.filter((_, i) => !matchedStartIndices.has(i));
 }
 
+function CommentBubble({ comment }: { comment: TaskComment }) {
+  return (
+    <div className="bg-blue-950/30 border border-blue-800/30 rounded-lg px-3 py-2.5 my-1.5">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="w-5 h-5 rounded-full bg-blue-600/30 flex items-center justify-center text-[10px] text-blue-300 font-bold shrink-0">
+          {comment.authorType === 'human' ? '👤' : '🤖'}
+        </span>
+        <span className="text-[11px] font-medium text-blue-300">{comment.authorName}</span>
+        <span className="text-[10px] text-gray-600 ml-auto">{new Date(comment.createdAt).toLocaleString()}</span>
+      </div>
+      <MarkdownMessage content={comment.content} className="text-sm text-gray-300" />
+      {comment.attachments?.map((att, i) => (
+        att.type === 'image' ? (
+          <img key={i} src={att.url} alt={att.name} className="mt-2 max-w-full max-h-48 rounded-lg border border-gray-700" />
+        ) : null
+      ))}
+    </div>
+  );
+}
+
 function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; isVisible: boolean; isRunning: boolean }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
+  const [comments, setComments] = useState<TaskComment[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [isExecuting, setIsExecuting] = useState(isRunning);
   const [loading, setLoading] = useState(true);
+  const [commentText, setCommentText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 
   useEffect(() => {
     setLoading(true);
-    api.tasks.getLogs(taskId).then(d => { setLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    Promise.all([
+      api.tasks.getLogs(taskId).catch(() => ({ logs: [] as TaskLogEntry[] })),
+      api.tasks.getComments(taskId).catch(() => ({ comments: [] as TaskComment[] })),
+    ]).then(([logData, commentData]) => {
+      setLogs(logData.logs);
+      setComments(commentData.comments);
+      setLoading(false);
+    });
   }, [taskId]);
 
   useEffect(() => {
@@ -147,46 +179,150 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
       if (p.taskId !== taskId) return;
       setStreamingText(prev => prev + (p.text as string));
     });
-    return () => { unsubLog(); unsubDelta(); };
+    const unsubComment = wsClient.on('task:comment', (event) => {
+      const p = event.payload;
+      if (p.taskId !== taskId) return;
+      const c = p.comment as TaskComment;
+      setComments(prev => prev.some(x => x.id === c.id) ? prev : [...prev, c]);
+    });
+    return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
 
   useEffect(() => {
     if (isVisible) endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs, streamingText, isVisible]);
+  }, [logs, comments, streamingText, isVisible]);
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImageAttachments(prev => [...prev, { type: 'image', url: reader.result as string, name: file.name }]);
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = '';
+  };
+
+  const submitComment = async () => {
+    if (!commentText.trim() && imageAttachments.length === 0) return;
+    setSubmitting(true);
+    try {
+      const result = await api.tasks.addComment(taskId, commentText, undefined, imageAttachments.length > 0 ? imageAttachments : undefined);
+      if (result.comment) {
+        setComments(prev => prev.some(x => x.id === result.comment.id) ? prev : [...prev, result.comment]);
+      }
+      setCommentText('');
+      setImageAttachments([]);
+    } catch { /* ignore */ }
+    setSubmitting(false);
+  };
+
+  // Merge logs and comments into a unified timeline
+  type TimelineItem =
+    | { kind: 'log'; entry: TaskLogEntry; time: number }
+    | { kind: 'comment'; entry: TaskComment; time: number };
+
+  const timeline = useMemo(() => {
+    const filteredLogs = filterCompletedToolStarts(logs);
+    const items: TimelineItem[] = [
+      ...filteredLogs.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.createdAt).getTime() })),
+      ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
+    ];
+    items.sort((a, b) => a.time - b.time);
+    return items;
+  }, [logs, comments]);
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-600">Loading logs…</div>;
-  if (logs.length === 0 && !streamingText) {
+  if (timeline.length === 0 && !streamingText) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="text-center text-gray-600">
-          <div className="text-2xl mb-2">📋</div>
-          <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
+      <div className="flex flex-col flex-1">
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center text-gray-600">
+            <div className="text-2xl mb-2">📋</div>
+            <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
+          </div>
+        </div>
+        {/* Comment input always visible */}
+        <div className="border-t border-gray-800 px-4 py-3">
+          {imageAttachments.length > 0 && (
+            <div className="flex gap-2 mb-2 flex-wrap">
+              {imageAttachments.map((att, i) => (
+                <div key={i} className="relative group">
+                  <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
+                  <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
+                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
+              placeholder="Add a comment or instruction…"
+              className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
+            <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
+            <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
+            <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
+          </div>
         </div>
       </div>
     );
   }
 
-  const visibleLogs = filterCompletedToolStarts(logs);
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
-      {visibleLogs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
-      {streamingText && (
-        <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-          <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
-          <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
+        {timeline.map((item, i) =>
+          item.kind === 'comment'
+            ? <CommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
+            : <LogEntryRow key={`l-${item.entry.seq}-${i}`} entry={item.entry} />
+        )}
+        {streamingText && (
+          <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+            <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
+            <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+          </div>
+        )}
+        {isExecuting && !streamingText && (
+          <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500">
+            <span className="flex gap-0.5">
+              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+            </span>
+            Thinking…
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+      {/* Comment input */}
+      <div className="border-t border-gray-800 px-4 py-3 shrink-0">
+        {imageAttachments.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {imageAttachments.map((att, i) => (
+              <div key={i} className="relative group">
+                <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
+                <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
+                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
+            placeholder="Add a comment or instruction…"
+            className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
+          <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
+          <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
+          <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
         </div>
-      )}
-      {isExecuting && !streamingText && (
-        <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500">
-          <span className="flex gap-0.5">
-            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-            <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-          </span>
-          Thinking…
-        </div>
-      )}
-      <div ref={endRef} />
+      </div>
     </div>
   );
 }
@@ -244,10 +380,16 @@ function TaskDetailModal({
   const pauseTask = async () => {
     if (busy) return; setBusy(true);
     try {
-      const nextStatus = task.assignedAgentId ? 'assigned' : 'pending';
-      await api.tasks.updateStatus(task.id, nextStatus);
+      await api.tasks.pause(task.id);
       onRefresh();
     } finally { setBusy(false); }
+  };
+
+  const resumeTask = async () => {
+    if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
+    try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
+      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+    } finally { setRunning(false); }
   };
 
   const addSubtask = async () => {
@@ -510,8 +652,8 @@ function TaskDetailModal({
               </>
             )}
             {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && (
-              <button onClick={() => void runWithAgent()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run with Agent</>}
+              <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run / Resume</>}
               </button>
             )}
             {isRunning && <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Pause</button>}
@@ -521,7 +663,7 @@ function TaskDetailModal({
               <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Mark In Progress</button>
             )}
             {(isCompleted || isFailed) && task.assignedAgentId && (
-              <button onClick={() => void runWithAgent()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50">Run Again</button>
+              <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50">Run Again</button>
             )}
             {task.status === 'review' && (
               <>

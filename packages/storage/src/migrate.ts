@@ -142,6 +142,19 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
     )`,
     `CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id)`,
 
+    // task_comments: human/agent comments interleaved with execution logs
+    `CREATE TABLE IF NOT EXISTS task_comments (
+      id varchar(64) PRIMARY KEY,
+      task_id varchar(64) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      author_id varchar(128) NOT NULL,
+      author_name varchar(255) NOT NULL,
+      author_type varchar(16) NOT NULL,
+      content text NOT NULL,
+      attachments jsonb DEFAULT '[]',
+      created_at timestamp NOT NULL DEFAULT now()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments (task_id, created_at)`,
+
     // tasks: project/iteration association
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id varchar(64)`,
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_id varchar(64)`,

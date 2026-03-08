@@ -22,6 +22,7 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   file_list:            { label: 'Listing files',          icon: '📂' },
   web_fetch:            { label: 'Fetching webpage',       icon: '🌐' },
   web_search:           { label: 'Searching web',          icon: '🔍' },
+  web_extract:          { label: 'Extracting content',     icon: '📑' },
   create_subtask:       { label: 'Adding subtask',         icon: '📌' },
   update_task:          { label: 'Updating task',          icon: '✅' },
   add_task_note:        { label: 'Adding note',            icon: '📝' },

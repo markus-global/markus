@@ -1404,6 +1404,95 @@ export class APIServer {
       return;
     }
 
+    // Task comments — add a comment (text + optional image attachments)
+    if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      if (!this.storage?.taskCommentRepo) {
+        this.json(res, 500, { error: 'Storage not available' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req);
+        const comment = await this.storage.taskCommentRepo.add({
+          taskId,
+          authorId: (body['authorId'] as string) ?? 'human',
+          authorName: (body['authorName'] as string) ?? 'User',
+          authorType: (body['authorType'] as string) ?? 'human',
+          content: body['content'] as string,
+          attachments: body['attachments'] as unknown[] | undefined,
+        });
+        // Broadcast real-time comment event via WS
+        this.ws?.broadcast({
+          type: 'task:comment',
+          payload: {
+            taskId,
+            comment: {
+              id: comment.id,
+              taskId: comment.taskId,
+              authorId: comment.authorId,
+              authorName: comment.authorName,
+              authorType: comment.authorType,
+              content: comment.content,
+              attachments: comment.attachments,
+              createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+            },
+          },
+          timestamp: new Date().toISOString(),
+        });
+        this.json(res, 201, { comment });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task comments — list comments for a task
+    if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      if (!this.storage?.taskCommentRepo) {
+        this.json(res, 200, { comments: [] });
+        return;
+      }
+      try {
+        const comments = await this.storage.taskCommentRepo.getByTask(taskId);
+        this.json(res, 200, { comments });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task pause — explicitly pause a running task
+    if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.status !== 'in_progress') {
+          this.json(res, 400, { error: `Cannot pause task in ${task.status} status` });
+          return;
+        }
+        const nextStatus = task.assignedAgentId ? 'assigned' : 'pending';
+        this.taskService.updateTaskStatus(taskId, nextStatus as any);
+        this.json(res, 200, { status: nextStatus, taskId });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task resume — resume a paused task
+    if (path.match(/^\/api\/tasks\/[^/]+\/resume$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        await this.taskService.runTask(taskId);
+        this.json(res, 202, { status: 'running', taskId });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
     // Organizations
     if (path === '/api/orgs' && req.method === 'GET') {
       const orgs = this.orgService.listOrganizations();

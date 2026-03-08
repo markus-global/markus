@@ -10,6 +10,7 @@ const TOOL_LABELS: Record<string, string> = {
   file_list: 'List Files',
   web_fetch: 'Fetch URL',
   web_search: 'Web Search',
+  web_extract: 'Extract Content',
   code_search: 'Code Search',
   create_subtask: 'Create Subtask',
   create_task: 'Create Task',

@@ -226,6 +226,24 @@ export const taskLogs = pgTable(
   t => [index('idx_task_logs_task').on(t.taskId, t.seq)]
 );
 
+/** Human/agent comments on tasks — interleaved with execution logs for timeline view */
+export const taskComments = pgTable(
+  'task_comments',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    taskId: varchar('task_id', { length: 64 })
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    authorId: varchar('author_id', { length: 128 }).notNull(),
+    authorName: varchar('author_name', { length: 255 }).notNull(),
+    authorType: varchar('author_type', { length: 16 }).notNull(), // 'human' | 'agent'
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').default([]), // [{type:'image', url:'...', name:'...'}]
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  t => [index('idx_task_comments_task').on(t.taskId, t.createdAt)]
+);
+
 /** Agent knowledge base entries for enhanced memory */
 export const agentKnowledge = pgTable(
   'agent_knowledge',

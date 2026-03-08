@@ -10,7 +10,7 @@ import {
 } from '@markus/shared';
 import type { AgentManager, WorkspaceManager, TaskWorkspace } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
-import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType } from '@markus/storage';
+import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
@@ -75,6 +75,7 @@ export class TaskService {
   private projectService?: ProjectService;
   private requirementService?: RequirementService;
   private workspaceManager?: WorkspaceManager;
+  private taskCommentRepo?: TaskCommentRepo;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -108,6 +109,10 @@ export class TaskService {
     this.workspaceManager = wm;
   }
 
+  setTaskCommentRepo(repo: TaskCommentRepo): void {
+    this.taskCommentRepo = repo;
+  }
+
   onTaskEvent(webhook: TaskWebhook): void {
     this.webhooks.push(webhook);
   }
@@ -128,19 +133,35 @@ export class TaskService {
   private static readonly RETRY_DELAYS_MS = [10_000, 30_000, 60_000];
 
   /**
-   * Format previous execution logs into a context block so the agent can resume
-   * from where it left off instead of starting fresh.
+   * Format previous execution logs AND human comments into a chronological
+   * context block so the agent can resume from where it left off.
+   * Comments and logs are interleaved by timestamp for a conversation-like view.
    */
-  private formatPreviousExecutionContext(logs: TaskLogRow[]): string {
-    if (logs.length === 0) return '';
+  private formatPreviousExecutionContext(logs: TaskLogRow[], comments: TaskCommentRow[] = []): string {
+    if (logs.length === 0 && comments.length === 0) return '';
+
+    // Merge logs and comments into a unified timeline sorted by createdAt
+    type TimelineEntry =
+      | { kind: 'log'; entry: TaskLogRow }
+      | { kind: 'comment'; entry: TaskCommentRow };
+
+    const timeline: TimelineEntry[] = [
+      ...logs.map(entry => ({ kind: 'log' as const, entry })),
+      ...comments.map(entry => ({ kind: 'comment' as const, entry })),
+    ];
+    timeline.sort((a, b) => {
+      const ta = a.entry.createdAt instanceof Date ? a.entry.createdAt.getTime() : new Date(a.entry.createdAt as any).getTime();
+      const tb = b.entry.createdAt instanceof Date ? b.entry.createdAt.getTime() : new Date(b.entry.createdAt as any).getTime();
+      return ta - tb;
+    });
 
     const lines: string[] = [];
     lines.push('## Previous Execution History');
     lines.push(
-      'This task was previously worked on and paused/interrupted. Below is a record of what was already done.'
+      'This task was previously worked on and paused/interrupted. Below is a chronological record of execution and human comments.'
     );
     lines.push(
-      '**CRITICAL: Continue from where the work stopped. Do NOT repeat steps already completed (✓). Do NOT re-read files that were already read.**'
+      '**CRITICAL: Continue from where the work stopped. Do NOT repeat steps already completed (✓). Do NOT re-read files that were already read. Pay close attention to human comments — they may contain new instructions or feedback.**'
     );
     lines.push('');
 
@@ -148,9 +169,26 @@ export class TaskService {
     let inRun = false;
     const filesRead = new Set<string>();
     const filesWritten = new Set<string>();
-    const completedSteps: string[] = [];
 
-    for (const entry of logs) {
+    for (const item of timeline) {
+      if (item.kind === 'comment') {
+        const c = item.entry as TaskCommentRow;
+        const time = c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt);
+        lines.push(`### 💬 Comment by ${c.authorName} (${time})`);
+        lines.push(c.content);
+        const attachments = (Array.isArray(c.attachments) ? c.attachments : []) as Array<{ type?: string; name?: string; url?: string }>;
+        for (const att of attachments) {
+          if (att.type === 'image') {
+            lines.push(`[Image: ${att.name ?? 'attachment'}]`);
+          }
+        }
+        lines.push('');
+        continue;
+      }
+
+      // kind === 'log'
+      const entry = item.entry as TaskLogRow;
+
       if (entry.type === 'status' && entry.content === 'started') {
         runIndex++;
         lines.push(`### Run ${runIndex}`);
@@ -190,7 +228,6 @@ export class TaskService {
         const ok = meta?.success !== false;
         const result = meta?.result ? ` → ${String(meta.result).slice(0, 400)}` : '';
         lines.push(`  ${ok ? '✓' : '✗'} ${entry.content}${result}`);
-        if (ok) completedSteps.push(entry.content);
       } else if (entry.type === 'error') {
         lines.push(`[ERROR] ${entry.content}`);
         lines.push('');
@@ -202,7 +239,6 @@ export class TaskService {
       lines.push('');
     }
 
-    // Summary of files already accessed — prevents redundant re-reads
     if (filesRead.size > 0 || filesWritten.size > 0) {
       lines.push('### Files Already Accessed');
       if (filesRead.size > 0) {
@@ -257,12 +293,16 @@ export class TaskService {
 
     this.updateTaskStatus(taskId, 'in_progress');
 
-    // Load previous execution history so the agent can resume from where it left off
+    // Load previous execution history + comments so the agent can resume
     let prevContext = '';
     if (this.taskLogRepo) {
       try {
         const prevLogs = await this.taskLogRepo.getByTask(taskId);
-        prevContext = this.formatPreviousExecutionContext(prevLogs);
+        let prevComments: TaskCommentRow[] = [];
+        if (this.taskCommentRepo) {
+          try { prevComments = await this.taskCommentRepo.getByTask(taskId); } catch { /* ignore */ }
+        }
+        prevContext = this.formatPreviousExecutionContext(prevLogs, prevComments);
       } catch (err) {
         log.warn('Failed to load previous task logs for context', { taskId, error: String(err) });
       }

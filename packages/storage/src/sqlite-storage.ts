@@ -175,6 +175,18 @@ CREATE TABLE IF NOT EXISTS task_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, seq);
 
+CREATE TABLE IF NOT EXISTS task_comments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  author_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  attachments TEXT DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, created_at);
+
 CREATE TABLE IF NOT EXISTS requirements (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES organizations(id),
@@ -1095,6 +1107,58 @@ export class SqliteTaskLogRepo {
 
   deleteByTask(taskId: string) {
     this.db.prepare('DELETE FROM task_logs WHERE task_id = ?').run(taskId);
+  }
+}
+
+export class SqliteTaskCommentRepo {
+  constructor(private db: Database.Database) {}
+
+  async add(data: {
+    taskId: string;
+    authorId: string;
+    authorName: string;
+    authorType: string;
+    content: string;
+    attachments?: unknown[];
+  }) {
+    const id = generateId('tc');
+    const ts = now();
+    this.db
+      .prepare(
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), ts);
+    return {
+      id,
+      taskId: data.taskId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      authorType: data.authorType,
+      content: data.content,
+      attachments: data.attachments ?? [],
+      createdAt: new Date(ts),
+    };
+  }
+
+  getByTask(taskId: string) {
+    return (
+      this.db
+        .prepare('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC')
+        .all(taskId) as Record<string, unknown>[]
+    ).map(r => ({
+      id: r['id'] as string,
+      taskId: r['task_id'] as string,
+      authorId: r['author_id'] as string,
+      authorName: r['author_name'] as string,
+      authorType: r['author_type'] as string,
+      content: r['content'] as string,
+      attachments: fromJson(r['attachments'] as string),
+      createdAt: toDate(r['created_at'] as string)!,
+    }));
+  }
+
+  deleteByTask(taskId: string) {
+    this.db.prepare('DELETE FROM task_comments WHERE task_id = ?').run(taskId);
   }
 }
 

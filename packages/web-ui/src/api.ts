@@ -360,6 +360,17 @@ export interface TaskLogEntry {
   createdAt: string;
 }
 
+export interface TaskComment {
+  id: string;
+  taskId: string;
+  authorId: string;
+  authorName: string;
+  authorType: string;
+  content: string;
+  attachments?: Array<{ type: string; url: string; name: string }>;
+  createdAt: string;
+}
+
 export interface AgentToolInfo {
   name: string;
   description: string;
@@ -636,6 +647,11 @@ export const api = {
     accept: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: 'human' }) }),
     revision: (id: string, reason: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
+    pause: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/pause`, { method: 'POST' }),
+    resume: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/resume`, { method: 'POST' }),
+    getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
+    addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>) =>
+      request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorName: authorName ?? 'User', authorType: 'human', attachments }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; iterationId?: string }) => {
