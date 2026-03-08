@@ -1219,7 +1219,7 @@ export function ProjectsPage() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-auto p-6">
+          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden p-6">
             <div className="flex gap-4 h-full">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);
@@ -1228,13 +1228,13 @@ export function ProjectsPage() {
                 const isOver = dragOverCol === col.id;
                 return (
                   <div key={col.id}
-                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
+                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors flex flex-col h-full ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
                     onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
-                    <div className="flex justify-between items-center mb-3">
+                    <div className="flex justify-between items-center mb-3 shrink-0">
                       <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
                       <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{itemCount}</span>
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin">
                       {/* ── Requirement cards (approval-needed first) ── */}
                       {[...colReqs].sort((a, b) => {
                         const aNeed = (a.status === 'draft' || a.status === 'pending_review') ? 0 : 1;
@@ -1338,7 +1338,7 @@ export function ProjectsPage() {
                       })}
                     </div>
                     {isOver && (
-                      <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center">
+                      <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center shrink-0">
                         <span className="text-xs text-indigo-400/60">Drop here</span>
                       </div>
                     )}
