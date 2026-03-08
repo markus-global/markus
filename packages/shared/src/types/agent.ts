@@ -41,6 +41,26 @@ export interface ChannelBinding {
   role: 'member' | 'observer';
 }
 
+export interface AgentActivity {
+  /** Unique ID for this activity session */
+  id: string;
+  type: 'task' | 'heartbeat' | 'chat';
+  label: string;
+  /** For task type, the task ID */
+  taskId?: string;
+  /** For heartbeat type, the heartbeat task name */
+  heartbeatName?: string;
+  startedAt: string;
+}
+
+export interface AgentActivityLogEntry {
+  seq: number;
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface AgentState {
   agentId: string;
   status: AgentStatus;
@@ -49,6 +69,8 @@ export interface AgentState {
   /** IDs of tasks currently being executed */
   activeTaskIds: string[];
   currentTaskId?: string;
+  /** Describes what the agent is currently doing (task, heartbeat, chat) */
+  currentActivity?: AgentActivity;
   lastHeartbeat?: string;
   containerId?: string;
   memoryUsageMb?: number;

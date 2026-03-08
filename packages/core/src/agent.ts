@@ -3,6 +3,8 @@ import {
   agentId as genAgentId,
   type AgentConfig,
   type AgentState,
+  type AgentActivity,
+  type AgentActivityLogEntry,
   type RoleTemplate,
   type LLMMessage,
   type LLMTool,
@@ -147,13 +149,18 @@ export class Agent {
   private stateManager?: AgentStateManager;
   private stateChangeCallback?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
   ) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
   private dataDir: string;
   private pauseReason?: string;
   private toolResultCounter = 0;
+  /** In-memory activity log buffer (keyed by activity ID) */
+  private activityLogs = new Map<string, AgentActivityLogEntry[]>();
+  private activitySeqCounters = new Map<string, number>();
+  private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
+  private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
   private static readonly MAX_CONCURRENT_TASKS = 5;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
@@ -637,7 +644,7 @@ export class Agent {
   setStateChangeCallback(
     cb: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
     ) => void
   ): void {
     this.stateChangeCallback = cb;
@@ -651,8 +658,75 @@ export class Agent {
         activeTaskIds: [...this.activeTasks],
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
+        currentActivity: this.state.currentActivity,
       });
     }
+  }
+
+  // ─── Activity Tracking ───────────────────────────────────────────────────────
+
+  private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
+    const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    this.state.currentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra };
+    this.activityLogs.set(id, []);
+    this.activitySeqCounters.set(id, 0);
+
+    // Prune old activity logs if too many
+    if (this.activityLogs.size > Agent.MAX_ACTIVITY_LOGS_KEPT) {
+      const keys = [...this.activityLogs.keys()];
+      for (let i = 0; i < keys.length - Agent.MAX_ACTIVITY_LOGS_KEPT; i++) {
+        this.activityLogs.delete(keys[i]);
+        this.activitySeqCounters.delete(keys[i]);
+      }
+    }
+
+    this.emitActivityLog(id, 'status', `Started: ${label}`);
+    this.notifyStateChange();
+    return id;
+  }
+
+  private endActivity(activityId?: string): void {
+    const aid = activityId ?? this.state.currentActivity?.id;
+    if (aid) {
+      this.emitActivityLog(aid, 'status', 'Completed');
+    }
+    this.state.currentActivity = undefined;
+    this.notifyStateChange();
+  }
+
+  private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
+    const logs = this.activityLogs.get(activityId);
+    if (!logs) return;
+
+    const seq = (this.activitySeqCounters.get(activityId) ?? 0) + 1;
+    this.activitySeqCounters.set(activityId, seq);
+
+    const entry: AgentActivityLogEntry = {
+      seq,
+      type,
+      content,
+      metadata,
+      createdAt: new Date().toISOString(),
+    };
+    logs.push(entry);
+
+    if (logs.length > Agent.MAX_ACTIVITY_LOG_ENTRIES) {
+      logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
+    }
+
+    this.eventBus.emit('agent:activity_log', {
+      agentId: this.id,
+      activityId,
+      ...entry,
+    });
+  }
+
+  getActivityLogs(activityId: string): AgentActivityLogEntry[] {
+    return this.activityLogs.get(activityId) ?? [];
+  }
+
+  getCurrentActivity(): AgentActivity | undefined {
+    return this.state.currentActivity;
   }
 
   /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
@@ -722,17 +796,25 @@ export class Agent {
       this.setStatus('working');
     }
 
+    // Track chat activity (only if not already in a heartbeat or other activity)
+    const isEphemeral = options?.ephemeral ?? false;
+    let chatActivityId: string | undefined;
+    if (!this.state.currentActivity && !isEphemeral) {
+      const senderLabel = senderInfo?.name ?? senderId ?? 'user';
+      chatActivityId = this.startActivity('chat', `Chat with ${senderLabel}`);
+    }
+
     // Run input guardrails
     const inputCheck = await this.guardrails.checkInput(userMessage, {
       agentId: this.id,
       senderId,
     });
     if (!inputCheck.passed) {
+      if (chatActivityId) this.endActivity(chatActivityId);
       return `I cannot process this request: ${inputCheck.reason}`;
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    const isEphemeral = options?.ephemeral ?? false;
     const maxHistory = options?.maxHistory ?? 200; // load generously; context engine will trim intelligently
 
     // Ephemeral mode: don't pollute the agent's main session with channel messages.
@@ -856,9 +938,13 @@ export class Agent {
           }
 
           // Execute all tool calls in parallel
+          const currentActId = this.state.currentActivity?.id;
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
+              if (currentActId) {
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { args: JSON.stringify(tc.arguments).slice(0, 300) });
+              }
               try {
                 let result = await this.executeTool(tc);
                 // Manus-inspired: offload large results to filesystem instead of truncating
@@ -872,6 +958,13 @@ export class Agent {
                   success: !isToolError,
                   detail: JSON.stringify(tc.arguments).slice(0, 200),
                 });
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'tool_end', tc.name, {
+                    durationMs: Date.now() - toolStart,
+                    success: !isToolError,
+                    preview: result.slice(0, 200),
+                  });
+                }
                 return { toolCallId: tc.id, content: result, error: false };
               } catch (toolErr) {
                 // Manus principle: keep errors in context for model self-correction
@@ -882,6 +975,9 @@ export class Agent {
                   success: false,
                   detail: String(toolErr).slice(0, 200),
                 });
+                if (currentActId) {
+                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr).slice(0, 200)}`);
+                }
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
               }
             })
@@ -974,6 +1070,7 @@ export class Agent {
           );
         }
       }
+      if (chatActivityId) this.endActivity(chatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
 
       this.eventBus.emit('agent:message', {
@@ -986,6 +1083,7 @@ export class Agent {
 
       return reply;
     } catch (error) {
+      if (chatActivityId) this.endActivity(chatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
         type: 'error',
@@ -1009,12 +1107,20 @@ export class Agent {
       this.setStatus('working');
     }
 
+    // Track chat activity for streaming
+    let streamChatActivityId: string | undefined;
+    if (!this.state.currentActivity) {
+      const senderLabel = senderInfo?.name ?? senderId ?? 'user';
+      streamChatActivityId = this.startActivity('chat', `Chat with ${senderLabel}`);
+    }
+
     // Run input guardrails
     const inputCheck = await this.guardrails.checkInput(userMessage, {
       agentId: this.id,
       senderId,
     });
     if (!inputCheck.passed) {
+      if (streamChatActivityId) this.endActivity(streamChatActivityId);
       return `I cannot process this request: ${inputCheck.reason}`;
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
@@ -1100,6 +1206,7 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
+          if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
           return response.content || '[Stream cancelled]';
         }
@@ -1177,6 +1284,7 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
+          if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
           return response.content || '[Stream cancelled]';
         }
@@ -1207,6 +1315,7 @@ export class Agent {
         return filtered;
       }
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
+      if (streamChatActivityId) this.endActivity(streamChatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
 
       this.eventBus.emit('agent:message', {
@@ -1219,6 +1328,7 @@ export class Agent {
 
       return reply;
     } catch (error) {
+      if (streamChatActivityId) this.endActivity(streamChatActivityId);
       // If abort was triggered by cancel, treat as cancellation not error
       if (cancelToken?.cancelled) {
         if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -1340,6 +1450,8 @@ export class Agent {
     }
     this.setStatus('working');
     this.activeTasks.add(taskId);
+    // Track task activity for UI visibility
+    const taskActId = this.startActivity('task', description.slice(0, 100), { taskId });
     this.notifyStateChange();
     const taskStartMs = Date.now();
     let taskFailed = '';
@@ -1585,6 +1697,7 @@ export class Agent {
       }
 
       this.activeTasks.delete(taskId);
+      this.endActivity(taskActId);
       this.notifyStateChange();
 
       if (this.activeTasks.size === 0) {
@@ -1914,6 +2027,10 @@ export class Agent {
     }
 
     log.info(`Processing heartbeat task: ${ctx.task.name}`);
+    const activityId = this.startActivity('heartbeat', `Heartbeat: ${ctx.task.name}`, {
+      heartbeatName: ctx.task.name,
+    });
+
     const prompt = [
       `[HEARTBEAT TASK] ${ctx.task.name}`,
       '',
@@ -1943,11 +2060,14 @@ export class Agent {
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true);
 
-      // Write heartbeat activity to daily log for medium-term recall
       if (reply && reply.length > 20) {
+        this.emitActivityLog(activityId, 'text', reply.slice(0, 500));
         this.memory.writeDailyLog(this.id, `[Heartbeat: ${ctx.task.name}] ${reply.slice(0, 500)}`);
       }
+      this.endActivity(activityId);
     } catch (error) {
+      this.emitActivityLog(activityId, 'error', String(error).slice(0, 500));
+      this.endActivity(activityId);
       this.metricsCollector.recordHeartbeat(false);
       log.error('Heartbeat task failed', { task: ctx.task.name, error: String(error) });
     }

@@ -3,6 +3,7 @@ import {
   agentId as genAgentId,
   type AgentConfig,
   type AgentProfile,
+  type AgentActivity,
   type IdentityContext,
   type HumanUser,
   type SystemAnnouncement,
@@ -173,7 +174,7 @@ export class AgentManager {
   ) => Promise<boolean>;
   private stateChangeHandler?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
   ) => void;
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
@@ -1185,7 +1186,7 @@ export class AgentManager {
   setStateChangeHandler(
     handler: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
     ) => void
   ): void {
     this.stateChangeHandler = handler;
@@ -1206,6 +1207,7 @@ export class AgentManager {
     lastError?: string;
     lastErrorAt?: string;
     currentTaskId?: string;
+    currentActivity?: AgentActivity;
   }> {
     return [...this.agents.values()].map(a => {
       const state = a.getState();
@@ -1221,6 +1223,7 @@ export class AgentManager {
         lastError: state.lastError,
         lastErrorAt: state.lastErrorAt,
         currentTaskId: state.currentTaskId,
+        currentActivity: state.currentActivity,
       };
     });
   }

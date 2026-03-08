@@ -239,6 +239,23 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface AgentActivityInfo {
+  id: string;
+  type: 'task' | 'heartbeat' | 'chat';
+  label: string;
+  taskId?: string;
+  heartbeatName?: string;
+  startedAt: string;
+}
+
+export interface AgentActivityLogEntry {
+  seq: number;
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -250,6 +267,7 @@ export interface AgentInfo {
   lastError?: string;
   lastErrorAt?: string;
   currentTaskId?: string;
+  currentActivity?: AgentActivityInfo;
 }
 
 export interface HumanUserInfo {
@@ -506,6 +524,8 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    getActivityLogs: (id: string, activityId: string) =>
+      request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
     message: (id: string, text: string) =>
       request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal): Promise<string> => {

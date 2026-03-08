@@ -276,7 +276,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openrouterKey) {
     providerConfigs['openrouter'] = {
       provider: 'openrouter',
-      model: process.env['OPENROUTER_MODEL'] ?? 'z-ai/glm-5',
+      model: process.env['OPENROUTER_MODEL'] ?? 'openai/gpt-5.4',
       apiKey: openrouterKey,
       baseUrl:
         process.env['OPENROUTER_BASE_URL'] ??
@@ -520,7 +520,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     }
   });
 
-  // Wire agent state changes to DB persistence
+  // Wire agent state changes to DB persistence + WS broadcast
   if (storage) {
     agentManager.setStateChangeHandler(async (agentId, state) => {
       try {
@@ -531,8 +531,23 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       } catch (err) {
         log.warn('Failed to persist agent state', { agentId, error: String(err) });
       }
+      // Broadcast status + currentActivity to all WS clients
+      apiServer.getWSBroadcaster().broadcastAgentUpdate(agentId, state.status, {
+        lastError: state.lastError,
+        lastErrorAt: state.lastErrorAt,
+        currentActivity: state.currentActivity,
+      });
     });
   }
+
+  // Wire agent activity logs to WS broadcast
+  agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
+    apiServer.getWSBroadcaster().broadcast({
+      type: 'agent:activity_log',
+      payload: event,
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   // Daily token reset scheduler: runs at midnight to reset per-agent tokensUsedToday
   const scheduleDailyReset = () => {

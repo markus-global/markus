@@ -988,7 +988,7 @@ export class APIServer {
         }
 
         const _st = agent.getState();
-        this.ws.broadcastAgentUpdate(agentId!, _st.status, { lastError: _st.lastError, lastErrorAt: _st.lastErrorAt });
+        this.ws.broadcastAgentUpdate(agentId!, _st.status, { lastError: _st.lastError, lastErrorAt: _st.lastErrorAt, currentActivity: _st.currentActivity });
         return;
       }
     }
@@ -1657,6 +1657,25 @@ export class APIServer {
       return;
     }
 
+    // Agent activity logs — fetch in-memory activity log for a given activity ID
+    if (path.match(/^\/api\/agents\/[^/]+\/activity-logs$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const activityId = url.searchParams.get('activityId');
+      if (!activityId) {
+        this.json(res, 400, { error: 'activityId query parameter is required' });
+        return;
+      }
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const logs = agent.getActivityLogs(activityId);
+        const activity = agent.getCurrentActivity();
+        this.json(res, 200, { logs, activity: activity?.id === activityId ? activity : undefined });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent heartbeat info
     if (path.match(/^\/api\/agents\/[^/]+\/heartbeat$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -2085,7 +2104,7 @@ export class APIServer {
         }
       }
       const _st2 = agent.getState();
-      this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt });
+      this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
       return;
     }
 
@@ -3378,7 +3397,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
         try {
           saveConfig({ llm: { defaultProvider } } as any, this.markusConfigPath);
         } catch (e) {
-          log.warn('Failed to persist defaultProvider to config file', e);
+          log.warn('Failed to persist defaultProvider to config file', { error: String(e) });
         }
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
       } catch (err) {

@@ -4,9 +4,11 @@ import {
   type AgentInfo, type AgentToolEvent, type HumanUserInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo,
   type TaskInfo, type AuthUser, type StoredSegment,
+  type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
+import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { navBus } from '../navBus.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -82,7 +84,8 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
   onSelect: () => void;
   onViewProfile: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [showActivityModal, setShowActivityModal] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500 animate-pulse' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
@@ -91,9 +94,20 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
 
   const activeTask = a.status === 'working' && a.currentTaskId ? tasks.find(t => t.id === a.currentTaskId) : undefined;
   const errorPreview = a.lastError ? (a.lastError.length > 60 ? a.lastError.slice(0, 60) + '…' : a.lastError) : 'Unknown error';
+  const activity = a.currentActivity;
+
+  // Click outside to close popover
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPopoverOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [popoverOpen]);
 
   return (
-    <div ref={ref} className="relative mb-0.5" onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}>
+    <div ref={ref} className="relative mb-0.5">
       <button
         onClick={onSelect}
         className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs transition-colors ${
@@ -115,10 +129,19 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
             : <div className="text-gray-600 truncate">{a.role}</div>
           }
         </div>
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
+        {/* Status dot - clickable to show details */}
+        <span
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor} cursor-pointer`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (a.status === 'error' || a.status === 'working' || a.status === 'paused') {
+              setPopoverOpen(o => !o);
+            }
+          }}
+        />
       </button>
 
-      {hovered && (a.status === 'error' || a.status === 'working' || a.status === 'paused') && (
+      {popoverOpen && (a.status === 'error' || a.status === 'working' || a.status === 'paused') && (
         <div className="absolute left-full top-0 ml-2 z-50 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-3 space-y-2">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} />
@@ -145,25 +168,54 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
               <div className="text-[9px] text-gray-500 mt-0.5">{activeTask.status.replace(/_/g, ' ')} · {activeTask.priority}</div>
             </div>
           )}
-          {a.status === 'working' && !activeTask && (
-            <div className="text-[10px] text-gray-500">Processing a task...</div>
+          {a.status === 'working' && !activeTask && activity && (
+            <div className="bg-gray-800/50 rounded-lg p-2">
+              <div className={`text-[10px] font-medium mb-0.5 ${
+                activity.type === 'heartbeat' ? 'text-cyan-400' : activity.type === 'chat' ? 'text-blue-400' : 'text-indigo-400'
+              }`}>
+                {activity.type === 'heartbeat' ? 'Heartbeat Task' : activity.type === 'chat' ? 'Chat Response' : 'Processing'}
+              </div>
+              <div className="text-[10px] text-gray-300 leading-relaxed truncate">{activity.label}</div>
+            </div>
+          )}
+          {a.status === 'working' && !activeTask && !activity && (
+            <div className="text-[10px] text-gray-500">Processing...</div>
           )}
 
           {a.status === 'paused' && (
             <div className="text-[10px] text-amber-400/80">Agent is paused. Check profile for details.</div>
           )}
 
-          <button
-            onClick={(e) => { e.stopPropagation(); onViewProfile(); }}
-            className={`w-full text-center text-[10px] border rounded-lg py-1 transition-colors ${
-              isError
-                ? 'text-red-400 hover:text-red-300 border-red-500/30 hover:border-red-500/50 hover:bg-red-500/10'
-                : 'text-indigo-400 hover:text-indigo-300 border-gray-700 hover:border-gray-600'
-            }`}
-          >
-            View Profile →
-          </button>
+          <div className="flex gap-1.5">
+            {a.status === 'working' && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setPopoverOpen(false); setShowActivityModal(true); }}
+                className="flex-1 text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+              >
+                Execution Log →
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setPopoverOpen(false); onViewProfile(); }}
+              className={`flex-1 text-center text-[10px] border rounded-lg py-1 transition-colors ${
+                isError
+                  ? 'text-red-400 hover:text-red-300 border-red-500/30 hover:border-red-500/50 hover:bg-red-500/10'
+                  : 'text-indigo-400 hover:text-indigo-300 border-gray-700 hover:border-gray-600'
+              }`}
+            >
+              Profile →
+            </button>
+          </div>
         </div>
+      )}
+
+      {showActivityModal && (
+        <AgentActivityModal
+          agent={a}
+          currentTask={activeTask ?? null}
+          onClose={() => setShowActivityModal(false)}
+          onGoToTask={activeTask ? () => { setShowActivityModal(false); navBus.navigate('tasks', { openTask: activeTask.id }); } : undefined}
+        />
       )}
     </div>
   );
@@ -1636,21 +1688,48 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 }
 
 function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[] }) {
-  const [hover, setHover] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [showActivityModal, setShowActivityModal] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const isWorking = agent.status === 'working';
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
+  const activity = agent.currentActivity;
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-yellow-400 animate-pulse' : 'bg-green-400';
   const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
 
+  const activityLabel = activity
+    ? activity.type === 'heartbeat' ? `Heartbeat: ${activity.heartbeatName ?? activity.label}`
+    : activity.type === 'chat' ? activity.label
+    : activity.type === 'task' ? `Task: ${activity.label}`
+    : activity.label
+    : 'Processing...';
+
   return (
-    <div className="relative" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full ${isWorking ? 'bg-yellow-500/10 border border-yellow-500/20' : isError ? 'bg-red-500/10 border border-red-500/20' : 'bg-green-500/10 border border-green-500/20'} cursor-default`}>
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
+          isWorking ? 'bg-yellow-500/10 border border-yellow-500/20 hover:bg-yellow-500/20'
+          : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
+          : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
+        }`}
+      >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
         <span className={`text-xs ${isError ? 'text-red-400' : isWorking ? 'text-yellow-400' : 'text-green-400'}`}>{label}</span>
-      </div>
-      {hover && isError && (
+      </button>
+
+      {open && isError && (
         <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
           <p className="text-[10px] text-red-400 uppercase font-semibold">Error Details</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
@@ -1660,20 +1739,21 @@ function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[
             {agent.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
           <button
-            onClick={() => navBus.navigate('team', { selectAgent: agent.id })}
+            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
           >
             View Agent Profile →
           </button>
         </div>
       )}
-      {hover && isWorking && (
-        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-30 w-72 p-3">
-          <p className="text-[10px] text-gray-500 uppercase font-semibold mb-2">Current Activity</p>
+
+      {open && isWorking && (
+        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+          <p className="text-[10px] text-gray-500 uppercase font-semibold">Current Activity</p>
           {currentTask ? (
             <div
               className="flex items-center gap-2 p-2 rounded-lg bg-indigo-900/20 border border-indigo-700/30 cursor-pointer hover:bg-indigo-900/30 transition-colors"
-              onClick={() => navBus.navigate('tasks', { openTask: currentTask.id })}
+              onClick={() => { setOpen(false); navBus.navigate('tasks', { openTask: currentTask.id }); }}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
@@ -1684,15 +1764,232 @@ function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[
             </div>
           ) : (
             <div className="flex items-center gap-2 p-2 rounded-lg bg-gray-800/50">
-              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
+                : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
+                : 'bg-yellow-400 animate-pulse'
+              }`} />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-gray-300">Processing...</div>
-                <div className="text-[10px] text-gray-500">Agent is thinking or communicating</div>
+                <div className="text-xs text-gray-300">{activityLabel}</div>
+                <div className="text-[10px] text-gray-500">
+                  {activity?.type === 'heartbeat' ? 'Periodic check-in task'
+                   : activity?.type === 'chat' ? 'Responding to conversation'
+                   : 'Agent is thinking or communicating'}
+                </div>
               </div>
             </div>
           )}
+          <button
+            onClick={() => { setOpen(false); setShowActivityModal(true); }}
+            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1.5 transition-colors"
+          >
+            View Execution Log →
+          </button>
         </div>
       )}
+
+      {showActivityModal && (
+        <AgentActivityModal
+          agent={agent}
+          currentTask={currentTask}
+          onClose={() => setShowActivityModal(false)}
+          onGoToTask={currentTask ? () => { setShowActivityModal(false); navBus.navigate('tasks', { openTask: currentTask.id }); } : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Agent Activity Modal ────────────────────────────────────────────────────
+
+function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
+  agent: AgentInfo;
+  currentTask: TaskInfo | null | undefined;
+  onClose: () => void;
+  onGoToTask?: () => void;
+}) {
+  const activity = agent.currentActivity;
+  const [taskLogs, setTaskLogs] = useState<TaskLogEntry[]>([]);
+  const [activityLogs, setActivityLogs] = useState<AgentActivityLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // Fetch logs on mount
+  useEffect(() => {
+    setLoading(true);
+    if (currentTask) {
+      api.tasks.getLogs(currentTask.id).then(d => { setTaskLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    } else if (activity) {
+      api.agents.getActivityLogs(agent.id, activity.id).then(d => { setActivityLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
+  }, [agent.id, activity, currentTask]);
+
+  // Real-time task:log events
+  useEffect(() => {
+    if (!currentTask) return;
+    const unsub = wsClient.on('task:log', (event) => {
+      const p = event.payload;
+      if (p.taskId !== currentTask.id) return;
+      const entry: TaskLogEntry = {
+        id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
+        seq: p.seq as number, type: p.logType as string, content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined, createdAt: p.createdAt as string,
+      };
+      setTaskLogs(prev => {
+        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
+        return [...prev, entry];
+      });
+    });
+    return unsub;
+  }, [currentTask]);
+
+  // Real-time agent:activity_log events
+  useEffect(() => {
+    if (!activity || currentTask) return;
+    const unsub = wsClient.on('agent:activity_log', (event) => {
+      const p = event.payload;
+      if (p.agentId !== agent.id || p.activityId !== activity.id) return;
+      const entry: AgentActivityLogEntry = {
+        seq: p.seq as number,
+        type: p.type as AgentActivityLogEntry['type'],
+        content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined,
+        createdAt: p.createdAt as string,
+      };
+      setActivityLogs(prev => {
+        if (prev.some(e => e.seq === entry.seq)) return prev;
+        return [...prev, entry];
+      });
+    });
+    return unsub;
+  }, [agent.id, activity, currentTask]);
+
+  // Auto-scroll
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [taskLogs, activityLogs]);
+
+  const activityTypeLabel = activity?.type === 'heartbeat' ? 'Heartbeat Task'
+    : activity?.type === 'chat' ? 'Chat Response'
+    : activity?.type === 'task' ? 'Task Execution'
+    : 'Processing';
+
+  const activityTypeColor = activity?.type === 'heartbeat' ? 'text-cyan-400'
+    : activity?.type === 'chat' ? 'text-blue-400'
+    : 'text-indigo-400';
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[580px] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${
+              activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
+              : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
+              : 'bg-indigo-400 animate-pulse'
+            }`} />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">{agent.name}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${activityTypeColor} border-current/20 bg-current/5`}>
+                  {activityTypeLabel}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400 truncate mt-0.5">
+                {activity?.label ?? currentTask?.title ?? 'Processing...'}
+              </div>
+              {activity?.startedAt && (
+                <div className="text-[10px] text-gray-600 mt-0.5">
+                  Started {new Date(activity.startedAt).toLocaleTimeString()}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {onGoToTask && (
+              <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
+                Go to Task →
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none px-1">×</button>
+          </div>
+        </div>
+
+        {/* Logs */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
+          {loading ? (
+            <div className="text-center py-8 text-xs text-gray-600">Loading logs…</div>
+          ) : currentTask && taskLogs.length > 0 ? (
+            <>
+              {taskLogs.slice(-60).map((entry, i) => (
+                <div key={`${entry.seq}-${i}`}><LogEntryRow entry={entry} /></div>
+              ))}
+            </>
+          ) : activityLogs.length > 0 ? (
+            <>
+              {activityLogs.map((entry, i) => (
+                <ActivityLogEntryRow key={`${entry.seq}-${i}`} entry={entry} />
+              ))}
+            </>
+          ) : (
+            <div className="text-center py-8 text-xs text-gray-600">No execution logs yet.</div>
+          )}
+
+          {agent.status === 'working' && (
+            <div className="flex items-center gap-2 px-2 py-1 text-xs text-gray-500">
+              <span className="flex gap-0.5">
+                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+              Working…
+            </div>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityLogEntryRow({ entry }: { entry: AgentActivityLogEntry }) {
+  const time = new Date(entry.createdAt).toLocaleTimeString();
+  const isError = entry.type === 'error';
+  const isToolStart = entry.type === 'tool_start';
+  const isToolEnd = entry.type === 'tool_end';
+  const isStatus = entry.type === 'status';
+
+  const icon = isError ? '⚠' : isToolStart ? '▶' : isToolEnd ? '✓' : isStatus ? '●' : '💬';
+  const color = isError ? 'text-red-400' : isToolStart ? 'text-yellow-400' : isToolEnd ? 'text-green-400' : isStatus ? 'text-indigo-400' : 'text-gray-300';
+
+  return (
+    <div className={`flex items-start gap-2 px-2 py-1 rounded text-xs ${isError ? 'bg-red-500/5' : ''}`}>
+      <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums">{time}</span>
+      <span className="shrink-0 w-4 text-center">{icon}</span>
+      <div className={`flex-1 min-w-0 ${color}`}>
+        <span className="break-all">{entry.content}</span>
+        {entry.metadata && isToolStart && (
+          <div className="text-[10px] text-gray-600 mt-0.5 truncate font-mono">
+            {(entry.metadata as Record<string, string>).args?.slice(0, 200)}
+          </div>
+        )}
+        {entry.metadata && isToolEnd && (() => {
+          const md = entry.metadata as Record<string, unknown>;
+          return (
+            <div className="text-[10px] text-gray-600 mt-0.5">
+              {md.durationMs != null && `${String(md.durationMs)}ms`}
+              {typeof md.preview === 'string' && (
+                <span className="ml-2 font-mono truncate inline-block max-w-[300px] align-bottom">
+                  {md.preview.slice(0, 100)}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 }
