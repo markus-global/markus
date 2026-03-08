@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 
 export interface MarkusConfig {
   org: {
@@ -45,7 +46,7 @@ const DEFAULT_CONFIG: MarkusConfig = {
 };
 
 export function getDefaultConfigPath(): string {
-  return resolve(process.cwd(), 'markus.json');
+  return join(homedir(), '.markus', 'markus.json');
 }
 
 export function loadConfig(configPath?: string): MarkusConfig {
@@ -62,6 +63,7 @@ export function loadConfig(configPath?: string): MarkusConfig {
  */
 export function saveConfig(updates: Partial<MarkusConfig>, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
+  mkdirSync(resolve(p, '..'), { recursive: true });
   let existing: Obj = {};
   if (existsSync(p)) {
     try {
