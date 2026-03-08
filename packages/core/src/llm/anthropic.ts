@@ -1,4 +1,4 @@
-import type { LLMProviderConfig, LLMRequest, LLMResponse, LLMStreamEvent, LLMMessage, LLMTool } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface AnthropicAPIMessage {
@@ -7,13 +7,14 @@ interface AnthropicAPIMessage {
 }
 
 interface AnthropicContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result';
+  type: 'text' | 'tool_use' | 'tool_result' | 'image';
   text?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string;
+  source?: { type: 'base64'; media_type: string; data: string };
 }
 
 interface AnthropicToolDef {
@@ -59,7 +60,7 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
     };
 
-    if (systemMsg) body['system'] = systemMsg.content;
+    if (systemMsg) body['system'] = getTextContent(systemMsg.content);
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
@@ -93,7 +94,7 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
       stream: true,
     };
-    if (systemMsg) body['system'] = systemMsg.content;
+    if (systemMsg) body['system'] = getTextContent(systemMsg.content);
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
@@ -215,6 +216,25 @@ export class AnthropicProvider implements LLMProviderInterface {
     };
   }
 
+  private convertContentParts(parts: LLMContentPart[]): AnthropicContentBlock[] {
+    const blocks: AnthropicContentBlock[] = [];
+    for (const p of parts) {
+      if (p.type === 'text') {
+        blocks.push({ type: 'text', text: p.text });
+      } else if (p.type === 'image_url') {
+        const url = p.image_url.url;
+        const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+        if (match) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: match[1]!, data: match[2]! },
+          });
+        }
+      }
+    }
+    return blocks;
+  }
+
   private convertMessages(messages: LLMMessage[]): AnthropicAPIMessage[] {
     return messages.map((m) => {
       if (m.role === 'tool') {
@@ -224,7 +244,7 @@ export class AnthropicProvider implements LLMProviderInterface {
             {
               type: 'tool_result' as const,
               tool_use_id: m.toolCallId ?? '',
-              content: m.content,
+              content: getTextContent(m.content),
             },
           ],
         };
@@ -232,7 +252,8 @@ export class AnthropicProvider implements LLMProviderInterface {
 
       if (m.toolCalls?.length) {
         const blocks: AnthropicContentBlock[] = [];
-        if (m.content) blocks.push({ type: 'text', text: m.content });
+        const text = getTextContent(m.content);
+        if (text) blocks.push({ type: 'text', text });
         for (const tc of m.toolCalls) {
           blocks.push({
             type: 'tool_use',
@@ -242,6 +263,13 @@ export class AnthropicProvider implements LLMProviderInterface {
           });
         }
         return { role: 'assistant' as const, content: blocks };
+      }
+
+      if (Array.isArray(m.content)) {
+        return {
+          role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+          content: this.convertContentParts(m.content),
+        };
       }
 
       return {

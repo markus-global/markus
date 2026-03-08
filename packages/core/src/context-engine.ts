@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import {
   createLogger,
+  getTextContent,
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
@@ -34,7 +35,12 @@ function estimateTokens(text: string, counter?: TokenCounter): number {
 
 function estimateMessageTokens(msg: LLMMessage, counter?: TokenCounter): number {
   const tc = counter ?? getDefaultTokenCounter();
-  let tokens = tc.countMessageTokens(msg.content, msg.role);
+  const textContent = getTextContent(msg.content);
+  let tokens = tc.countMessageTokens(textContent, msg.role);
+  if (Array.isArray(msg.content)) {
+    const imageCount = msg.content.filter(p => p.type === 'image_url').length;
+    tokens += imageCount * 1000;
+  }
   if (msg.toolCalls) tokens += tc.countTokens(JSON.stringify(msg.toolCalls));
   return tokens;
 }
@@ -522,19 +528,20 @@ export class ContextEngine {
    */
   private shrinkOversizedMessages(messages: LLMMessage[], maxChars: number): LLMMessage[] {
     return messages.map(m => {
-      if (m.content.length <= maxChars) return m;
+      const text = getTextContent(m.content);
+      if (text.length <= maxChars) return m;
       if (m.role === 'tool') {
-        const preview = m.content.slice(0, 300);
+        const preview = text.slice(0, 300);
         return {
           ...m,
-          content: `[Compacted tool result: ${m.content.length} chars]\n${preview}...`,
+          content: `[Compacted tool result: ${text.length} chars]\n${preview}...`,
         };
       }
-      // For user/assistant, keep the beginning (context is usually front-loaded)
+      if (Array.isArray(m.content)) return m;
       return {
         ...m,
         content:
-          m.content.slice(0, maxChars) + `\n\n[... content trimmed from ${m.content.length} chars]`,
+          text.slice(0, maxChars) + `\n\n[... content trimmed from ${text.length} chars]`,
       };
     });
   }
@@ -635,8 +642,9 @@ export class ContextEngine {
     const toolResults = block.slice(1);
 
     const summaryParts: string[] = [];
-    if (assistant.content?.trim()) {
-      summaryParts.push(assistant.content.trim());
+    const assistantText = getTextContent(assistant.content);
+    if (assistantText.trim()) {
+      summaryParts.push(assistantText.trim());
     }
 
     // Manus: serialization diversity — vary summary templates to avoid few-shot ruts
@@ -658,7 +666,7 @@ export class ContextEngine {
       );
       let resultSummary = '';
       if (result) {
-        const content = result.content;
+        const content = getTextContent(result.content);
         if (
           content.startsWith('Error:') ||
           (content.startsWith('{') && content.includes('"status":"error"'))

@@ -1,7 +1,7 @@
 import { MemoryStore } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 import type { LLMMessage } from '@markus/shared';
-import { createLogger } from '@markus/shared';
+import { createLogger, getTextContent } from '@markus/shared';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -241,7 +241,7 @@ export class EnhancedMemorySystem implements IMemoryStore {
     
     for (const msg of messages) {
       if (msg.role === 'user') {
-        const content = msg.content.slice(0, 200);
+        const content = getTextContent(msg.content).slice(0, 200);
         if (content !== currentTopic) {
           summaryParts.push(`User asked about: ${content}`);
           currentTopic = content;
@@ -267,7 +267,7 @@ export class EnhancedMemorySystem implements IMemoryStore {
       const recentMessages = latestSession.messages.slice(-10);
       contextParts.push('## Recent Conversation');
       recentMessages.forEach(msg => {
-        contextParts.push(`${msg.role}: ${msg.content.slice(0, 150)}`);
+        contextParts.push(`${msg.role}: ${getTextContent(msg.content).slice(0, 150)}`);
       });
     }
     

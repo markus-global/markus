@@ -53,11 +53,24 @@ export interface LLMRequest {
   stopSequences?: string[];
 }
 
+export type LLMContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | LLMContentPart[];
   toolCallId?: string;
   toolCalls?: LLMToolCall[];
+}
+
+/** Extract plain text from a message's content (ignoring image parts). */
+export function getTextContent(content: string | LLMContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is Extract<LLMContentPart, { type: 'text' }> => p.type === 'text')
+    .map(p => p.text)
+    .join('');
 }
 
 export interface LLMTool {

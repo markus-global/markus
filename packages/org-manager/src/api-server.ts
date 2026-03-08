@@ -452,7 +452,8 @@ export class APIServer {
   private async persistUserMessage(
     agentId: string,
     userMessage: string,
-    senderId?: string
+    senderId?: string,
+    images?: string[],
   ): Promise<string | null> {
     if (!this.storage) return null;
     try {
@@ -462,7 +463,8 @@ export class APIServer {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
       const title = !session.title ? userMessage.slice(0, 60) : undefined;
-      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
+      const meta = images?.length ? { images } : undefined;
+      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0, meta);
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
       return session.id;
     } catch (err) {
@@ -945,6 +947,7 @@ export class APIServer {
         const body = await this.readBody(req);
         const stream = body['stream'] as boolean | undefined;
         const senderId = body['senderId'] as string | undefined;
+        const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -956,6 +959,7 @@ export class APIServer {
             agentId: agentId!,
             agent,
             userText,
+            images,
             senderId,
             senderInfo,
             wsBroadcaster: this.ws,
@@ -966,10 +970,10 @@ export class APIServer {
           await sseHandler.handle(res);
         } else {
           const userText = body['text'] as string;
-          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId);
+          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images);
           let reply: string;
           try {
-            reply = await agent.handleMessage(userText, senderId, senderInfo);
+            reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
@@ -1965,6 +1969,7 @@ export class APIServer {
       }
 
       const senderId = body['senderId'] as string | undefined;
+      const images = (body['images'] as string[] | undefined)?.filter(Boolean);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
       const agent = this.orgService.getAgentManager().getAgent(targetAgentId);
       this.ws.broadcastAgentUpdate(targetAgentId, 'working');
@@ -1992,6 +1997,7 @@ export class APIServer {
           agentId: targetAgentId,
           agent,
           userText,
+          images,
           senderId,
           senderInfo,
           onTextDelta: _text => {
@@ -2063,7 +2069,7 @@ export class APIServer {
         }
         let reply: string;
         try {
-          reply = await agent.handleMessage(userText, senderId, senderInfo);
+          reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
         } catch (err) {
           const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
           if (this.storage) {

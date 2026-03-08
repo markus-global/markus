@@ -11,13 +11,14 @@ export interface SSEMessageHandlerOptions {
   agentId: string;
   agent: Agent;
   userText: string;
+  images?: string[];
   senderId?: string;
   senderInfo?: { name: string; role: string };
   wsBroadcaster?: {
     broadcastChat: (agentId: string, message: string, sender: 'agent' | 'user') => void;
     broadcastAgentUpdate?: (agentId: string, status: string) => void;
   };
-  persistUserMessage?: (agentId: string, text: string, senderId?: string) => Promise<string | null>;
+  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[]) => Promise<string | null>;
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
@@ -79,7 +80,8 @@ export class SSEHandler {
         this.sessionId = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
-          this.options.senderId
+          this.options.senderId,
+          this.options.images,
         );
       }
 
@@ -89,6 +91,7 @@ export class SSEHandler {
         this.options.senderId,
         this.options.senderInfo,
         this.cancelToken,
+        this.options.images,
       );
 
       if (this.textBuf) {

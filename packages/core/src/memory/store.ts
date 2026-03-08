@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LLMMessage } from '@markus/shared';
-import { createLogger } from '@markus/shared';
+import { createLogger, getTextContent } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
@@ -166,12 +166,13 @@ export class MemoryStore implements IMemoryStore {
     const summaryParts: string[] = [];
     for (const msg of older) {
       if (msg.role === 'system') continue;
+      const text = getTextContent(msg.content);
       if (msg.role === 'user') {
-        summaryParts.push(`User: ${msg.content.slice(0, 200)}`);
-      } else if (msg.role === 'assistant' && msg.content) {
-        summaryParts.push(`Assistant: ${msg.content.slice(0, 200)}`);
+        summaryParts.push(`User: ${text.slice(0, 200)}`);
+      } else if (msg.role === 'assistant' && text) {
+        summaryParts.push(`Assistant: ${text.slice(0, 200)}`);
       } else if (msg.role === 'tool') {
-        summaryParts.push(`Tool result: ${msg.content.slice(0, 100)}`);
+        summaryParts.push(`Tool result: ${text.slice(0, 100)}`);
       }
     }
 
@@ -182,8 +183,8 @@ export class MemoryStore implements IMemoryStore {
 
     // Extract any important facts for long-term memory
     const facts = older
-      .filter((m) => m.role === 'assistant' && m.content.length > 50)
-      .map((m) => m.content.slice(0, 150))
+      .filter((m) => m.role === 'assistant' && getTextContent(m.content).length > 50)
+      .map((m) => getTextContent(m.content).slice(0, 150))
       .slice(0, 3);
 
     if (facts.length > 0) {
@@ -220,9 +221,10 @@ export class MemoryStore implements IMemoryStore {
     // from accumulating unbounded content in the session history.
     let shrunk = 0;
     for (const m of session.messages) {
-      if (m.role === 'tool' && m.content.length > 4000) {
-        const origLen = m.content.length;
-        const preview = m.content.slice(0, 200);
+      const text = getTextContent(m.content);
+      if (m.role === 'tool' && text.length > 4000) {
+        const origLen = text.length;
+        const preview = text.slice(0, 200);
         m.content = `[Tool result compacted: ${origLen} chars] ${preview}...`;
         shrunk++;
       }

@@ -1,9 +1,10 @@
-import type { LLMProviderConfig, LLMRequest, LLMResponse, LLMStreamEvent, LLMMessage, LLMTool } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, getTextContent } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  images?: string[];
   tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
 }
 
@@ -185,16 +186,30 @@ export class OllamaProvider implements LLMProviderInterface {
   private convertMessages(messages: LLMMessage[]): OllamaMessage[] {
     return messages.map(m => {
       if (m.role === 'tool') {
-        return { role: 'tool' as const, content: m.content };
+        return { role: 'tool' as const, content: getTextContent(m.content) };
       }
       if (m.toolCalls?.length) {
         return {
           role: 'assistant' as const,
-          content: m.content || '',
+          content: getTextContent(m.content) || '',
           tool_calls: m.toolCalls.map(tc => ({
             function: { name: tc.name, arguments: tc.arguments },
           })),
         };
+      }
+      if (Array.isArray(m.content)) {
+        const text = m.content.filter(p => p.type === 'text').map(p => (p as {type:'text';text:string}).text).join('');
+        const images = m.content
+          .filter(p => p.type === 'image_url')
+          .map(p => {
+            const url = (p as {type:'image_url';image_url:{url:string}}).image_url.url;
+            const match = url.match(/^data:image\/[^;]+;base64,(.+)$/);
+            return match ? match[1]! : '';
+          })
+          .filter(Boolean);
+        const msg: OllamaMessage = { role: m.role as OllamaMessage['role'], content: text };
+        if (images.length > 0) msg.images = images;
+        return msg;
       }
       return { role: m.role as OllamaMessage['role'], content: m.content };
     });

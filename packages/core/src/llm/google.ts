@@ -1,9 +1,15 @@
-import type { LLMProviderConfig, LLMRequest, LLMResponse, LLMStreamEvent, LLMMessage, LLMTool } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
+
+type GeminiPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: { result: string } } };
 
 interface GeminiContent {
   role: 'user' | 'model';
-  parts: Array<{ text: string } | { functionCall: { name: string; args: Record<string, unknown> } } | { functionResponse: { name: string; response: { result: string } } }>;
+  parts: GeminiPart[];
 }
 
 interface GeminiFunctionDeclaration {
@@ -195,13 +201,29 @@ export class GoogleProvider implements LLMProviderInterface {
     return { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
   }
 
+  private convertContentParts(parts: LLMContentPart[]): GeminiPart[] {
+    const result: GeminiPart[] = [];
+    for (const p of parts) {
+      if (p.type === 'text') {
+        result.push({ text: p.text });
+      } else if (p.type === 'image_url') {
+        const url = p.image_url.url;
+        const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+        if (match) {
+          result.push({ inlineData: { mimeType: match[1]!, data: match[2]! } });
+        }
+      }
+    }
+    return result;
+  }
+
   private convertMessages(messages: LLMMessage[]): { contents: GeminiContent[]; systemInstruction?: string } {
     let systemInstruction: string | undefined;
     const contents: GeminiContent[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        systemInstruction = (systemInstruction ? systemInstruction + '\n' : '') + msg.content;
+        systemInstruction = (systemInstruction ? systemInstruction + '\n' : '') + getTextContent(msg.content);
         continue;
       }
 
@@ -211,7 +233,7 @@ export class GoogleProvider implements LLMProviderInterface {
           parts: [{
             functionResponse: {
               name: msg.toolCallId ?? 'unknown',
-              response: { result: msg.content },
+              response: { result: getTextContent(msg.content) },
             },
           }],
         });
@@ -219,8 +241,9 @@ export class GoogleProvider implements LLMProviderInterface {
       }
 
       if (msg.role === 'assistant') {
-        const parts: GeminiContent['parts'] = [];
-        if (msg.content) parts.push({ text: msg.content });
+        const parts: GeminiPart[] = [];
+        const text = getTextContent(msg.content);
+        if (text) parts.push({ text });
         if (msg.toolCalls) {
           for (const tc of msg.toolCalls) {
             parts.push({ functionCall: { name: tc.name, args: tc.arguments } });
@@ -230,7 +253,12 @@ export class GoogleProvider implements LLMProviderInterface {
         continue;
       }
 
-      contents.push({ role: 'user', parts: [{ text: msg.content }] });
+      if (Array.isArray(msg.content)) {
+        const parts = this.convertContentParts(msg.content);
+        if (parts.length > 0) contents.push({ role: 'user', parts });
+      } else {
+        contents.push({ role: 'user', parts: [{ text: msg.content }] });
+      }
     }
 
     return { contents, systemInstruction };

@@ -7,6 +7,7 @@ import {
   type AgentActivityLogEntry,
   type RoleTemplate,
   type LLMMessage,
+  type LLMContentPart,
   type LLMTool,
   type LLMToolCall,
   type LLMStreamEvent,
@@ -790,6 +791,7 @@ export class Agent {
       ephemeral?: boolean;
       maxHistory?: number;
       channelContext?: Array<{ role: string; content: string }>;
+      images?: string[];
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -828,7 +830,8 @@ export class Agent {
         this.currentSessionId = session.id;
       }
       sessionId = this.currentSessionId;
-      this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
+      const userContent = this.buildUserContent(userMessage, options?.images);
+      this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
     }
 
     const systemPrompt = this.contextEngine.buildSystemPrompt({
@@ -1101,7 +1104,8 @@ export class Agent {
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
     senderInfo?: { name: string; role: string },
-    cancelToken?: { cancelled: boolean }
+    cancelToken?: { cancelled: boolean },
+    images?: string[],
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
@@ -1130,7 +1134,8 @@ export class Agent {
       this.currentSessionId = session.id;
     }
 
-    this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userMessage });
+    const userContent = this.buildUserContent(userMessage, images);
+    this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
     const systemPrompt = this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -1836,6 +1841,15 @@ export class Agent {
     log.info(`Sandboxed tools registered for agent ${this.id}`);
   }
 
+  private buildUserContent(text: string, images?: string[]): string | LLMContentPart[] {
+    if (!images?.length) return text;
+    const parts: LLMContentPart[] = [{ type: 'text', text }];
+    for (const img of images) {
+      parts.push({ type: 'image_url', image_url: { url: img } });
+    }
+    return parts;
+  }
+
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
@@ -2083,7 +2097,7 @@ export class Agent {
 
     const recentMessages = session.messages.slice(-20);
     const hasSubstantiveContent = recentMessages.some(
-      m => m.role === 'assistant' && m.content.length > 100
+      m => m.role === 'assistant' && (typeof m.content === 'string' ? m.content.length : 0) > 100
     );
     if (!hasSubstantiveContent) return;
 

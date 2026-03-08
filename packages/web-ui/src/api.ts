@@ -37,7 +37,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; isError?: boolean } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -526,16 +526,16 @@ export const api = {
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
-    message: (id: string, text: string) =>
-      request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal): Promise<string> => {
+    message: (id: string, text: string, images?: string[]) =>
+      request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[]): Promise<string> => {
       return new Promise(async (resolve, reject) => {
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true }),
+            body: JSON.stringify({ text, stream: true, images }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -673,7 +673,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ text, ...opts }),
       }),
-    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
+    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal; images?: string[] }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
       return new Promise(async (resolve, reject) => {
         try {
           const { signal, ...restOpts } = opts ?? {};

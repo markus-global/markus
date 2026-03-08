@@ -33,6 +33,8 @@ interface ChatMsg {
   isError?: boolean;
   /** True when this message was stopped by the user mid-stream */
   isStopped?: boolean;
+  /** Attached image data URLs */
+  images?: string[];
 }
 
 type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
@@ -56,6 +58,9 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
+  }
+  if (m.metadata?.images?.length) {
+    base.images = m.metadata.images;
   }
   return base;
 }
@@ -713,6 +718,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Image attachments
+  const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Session management (direct mode)
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -1000,14 +1009,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const send = async (retryText?: string) => {
     const text = (retryText ?? input).trim();
-    if (!text || sending) return;
+    if (!text && pendingImages.length === 0) return;
+    if (sending) return;
     if (chatMode === 'direct' && !selectedAgent) return;
 
-    // Capture the conversation key at send-time. All callbacks write to THIS key,
-    // regardless of which conversation the user is currently viewing.
+    const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
 
     if (!retryText) setInput('');
+    setPendingImages([]);
     setMentionDropdown(false);
 
     // Mark this conv as sending (skip for DM — instant DB write, no LLM wait)
@@ -1077,9 +1087,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     } else {
       // direct or smart — build an interleaved segment stream
       const agentMsgId = `a_${Date.now()}`;
+      const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
+      if (imagesToSend?.length) userMsg.images = imagesToSend;
       updateConvMsgs(sendKey, prev => [
         ...prev,
-        { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() },
+        userMsg,
         { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
       ]);
 
@@ -1141,7 +1153,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           const result = await api.message.sendStream(
             text,
             appendTextChunk,
-            { senderId: authUser?.id || undefined, signal: abortCtrl.signal },
+            { senderId: authUser?.id || undefined, signal: abortCtrl.signal, images: imagesToSend },
             handleToolEvent,
           );
           const ra = agents.find(a => a.id === result.agentId);
@@ -1157,6 +1169,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             appendTextChunk,
             handleToolEvent,
             abortCtrl.signal,
+            imagesToSend,
           );
           loadSessions(selectedAgent).then(s => {
             setSessions(s);
@@ -1345,6 +1358,55 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     setInput(input.slice(0, lastAt) + '@' + name + ' ');
     setMentionDropdown(false);
   };
+
+  // ── Image handling ──────────────────────────────────────────────────────────
+  const MAX_IMAGE_SIZE = 4 * 1024 * 1024;
+  const MAX_IMAGES = 5;
+
+  const addImageFiles = useCallback((files: FileList | File[]) => {
+    const fileArr = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (fileArr.length === 0) return;
+    for (const file of fileArr) {
+      if (file.size > MAX_IMAGE_SIZE) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setPendingImages(p => {
+          if (p.length >= MAX_IMAGES) return p;
+          if (p.some(img => img.dataUrl === dataUrl)) return p;
+          return [...p, { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dataUrl, name: file.name }];
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const removeImage = useCallback((id: string) => {
+    setPendingImages(prev => prev.filter(img => img.id !== id));
+  }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
+      const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addImageFiles(imageFiles);
+      }
+    }
+  }, [addImageFiles]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      addImageFiles(Array.from(files).filter(f => f.type.startsWith('image/')));
+    }
+  }, [addImageFiles]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const currentAgent = agents.find(a => a.id === selectedAgent);
@@ -1575,7 +1637,16 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                     }>
                       {msg.sender === 'agent'
                         ? <MarkdownMessage content={msg.text} className={`text-sm ${msg.isError || msg.text.startsWith('⚠') ? 'text-red-200' : 'text-gray-300'}`} />
-                        : <div className="text-sm text-gray-300 whitespace-pre-wrap">{msg.text}</div>
+                        : <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                            {msg.images && msg.images.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mb-1">
+                                {msg.images.map((src, idx) => (
+                                  <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
+                                ))}
+                              </div>
+                            )}
+                            {msg.text}
+                          </div>
                       }
                     </div>
                     <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
@@ -1610,7 +1681,16 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                             : 'bg-gray-800 text-gray-200 rounded-bl-sm'
                       }`}>
                         {msg.sender === 'user'
-                          ? <span className="whitespace-pre-wrap leading-relaxed">{msg.text}</span>
+                          ? <>
+                              {msg.images && msg.images.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 mb-2">
+                                  {msg.images.map((src, idx) => (
+                                    <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
+                                  ))}
+                                </div>
+                              )}
+                              {msg.text && <span className="whitespace-pre-wrap leading-relaxed">{msg.text}</span>}
+                            </>
                           : <AgentMessageBody
                               msg={msg}
                               isStreaming={isStreamingMsg}
@@ -1635,7 +1715,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         </div>
 
         {/* Input */}
-        <div className="p-4 border-t border-gray-800 bg-gray-900 relative shrink-0">
+        <div className="p-4 border-t border-gray-800 bg-gray-900 relative shrink-0" onDrop={handleDrop} onDragOver={handleDragOver}>
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10">
               {filteredAgents.map(a => (
@@ -1651,11 +1731,49 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               ))}
             </div>
           )}
+          {pendingImages.length > 0 && (
+            <div className="flex items-center gap-2 mb-2 overflow-x-auto pb-1">
+              {pendingImages.map(img => (
+                <div key={img.id} className="relative group/img shrink-0">
+                  <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-gray-700" />
+                  <button
+                    onClick={() => removeImage(img.id)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-900 border border-gray-600 rounded-full flex items-center justify-center text-gray-400 hover:text-red-400 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {pendingImages.length < MAX_IMAGES && (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-16 h-16 rounded-lg border border-dashed border-gray-600 flex items-center justify-center text-gray-500 hover:text-gray-300 hover:border-gray-400 transition-colors shrink-0"
+                  title="Add more images"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
+                </button>
+              )}
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} />
           <div className="flex gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm')}
+              className="px-2.5 py-2.5 text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors rounded-xl hover:bg-gray-800"
+              title="Attach images"
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <path d="M21 15l-5-5L5 21" />
+              </svg>
+            </button>
             <input
               value={input}
               onChange={e => handleInputChange(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+              onPaste={handlePaste}
               placeholder={placeholder}
               disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm')}
               className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors"
@@ -1674,7 +1792,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             ) : (
               <button
                 onClick={() => void send()}
-                disabled={(chatMode === 'direct' && !selectedAgent) || !input.trim()}
+                disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
                 className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
               >
                 Send

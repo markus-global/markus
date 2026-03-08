@@ -1,9 +1,9 @@
-import type { LLMProviderConfig, LLMRequest, LLMResponse, LLMStreamEvent, LLMMessage, LLMTool } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent } from '@markus/shared';
 import type { LLMProviderInterface } from './provider.js';
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | null | Array<{type: string; text?: string; image_url?: {url: string}}>;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
 }
@@ -98,7 +98,7 @@ export class OpenAIProvider implements LLMProviderInterface {
       if (m.role === 'tool') {
         return {
           role: 'tool' as const,
-          content: m.content,
+          content: getTextContent(m.content),
           tool_call_id: m.toolCallId ?? '',
         };
       }
@@ -106,12 +106,23 @@ export class OpenAIProvider implements LLMProviderInterface {
       if (m.toolCalls?.length) {
         return {
           role: 'assistant' as const,
-          content: m.content || null,
+          content: getTextContent(m.content) || null,
           tool_calls: m.toolCalls.map((tc) => ({
             id: tc.id,
             type: 'function' as const,
             function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
           })),
+        };
+      }
+
+      if (Array.isArray(m.content)) {
+        return {
+          role: m.role,
+          content: m.content.map((p: LLMContentPart) =>
+            p.type === 'image_url'
+              ? { type: 'image_url' as const, image_url: { url: p.image_url.url } }
+              : { type: 'text' as const, text: p.text }
+          ),
         };
       }
 
@@ -287,7 +298,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     };
 
     return {
-      content: msg.content ?? '',
+      content: typeof msg.content === 'string' ? msg.content : '',
       toolCalls: toolCalls?.length ? toolCalls : undefined,
       usage: {
         inputTokens: data.usage.prompt_tokens,

@@ -1,4 +1,4 @@
-import { createLogger, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings } from '@markus/shared';
+import { createLogger, getTextContent, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -128,7 +128,7 @@ export class LLMRouter {
   }
 
   static assessComplexity(request: LLMRequest): ComplexityLevel {
-    const totalChars = request.messages.reduce((s, m) => s + m.content.length, 0);
+    const totalChars = request.messages.reduce((s, m) => s + getTextContent(m.content).length, 0);
     const toolCount = request.tools?.length ?? 0;
     const msgCount = request.messages.length;
 
