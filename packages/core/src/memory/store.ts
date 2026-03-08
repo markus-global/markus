@@ -224,8 +224,8 @@ export class MemoryStore implements IMemoryStore {
       const text = getTextContent(m.content);
       if (m.role === 'tool' && text.length > 4000) {
         const origLen = text.length;
-        const preview = text.slice(0, 200);
-        m.content = `[Tool result compacted: ${origLen} chars] ${preview}...`;
+        const preview = text.slice(0, 500);
+        m.content = `[Old tool result compacted for session storage: ${origLen} chars → 500 char preview. Full result was available at execution time.]\n${preview}\n[... ${origLen - 500} more chars omitted ...]`;
         shrunk++;
       }
     }

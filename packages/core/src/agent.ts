@@ -500,7 +500,7 @@ export class Agent {
    * This prevents context bloat while preserving all information (restorable compression).
    */
   private offloadLargeResult(toolName: string, result: string): string {
-    const OFFLOAD_THRESHOLD = 8_000; // chars; results above this get offloaded
+    const OFFLOAD_THRESHOLD = 50_000;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
 
     try {
@@ -510,18 +510,19 @@ export class Agent {
       const filepath = join(offloadDir, filename);
       writeFileSync(filepath, result);
 
-      const preview = result.slice(0, 500);
+      const PREVIEW_SIZE = 2000;
+      const preview = result.slice(0, PREVIEW_SIZE);
       const lineCount = result.split('\n').length;
       return [
-        `[Tool output saved to file: ${filepath}]`,
-        `[${result.length} chars, ${lineCount} lines — use file_read to access full content]`,
-        `Preview:`,
+        `[FULL output (${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
+        `[NOTE: The content below is only the first ${PREVIEW_SIZE} chars. The complete, untruncated result is in the file above. Use file_read to access it if you need more.]`,
+        ``,
         preview,
-        result.length > 500 ? '...' : '',
+        ``,
+        `[... remaining ${result.length - PREVIEW_SIZE} chars in file ...]`,
       ].join('\n');
     } catch {
-      // Fallback: truncate in-place if file write fails
-      return result.slice(0, 2000) + `\n\n[... truncated ${result.length} chars total ...]`;
+      return result.slice(0, 8000) + `\n\n[... output truncated at 8000 of ${result.length} total chars due to file-save failure ...]`;
     }
   }
 

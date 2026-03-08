@@ -531,10 +531,11 @@ export class ContextEngine {
       const text = getTextContent(m.content);
       if (text.length <= maxChars) return m;
       if (m.role === 'tool') {
-        const preview = text.slice(0, 300);
+        const previewSize = Math.min(1000, maxChars);
+        const preview = text.slice(0, previewSize);
         return {
           ...m,
-          content: `[Compacted tool result: ${text.length} chars]\n${preview}...`,
+          content: `[Tool result compacted for context budget: showing first ${previewSize} of ${text.length} chars. This is NOT the full output — the complete result was available when the tool ran.]\n${preview}\n[... ${text.length - previewSize} more chars omitted ...]`,
         };
       }
       if (Array.isArray(m.content)) return m;
