@@ -281,7 +281,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openrouterKey) {
     providerConfigs['openrouter'] = {
       provider: 'openrouter',
-      model: process.env['OPENROUTER_MODEL'] ?? 'openai/gpt-5.4',
+      model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.5',
       apiKey: openrouterKey,
       baseUrl:
         process.env['OPENROUTER_BASE_URL'] ??
