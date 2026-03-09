@@ -14,6 +14,7 @@ export { TaskLogRepo, type TaskLogRow, type TaskLogType } from './repos/task-log
 export { TaskCommentRepo, type TaskCommentRow } from './repos/task-comment-repo.js';
 export { AgentKnowledgeRepo, type KnowledgeRow } from './repos/agent-knowledge-repo.js';
 export { RequirementRepo } from './repos/requirement-repo.js';
+export { ExternalAgentRepo, type ExternalAgentRow, type GatewayMessageRow } from './repos/external-agent-repo.js';
 export {
   MarketplaceTemplateRepo,
   type MarketplaceTemplateRow,

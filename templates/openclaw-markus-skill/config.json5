@@ -1,0 +1,44 @@
+// OpenClaw configuration fragment for Markus Platform integration.
+//
+// To use: merge this into your OpenClaw config file and replace the
+// placeholder values ({{MARKUS_URL}}, {{MARKUS_TOKEN}}) with your
+// actual Markus instance URL and authentication token.
+//
+// Registration flow:
+//   1. POST {{MARKUS_URL}}/api/gateway/register  (get registered)
+//   2. POST {{MARKUS_URL}}/api/gateway/auth       (get bearer token)
+//   3. Paste the token below as {{MARKUS_TOKEN}}
+{
+  // Agent identity — set these to match your OpenClaw agent
+  agents: {
+    defaults: {
+      subagents: {
+        maxSpawnDepth: 2,
+        maxChildrenPerAgent: 5,
+        maxConcurrent: 8,
+      },
+    },
+  },
+
+  // Heartbeat tasks — these run automatically on schedule
+  heartbeat: {
+    tasks: [
+      {
+        name: "markus-sync",
+        description: "Synchronize with Markus platform — exchange status, tasks, and messages",
+        schedule: "*/30 * * * * *",
+        // Calls POST /api/gateway/sync with current status and receives assignments
+      },
+      {
+        name: "markus-manual-refresh",
+        description: "Check if the Markus integration handbook has been updated",
+        schedule: "0 0 * * *",
+        // Calls GET /api/gateway/manual and updates local context if version changed
+      },
+    ],
+  },
+
+  // Environment variables to configure
+  // MARKUS_URL:   Base URL of your Markus instance (e.g., http://localhost:3001)
+  // MARKUS_TOKEN: Bearer token from /api/gateway/auth
+}

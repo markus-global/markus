@@ -56,6 +56,15 @@ export type {
   GatewayMessage,
   GatewayMessageResult,
 } from './external-gateway.js';
+export { generateHandbook, GatewaySyncHandler } from './gateway/index.js';
+export type {
+  HandbookContext,
+  SyncRequest,
+  SyncResponse,
+  TaskBridge,
+  MessageBridge,
+  AgentStatusUpdater,
+} from './gateway/index.js';
 export {
   ReviewService,
   createDescriptionChecker,

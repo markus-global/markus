@@ -8,6 +8,8 @@ import {
   createDefaultTeamTemplates,
   createDefaultTemplateRegistry,
   PromptStudio,
+  generateHandbook,
+  GatewaySyncHandler,
   type TeamTemplateRegistry,
   type AgentToolHandler,
   type ExternalAgentGateway,
@@ -17,6 +19,7 @@ import {
   type TemplateRegistry,
   type WorkflowExecutor,
   type WorkflowDefinition,
+  type SyncRequest,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -167,6 +170,8 @@ export class APIServer {
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
   private gateway?: ExternalAgentGateway;
+  private syncHandler?: GatewaySyncHandler;
+  private gatewayMessageQueue = new Map<string, Array<{ id: string; from: string; fromName: string; content: string; timestamp: string }>>();
   private reviewService?: ReviewService;
   private registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
@@ -300,6 +305,60 @@ export class APIServer {
 
   setGateway(gateway: ExternalAgentGateway): void {
     this.gateway = gateway;
+    this.initSyncHandler();
+  }
+
+  private initSyncHandler(): void {
+    const self = this;
+    this.syncHandler = new GatewaySyncHandler(
+      {
+        getTasksByAgent(agentId: string) {
+          return self.taskService.getTasksByAgent(agentId).map(t => ({
+            id: t.id, title: t.title, description: t.description,
+            priority: t.priority, status: t.status, parentTaskId: t.parentTaskId,
+          }));
+        },
+        updateTaskStatus(taskId: string, status: string, updatedBy?: string) {
+          self.taskService.updateTaskStatus(taskId, status as TaskStatus, updatedBy);
+        },
+        createTask(req) {
+          return self.taskService.createTask({
+            title: req.title, description: req.description,
+            priority: req.priority as TaskPriority,
+            orgId: req.orgId, assignedAgentId: req.assignedAgentId,
+            parentTaskId: req.parentTaskId, createdBy: req.createdBy,
+          });
+        },
+      },
+      {
+        drainInbox(markusAgentId: string) {
+          const queue = self.gatewayMessageQueue.get(markusAgentId) ?? [];
+          self.gatewayMessageQueue.set(markusAgentId, []);
+          return queue;
+        },
+        deliver(fromAgentId: string, toAgentId: string, content: string) {
+          const fromAgent = self.orgService.getAgentManager().getAgent(fromAgentId);
+          const queue = self.gatewayMessageQueue.get(toAgentId) ?? [];
+          queue.push({
+            id: `gwmsg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            from: fromAgentId,
+            fromName: fromAgent?.config?.name ?? fromAgentId,
+            content,
+            timestamp: new Date().toISOString(),
+          });
+          self.gatewayMessageQueue.set(toAgentId, queue);
+        },
+      },
+      {
+        updateStatus(_agentId: string, _status: 'idle' | 'working' | 'error') {
+          // External agents are tracked via gateway registrations, not Agent runtime instances.
+          // Status is recorded on the registration record via heartbeat timestamps.
+        },
+        updateHeartbeat(_agentId: string) {
+          // Heartbeat is implicitly recorded by the gateway on each sync call.
+        },
+      },
+    );
   }
 
   setReviewService(svc: ReviewService): void {
@@ -1980,6 +2039,139 @@ export class APIServer {
         const token = this.gateway.verifyToken(authHeader.slice(7));
         const status = this.gateway.getStatus(token);
         this.json(res, 200, status);
+      } catch (err) {
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Manual / Handbook ──────────────────────────────────────────
+    if (path === '/api/gateway/manual' && req.method === 'GET') {
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) {
+        this.json(res, 401, { error: 'Missing Bearer token' });
+        return;
+      }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const reg = this.gateway.listRegistrations(token.orgId)
+          .find(r => r.externalAgentId === token.externalAgentId);
+        const handbook = generateHandbook({
+          baseUrl: `http://localhost:${this.port}`,
+          orgName: token.orgId,
+          agentName: reg?.agentName,
+          markusAgentId: token.markusAgentId,
+        });
+        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        res.end(handbook);
+      } catch (err) {
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Sync Endpoint ──────────────────────────────────────────────
+    if (path === '/api/gateway/sync' && req.method === 'POST') {
+      if (!this.gateway || !this.syncHandler) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) {
+        this.json(res, 401, { error: 'Missing Bearer token' });
+        return;
+      }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const body = await this.readBody(req) as SyncRequest;
+        const result = await this.syncHandler.handleSync(token.markusAgentId, token.orgId, body);
+        this.json(res, 200, result);
+      } catch (err) {
+        if (err instanceof GatewayError) {
+          this.json(res, err.statusCode, { error: err.message });
+          return;
+        }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Task Lifecycle Endpoints ────────────────────────────────────
+    const gwTaskMatch = path.match(/^\/api\/gateway\/tasks\/([^/]+)\/(accept|progress|complete|fail|delegate|subtasks)$/);
+    if (gwTaskMatch && req.method === 'POST') {
+      if (!this.gateway) {
+        this.json(res, 503, { error: 'Gateway not configured' });
+        return;
+      }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) {
+        this.json(res, 401, { error: 'Missing Bearer token' });
+        return;
+      }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const taskId = gwTaskMatch[1]!;
+        const action = gwTaskMatch[2]!;
+        const body = await this.readBody(req);
+
+        switch (action) {
+          case 'accept': {
+            const task = this.taskService.updateTaskStatus(taskId, 'in_progress', `ext:${token.markusAgentId}`);
+            this.json(res, 200, { task: { id: task.id, status: task.status } });
+            break;
+          }
+          case 'progress': {
+            const task = this.taskService.getTask(taskId);
+            if (!task) { this.json(res, 404, { error: 'Task not found' }); break; }
+            if (task.status !== 'in_progress') {
+              try { this.taskService.updateTaskStatus(taskId, 'in_progress', `ext:${token.markusAgentId}`); } catch { /* already in_progress */ }
+            }
+            this.json(res, 200, { taskId, progress: body['progress'], acknowledged: true });
+            break;
+          }
+          case 'complete': {
+            const task = this.taskService.updateTaskStatus(taskId, 'completed', `ext:${token.markusAgentId}`);
+            this.json(res, 200, { task: { id: task.id, status: task.status } });
+            break;
+          }
+          case 'fail': {
+            const task = this.taskService.updateTaskStatus(taskId, 'failed', `ext:${token.markusAgentId}`);
+            this.json(res, 200, { task: { id: task.id, status: task.status } });
+            break;
+          }
+          case 'delegate': {
+            const task = this.taskService.unassignTask(taskId);
+            this.json(res, 200, { task: { id: task.id, status: task.status }, delegated: true });
+            break;
+          }
+          case 'subtasks': {
+            const parentTask = this.taskService.getTask(taskId);
+            if (!parentTask) { this.json(res, 404, { error: 'Parent task not found' }); break; }
+            const subtask = this.taskService.createTask({
+              title: body['title'] as string,
+              description: (body['description'] as string) ?? '',
+              priority: (body['priority'] as TaskPriority) ?? 'medium',
+              orgId: parentTask.orgId,
+              parentTaskId: taskId,
+              assignedAgentId: token.markusAgentId,
+              createdBy: `ext:${token.markusAgentId}`,
+            });
+            this.json(res, 201, { task: { id: subtask.id, title: subtask.title, status: subtask.status } });
+            break;
+          }
+        }
       } catch (err) {
         if (err instanceof GatewayError) {
           this.json(res, err.statusCode, { error: err.message });

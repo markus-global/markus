@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
-import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser, type TaskLogEntry } from '../api.ts';
+import { useEffect, useMemo, useState, useRef } from 'react';
+import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type AuthUser, type TaskLogEntry, type ExternalAgentInfo } from '../api.ts';
 import { AgentProfile } from './AgentProfile.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { navBus } from '../navBus.ts';
@@ -33,6 +33,8 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
+  const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
+  const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
   const [showNewTeam, setShowNewTeam] = useState(false);
@@ -69,6 +71,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const refresh = () => {
     api.teams.list().then(d => { setTeams(d.teams); setUngrouped(d.ungrouped); }).catch(() => {});
     api.roles.list().then(d => setRoles(d.roles)).catch(() => {});
+    api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
   };
 
   useEffect(() => {
@@ -267,6 +270,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               onAddHuman={() => { setAddMemberMenuTeam(null); setShowAddHuman({ teamId: team.id }); }}
               onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
               ungrouped={ungrouped}
+              externalMarkusIds={externalMarkusIds}
             />
           ))}
 
@@ -277,6 +281,7 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               authUserId={authUser?.id}
               selectedAgentId={selectedAgentId}
               teams={teams}
+              externalMarkusIds={externalMarkusIds}
               onStartStop={handleStartStop}
               onRemoveAgent={handleRemoveAgent}
               onRemoveHuman={handleRemoveHuman}
@@ -409,7 +414,7 @@ function TeamCard({
   team, isAdmin, authUserId, selectedAgentId, addMemberMenuOpen,
   onSetManager, onRemoveFromTeam, onDeleteTeam,
   onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick,
-  onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped,
+  onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped, externalMarkusIds,
 }: {
   team: TeamInfo;
   isAdmin: boolean;
@@ -417,6 +422,7 @@ function TeamCard({
   selectedAgentId: string | null;
   addMemberMenuOpen: boolean;
   ungrouped: TeamMemberInfo[];
+  externalMarkusIds?: Set<string>;
   onSetManager: (teamId: string, memberId: string, memberType: 'human' | 'agent') => void;
   onRemoveFromTeam: (teamId: string, memberId: string) => void;
   onDeleteTeam: (teamId: string, teamName: string) => void;
@@ -504,6 +510,7 @@ function TeamCard({
                 isAdmin={isAdmin}
                 isSelected={selectedAgentId === member.id}
                 isSelf={member.id === authUserId}
+                isExternal={externalMarkusIds?.has(member.id)}
                 onClick={() => onMemberClick(member)}
                 onBusyClick={() => onBusyClick(member)}
                 onSetManager={() => onSetManager(team.id, member.id, member.type)}
@@ -522,7 +529,7 @@ function TeamCard({
 // ─── Member Card ──────────────────────────────────────────────────────────────
 
 function MemberCard({
-  member, teamId, isManager, isAdmin, isSelected, isSelf,
+  member, teamId, isManager, isAdmin, isSelected, isSelf, isExternal,
   onClick, onBusyClick, onSetManager, onRemoveFromTeam, onStartStop, onRemoveFromOrg,
 }: {
   member: TeamMemberInfo;
@@ -531,6 +538,7 @@ function MemberCard({
   isAdmin: boolean;
   isSelected: boolean;
   isSelf: boolean;
+  isExternal?: boolean;
   onClick: () => void;
   onBusyClick: () => void;
   onSetManager: () => void;
@@ -585,6 +593,9 @@ function MemberCard({
         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isAI ? 'bg-indigo-900/60 text-indigo-400' : 'bg-emerald-900/40 text-emerald-400'}`}>
           {isAI ? 'AI' : 'Human'}
         </span>
+        {isExternal && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">EXT</span>
+        )}
         {isAI && member.status && (
           member.status === 'working' && member.currentTaskId ? (
             <button
@@ -644,7 +655,7 @@ function MemberCard({
 // ─── Ungrouped Section ────────────────────────────────────────────────────────
 
 function UngroupedSection({
-  members, isAdmin, authUserId, selectedAgentId, teams,
+  members, isAdmin, authUserId, selectedAgentId, teams, externalMarkusIds,
   onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick, onMoveToTeam,
 }: {
   members: TeamMemberInfo[];
@@ -652,6 +663,7 @@ function UngroupedSection({
   authUserId?: string;
   selectedAgentId: string | null;
   teams: TeamInfo[];
+  externalMarkusIds?: Set<string>;
   onStartStop: (agentId: string, status: string) => void;
   onRemoveAgent: (agentId: string, agentName: string) => void;
   onRemoveHuman: (userId: string, userName: string) => void;
@@ -673,6 +685,7 @@ function UngroupedSection({
             isAdmin={isAdmin}
             isSelected={selectedAgentId === member.id}
             isSelf={member.id === authUserId}
+            isExternal={externalMarkusIds?.has(member.id)}
             teams={teams}
             onClick={() => onMemberClick(member)}
             onBusyClick={() => onBusyClick(member)}
@@ -687,12 +700,13 @@ function UngroupedSection({
 }
 
 function UngroupedMemberCard({
-  member, isAdmin, isSelected, isSelf, teams, onClick, onBusyClick, onStartStop, onRemove, onMoveToTeam,
+  member, isAdmin, isSelected, isSelf, isExternal, teams, onClick, onBusyClick, onStartStop, onRemove, onMoveToTeam,
 }: {
   member: TeamMemberInfo;
   isAdmin: boolean;
   isSelected: boolean;
   isSelf: boolean;
+  isExternal?: boolean;
   teams: TeamInfo[];
   onClick: () => void;
   onBusyClick: () => void;
@@ -739,6 +753,9 @@ function UngroupedMemberCard({
         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isAI ? 'bg-indigo-900/40 text-indigo-500' : 'bg-emerald-900/30 text-emerald-500'}`}>
           {isAI ? 'AI' : 'Human'}
         </span>
+        {isExternal && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">EXT</span>
+        )}
         {isAI && member.status && (
           member.status === 'working' && member.currentTaskId ? (
             <button

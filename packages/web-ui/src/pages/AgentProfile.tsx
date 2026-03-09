@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -33,12 +33,18 @@ function fmtNum(n: number): string {
 export function AgentProfile({ agentId, onBack, inline }: Props) {
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>('overview');
+  const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
 
   const reload = useCallback(() => { api.agents.get(agentId).then(setAgent).catch(() => {}); }, [agentId]);
 
   useEffect(() => {
     setTab('overview');
+    setExternalInfo(null);
     reload();
+    api.externalAgents.list().then(d => {
+      const match = d.agents.find(ea => ea.markusAgentId === agentId);
+      setExternalInfo(match ?? null);
+    }).catch(() => {});
     const unsub = wsClient.on('agent:update', (evt) => {
       if ((evt.payload as Record<string, string>).agentId === agentId) reload();
     });
@@ -59,6 +65,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
               <h2 className="text-base font-semibold">{agent.name}</h2>
               <span className={`w-2 h-2 rounded-full ${statusDot}`} />
               <span className="text-xs text-gray-500">{agent.state.status}</span>
+              {externalInfo && <span className="px-1.5 py-0.5 text-[10px] bg-purple-500/15 text-purple-400 rounded font-medium">External</span>}
               {agent.agentRole === 'manager' && <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-400 rounded font-medium">Manager</span>}
             </div>
             <div className="text-xs text-gray-500 truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
@@ -79,7 +86,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
         </div>
       </div>
       <div className="p-5">
-        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} />}
+        {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} onUpdate={reload} />}
@@ -93,7 +100,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
+function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(agent.name);
   const [editRole, setEditRole] = useState(agent.agentRole);
@@ -232,52 +239,69 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => 
         </Card>
       )}
 
-      {/* LLM Config */}
-      <Card title="LLM Configuration">
-        <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-          <KV label="Model Mode">
-            {editing
-              ? <div className="flex gap-1.5">
-                  {(['default', 'custom'] as const).map(m => (
-                    <button key={m} onClick={() => setEditModelMode(m)}
-                      className={`px-2.5 py-1 text-[10px] rounded border transition-colors capitalize ${
-                        editModelMode === m
-                          ? (m === 'default' ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30')
-                          : 'bg-gray-800 text-gray-500 border-gray-700'
-                      }`}
-                    >{m === 'default' ? 'System Default' : 'Custom'}</button>
-                  ))}
-                </div>
-              : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-400' : 'text-indigo-400'}`}>
-                  {currentModelMode === 'custom' ? '⚙ Custom' : '◎ System Default'}
-                </span>}
-          </KV>
-          <KV label="Primary Model">
-            {editing
-              ? editModelMode === 'custom'
-                ? <select className="input-sm" value={editModel} onChange={e => setEditModel(e.target.value)}>
-                    {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
-                    {!configuredModels.includes(editModel) && editModel && <option value={editModel}>{editModel}</option>}
+      {externalInfo ? (
+        <Card title="External Connection">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <KV label="Platform">OpenClaw</KV>
+            <KV label="Connection">
+              <span className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${externalInfo.connected ? 'bg-green-400' : 'bg-gray-500'}`} />
+                <span className={externalInfo.connected ? 'text-green-400' : 'text-gray-500'}>{externalInfo.connected ? 'Connected' : 'Disconnected'}</span>
+              </span>
+            </KV>
+            <KV label="External Agent ID" mono>{externalInfo.externalAgentId}</KV>
+            <KV label="Last Heartbeat">{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : 'Never'}</KV>
+            <KV label="Registered">{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
+            <KV label="Capabilities">{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : 'none declared'}</KV>
+          </div>
+        </Card>
+      ) : (
+        <Card title="LLM Configuration">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <KV label="Model Mode">
+              {editing
+                ? <div className="flex gap-1.5">
+                    {(['default', 'custom'] as const).map(m => (
+                      <button key={m} onClick={() => setEditModelMode(m)}
+                        className={`px-2.5 py-1 text-[10px] rounded border transition-colors capitalize ${
+                          editModelMode === m
+                            ? (m === 'default' ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30')
+                            : 'bg-gray-800 text-gray-500 border-gray-700'
+                        }`}
+                      >{m === 'default' ? 'System Default' : 'Custom'}</button>
+                    ))}
+                  </div>
+                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-400' : 'text-indigo-400'}`}>
+                    {currentModelMode === 'custom' ? '⚙ Custom' : '◎ System Default'}
+                  </span>}
+            </KV>
+            <KV label="Primary Model">
+              {editing
+                ? editModelMode === 'custom'
+                  ? <select className="input-sm" value={editModel} onChange={e => setEditModel(e.target.value)}>
+                      {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
+                      {!configuredModels.includes(editModel) && editModel && <option value={editModel}>{editModel}</option>}
+                    </select>
+                  : <span className="text-xs text-gray-400 italic">follows system default ({defaultProvider || '...'})</span>
+                : <span className="font-mono text-xs">
+                    {currentModelMode === 'custom'
+                      ? (agent.config?.llmConfig.primary ?? '—')
+                      : <span className="text-gray-400">{defaultProvider || agent.config?.llmConfig.primary || '—'} <span className="text-gray-600">(system default)</span></span>}
+                  </span>}
+            </KV>
+            <KV label="Fallback">
+              {editing
+                ? <select className="input-sm" value={editFallback} onChange={e => setEditFallback(e.target.value)}>
+                    <option value="">none</option>
+                    {configuredModels.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
-                : <span className="text-xs text-gray-400 italic">follows system default ({defaultProvider || '...'})</span>
-              : <span className="font-mono text-xs">
-                  {currentModelMode === 'custom'
-                    ? (agent.config?.llmConfig.primary ?? '—')
-                    : <span className="text-gray-400">{defaultProvider || agent.config?.llmConfig.primary || '—'} <span className="text-gray-600">(system default)</span></span>}
-                </span>}
-          </KV>
-          <KV label="Fallback">
-            {editing
-              ? <select className="input-sm" value={editFallback} onChange={e => setEditFallback(e.target.value)}>
-                  <option value="">none</option>
-                  {configuredModels.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              : <span className="font-mono text-xs">{agent.config?.llmConfig.fallback ?? 'none'}</span>}
-          </KV>
-          <KV label="Max Tokens/Request">{agent.config?.llmConfig.maxTokensPerRequest ?? 'default'}</KV>
-          <KV label="Max Tokens/Day">{agent.config?.llmConfig.maxTokensPerDay ?? 'unlimited'}</KV>
-        </div>
-      </Card>
+                : <span className="font-mono text-xs">{agent.config?.llmConfig.fallback ?? 'none'}</span>}
+            </KV>
+            <KV label="Max Tokens/Request">{agent.config?.llmConfig.maxTokensPerRequest ?? 'default'}</KV>
+            <KV label="Max Tokens/Day">{agent.config?.llmConfig.maxTokensPerDay ?? 'unlimited'}</KV>
+          </div>
+        </Card>
+      )}
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (

@@ -570,3 +570,43 @@ export const systemAnnouncements = pgTable(
   },
   t => [index('idx_announcements_org').on(t.orgId)]
 );
+
+// ─── External Agent Gateway ─────────────────────────────────────────────────
+
+export const externalAgentRegistrations = pgTable(
+  'external_agent_registrations',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    externalAgentId: varchar('external_agent_id', { length: 255 }).notNull(),
+    orgId: varchar('org_id', { length: 64 }).notNull(),
+    agentName: varchar('agent_name', { length: 255 }).notNull(),
+    markusAgentId: varchar('markus_agent_id', { length: 64 }),
+    capabilities: jsonb('capabilities').default([]),
+    openClawConfig: text('openclaw_config'),
+    connected: boolean('connected').notNull().default(false),
+    lastSyncStatus: varchar('last_sync_status', { length: 16 }),
+    lastHeartbeat: timestamp('last_heartbeat'),
+    registeredAt: timestamp('registered_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  t => [
+    index('idx_ext_agent_org').on(t.orgId),
+    index('idx_ext_agent_external_id').on(t.externalAgentId, t.orgId),
+  ]
+);
+
+export const gatewayMessageQueue = pgTable(
+  'gateway_message_queue',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    targetAgentId: varchar('target_agent_id', { length: 64 }).notNull(),
+    fromAgentId: varchar('from_agent_id', { length: 64 }).notNull(),
+    fromAgentName: varchar('from_agent_name', { length: 255 }),
+    content: text('content').notNull(),
+    delivered: boolean('delivered').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  t => [
+    index('idx_gw_msg_target').on(t.targetAgentId, t.delivered),
+  ]
+);

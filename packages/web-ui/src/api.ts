@@ -297,6 +297,17 @@ export interface TeamMemberInfo {
   currentTaskId?: string;
 }
 
+export interface ExternalAgentInfo {
+  externalAgentId: string;
+  agentName: string;
+  orgId: string;
+  capabilities: string[];
+  connected: boolean;
+  markusAgentId?: string;
+  lastHeartbeat?: string;
+  registeredAt: string;
+}
+
 export interface TeamInfo {
   id: string;
   orgId: string;
@@ -610,6 +621,9 @@ export const api = {
       request(`/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType }) }),
     removeMember: (teamId: string, memberId: string) =>
       request(`/teams/${teamId}/members/${memberId}`, { method: 'DELETE' }),
+  },
+  externalAgents: {
+    list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),
   },
   tasks: {
     list: (filters?: { assignedAgentId?: string; status?: string; projectId?: string; iterationId?: string }) => {

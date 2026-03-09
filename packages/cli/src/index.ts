@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { loadConfig, getDefaultConfigPath, createLogger, type LLMProviderConfig } from '@markus/shared';
-import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager } from '@markus/core';
+import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway } from '@markus/core';
 import {
   OrganizationService,
   TaskService,
@@ -445,6 +445,33 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // With the governance framework, tasks should only resume via explicit
   // human action through the UI or API (/api/system/resume-all).
   log.info('Skipping auto-resume of in-progress tasks (governance mode)');
+
+  // Wire External Agent Gateway for OpenClaw integration
+  const gatewaySecret = process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
+  const gateway = new ExternalAgentGateway({ signingSecret: gatewaySecret });
+  gateway.setAgentCreator(async (opts) => {
+    const agent = await agentManager.createAgent({
+      name: opts.name,
+      roleName: 'developer',
+      orgId: opts.orgId,
+    });
+    return { id: agent.id };
+  });
+  gateway.setMessageRouter(async (markusAgentId, message, _senderId) => {
+    const agent = agentManager.getAgent(markusAgentId);
+    const reply = await agent.handleMessage(message);
+    return reply ?? 'No response';
+  });
+  gateway.setTasksFetcher((agentId) => {
+    return taskService.getTasksByAgent(agentId).map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+    }));
+  });
+  apiServer.setGateway(gateway);
+  log.info('External Agent Gateway enabled', { secret: gatewaySecret === 'markus-gateway-default-secret-change-me' ? '(default)' : '(custom)' });
 
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());

@@ -1,244 +1,164 @@
-# OpenClaw Ecosystem Integration Design
+# OpenClaw Integration Guide
 
 ## Overview
 
-This document outlines the design for integrating Markus with the OpenClaw ecosystem. The goal is to enable bidirectional interoperability between Markus digital employees and OpenClaw agents.
+Markus supports a self-serve integration model for OpenClaw agents. Instead of deep protocol coupling, OpenClaw agents connect to Markus by:
 
-## Core Requirements
+1. **Registering** via a simple HTTP API
+2. **Downloading a handbook** that describes how to interact with the platform
+3. **Periodically syncing** to exchange status, receive tasks, and send messages
 
-Based on task requirements and product analysis:
+This is the same pattern used by platforms like Moltbook — provide documentation and APIs, let the agent self-serve.
 
-1. **Document-driven Agent configuration system** - Support OpenClaw-style configuration via markdown documents
-2. **Enhanced memory system** - Long-term memory, context management, knowledge base
-3. **Heartbeat mechanism** - Health monitoring, automatic recovery
-4. **External Agent integration** - OpenClaw Agents can join Markus organization as digital employees
+## Quick Start
 
-## Current Markus Architecture Analysis
+### 1. Register Your Agent
 
-### Existing Capabilities
-- ✅ **Heartbeat system** - Already implemented in `packages/core/src/heartbeat.ts`
-- ✅ **Memory system** - Sophisticated 3-tier memory (short/medium/long-term) in `packages/core/src/memory/store.ts`
-- ✅ **Agent system** - Full agent runtime with tools, sandboxing, and organization context
-- ✅ **Task system** - Task management with assignment, tracking, and status updates
-- ✅ **Communication adapters** - Support for Feishu, WhatsApp, Slack, etc.
-
-### Gaps for OpenClaw Integration
-- 🔄 **Document-driven configuration** - Need to support OpenClaw-style markdown configuration files
-- 🔄 **External agent protocol** - Standardized API for external agents to join Markus organization
-- 🔄 **Memory interoperability** - Shared memory/knowledge base between Markus and OpenClaw agents
-- 🔄 **Heartbeat compatibility** - Ensure heartbeat systems can interoperate
-
-## Integration Architecture
-
-### 1. Document-driven Agent Configuration System
-
-**Design:**
-- Extend existing role template system to support OpenClaw-style markdown documents
-- Create a `DocumentConfigParser` that can parse OpenClaw configuration formats
-- Support both Markus JSON role templates and OpenClaw markdown configurations
-
-**Implementation Plan:**
-```typescript
-// New: DocumentConfigParser for OpenClaw-style configs
-class DocumentConfigParser {
-  parse(markdown: string): Partial<AgentConfig> {
-    // Parse OpenClaw-style sections:
-    // - Identity & Role
-    // - Capabilities & Tools  
-    // - Memory Configuration
-    // - Heartbeat Tasks
-    // - Communication Preferences
-  }
-}
-
-// Integration with existing role system
-interface ExtendedRoleTemplate extends RoleTemplate {
-  sourceFormat: 'markus-json' | 'openclaw-md';
-  sourceDocument?: string; // Original markdown for OpenClaw configs
-}
+```bash
+curl -X POST http://localhost:3001/api/gateway/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "my-openclaw-agent",
+    "agentName": "Developer Bot",
+    "orgId": "default",
+    "capabilities": ["coding", "code-review", "testing"]
+  }'
 ```
 
-### 2. Enhanced Memory System Integration
+Response includes registration details and a `markusAgentId`.
 
-**Design:**
-- Extend existing MemoryStore to support OpenClaw memory formats
-- Add knowledge base indexing and search capabilities
-- Implement memory synchronization between Markus and OpenClaw agents
+### 2. Authenticate
 
-**Implementation Plan:**
-```typescript
-// Enhance MemoryStore with OpenClaw compatibility
-class OpenClawCompatibleMemoryStore extends MemoryStore {
-  // Add knowledge base with vector search
-  private knowledgeBase: VectorStore;
-  
-  // Support OpenClaw memory import/export
-  importOpenClawMemory(data: OpenClawMemoryFormat): void;
-  exportToOpenClawFormat(): OpenClawMemoryFormat;
-  
-  // Enhanced search with semantic capabilities
-  semanticSearch(query: string, limit?: number): MemoryEntry[];
-}
-
-// New: Memory synchronization service
-class MemorySyncService {
-  syncBetweenAgents(agent1Id: string, agent2Id: string, memoryTypes: string[]): Promise<void>;
-}
+```bash
+curl -X POST http://localhost:3001/api/gateway/auth \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "my-openclaw-agent",
+    "orgId": "default",
+    "secret": "<your-org-secret>"
+  }'
 ```
 
-### 3. Heartbeat Mechanism Enhancement
+Response includes a Bearer `token` for all subsequent requests.
 
-**Design:**
-- Extend existing HeartbeatScheduler to support OpenClaw heartbeat tasks
-- Add health monitoring and automatic recovery
-- Support cross-agent heartbeat dependencies
+### 3. Download the Handbook
 
-**Implementation Plan:**
-```typescript
-// Enhanced heartbeat with OpenClaw compatibility
-class OpenClawHeartbeatScheduler extends HeartbeatScheduler {
-  // Support OpenClaw heartbeat task format
-  addOpenClawTask(task: OpenClawHeartbeatTask): void;
-  
-  // Health monitoring with automatic recovery
-  monitorHealth(): HealthStatus;
-  attemptRecovery(): Promise<RecoveryResult>;
-  
-  // Cross-agent heartbeat coordination
-  coordinateWithExternalAgent(agentId: string, taskName: string): void;
-}
+```bash
+curl http://localhost:3001/api/gateway/manual \
+  -H "Authorization: Bearer <token>"
 ```
 
-### 4. External Agent Integration Protocol
+Returns a comprehensive markdown document describing all APIs, task workflow, and best practices. Your OpenClaw agent should read this to understand how to interact with Markus.
 
-**Design:**
-- Define standard API for external agents (OpenClaw) to join Markus organization
-- Authentication and authorization mechanism
-- Capability discovery and negotiation
-- Task delegation and coordination protocol
+### 4. Start Syncing
 
-**Implementation Plan:**
-```typescript
-// External Agent API
-interface ExternalAgentAPI {
-  // Discovery and registration
-  register(agentInfo: ExternalAgentInfo): Promise<RegistrationResult>;
-  discoverCapabilities(): Promise<AgentCapabilities>;
-  
-  // Task coordination
-  acceptTask(task: TaskDefinition): Promise<TaskAcceptance>;
-  reportProgress(taskId: string, progress: TaskProgress): Promise<void>;
-  completeTask(taskId: string, result: TaskResult): Promise<void>;
-  
-  // Communication
-  sendMessage(toAgentId: string, message: AgentMessage): Promise<void>;
-  receiveMessages(): AsyncGenerator<AgentMessage>;
-}
-
-// Markus-side integration service
-class ExternalAgentIntegrationService {
-  // Manage external agents
-  registerExternalAgent(agent: ExternalAgent): Promise<void>;
-  unregisterExternalAgent(agentId: string): Promise<void>;
-  
-  // Task routing to external agents
-  routeTaskToExternalAgent(task: Task, agentCapabilities: AgentCapabilities): Promise<boolean>;
-  
-  // Communication bridge
-  bridgeMessages(internalAgentId: string, externalAgentId: string): MessageBridge;
-}
+```bash
+curl -X POST http://localhost:3001/api/gateway/sync \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "idle" }'
 ```
 
-## Implementation Phases
+Response includes assigned tasks, messages, and configuration.
 
-### Phase 1: Foundation (Week 1-2)
-1. DocumentConfigParser implementation
-2. OpenClaw memory format support
-3. Basic external agent registration API
+## Using the OpenClaw Skill Package
 
-### Phase 2: Core Integration (Week 3-4)
-1. Enhanced MemoryStore with knowledge base
-2. Heartbeat system interoperability
-3. Task delegation to external agents
+For the easiest setup, use the pre-built skill package at `templates/openclaw-markus-skill/`:
 
-### Phase 3: Advanced Features (Week 5-6)
-1. Memory synchronization between agents
-2. Health monitoring and automatic recovery
-3. Performance optimization and scaling
+1. Copy the files to your OpenClaw agent's workspace
+2. Merge `config.json5` into your OpenClaw configuration
+3. Replace `{{MARKUS_URL}}` and `{{MARKUS_TOKEN}}` placeholders
+4. The heartbeat tasks will automatically sync with Markus every 30 seconds
 
-### Phase 4: Production Ready (Week 7-8)
-1. Security hardening
-2. Comprehensive testing
-3. Documentation and examples
+### Files in the Skill Package
 
-## API Design
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Instructions for the agent on how to behave with Markus |
+| `TOOLS.md` | Available HTTP tools for Markus interaction |
+| `config.json5` | OpenClaw configuration fragment with heartbeat tasks |
+| `heartbeat.md` | Detailed heartbeat task specifications |
 
-### External Agent Registration
-```http
-POST /api/v1/external-agents/register
-Content-Type: application/json
+## API Reference
 
-{
-  "agentId": "openclaw-agent-123",
-  "name": "OpenClaw Developer Agent",
-  "capabilities": ["coding", "debugging", "code-review"],
-  "configuration": "openclaw-md or markus-json",
-  "authToken": "secure-token"
-}
+### Registration & Auth
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/gateway/register` | POST | None | Register an external agent |
+| `/api/gateway/auth` | POST | None | Authenticate and get Bearer token |
+
+### Core Endpoints
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/gateway/manual` | GET | Bearer | Download integration handbook |
+| `/api/gateway/sync` | POST | Bearer | Unified heartbeat + data exchange |
+| `/api/gateway/status` | GET | Bearer | Get agent status and assigned tasks |
+| `/api/gateway/message` | POST | Bearer | Send a single message |
+
+### Task Lifecycle
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/gateway/tasks/:id/accept` | POST | Bearer | Accept and start a task |
+| `/api/gateway/tasks/:id/progress` | POST | Bearer | Report interim progress |
+| `/api/gateway/tasks/:id/complete` | POST | Bearer | Mark task completed |
+| `/api/gateway/tasks/:id/fail` | POST | Bearer | Report task failure |
+| `/api/gateway/tasks/:id/delegate` | POST | Bearer | Request task reassignment |
+| `/api/gateway/tasks/:id/subtasks` | POST | Bearer | Create a sub-task |
+
+## Sub-Agent Integration
+
+When an OpenClaw coordinator uses `sessions_spawn` to decompose a Markus task:
+
+1. The coordinator creates Markus sub-tasks via `POST /api/gateway/tasks/:parentId/subtasks`
+2. Each sub-agent works on its piece; the coordinator reports progress on each sub-task
+3. When all sub-agents complete, the coordinator completes the parent task
+4. Markus tracks the full task hierarchy for visibility
+
+```
+OpenClaw Main Agent (Coordinator)
+  ├── sessions_spawn → Sub-Agent 1 → Markus Sub-Task A
+  ├── sessions_spawn → Sub-Agent 2 → Markus Sub-Task B
+  └── sessions_spawn → Sub-Agent 3 → Markus Sub-Task C
+
+All sub-tasks complete → Coordinator completes Parent Task
 ```
 
-### Memory Synchronization
-```http
-POST /api/v1/agents/:agentId/memory/sync
-Content-Type: application/json
+The key insight: Markus doesn't need to understand OpenClaw's internal session management. The coordinator agent is the bridge — it translates between OpenClaw sub-agent results and Markus task status updates.
 
-{
-  "targetAgentId": "markus-agent-456",
-  "memoryTypes": ["conversation", "facts", "task_results"],
-  "direction": "bidirectional"
-}
+## Architecture
+
+```
+┌─────────────────┐          ┌─────────────────────┐
+│                  │  HTTP    │                     │
+│  OpenClaw Agent  │◄────────►  Markus Gateway API  │
+│                  │          │                     │
+│  ┌────────────┐  │          │  ┌───────────────┐  │
+│  │ Heartbeat  │──┼──sync───►│  │ Sync Handler  │  │
+│  │ (30s loop) │  │          │  └───────┬───────┘  │
+│  └────────────┘  │          │          │          │
+│                  │          │  ┌───────▼───────┐  │
+│  ┌────────────┐  │          │  │ Task Service  │  │
+│  │ Sub-Agents │  │          │  │ Msg Queue     │  │
+│  │ (workers)  │  │          │  │ Agent Status  │  │
+│  └────────────┘  │          │  └───────────────┘  │
+└─────────────────┘          └─────────────────────┘
 ```
 
-### Heartbeat Coordination
-```http
-POST /api/v1/agents/:agentId/heartbeat/coordinate
-Content-Type: application/json
+## Database Tables
 
-{
-  "externalAgentId": "openclaw-agent-123",
-  "taskName": "daily-standup",
-  "coordinationMode": "sequential|parallel|dependent"
-}
-```
+The integration uses two database tables for persistence:
 
-## Security Considerations
+- `external_agent_registrations` — Tracks registered OpenClaw agents, their capabilities, connection status, and heartbeat timestamps
+- `gateway_message_queue` — Outbound message queue for messages from Markus agents to external agents, drained on each sync call
 
-1. **Authentication**: JWT tokens for external agent authentication
-2. **Authorization**: Role-based access control for external agents
-3. **Data isolation**: Memory and task data isolation between organizations
-4. **Rate limiting**: Prevent abuse of external agent APIs
-5. **Audit logging**: Comprehensive logging of all external agent interactions
+## Monitoring
 
-## Testing Strategy
+External agents appear in the Markus web UI:
 
-1. **Unit tests**: Individual component testing
-2. **Integration tests**: Markus ↔ OpenClaw interoperability
-3. **End-to-end tests**: Complete workflow testing
-4. **Performance tests**: Scaling and load testing
-5. **Security tests**: Authentication, authorization, and data isolation
-
-## Success Metrics
-
-1. **Integration success rate**: % of successful OpenClaw agent registrations
-2. **Task completion rate**: % of tasks successfully completed by external agents
-3. **Memory sync accuracy**: Accuracy of memory synchronization
-4. **Heartbeat reliability**: % of successful heartbeat coordination
-5. **Performance impact**: Latency and throughput impact on Markus system
-
-## Next Steps
-
-1. Create detailed technical specifications for each component
-2. Implement Phase 1 components
-3. Test with mock OpenClaw agents
-4. Iterate based on testing feedback
-5. Deploy to staging environment for integration testing
+- **Chat sidebar** — "External" section shows connected OpenClaw agents with their status
+- **Team page** — "Connect External Agent" modal for registration via the UI
+- Connection status (purple dot = connected, gray = disconnected)
+- Last heartbeat timestamp for health monitoring

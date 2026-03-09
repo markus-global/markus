@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type RefObject } from 'react';
 import {
   api, wsClient,
-  type AgentInfo, type AgentToolEvent, type HumanUserInfo,
+  type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo,
   type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
   type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
@@ -82,10 +82,11 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
-function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }: {
+function AgentSidebarItem({ agent: a, selected, tasks, isExternal, onSelect, onViewProfile }: {
   agent: AgentInfo;
   selected: boolean;
   tasks: TaskInfo[];
+  isExternal?: boolean;
   onSelect: () => void;
   onViewProfile: () => void;
 }) {
@@ -127,6 +128,7 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
         <div className="flex-1 min-w-0 text-left">
           <div className="flex items-center gap-1.5">
             <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
+            {isExternal && <span className="text-[8px] px-1 py-0 rounded bg-purple-500/20 text-purple-400 font-medium shrink-0 leading-relaxed">EXT</span>}
             {isError && <span className="text-[9px] px-1.5 py-0 rounded bg-red-500/20 text-red-400 font-medium shrink-0">error</span>}
           </div>
           {isError
@@ -734,6 +736,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
 
+  // External agents (OpenClaw etc.)
+  const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
+
   // Task context
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [linkedTaskId, setLinkedTaskId] = useState<string | null>(null);
@@ -789,6 +794,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     api.users.list().then(d => setHumans(d.users)).catch(() => {});
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
+    api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
 
     // Keep agent list in sync — poll every 8s and react to WS events
@@ -1470,6 +1476,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
           )}
           {(() => {
+            const externalMarkusIds = new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean));
             const teamMap = new Map(teams.map(t => [t.id, t]));
             const agentsByTeam = new Map<string, AgentInfo[]>();
             const ungrouped: AgentInfo[] = [];
@@ -1520,6 +1527,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                           agent={a}
                           selected={chatMode === 'direct' && selectedAgent === a.id}
                           tasks={tasks}
+                          isExternal={externalMarkusIds.has(a.id)}
                           onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
                           onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
                         />
@@ -1537,6 +1545,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   agent={a}
                   selected={chatMode === 'direct' && selectedAgent === a.id}
                   tasks={tasks}
+                  isExternal={externalMarkusIds.has(a.id)}
                   onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
                   onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
                 />
