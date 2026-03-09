@@ -20,6 +20,8 @@ import {
   type WorkflowExecutor,
   type WorkflowDefinition,
   type SyncRequest,
+  type HandbookColleague,
+  type HandbookProject,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -316,6 +318,8 @@ export class APIServer {
           return self.taskService.getTasksByAgent(agentId).map(t => ({
             id: t.id, title: t.title, description: t.description,
             priority: t.priority, status: t.status, parentTaskId: t.parentTaskId,
+            requirementId: t.requirementId,
+            projectId: t.projectId,
           }));
         },
         updateTaskStatus(taskId: string, status: string, updatedBy?: string) {
@@ -350,15 +354,49 @@ export class APIServer {
         },
       },
       {
-        updateStatus(_agentId: string, _status: 'idle' | 'working' | 'error') {
-          // External agents are tracked via gateway registrations, not Agent runtime instances.
-          // Status is recorded on the registration record via heartbeat timestamps.
-        },
-        updateHeartbeat(_agentId: string) {
-          // Heartbeat is implicitly recorded by the gateway on each sync call.
-        },
+        updateStatus(_agentId: string, _status: 'idle' | 'working' | 'error') {},
+        updateHeartbeat(_agentId: string) {},
       },
     );
+
+    this.syncHandler.setTeamBridge({
+      getColleagues(agentId: string, _orgId: string) {
+        return self.orgService.getAgentManager().listAgents()
+          .filter(a => a.id !== agentId)
+          .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
+      },
+      getManager(agentId: string, _orgId: string) {
+        const agents = self.orgService.getAgentManager().listAgents();
+        const mgr = agents.find(a => a.agentRole === 'manager' && a.id !== agentId);
+        return mgr ? { id: mgr.id, name: mgr.name } : undefined;
+      },
+    });
+
+    this.syncHandler.setProjectBridge({
+      getProjects(orgId: string) {
+        if (!self.projectService) return [];
+        return self.projectService.listProjects(orgId).map(p => {
+          const iter = self.projectService!.getActiveIteration(p.id);
+          return {
+            id: p.id,
+            name: p.name,
+            currentIteration: iter ? { id: iter.id, name: iter.name, status: iter.status } : undefined,
+          };
+        });
+      },
+      getActiveRequirements(orgId: string) {
+        if (!self.requirementService) return [];
+        return self.requirementService.listRequirements({ orgId })
+          .filter(r => r.status === 'approved' || r.status === 'in_progress')
+          .map(r => ({
+            id: r.id,
+            title: r.title,
+            status: r.status,
+            priority: r.priority,
+            projectId: r.projectId,
+          }));
+      },
+    });
   }
 
   setReviewService(svc: ReviewService): void {
@@ -2064,11 +2102,30 @@ export class APIServer {
         const token = this.gateway.verifyToken(authHeader.slice(7));
         const reg = this.gateway.listRegistrations(token.orgId)
           .find(r => r.externalAgentId === token.externalAgentId);
+
+        const colleagues: HandbookColleague[] = this.orgService.getAgentManager().listAgents()
+          .filter(a => a.id !== token.markusAgentId)
+          .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
+        const mgr = colleagues.find(c => {
+          const all = this.orgService.getAgentManager().listAgents();
+          return all.find(a => a.id === c.id && a.agentRole === 'manager');
+        });
+
+        const projects: HandbookProject[] = this.projectService
+          ? this.projectService.listProjects(token.orgId).map(p => {
+              const iter = this.projectService!.getActiveIteration(p.id);
+              return { id: p.id, name: p.name, currentIteration: iter?.name };
+            })
+          : [];
+
         const handbook = generateHandbook({
           baseUrl: `http://localhost:${this.port}`,
           orgName: token.orgId,
           agentName: reg?.agentName,
           markusAgentId: token.markusAgentId,
+          colleagues,
+          manager: mgr ? { id: mgr.id, name: mgr.name } : undefined,
+          projects,
         });
         res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
         res.end(handbook);
@@ -2077,6 +2134,85 @@ export class APIServer {
           this.json(res, err.statusCode, { error: err.message });
           return;
         }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Team Context ────────────────────────────────────────────────
+    if (path === '/api/gateway/team' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        const agents = this.orgService.getAgentManager().listAgents();
+        const colleagues = agents
+          .filter(a => a.id !== token.markusAgentId)
+          .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status, agentRole: a.agentRole, skills: a.skills }));
+        const manager = agents.find(a => a.agentRole === 'manager' && a.id !== token.markusAgentId);
+        this.json(res, 200, {
+          colleagues,
+          manager: manager ? { id: manager.id, name: manager.name } : null,
+        });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Projects ────────────────────────────────────────────────────
+    if (path === '/api/gateway/projects' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        if (!this.projectService) { this.json(res, 200, { projects: [] }); return; }
+        const projects = this.projectService.listProjects(token.orgId).map(p => {
+          const iter = this.projectService!.getActiveIteration(p.id);
+          const iterations = this.projectService!.listIterations(p.id);
+          return {
+            id: p.id, name: p.name, description: p.description, status: p.status,
+            iterationModel: p.iterationModel,
+            currentIteration: iter ? { id: iter.id, name: iter.name, status: iter.status } : null,
+            iterationCount: iterations.length,
+            teamIds: p.teamIds,
+          };
+        });
+        this.json(res, 200, { projects });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Gateway: Requirements ────────────────────────────────────────────────
+    if (path === '/api/gateway/requirements' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        if (!this.requirementService) { this.json(res, 200, { requirements: [] }); return; }
+        const url = new URL(req.url!, `http://localhost`);
+        const projectId = url.searchParams.get('project_id') ?? undefined;
+        const status = url.searchParams.get('status') ?? undefined;
+        const reqs = this.requirementService.listRequirements({
+          orgId: token.orgId,
+          projectId,
+          status: status as any,
+        }).map(r => ({
+          id: r.id, title: r.title, description: r.description,
+          status: r.status, priority: r.priority,
+          projectId: r.projectId, iterationId: r.iterationId,
+          source: r.source, createdAt: r.createdAt,
+        }));
+        this.json(res, 200, { requirements: reqs });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
         this.json(res, 500, { error: String(err) });
       }
       return;

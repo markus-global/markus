@@ -154,6 +154,20 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
   const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-indigo-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
 
   if (externalInfo) {
+    const GATEWAY_ENDPOINTS = [
+      { method: 'POST', path: '/api/gateway/sync', desc: 'Exchange status, tasks, messages, team & project context' },
+      { method: 'GET', path: '/api/gateway/manual', desc: 'Download integration handbook (dynamic, includes colleagues & projects)' },
+      { method: 'GET', path: '/api/gateway/team', desc: 'Query team members, roles, and manager' },
+      { method: 'GET', path: '/api/gateway/projects', desc: 'List projects with iterations and governance' },
+      { method: 'GET', path: '/api/gateway/requirements', desc: 'Query requirements (filter by project/status)' },
+    ];
+    const SYNC_CONTEXT_FIELDS = [
+      { field: 'assignedTasks', desc: 'Tasks with requirement & project traceability' },
+      { field: 'inboxMessages', desc: 'Messages from teammates' },
+      { field: 'teamContext', desc: 'Colleagues (id, name, role, status) + manager' },
+      { field: 'projectContext', desc: 'Projects, iterations, active requirements' },
+    ];
+
     return (
       <div className="space-y-4">
         <Card title="Identity">
@@ -184,6 +198,29 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
             <KV label="Registered">{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
             <KV label="Capabilities">{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : 'none declared'}</KV>
             <KV label="Last Heartbeat">{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : 'Never'}</KV>
+          </div>
+        </Card>
+
+        <Card title="Sync Context (received every sync cycle)">
+          <div className="space-y-1.5">
+            {SYNC_CONTEXT_FIELDS.map(f => (
+              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-gray-800/30 border border-gray-700/30">
+                <span className="font-mono text-[10px] text-indigo-400 shrink-0 pt-0.5">{f.field}</span>
+                <span className="text-[10px] text-gray-500">{f.desc}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card title="Gateway API Endpoints">
+          <div className="space-y-1.5">
+            {GATEWAY_ENDPOINTS.map(ep => (
+              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-gray-800/30 border border-gray-700/30">
+                <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-400' : 'text-green-400'}`}>{ep.method}</span>
+                <span className="font-mono text-[10px] text-gray-300 shrink-0 pt-0.5">{ep.path}</span>
+                <span className="text-[10px] text-gray-600 ml-auto">{ep.desc}</span>
+              </div>
+            ))}
           </div>
         </Card>
 

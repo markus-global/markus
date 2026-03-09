@@ -60,11 +60,17 @@ export type {
 export { generateHandbook, GatewaySyncHandler } from './gateway/index.js';
 export type {
   HandbookContext,
+  HandbookColleague,
+  HandbookProject,
   SyncRequest,
   SyncResponse,
+  SyncTeamContext,
+  SyncProjectContext,
   TaskBridge,
   MessageBridge,
   AgentStatusUpdater,
+  TeamBridge,
+  ProjectBridge,
 } from './gateway/index.js';
 export {
   ReviewService,

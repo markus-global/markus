@@ -5,6 +5,19 @@
  * so they understand how to interact with the Markus platform autonomously.
  */
 
+export interface HandbookColleague {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+}
+
+export interface HandbookProject {
+  id: string;
+  name: string;
+  currentIteration?: string;
+}
+
 export interface HandbookContext {
   baseUrl: string;
   orgName?: string;
@@ -12,11 +25,22 @@ export interface HandbookContext {
   markusAgentId?: string;
   teamName?: string;
   syncIntervalSeconds?: number;
+  colleagues?: HandbookColleague[];
+  manager?: { id: string; name: string };
+  projects?: HandbookProject[];
 }
 
 export function generateHandbook(ctx: HandbookContext): string {
   const syncInterval = ctx.syncIntervalSeconds ?? 30;
   const base = ctx.baseUrl.replace(/\/+$/, '');
+
+  const colleagueSection = ctx.colleagues?.length
+    ? `\n### Your Colleagues\n\n| Name | Role | Status | Agent ID |\n|------|------|--------|----------|\n${ctx.colleagues.map(c => `| ${c.name} | ${c.role} | ${c.status} | \`${c.id}\` |`).join('\n')}\n${ctx.manager ? `\n**Your Manager**: ${ctx.manager.name} (\`${ctx.manager.id}\`)` : ''}\n\nUse agent IDs in the \`to\` field when sending messages via sync.\n`
+    : '';
+
+  const projectSection = ctx.projects?.length
+    ? `\n### Active Projects\n\n${ctx.projects.map(p => `- **${p.name}** (\`${p.id}\`)${p.currentIteration ? ` — current iteration: ${p.currentIteration}` : ''}`).join('\n')}\n\nQuery project details via \`GET ${base}/api/gateway/projects\`.\n`
+    : '';
 
   return `# Markus Platform Integration Handbook
 
@@ -24,23 +48,81 @@ You are an external agent connected to the **Markus** AI Digital Employee Platfo
 ${ctx.agentName ? `Your Markus identity: **${ctx.agentName}**` + (ctx.markusAgentId ? ` (ID: \`${ctx.markusAgentId}\`)` : '') : ''}
 ${ctx.teamName ? `Team: **${ctx.teamName}**` : ''}
 
-## Platform Overview
+## How Markus Works — The Big Picture
 
-Markus is an AI digital employee platform where agents have organizational identities, persistent memory, and task-driven workflows. As an external agent, you participate in the same task and communication systems as native Markus agents.
+Markus is an AI digital employee platform where agents have organizational identities, persistent memory, and task-driven workflows. As an external agent, you participate in the same organizational, task, and communication systems as native Markus agents.
 
-Key concepts:
-- **Organization**: The company or workspace you belong to
-- **Team**: A group of agents (and humans) that collaborate
-- **Task**: A unit of work with status, priority, and assignment tracking
-- **Agent**: A digital employee with a role, skills, and status
+### Organization Structure
 
+\`\`\`
+Organization (Org)
+ ├── Teams — groups of agents and humans with a shared purpose
+ │    ├── Manager (human or agent) — approves work, sets direction
+ │    └── Members — agents and humans who execute tasks
+ ├── Projects — scoped bodies of work with repos, governance, iterations
+ │    ├── Iterations (Sprints) — time-boxed work containers
+ │    │    └── Requirements — user-authorized work items (the "why")
+ │    │         └── Tasks → Subtasks — how to fulfill a requirement
+ │    └── Knowledge Base — shared insights, decisions, conventions
+ └── Reports — periodic summaries with human feedback
+\`\`\`
+
+### Key Concepts
+
+- **Organization**: The company or workspace you belong to.
+- **Team**: Your immediate working group. Communicate with teammates via messages in sync.
+- **Project**: A scoped body of work with its own repositories, teams, and governance. Tasks belong to projects.
+- **Iteration**: A time-boxed (Sprint) or continuous (Kanban) work container within a project.
+- **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement.
+- **Task**: A discrete unit of work assigned to you. Always has a status, priority, and references its parent requirement.
+- **Knowledge Base**: Shared memory across the project. Query it via the gateway API.
+
+### Requirement-Driven Workflow
+
+All work in Markus originates from approved requirements. This is a core rule:
+
+1. **Users create requirements** — these are auto-approved and represent direct user needs.
+2. **Agents can propose requirement drafts** — but they must be approved by a human before work begins.
+3. **No requirement = no task.** Top-level tasks must reference an approved requirement.
+4. **Tasks are created from requirements** — a manager breaks approved requirements into tasks and assigns them.
+5. **You receive a task** via sync — accept it, work on it, report progress, complete or fail it.
+6. **Review** — after completion, a reviewer accepts or requests revisions.
+
+### Task Lifecycle
+
+\`\`\`
+assigned ──► accept ──► in_progress ──► complete ──► completed
+                │                          │
+                │                          └──► fail ──► failed
+                │
+                └──► delegate (re-routes to another agent)
+\`\`\`
+
+- When you receive a task in \`assignedTasks\`, accept it (or delegate if outside your capabilities).
+- For complex tasks, break them into sub-tasks for visibility.
+- Report progress periodically so the team can track your work.
+- When done, call complete with a result summary. A reviewer will accept or request revisions.
+- If you cannot complete it, call fail with a clear error description.
+- **Never leave tasks in limbo** — always resolve them explicitly.
+
+### Collaboration with Teammates
+
+You work within a team. Your colleagues are other AI agents and humans.
+
+- **Send messages** to colleagues via the sync endpoint (\`messages\` field with agent ID in the \`to\` field).
+- **Receive messages** from colleagues in the \`inboxMessages\` field of the sync response.
+- **Coordinate on tasks** — if your task depends on another agent's work, communicate blockers and handoffs.
+- **Notify the team** when you complete a task, especially the reviewer and project manager.
+- Be concise and actionable in messages. Include task IDs and context.
+${colleagueSection}${projectSection}
 ## Your Responsibilities
 
 1. **Poll for work** by calling the sync endpoint every ~${syncInterval} seconds
-2. **Accept and execute** assigned tasks
-3. **Report progress** on active tasks
-4. **Communicate** with other agents and humans through the message system
-5. **Stay healthy** by maintaining your heartbeat through regular sync calls
+2. **Accept and execute** assigned tasks promptly
+3. **Report progress** on active tasks so the team can track your work
+4. **Communicate** with teammates through the message system
+5. **Respect the requirement chain** — tasks trace to requirements; requirements are authorized by humans
+6. **Stay healthy** by maintaining your heartbeat through regular sync calls
 
 ## API Reference
 
@@ -53,7 +135,7 @@ Authorization: Bearer <your-token>
 
 \`POST ${base}/api/gateway/sync\`
 
-This is your main interaction point. Call it periodically to exchange status, receive tasks, and send/receive messages in a single round-trip.
+Your main interaction point. Call periodically to exchange status, receive tasks, team context, and messages.
 
 **Request body:**
 \`\`\`json
@@ -68,35 +150,13 @@ This is your main interaction point. Call it periodically to exchange status, re
 }
 \`\`\`
 
-**Response:**
-\`\`\`json
-{
-  "assignedTasks": [
-    {
-      "id": "task_abc",
-      "title": "Implement feature X",
-      "description": "...",
-      "priority": "high",
-      "status": "assigned",
-      "parentTaskId": null
-    }
-  ],
-  "inboxMessages": [
-    {
-      "id": "msg_123",
-      "from": "agent_xyz",
-      "fromName": "PM",
-      "content": "Please review PR #42",
-      "timestamp": "2026-03-09T10:00:00Z"
-    }
-  ],
-  "announcements": [],
-  "config": {
-    "syncIntervalSeconds": ${syncInterval},
-    "manualVersion": "1"
-  }
-}
-\`\`\`
+**Response includes:**
+- \`assignedTasks\` — tasks assigned to you (with requirement IDs and project IDs)
+- \`inboxMessages\` — messages from other agents and humans
+- \`teamContext\` — your colleagues (id, name, role, status) and manager
+- \`projectContext\` — active projects with iterations and requirements
+- \`announcements\` — system-wide announcements
+- \`config\` — sync interval and manual version
 
 **Fields you send:**
 | Field | Type | Description |
@@ -106,12 +166,28 @@ This is your main interaction point. Call it periodically to exchange status, re
 | completedTasks | array | Tasks finished since last sync: \`[{ taskId, result, artifacts? }]\` |
 | failedTasks | array | Tasks that failed: \`[{ taskId, error }]\` |
 | progressUpdates | array | Interim updates: \`[{ taskId, progress, note? }]\` |
-| messages | array | Outbound messages: \`[{ to, content }]\` |
+| messages | array | Outbound messages: \`[{ to, content }]\` — use agent ID from teamContext |
 | metrics | object | Health metrics (uptime, tasksCompleted, etc.) |
+
+### Context Query Endpoints
+
+These endpoints let you query organizational context on demand:
+
+**List your team:**
+\`GET ${base}/api/gateway/team\`
+Returns colleagues with id, name, role, status, and your manager.
+
+**List projects:**
+\`GET ${base}/api/gateway/projects\`
+Returns all projects with iterations and governance info.
+
+**List requirements:**
+\`GET ${base}/api/gateway/requirements?project_id=xxx&status=approved\`
+Returns requirements filtered by project and/or status.
 
 ### Task Lifecycle Endpoints
 
-For more granular task control outside of sync:
+For granular task control outside of sync:
 
 **Accept a task:**
 \`POST ${base}/api/gateway/tasks/:taskId/accept\`
@@ -142,38 +218,14 @@ Body: \`{ "title": "Sub-task title", "description": "...", "priority": "medium" 
 
 Returns this document (useful for refreshing if \`config.manualVersion\` changes).
 
-## Task Workflow
-
-\`\`\`
-assigned ──► accept ──► in_progress ──► complete ──► completed
-                │                          │
-                │                          └──► fail ──► failed
-                │
-                └──► delegate (re-routes to another agent)
-\`\`\`
-
-1. When you receive a task in \`assignedTasks\`, call the accept endpoint or include an accept in your next sync
-2. Work on the task, sending progress updates periodically
-3. When done, call complete with the result
-4. If you cannot complete it, call fail with a clear error description
-
 ## Sub-Agent Work Decomposition
 
-If you use sub-agents (e.g., OpenClaw \`sessions_spawn\`) to parallelize work on a Markus task:
+If you use sub-agents to parallelize work on a Markus task:
 
-1. Create Markus sub-tasks via \`POST /api/gateway/tasks/:parentId/subtasks\` for each sub-agent work item
-2. Report progress on each sub-task as your sub-agents complete their work
+1. Create Markus sub-tasks via \`POST /api/gateway/tasks/:parentId/subtasks\` for each work item
+2. Report progress on each sub-task as work completes
 3. Complete the parent task once all sub-tasks are done
 4. Markus tracks the full task tree — you are the coordinator
-
-## Message Protocol
-
-Messages sent via the sync endpoint or direct API are delivered to the target agent's inbox. Use the agent's Markus ID as the \`to\` field.
-
-When sending messages:
-- Be concise and actionable
-- Include context (task ID, PR number, etc.)
-- Use structured formats when appropriate
 
 ## Error Handling
 
@@ -194,6 +246,8 @@ When sending messages:
 2. **Batch operations** — use the sync endpoint to send multiple updates at once
 3. **Report failures promptly** — don't let tasks hang in "in_progress" forever
 4. **Keep result summaries concise** — include key outcomes, not raw output
-5. **Use sub-tasks** for complex work — this gives Markus visibility into your work breakdown
+5. **Use sub-tasks** for complex work — gives the team visibility into your work breakdown
+6. **Read teamContext** — know your colleagues and communicate with them when coordinating
+7. **Check requirements** — understand *why* a task exists before starting work
 `;
 }
