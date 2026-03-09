@@ -6,6 +6,16 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
   beforeEach(() => {
     ts = new TaskService();
+    // Disable governance for unit tests so tasks don't require requirementId or approval
+    ts.setGovernancePolicy({
+      enabled: false,
+      defaultTier: 'auto',
+      maxPendingTasksPerAgent: 100,
+      maxTotalActiveTasks: 100,
+      requireApprovalForPriority: [],
+      requireRequirement: false,
+      rules: [],
+    });
   });
 
   afterEach(() => {
@@ -208,6 +218,146 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
       ts.updateTaskStatus(sub2.id, 'completed');
       expect(ts.getTask(parent.id)!.status).toBe('completed');
+    });
+  });
+
+  describe('findDuplicateTasks', () => {
+    it('finds tasks with identical titles in same requirement/agent scope', () => {
+      ts.createTask({
+        orgId: 'org-1',
+        title: 'Implement login',
+        description: 'first',
+        requirementId: 'req-1',
+        assignedAgentId: 'agent-1',
+      });
+      ts.createTask({
+        orgId: 'org-1',
+        title: 'Implement login',
+        description: 'duplicate',
+        requirementId: 'req-1',
+        assignedAgentId: 'agent-1',
+      });
+
+      const groups = ts.findDuplicateTasks('org-1');
+      expect(groups.length).toBe(1);
+      expect(groups[0].tasks.length).toBe(2);
+    });
+
+    it('finds tasks with similar titles (containment)', () => {
+      ts.createTask({
+        orgId: 'org-1',
+        title: 'Add user authentication',
+        description: '',
+        requirementId: 'req-1',
+      });
+      ts.createTask({
+        orgId: 'org-1',
+        title: 'add user authentication module',
+        description: '',
+        requirementId: 'req-1',
+      });
+
+      const groups = ts.findDuplicateTasks('org-1');
+      expect(groups.length).toBe(1);
+    });
+
+    it('does not flag unrelated tasks as duplicates', () => {
+      ts.createTask({ orgId: 'org-1', title: 'Setup database', description: '' });
+      ts.createTask({ orgId: 'org-1', title: 'Design frontend UI', description: '' });
+
+      const groups = ts.findDuplicateTasks('org-1');
+      expect(groups.length).toBe(0);
+    });
+
+    it('ignores completed/cancelled tasks', () => {
+      const t1 = ts.createTask({ orgId: 'org-1', title: 'Same title', description: '' });
+      ts.createTask({ orgId: 'org-1', title: 'Same title', description: '' });
+      ts.updateTaskStatus(t1.id, 'completed');
+
+      const groups = ts.findDuplicateTasks('org-1');
+      expect(groups.length).toBe(0);
+    });
+  });
+
+  describe('cleanupDuplicateTasks', () => {
+    it('cancels newer duplicates and keeps the oldest', () => {
+      const t1 = ts.createTask({
+        orgId: 'org-1',
+        title: 'Build API',
+        description: '',
+        requirementId: 'req-1',
+      });
+      const t2 = ts.createTask({
+        orgId: 'org-1',
+        title: 'Build API',
+        description: '',
+        requirementId: 'req-1',
+      });
+      const t3 = ts.createTask({
+        orgId: 'org-1',
+        title: 'Build API',
+        description: '',
+        requirementId: 'req-1',
+      });
+
+      const result = ts.cleanupDuplicateTasks('org-1');
+      expect(result.count).toBe(2);
+      expect(result.cancelledIds).toContain(t2.id);
+      expect(result.cancelledIds).toContain(t3.id);
+
+      expect(ts.getTask(t1.id)!.status).toBe('pending');
+      expect(ts.getTask(t2.id)!.status).toBe('cancelled');
+      expect(ts.getTask(t3.id)!.status).toBe('cancelled');
+    });
+
+    it('returns empty when no duplicates', () => {
+      ts.createTask({ orgId: 'org-1', title: 'Unique A', description: '' });
+      ts.createTask({ orgId: 'org-1', title: 'Unique B', description: '' });
+
+      const result = ts.cleanupDuplicateTasks('org-1');
+      expect(result.count).toBe(0);
+      expect(result.cancelledIds).toHaveLength(0);
+    });
+  });
+
+  describe('getTaskBoardHealth', () => {
+    it('returns board health summary with status counts', () => {
+      ts.createTask({ orgId: 'org-1', title: 'Pending', description: '' });
+      const t2 = ts.createTask({
+        orgId: 'org-1',
+        title: 'Assigned',
+        description: '',
+        assignedAgentId: 'agent-1',
+      });
+      const dep = ts.createTask({ orgId: 'org-1', title: 'Dep', description: '' });
+      ts.createTask({
+        orgId: 'org-1',
+        title: 'Blocked',
+        description: '',
+        blockedBy: [dep.id],
+      });
+
+      const health = ts.getTaskBoardHealth('org-1') as any;
+      expect(health.totalTasks).toBe(4);
+      expect(health.statusCounts['pending']).toBe(2);
+      expect(health.statusCounts['assigned']).toBe(1);
+      expect(health.statusCounts['blocked']).toBe(1);
+    });
+
+    it('detects unassigned tasks', () => {
+      ts.createTask({ orgId: 'org-1', title: 'Unassigned', description: '' });
+
+      const health = ts.getTaskBoardHealth('org-1') as any;
+      expect(health.unassigned.length).toBe(1);
+      expect(health.unassigned[0].title).toBe('Unassigned');
+    });
+
+    it('reports duplicate groups count', () => {
+      ts.createTask({ orgId: 'org-1', title: 'Dup Task', description: '' });
+      ts.createTask({ orgId: 'org-1', title: 'Dup Task', description: '' });
+
+      const health = ts.getTaskBoardHealth('org-1') as any;
+      expect(health.duplicateGroups).toBe(1);
     });
   });
 });

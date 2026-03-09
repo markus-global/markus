@@ -16,6 +16,7 @@ export interface AgentTaskContext {
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
+    blockedBy?: string[];
   }) => Promise<{ id: string; title: string; status: string }>;
   /** List tasks — defaults to tasks assigned to this agent */
   listTasks: (filter?: { assignedToMe?: boolean; status?: string; requirementId?: string; projectId?: string }) => Promise<
@@ -137,6 +138,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Iteration ID this task belongs to (optional).',
           },
+          blocked_by: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of task IDs that must complete before this task can start. Use this to express dependencies between tasks.',
+          },
         },
         required: ['title', 'description'],
       },
@@ -162,6 +168,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
             iterationId: args['iteration_id'] as string | undefined,
+            blockedBy: args['blocked_by'] as string[] | undefined,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId, reasonUnassigned });
           if (task.status === 'pending_approval') {

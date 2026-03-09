@@ -115,7 +115,8 @@ If you notice work that should be done but no requirement exists for it:
 ### Task creation rules
 - Every `task_create` call MUST include `requirement_id` (the approved requirement this task fulfills) and `project_id` (the project it belongs to). Never create a task without both of these fields.
 - When you call `task_create`, the system may place it in `pending_approval` status. You MUST wait for explicit human or manager approval — do NOT treat the task as yours to execute just because you created it.
-- Do NOT create tasks that duplicate existing ones. Always check `task_list` first.
+- **Before creating a task**, call `task_list` with the same `requirement_id` to check for existing tasks. Do NOT create tasks that duplicate existing ones.
+- When creating multiple related tasks, **always specify `blocked_by`** to declare dependencies explicitly. Tasks that depend on the output of other tasks must list those tasks as blockers. A task with `blocked_by` will start in `blocked` status and automatically transition to `assigned` when all blockers complete.
 - Respect the task cap — if you have reached your concurrent task limit, finish existing tasks before creating new ones.
 
 ---

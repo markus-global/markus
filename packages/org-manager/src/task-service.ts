@@ -524,6 +524,10 @@ export class TaskService {
           if (!v) return undefined;
           return v instanceof Date ? v.toISOString() : String(v);
         };
+        const rawBlockedBy = (row as any).blockedBy;
+        const blockedBy = Array.isArray(rawBlockedBy) && rawBlockedBy.length > 0
+          ? rawBlockedBy as string[]
+          : undefined;
         const task: Task = {
           id: row.id,
           orgId: row.orgId,
@@ -535,6 +539,7 @@ export class TaskService {
           assignedAgentId: row.assignedAgentId ?? undefined,
           parentTaskId: row.parentTaskId ?? undefined,
           subtaskIds: [],
+          blockedBy,
           result: (row.result as Task['result']) ?? undefined,
           notes: Array.isArray(row.notes) ? (row.notes as string[]) : undefined,
           createdAt:
@@ -725,12 +730,14 @@ export class TaskService {
           title: task.title,
           description: task.description,
           priority: task.priority,
+          status: task.status,
           assignedAgentId: task.assignedAgentId,
           parentTaskId: task.parentTaskId,
           requirementId: task.requirementId,
           projectId: task.projectId,
           iterationId: task.iterationId,
           createdBy: task.createdBy,
+          blockedBy: task.blockedBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
         })
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
@@ -1264,6 +1271,11 @@ export class TaskService {
         log.info(`Unblocking task ${task.id} (dependency ${completedTask.id} completed)`);
         task.status = newStatus;
         task.updatedAt = new Date().toISOString();
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, newStatus).catch(err =>
+            log.warn('Failed to persist unblocked task status', { taskId: task.id, error: String(err) })
+          );
+        }
         this.ws?.broadcastTaskUpdate(task.id, newStatus, { title: task.title });
         this.emitTaskEvent({
           type: 'unblocked',
@@ -1526,5 +1538,195 @@ export class TaskService {
     task.updatedAt = new Date().toISOString();
     log.info(`Task archived: ${task.title}`, { id: task.id });
     return task;
+  }
+
+  // ─── Duplicate Detection & Board Health ───────────────────────────────────
+
+  private normalizeTitle(title: string): string {
+    return title.toLowerCase().trim().replace(/\s+/g, ' ');
+  }
+
+  private titlesAreSimilar(a: string, b: string): boolean {
+    const na = this.normalizeTitle(a);
+    const nb = this.normalizeTitle(b);
+    if (na === nb) return true;
+
+    // Containment: one title fully contains the other (meaningful overlap)
+    const shorter = na.length <= nb.length ? na : nb;
+    const longer = na.length <= nb.length ? nb : na;
+    if (shorter.length >= 10 && longer.includes(shorter)) return true;
+
+    // Levenshtein distance ratio — require > 0.85 similarity and minimum length
+    const maxLen = Math.max(na.length, nb.length);
+    if (maxLen < 10) return na === nb;
+    const dist = this.levenshteinDistance(na, nb);
+    return 1 - dist / maxLen > 0.85;
+  }
+
+  private levenshteinDistance(a: string, b: string): number {
+    const m = a.length;
+    const n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  /**
+   * Find groups of suspected duplicate tasks among pending/assigned tasks.
+   * Groups tasks by (requirementId, assignedAgentId) then compares titles.
+   */
+  findDuplicateTasks(orgId: string): Array<{
+    group: string;
+    tasks: Array<{ id: string; title: string; status: string; createdAt: string }>;
+  }> {
+    const candidates = [...this.tasks.values()].filter(
+      t => t.orgId === orgId && ['pending', 'assigned', 'blocked'].includes(t.status)
+    );
+
+    // Group by (requirementId || 'none', assignedAgentId || 'unassigned')
+    const groups = new Map<string, Task[]>();
+    for (const task of candidates) {
+      const key = `${task.requirementId ?? 'none'}:${task.assignedAgentId ?? 'unassigned'}`;
+      const arr = groups.get(key) ?? [];
+      arr.push(task);
+      groups.set(key, arr);
+    }
+
+    const duplicateGroups: Array<{
+      group: string;
+      tasks: Array<{ id: string; title: string; status: string; createdAt: string }>;
+    }> = [];
+
+    for (const [groupKey, tasksInGroup] of groups) {
+      if (tasksInGroup.length < 2) continue;
+
+      // Find clusters of similar titles within this group
+      const visited = new Set<string>();
+      for (let i = 0; i < tasksInGroup.length; i++) {
+        if (visited.has(tasksInGroup[i].id)) continue;
+        const cluster: Task[] = [tasksInGroup[i]];
+        visited.add(tasksInGroup[i].id);
+
+        for (let j = i + 1; j < tasksInGroup.length; j++) {
+          if (visited.has(tasksInGroup[j].id)) continue;
+          if (this.titlesAreSimilar(tasksInGroup[i].title, tasksInGroup[j].title)) {
+            cluster.push(tasksInGroup[j]);
+            visited.add(tasksInGroup[j].id);
+          }
+        }
+
+        if (cluster.length >= 2) {
+          duplicateGroups.push({
+            group: groupKey,
+            tasks: cluster.map(t => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              createdAt: t.createdAt,
+            })),
+          });
+        }
+      }
+    }
+
+    return duplicateGroups;
+  }
+
+  /**
+   * Auto-cancel duplicate pending/assigned tasks.
+   * Keeps the oldest task in each duplicate group and cancels the rest.
+   */
+  cleanupDuplicateTasks(orgId: string): { cancelledIds: string[]; count: number } {
+    const groups = this.findDuplicateTasks(orgId);
+    const cancelledIds: string[] = [];
+
+    for (const group of groups) {
+      // Sort by createdAt ascending — keep the oldest
+      const sorted = [...group.tasks].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      const keeper = sorted[0];
+      for (let i = 1; i < sorted.length; i++) {
+        const dup = sorted[i];
+        try {
+          this.addTaskNote(dup.id, `[System] Auto-cancelled: duplicate of task ${keeper.id} ("${keeper.title}")`);
+          this.updateTaskStatus(dup.id, 'cancelled');
+          cancelledIds.push(dup.id);
+          log.info(`Auto-cancelled duplicate task`, { cancelledId: dup.id, keeperId: keeper.id });
+        } catch (err) {
+          log.warn('Failed to cancel duplicate task', { taskId: dup.id, error: String(err) });
+        }
+      }
+    }
+
+    return { cancelledIds, count: cancelledIds.length };
+  }
+
+  /**
+   * Get a health summary of the task board for manager review.
+   */
+  getTaskBoardHealth(orgId: string): Record<string, unknown> {
+    const allTasks = [...this.tasks.values()].filter(t => t.orgId === orgId);
+    const now = Date.now();
+
+    const statusCounts: Record<string, number> = {};
+    for (const t of allTasks) {
+      statusCounts[t.status] = (statusCounts[t.status] ?? 0) + 1;
+    }
+
+    // Duplicates
+    const duplicateGroups = this.findDuplicateTasks(orgId);
+
+    // Stale blocked tasks (blocked > 24h)
+    const staleBlocked = allTasks
+      .filter(t => {
+        if (t.status !== 'blocked') return false;
+        const age = now - new Date(t.updatedAt).getTime();
+        return age > 24 * 60 * 60 * 1000;
+      })
+      .map(t => ({ id: t.id, title: t.title, blockedSinceHours: Math.round((now - new Date(t.updatedAt).getTime()) / 3600000) }));
+
+    // Stale assigned tasks (assigned > 48h without starting)
+    const staleAssigned = allTasks
+      .filter(t => {
+        if (t.status !== 'assigned') return false;
+        const age = now - new Date(t.updatedAt).getTime();
+        return age > 48 * 60 * 60 * 1000;
+      })
+      .map(t => ({ id: t.id, title: t.title, assignedAgentId: t.assignedAgentId, assignedSinceHours: Math.round((now - new Date(t.updatedAt).getTime()) / 3600000) }));
+
+    // Unassigned tasks
+    const unassigned = allTasks
+      .filter(t => !t.assignedAgentId && ['pending', 'blocked'].includes(t.status))
+      .map(t => ({ id: t.id, title: t.title, status: t.status }));
+
+    // Agent workload
+    const agentLoad = new Map<string, { active: number; total: number }>();
+    for (const t of allTasks) {
+      if (!t.assignedAgentId) continue;
+      const entry = agentLoad.get(t.assignedAgentId) ?? { active: 0, total: 0 };
+      entry.total++;
+      if (['assigned', 'in_progress', 'blocked'].includes(t.status)) entry.active++;
+      agentLoad.set(t.assignedAgentId, entry);
+    }
+
+    return {
+      totalTasks: allTasks.length,
+      statusCounts,
+      duplicateGroups: duplicateGroups.length,
+      duplicateDetails: duplicateGroups,
+      staleBlocked,
+      staleAssigned,
+      unassigned,
+      agentWorkload: Object.fromEntries(agentLoad),
+    };
   }
 }

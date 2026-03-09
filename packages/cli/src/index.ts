@@ -326,6 +326,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
       taskService.setTaskCommentRepo(storage.taskCommentRepo);
     }
     await taskService.loadFromDB('default');
+    taskService.startTimeoutChecker();
   }
 
   const agentManager = new AgentManager({

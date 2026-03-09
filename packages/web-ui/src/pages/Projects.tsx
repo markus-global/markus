@@ -330,12 +330,13 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailModal({
-  task, agents, projects, requirements, onClose, onRefresh,
+  task, agents, projects, requirements, allTasks, onClose, onRefresh,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
   projects: ProjectInfo[];
   requirements: RequirementInfo[];
+  allTasks: TaskInfo[];
   onClose: () => void;
   onRefresh: () => void;
 }) {
@@ -465,8 +466,8 @@ function TaskDetailModal({
             </div>
           )}
 
-          {/* Context badges — project, requirement */}
-          {(taskProject || taskRequirement || task.parentTaskId) && (
+          {/* Context badges — project, requirement, dependencies */}
+          {(taskProject || taskRequirement || task.parentTaskId || (task.blockedBy && task.blockedBy.length > 0)) && (
             <div className="px-6 py-2.5 border-b border-gray-800 flex flex-wrap items-center gap-2">
               {taskProject && (
                 <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded-full">
@@ -486,6 +487,17 @@ function TaskDetailModal({
                   <span className="font-mono">{task.parentTaskId.slice(-8)}</span>
                 </span>
               )}
+              {task.blockedBy && task.blockedBy.length > 0 && task.blockedBy.map(blockerId => {
+                const blockerTask = allTasks.find(t => t.id === blockerId);
+                const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
+                return (
+                  <span key={blockerId} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-400 line-through opacity-60' : 'bg-amber-500/10 text-amber-300'}`}>
+                    <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
+                    <span className="text-[9px] opacity-60">Blocked by</span>
+                    <span className="font-mono">{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
+                  </span>
+                );
+              })}
             </div>
           )}
 
@@ -847,6 +859,7 @@ export function ProjectsPage() {
   const [taskAutoAssign, setTaskAutoAssign] = useState(true);
   const [taskAssignTo, setTaskAssignTo] = useState('');
   const [taskProjectId, setTaskProjectId] = useState<string>('');
+  const [taskBlockedBy, setTaskBlockedBy] = useState<string[]>([]);
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
@@ -1008,8 +1021,9 @@ export function ProjectsPage() {
       taskAutoAssign,
       projId,
       iterId,
+      taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
     );
-    setTaskTitle(''); setTaskDesc(''); setShowCreateTask(false);
+    setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setShowCreateTask(false);
     refreshBoard();
   };
 
@@ -1459,6 +1473,11 @@ export function ProjectsPage() {
                                 {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>}
                               </div>
                             )}
+                            {task.blockedBy && task.blockedBy.length > 0 && (
+                              <div className="mt-1.5 flex items-center gap-1">
+                                <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded">⏳ {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}</span>
+                              </div>
+                            )}
                             <div className="flex items-center justify-between mt-2">
                               <div className="flex items-center gap-1.5">
                                 <span className="text-xs text-gray-600">{task.priority}</span>
@@ -1563,6 +1582,35 @@ export function ProjectsPage() {
                 </div>
               )}
             </div>
+            {/* Dependency selector */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Blocked By (dependencies)</label>
+              <select
+                value=""
+                onChange={e => {
+                  const id = e.target.value;
+                  if (id && !taskBlockedBy.includes(id)) setTaskBlockedBy([...taskBlockedBy, id]);
+                }}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                <option value="">Select a task to depend on…</option>
+                {Object.values(board).flat()
+                  .filter(t => !t.parentTaskId && t.status !== 'completed' && t.status !== 'cancelled' && !taskBlockedBy.includes(t.id))
+                  .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+              </select>
+              {taskBlockedBy.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {taskBlockedBy.map(id => {
+                    const dep = Object.values(board).flat().find(t => t.id === id);
+                    return (
+                      <span key={id} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 bg-amber-500/10 text-amber-300 rounded-full">
+                        ⏳ {dep ? dep.title.slice(0, 30) : id.slice(-8)}
+                        <button onClick={() => setTaskBlockedBy(taskBlockedBy.filter(x => x !== id))} className="ml-0.5 text-amber-400/60 hover:text-amber-300">×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
               <input type="checkbox" checked={taskAutoAssign} onChange={e => setTaskAutoAssign(e.target.checked)} className="rounded bg-gray-800 border-gray-700" />
               Auto-assign to best available agent
@@ -1582,6 +1630,7 @@ export function ProjectsPage() {
           agents={agents}
           projects={projects}
           requirements={allRequirements}
+          allTasks={Object.values(board).flat()}
           onClose={() => setSelectedTask(null)}
           onRefresh={handleTaskRefresh}
         />

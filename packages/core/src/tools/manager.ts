@@ -3,11 +3,25 @@ import { createLogger } from '@markus/shared';
 
 const log = createLogger('manager-tools');
 
+export interface CreateTaskParams {
+  title: string;
+  description: string;
+  assignedAgentId?: string;
+  priority?: string;
+  blockedBy?: string[];
+  parentTaskId?: string;
+  requirementId?: string;
+  projectId?: string;
+}
+
 export interface ManagerToolsContext {
   listAgents: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
   delegateMessage: (agentId: string, message: string, fromManager: string) => Promise<string>;
-  createTask: (title: string, description: string, assignedAgentId?: string, priority?: string) => string;
+  createTask: (params: CreateTaskParams) => string;
   getTeamStatus: () => Array<{ id: string; name: string; role: string; status: string; currentTask?: string; tokensUsedToday: number }>;
+  findDuplicateTasks?: (orgId: string) => Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
+  cleanupDuplicateTasks?: (orgId: string) => { cancelledIds: string[]; count: number };
+  getTaskBoardHealth?: (orgId: string) => Record<string, unknown>;
 }
 
 export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[] {
@@ -60,7 +74,13 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
     },
     {
       name: 'create_task',
-      description: 'Create a new task and assign it to a team member. IMPORTANT: assigned_agent_id is required in almost all cases — use team_list first to find the right agent. Only omit if genuinely unclear who should own the task, and then provide reason_unassigned.',
+      description: [
+        'Create a new task and optionally assign it to a team member.',
+        'IMPORTANT: assigned_agent_id is required in almost all cases — use team_list first.',
+        'Use blocked_by to declare dependencies on other tasks.',
+        'Use parent_task_id to create subtasks under a parent task.',
+        'Always provide requirement_id and project_id for top-level tasks.',
+      ].join(' '),
       inputSchema: {
         type: 'object',
         properties: {
@@ -69,6 +89,14 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
           assigned_agent_id: { type: 'string', description: 'Agent ID to assign this task to. REQUIRED in almost all cases. Use team_list to find the right agent by role/skills.' },
           reason_unassigned: { type: 'string', description: 'Required when assigned_agent_id is omitted. Explain why no agent can be assigned right now.' },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Task priority' },
+          blocked_by: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Array of task IDs that must complete before this task can start. Use this to express dependencies between tasks.',
+          },
+          parent_task_id: { type: 'string', description: 'Parent task ID if this is a subtask.' },
+          requirement_id: { type: 'string', description: 'ID of the approved requirement this task fulfills. Required for top-level tasks.' },
+          project_id: { type: 'string', description: 'Project ID this task belongs to.' },
         },
         required: ['title', 'description'],
       },
@@ -82,17 +110,106 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
               error: 'assigned_agent_id is required. If you cannot assign this task yet, provide reason_unassigned. Use team_list to find the right agent.',
             });
           }
-          const taskId = ctx.createTask(
-            args['title'] as string,
-            args['description'] as string,
+          const taskId = ctx.createTask({
+            title: args['title'] as string,
+            description: args['description'] as string,
             assignedAgentId,
-            args['priority'] as string | undefined,
-          );
+            priority: args['priority'] as string | undefined,
+            blockedBy: args['blocked_by'] as string[] | undefined,
+            parentTaskId: args['parent_task_id'] as string | undefined,
+            requirementId: args['requirement_id'] as string | undefined,
+            projectId: args['project_id'] as string | undefined,
+          });
           return JSON.stringify({ status: 'success', taskId });
         } catch (error) {
           return JSON.stringify({ status: 'error', error: String(error) });
         }
       },
     },
+
+    ...(ctx.findDuplicateTasks
+      ? [
+          {
+            name: 'task_check_duplicates',
+            description: 'Check for duplicate tasks on the board. Returns groups of suspected duplicate tasks that have similar titles within the same requirement/agent scope. Use during heartbeat to maintain board hygiene.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                org_id: { type: 'string', description: 'Organization ID to check' },
+              },
+              required: ['org_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const groups = ctx.findDuplicateTasks!(args['org_id'] as string);
+                return JSON.stringify({
+                  status: 'success',
+                  duplicateGroups: groups,
+                  totalGroups: groups.length,
+                  message: groups.length === 0
+                    ? 'No duplicates found.'
+                    : `Found ${groups.length} group(s) of suspected duplicates. Review and use task_cleanup_duplicates to cancel them.`,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.cleanupDuplicateTasks
+      ? [
+          {
+            name: 'task_cleanup_duplicates',
+            description: 'Auto-cancel duplicate pending/assigned tasks. For each group of duplicates, keeps the oldest task and cancels the rest. Returns the list of cancelled task IDs.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                org_id: { type: 'string', description: 'Organization ID to clean up' },
+              },
+              required: ['org_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = ctx.cleanupDuplicateTasks!(args['org_id'] as string);
+                return JSON.stringify({
+                  status: 'success',
+                  ...result,
+                  message: result.count === 0
+                    ? 'No duplicates to clean up.'
+                    : `Cancelled ${result.count} duplicate task(s).`,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.getTaskBoardHealth
+      ? [
+          {
+            name: 'task_board_health',
+            description: 'Get a health summary of the task board: status counts, duplicate warnings, stale blocked tasks, unassigned tasks, and agent workload. Use during heartbeat for board hygiene.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                org_id: { type: 'string', description: 'Organization ID to check' },
+              },
+              required: ['org_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const health = ctx.getTaskBoardHealth!(args['org_id'] as string);
+                return JSON.stringify({ status: 'success', ...health });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
   ];
 }

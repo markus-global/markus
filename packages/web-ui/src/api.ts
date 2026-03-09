@@ -317,6 +317,7 @@ export interface TaskInfo {
   assignedAgentId?: string;
   parentTaskId?: string;
   subtaskIds?: string[];
+  blockedBy?: string[];
   notes?: string[];
   projectId?: string;
   iterationId?: string;
@@ -621,8 +622,8 @@ export const api = {
       return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
-    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId }) }),
+    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string, blockedBy?: string[]) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId, blockedBy }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>

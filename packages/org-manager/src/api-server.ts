@@ -1250,6 +1250,7 @@ export class APIServer {
         autoAssign: body['autoAssign'] as boolean | undefined,
         projectId: body['projectId'] as string | undefined,
         iterationId: body['iterationId'] as string | undefined,
+        blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
         createdBy: authUser?.userId ?? 'unknown',
         creatorRole: 'human',
       });

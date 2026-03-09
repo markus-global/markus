@@ -104,6 +104,7 @@ export const tasks = pgTable('tasks', {
   assignedAgentId: varchar('assigned_agent_id', { length: 64 }).references(() => agents.id),
   parentTaskId: varchar('parent_task_id', { length: 64 }),
   requirementId: varchar('requirement_id', { length: 64 }),
+  blockedBy: jsonb('blocked_by').default([]),
   result: jsonb('result'),
   notes: jsonb('notes').default([]),
   projectId: varchar('project_id', { length: 64 }),

@@ -485,6 +485,7 @@ export class AgentManager {
             requirementId: params.requirementId,
             projectId: params.projectId,
             iterationId: params.iterationId,
+            blockedBy: params.blockedBy,
             createdBy: id,
             creatorRole: 'worker',
           });
@@ -610,14 +611,18 @@ export class AgentManager {
           const target = this.getAgent(targetId);
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
-        createTask: (title, description, assignedAgentId, priority) => {
+        createTask: (params) => {
           if (this.taskService) {
             const task = this.taskService.createTask({
               orgId: config.orgId,
-              title,
-              description,
-              priority: priority ?? 'medium',
-              assignedAgentId,
+              title: params.title,
+              description: params.description,
+              priority: params.priority ?? 'medium',
+              assignedAgentId: params.assignedAgentId,
+              blockedBy: params.blockedBy,
+              parentTaskId: params.parentTaskId,
+              requirementId: params.requirementId,
+              projectId: params.projectId,
               createdBy: id,
               creatorRole: 'manager',
             });
@@ -639,6 +644,15 @@ export class AgentManager {
               return { ...a, tokensUsedToday: 0 };
             }
           }),
+        findDuplicateTasks: this.taskService
+          ? (orgId: string) => this.taskService!.findDuplicateTasks(orgId)
+          : undefined,
+        cleanupDuplicateTasks: this.taskService
+          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks(orgId)
+          : undefined,
+        getTaskBoardHealth: this.taskService
+          ? (orgId: string) => this.taskService!.getTaskBoardHealth(orgId)
+          : undefined,
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
@@ -977,14 +991,20 @@ export class AgentManager {
           const target = this.getAgent(targetId);
           return target.handleMessage(message, id, { name: config.name, role: 'manager' });
         },
-        createTask: (title, description, assignedAgentId, priority) => {
+        createTask: (params) => {
           if (this.taskService) {
             return this.taskService.createTask({
               orgId: config.orgId,
-              title,
-              description,
-              priority: priority ?? 'medium',
-              assignedAgentId,
+              title: params.title,
+              description: params.description,
+              priority: params.priority ?? 'medium',
+              assignedAgentId: params.assignedAgentId,
+              blockedBy: params.blockedBy,
+              parentTaskId: params.parentTaskId,
+              requirementId: params.requirementId,
+              projectId: params.projectId,
+              createdBy: id,
+              creatorRole: 'manager',
             }).id;
           }
           return `task_${Date.now()}`;
@@ -1003,6 +1023,15 @@ export class AgentManager {
               return { ...a, tokensUsedToday: 0 };
             }
           }),
+        findDuplicateTasks: this.taskService
+          ? (orgId: string) => this.taskService!.findDuplicateTasks(orgId)
+          : undefined,
+        cleanupDuplicateTasks: this.taskService
+          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks(orgId)
+          : undefined,
+        getTaskBoardHealth: this.taskService
+          ? (orgId: string) => this.taskService!.getTaskBoardHealth(orgId)
+          : undefined,
       });
       for (const tool of managerTools) agent.registerTool(tool);
     }

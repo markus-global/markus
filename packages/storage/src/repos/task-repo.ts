@@ -26,12 +26,14 @@ export class TaskRepo {
     title: string;
     description?: string;
     priority?: TaskPriority;
+    status?: TaskStatus;
     assignedAgentId?: string;
     parentTaskId?: string;
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
     createdBy?: string;
+    blockedBy?: string[];
     dueAt?: Date;
   }) {
     const [row] = await this.db
@@ -42,13 +44,14 @@ export class TaskRepo {
         title: data.title,
         description: data.description ?? '',
         priority: data.priority ?? 'medium',
-        status: data.assignedAgentId ? 'assigned' : 'pending',
+        status: data.status ?? (data.assignedAgentId ? 'assigned' : 'pending'),
         assignedAgentId: data.assignedAgentId ?? null,
         parentTaskId: data.parentTaskId ?? null,
         requirementId: data.requirementId ?? null,
         projectId: data.projectId ?? null,
         iterationId: data.iterationId ?? null,
         createdBy: data.createdBy ?? null,
+        blockedBy: data.blockedBy ?? [],
         dueAt: data.dueAt ?? null,
       })
       .returning();
@@ -118,6 +121,10 @@ export class TaskRepo {
 
   async listByAgent(agentId: string) {
     return this.db.select().from(tasks).where(eq(tasks.assignedAgentId, agentId));
+  }
+
+  async updateBlockedBy(id: string, blockedBy: string[]) {
+    await this.db.update(tasks).set({ blockedBy, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
   async delete(id: string) {
