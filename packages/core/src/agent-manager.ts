@@ -88,6 +88,7 @@ export interface TaskServiceBridge {
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
+    blockedBy?: string[];
     createdBy?: string;
     creatorRole?: string;
   }): { id: string; title: string; status: string };
@@ -116,6 +117,9 @@ export interface TaskServiceBridge {
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string): void;
   submitForReview(taskId: string, deliverables: TaskDeliverable[]): { id: string; status: string };
+  findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
+  cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
+  getTaskBoardHealth?(orgId: string): Record<string, unknown>;
 }
 
 export interface MCPServerConfig {
@@ -644,14 +648,14 @@ export class AgentManager {
               return { ...a, tokensUsedToday: 0 };
             }
           }),
-        findDuplicateTasks: this.taskService
-          ? (orgId: string) => this.taskService!.findDuplicateTasks(orgId)
+        findDuplicateTasks: this.taskService?.findDuplicateTasks
+          ? (orgId: string) => this.taskService!.findDuplicateTasks!(orgId)
           : undefined,
-        cleanupDuplicateTasks: this.taskService
-          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks(orgId)
+        cleanupDuplicateTasks: this.taskService?.cleanupDuplicateTasks
+          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks!(orgId)
           : undefined,
-        getTaskBoardHealth: this.taskService
-          ? (orgId: string) => this.taskService!.getTaskBoardHealth(orgId)
+        getTaskBoardHealth: this.taskService?.getTaskBoardHealth
+          ? (orgId: string) => this.taskService!.getTaskBoardHealth!(orgId)
           : undefined,
       });
       for (const tool of managerTools) {
@@ -1023,14 +1027,14 @@ export class AgentManager {
               return { ...a, tokensUsedToday: 0 };
             }
           }),
-        findDuplicateTasks: this.taskService
-          ? (orgId: string) => this.taskService!.findDuplicateTasks(orgId)
+        findDuplicateTasks: this.taskService?.findDuplicateTasks
+          ? (orgId: string) => this.taskService!.findDuplicateTasks!(orgId)
           : undefined,
-        cleanupDuplicateTasks: this.taskService
-          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks(orgId)
+        cleanupDuplicateTasks: this.taskService?.cleanupDuplicateTasks
+          ? (orgId: string) => this.taskService!.cleanupDuplicateTasks!(orgId)
           : undefined,
-        getTaskBoardHealth: this.taskService
-          ? (orgId: string) => this.taskService!.getTaskBoardHealth(orgId)
+        getTaskBoardHealth: this.taskService?.getTaskBoardHealth
+          ? (orgId: string) => this.taskService!.getTaskBoardHealth!(orgId)
           : undefined,
       });
       for (const tool of managerTools) agent.registerTool(tool);
