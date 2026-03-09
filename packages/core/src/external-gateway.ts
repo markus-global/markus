@@ -115,15 +115,29 @@ export class ExternalAgentGateway {
   }
 
   /** Load persisted registrations from the store into memory. Call once at startup. */
-  async loadFromStore(): Promise<number> {
+  async loadFromStore(agentExists?: (markusAgentId: string) => boolean): Promise<number> {
     if (!this.store) return 0;
     const rows = await this.store.loadAll();
     for (const reg of rows) {
       const key = this.registrationKey(reg.externalAgentId, reg.orgId);
-      reg.connected = false; // reset connection status on restart
+      reg.connected = false;
       this.registrations.set(key, reg);
       const count = this.orgAgentCounts.get(reg.orgId) ?? 0;
       this.orgAgentCounts.set(reg.orgId, count + 1);
+
+      // Recreate internal Markus agent if it was lost (e.g. not in DB restore)
+      if (reg.markusAgentId && agentExists && !agentExists(reg.markusAgentId) && this.agentCreator) {
+        try {
+          const created = await this.agentCreator({ name: reg.agentName, orgId: reg.orgId, capabilities: reg.capabilities });
+          reg.markusAgentId = created.id;
+          if (this.store) {
+            await this.store.saveRegistration(reg);
+          }
+          log.info('Recreated Markus agent for external registration', { externalAgentId: reg.externalAgentId, markusAgentId: created.id });
+        } catch (err) {
+          log.error('Failed to recreate Markus agent for external registration', { externalAgentId: reg.externalAgentId, error: String(err) });
+        }
+      }
     }
     if (rows.length > 0) {
       log.info('Loaded external agent registrations from store', { count: rows.length });

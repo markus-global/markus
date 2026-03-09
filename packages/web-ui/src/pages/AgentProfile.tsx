@@ -76,7 +76,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
           </div>
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
-          {TABS.map(t => (
+          {TABS.filter(t => !externalInfo || ['overview', 'tasks'].includes(t.key)).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === t.key ? 'bg-gray-950 text-white border-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300 hover:bg-gray-800/50'
@@ -152,6 +152,57 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
   };
 
   const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-indigo-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
+
+  if (externalInfo) {
+    return (
+      <div className="space-y-4">
+        <Card title="Identity">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <KV label="Name">{agent.name}</KV>
+            <KV label="Agent Role">
+              <span className={agent.agentRole === 'manager' ? 'text-amber-400' : 'text-cyan-400'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>
+            </KV>
+            <KV label="Role Template">{agent.role}</KV>
+            <KV label="Markus Agent ID" mono>{agent.id}</KV>
+            <KV label="Organization">{agent.config?.orgId ?? 'default'}</KV>
+            <KV label="Created">{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : '—'}</KV>
+          </div>
+        </Card>
+
+        <Card title="Connection Status">
+          <div className="grid grid-cols-4 gap-4">
+            <StatBox label="Connection" value={externalInfo.connected ? 'Online' : 'Offline'} color={externalInfo.connected ? 'green' : 'gray'} />
+            <StatBox label="Platform" value="OpenClaw" />
+            <StatBox label="Active Tasks" value={String(agent.state.activeTaskIds?.length ?? 0)} />
+            <StatBox label="Last Sync" value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : 'Never'} />
+          </div>
+        </Card>
+
+        <Card title="External Agent Details">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <KV label="External Agent ID" mono>{externalInfo.externalAgentId}</KV>
+            <KV label="Registered">{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
+            <KV label="Capabilities">{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : 'none declared'}</KV>
+            <KV label="Last Heartbeat">{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : 'Never'}</KV>
+          </div>
+        </Card>
+
+        {recentTasks.length > 0 && (
+          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-gray-600 hover:text-gray-400">View all →</button>}>
+            <div className="divide-y divide-gray-800/50 -mx-5">
+              {recentTasks.map(t => (
+                <div key={t.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
+                  <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
+                  <span className="text-[10px] text-gray-600 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -239,24 +290,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         </Card>
       )}
 
-      {externalInfo ? (
-        <Card title="External Connection">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <KV label="Platform">OpenClaw</KV>
-            <KV label="Connection">
-              <span className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${externalInfo.connected ? 'bg-green-400' : 'bg-gray-500'}`} />
-                <span className={externalInfo.connected ? 'text-green-400' : 'text-gray-500'}>{externalInfo.connected ? 'Connected' : 'Disconnected'}</span>
-              </span>
-            </KV>
-            <KV label="External Agent ID" mono>{externalInfo.externalAgentId}</KV>
-            <KV label="Last Heartbeat">{externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleString() : 'Never'}</KV>
-            <KV label="Registered">{new Date(externalInfo.registeredAt).toLocaleString()}</KV>
-            <KV label="Capabilities">{externalInfo.capabilities.length > 0 ? externalInfo.capabilities.join(', ') : 'none declared'}</KV>
-          </div>
-        </Card>
-      ) : (
-        <Card title="LLM Configuration">
+      <Card title="LLM Configuration">
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <KV label="Model Mode">
               {editing
@@ -301,7 +335,6 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
             <KV label="Max Tokens/Day">{agent.config?.llmConfig.maxTokensPerDay ?? 'unlimited'}</KV>
           </div>
         </Card>
-      )}
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (

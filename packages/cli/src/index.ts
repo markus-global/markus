@@ -450,6 +450,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const gatewaySecret = process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
   const gateway = new ExternalAgentGateway({ signingSecret: gatewaySecret });
 
+  gateway.setAgentCreator(async (opts) => {
+    const agent = await agentManager.createAgent({
+      name: opts.name,
+      roleName: 'developer',
+      orgId: opts.orgId,
+    });
+    return { id: agent.id };
+  });
+
   // Persistence: wire the store so registrations survive restarts
   if (storage?.externalAgentRepo) {
     const repo = storage.externalAgentRepo;
@@ -460,17 +469,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       async loadAll() { return repo.loadAll(); },
     };
     gateway.setStore(gatewayStore);
-    await gateway.loadFromStore();
+    await gateway.loadFromStore((id) => { try { agentManager.getAgent(id); return true; } catch { return false; } });
   }
-
-  gateway.setAgentCreator(async (opts) => {
-    const agent = await agentManager.createAgent({
-      name: opts.name,
-      roleName: 'developer',
-      orgId: opts.orgId,
-    });
-    return { id: agent.id };
-  });
   gateway.setMessageRouter(async (markusAgentId, message, _senderId) => {
     const agent = agentManager.getAgent(markusAgentId);
     const reply = await agent.handleMessage(message);
