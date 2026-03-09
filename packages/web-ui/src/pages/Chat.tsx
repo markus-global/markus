@@ -3,7 +3,7 @@ import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo,
-  type TaskInfo, type AuthUser, type StoredSegment,
+  type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
   type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -731,6 +731,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number }>>([]);
 
+  // Teams (for grouping direct chats)
+  const [teams, setTeams] = useState<TeamInfo[]>([]);
+  const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
+
   // Task context
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [linkedTaskId, setLinkedTaskId] = useState<string | null>(null);
@@ -785,6 +789,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     refreshAgents();
     api.users.list().then(d => setHumans(d.users)).catch(() => {});
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
+    api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
 
     // Keep agent list in sync — poll every 8s and react to WS events
@@ -1460,22 +1465,95 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           </div>
         )}
 
-        {/* Agents (Direct) */}
+        {/* Agents (Direct) — grouped by team */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
-          <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">Direct</p>
           {agents.length === 0 && (
             <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
           )}
-          {agents.map(a => (
-            <AgentSidebarItem
-              key={a.id}
-              agent={a}
-              selected={chatMode === 'direct' && selectedAgent === a.id}
-              tasks={tasks}
-              onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
-              onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
-            />
-          ))}
+          {(() => {
+            const teamMap = new Map(teams.map(t => [t.id, t]));
+            const agentsByTeam = new Map<string, AgentInfo[]>();
+            const ungrouped: AgentInfo[] = [];
+            for (const a of agents) {
+              if (a.teamId && teamMap.has(a.teamId)) {
+                const list = agentsByTeam.get(a.teamId) ?? [];
+                list.push(a);
+                agentsByTeam.set(a.teamId, list);
+              } else {
+                ungrouped.push(a);
+              }
+            }
+            const teamIds = teams.filter(t => agentsByTeam.has(t.id)).map(t => t.id);
+            const hasTeams = teamIds.length > 0;
+            const toggleTeam = (tid: string) => setCollapsedTeams(prev => {
+              const next = new Set(prev);
+              if (next.has(tid)) next.delete(tid); else next.add(tid);
+              return next;
+            });
+
+            const renderTeamSection = (tid: string, label: string, agentList: AgentInfo[], collapsible: boolean) => {
+              const isCollapsed = collapsible && collapsedTeams.has(tid);
+              return (
+                <div key={tid} className="mb-0.5">
+                  <button
+                    onClick={() => collapsible && toggleTeam(tid)}
+                    className={`w-full flex items-center gap-1.5 px-1.5 py-1.5 rounded-md text-[10px] font-semibold text-gray-500 tracking-wider ${
+                      collapsible ? 'hover:bg-gray-800/50 hover:text-gray-400' : ''
+                    } transition-colors`}
+                  >
+                    {collapsible && (
+                      <svg
+                        className={`w-2.5 h-2.5 text-gray-600 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
+                        fill="currentColor" viewBox="0 0 20 20"
+                      >
+                        <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                    {!collapsible && <span className="w-2.5" />}
+                    <span className="truncate uppercase">{label}</span>
+                    <span className="ml-auto text-[9px] text-gray-700 tabular-nums font-normal">{agentList.length}</span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="ml-1">
+                      {agentList.map(a => (
+                        <AgentSidebarItem
+                          key={a.id}
+                          agent={a}
+                          selected={chatMode === 'direct' && selectedAgent === a.id}
+                          tasks={tasks}
+                          onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
+                          onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            if (!hasTeams) {
+              return agents.map(a => (
+                <AgentSidebarItem
+                  key={a.id}
+                  agent={a}
+                  selected={chatMode === 'direct' && selectedAgent === a.id}
+                  tasks={tasks}
+                  onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
+                  onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
+                />
+              ));
+            }
+
+            return (
+              <>
+                {teamIds.map(tid => {
+                  const team = teamMap.get(tid)!;
+                  return renderTeamSection(tid, team.name, agentsByTeam.get(tid)!, true);
+                })}
+                {ungrouped.length > 0 && renderTeamSection('_ungrouped', 'Other', ungrouped, true)}
+              </>
+            );
+          })()}
 
           {/* People — human-to-human DMs + personal notepad */}
           <div className="mt-3 pt-2 border-t border-gray-800/60">
