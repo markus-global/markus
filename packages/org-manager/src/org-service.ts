@@ -597,7 +597,8 @@ export class OrganizationService {
       log.warn('Failed to restore teams from DB', { error: String(error) });
     }
 
-    // 2. Restore agents
+    // 2. Restore agents (stagger starts to avoid API rate-limiting)
+    const AGENT_START_STAGGER_MS = 5_000;
     try {
       const agentRows = await this.storage.agentRepo.findByOrgId(orgId);
       let restoredCount = 0;
@@ -615,9 +616,12 @@ export class OrganizationService {
             }
           }
 
-          // Auto-start restored agents
+          // Auto-start restored agents with staggered delay
           try {
             await this.agentManager.startAgent(row.id);
+            if (restoredCount < agentRows.length) {
+              await new Promise(r => setTimeout(r, AGENT_START_STAGGER_MS));
+            }
           } catch (startErr) {
             log.warn(`Failed to auto-start restored agent ${row.id}`, { error: String(startErr) });
           }

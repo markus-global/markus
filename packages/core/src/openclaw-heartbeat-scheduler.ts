@@ -33,9 +33,13 @@ export interface HealthMetrics {
 export class OpenClawHeartbeatScheduler {
   private cronTasks = new Map<string, any>(); // node-cron ScheduledTask type
   private intervalTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private pendingDelays = new Map<string, ReturnType<typeof setTimeout>>();
   private running = false;
   private taskStats = new Map<string, HeartbeatTaskStats>();
   private startTime = Date.now();
+
+  private static readonly MAX_INITIAL_JITTER_MS = 10 * 60_000; // 10 minutes max jitter
+  private static taskStartIndex = 0; // global counter for staggering across all scheduler instances
 
   constructor(
     private agentId: string,
@@ -68,6 +72,13 @@ export class OpenClawHeartbeatScheduler {
   stop(): void {
     this.running = false;
     
+    // Stop pending initial delays
+    for (const [key, timer] of this.pendingDelays) {
+      clearTimeout(timer);
+      log.info(`Stopped pending heartbeat delay: ${key}`);
+    }
+    this.pendingDelays.clear();
+
     // Stop all cron tasks
     for (const [key, cronTask] of this.cronTasks) {
       cronTask.stop();
@@ -146,25 +157,39 @@ export class OpenClawHeartbeatScheduler {
   }
 
   /**
-   * Schedule a task using interval
+   * Schedule a task using interval, with an initial random jitter delay
+   * to prevent all agents' heartbeats from firing simultaneously.
    */
   private scheduleIntervalTask(task: HeartbeatTask, key: string): void {
     const interval = task.intervalMs ?? this.defaultIntervalMs;
+
+    // Stagger first execution: deterministic spread + random jitter to avoid thundering herd
+    const idx = OpenClawHeartbeatScheduler.taskStartIndex++;
+    const spreadMs = (idx * 15_000) % OpenClawHeartbeatScheduler.MAX_INITIAL_JITTER_MS;
+    const jitterMs = Math.floor(Math.random() * 30_000);
+    const initialDelay = spreadMs + jitterMs;
     
     log.info(`Scheduling interval heartbeat task: ${task.name}`, {
       agentId: this.agentId,
       intervalMs: interval,
+      initialDelayMs: initialDelay,
     });
 
-    const timer = setInterval(() => {
-      this.executeTask(task, key);
-    }, interval);
+    const delayTimer = setTimeout(() => {
+      this.pendingDelays.delete(key);
+      if (!this.running) return;
 
-    this.intervalTimers.set(key, timer);
+      this.executeTask(task, key);
+      const timer = setInterval(() => {
+        this.executeTask(task, key);
+      }, interval);
+      this.intervalTimers.set(key, timer);
+    }, initialDelay);
+
+    this.pendingDelays.set(key, delayTimer);
     
-    // Calculate next run time for interval
     const stats = this.taskStats.get(key)!;
-    const nextRun = new Date(Date.now() + interval);
+    const nextRun = new Date(Date.now() + initialDelay);
     stats.nextRun = nextRun.toISOString();
   }
 
@@ -249,7 +274,7 @@ export class OpenClawHeartbeatScheduler {
     const uptime = now - this.startTime;
     
     const taskStats = Array.from(this.taskStats.values());
-    const activeTasks = this.cronTasks.size + this.intervalTimers.size;
+    const activeTasks = this.cronTasks.size + this.intervalTimers.size + this.pendingDelays.size;
     const failedTasks = taskStats.filter(stats => stats.failedRuns > 0).length;
     
     // Find last heartbeat time
