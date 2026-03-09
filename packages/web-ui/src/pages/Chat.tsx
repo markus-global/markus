@@ -115,7 +115,7 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
     <div ref={ref} className="relative mb-0.5">
       <button
         onClick={onSelect}
-        className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs transition-colors ${
+        className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors ${
           selected ? 'bg-indigo-600/20 text-indigo-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-gray-800'
         }`}
       >
@@ -124,17 +124,16 @@ function AgentSidebarItem({ agent: a, selected, tasks, onSelect, onViewProfile }
         }`}>
           {agentInitials(a.name)}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 text-left">
           <div className="flex items-center gap-1.5">
-            <span className="truncate">{a.name}</span>
+            <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
             {isError && <span className="text-[9px] px-1.5 py-0 rounded bg-red-500/20 text-red-400 font-medium shrink-0">error</span>}
           </div>
           {isError
-            ? <div className="text-red-400/60 truncate text-[10px]">{errorPreview}</div>
-            : <div className="text-gray-600 truncate">{a.role}</div>
+            ? <div className="text-red-400/60 truncate text-[9px] leading-tight mt-0.5">{errorPreview}</div>
+            : <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">{a.role}</div>
           }
         </div>
-        {/* Status dot - clickable to show details */}
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor} cursor-pointer`}
           onClick={(e) => {
@@ -1563,7 +1562,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             {authUser && (
               <button
                 onClick={() => { setChatMode('dm'); setActiveDmUserId(authUser.id); }}
-                className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
+                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
                   chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
                     ? 'bg-indigo-600/20 text-indigo-300'
                     : 'text-gray-400 hover:bg-gray-800'
@@ -1574,9 +1573,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 }`}>
                   {authUser.name[0]?.toUpperCase()}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate">{authUser.name}</div>
-                  <div className="text-gray-600 truncate">My Notes</div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
+                  <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">My Notes</div>
                 </div>
                 <span className="text-[9px] text-gray-600">📝</span>
               </button>
@@ -1587,7 +1586,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <button
                 key={h.id}
                 onClick={() => { setChatMode('dm'); setActiveDmUserId(h.id); }}
-                className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
+                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
                   chatMode === 'dm' && activeDmUserId === h.id
                     ? 'bg-emerald-900/30 text-emerald-300'
                     : 'text-gray-400 hover:bg-gray-800'
@@ -1598,9 +1597,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 }`}>
                   {h.name[0]?.toUpperCase()}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate">{h.name}</div>
-                  <div className="text-gray-600 truncate">{h.email || h.role}</div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
+                  <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
                 </div>
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
               </button>
