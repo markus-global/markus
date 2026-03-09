@@ -47,4 +47,6 @@ export {
   SqliteMarketplaceRatingRepo,
   SqliteAgentKnowledgeRepo,
   SqliteTaskCommentRepo,
+  SqliteExternalAgentRepo,
+  type SqliteExternalAgentRegistration,
 } from './sqlite-storage.js';

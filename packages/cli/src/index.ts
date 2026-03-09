@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { loadConfig, getDefaultConfigPath, createLogger, type LLMProviderConfig } from '@markus/shared';
-import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway } from '@markus/core';
+import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
 import {
   OrganizationService,
   TaskService,
@@ -449,6 +449,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire External Agent Gateway for OpenClaw integration
   const gatewaySecret = process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
   const gateway = new ExternalAgentGateway({ signingSecret: gatewaySecret });
+
+  // Persistence: wire the store so registrations survive restarts
+  if (storage?.externalAgentRepo) {
+    const repo = storage.externalAgentRepo;
+    const gatewayStore: GatewayStore = {
+      async saveRegistration(reg: ExternalAgentRegistration) { await repo.save(reg); },
+      async deleteRegistration(extId: string, orgId: string) { return repo.delete(extId, orgId); },
+      async updateRegistration(extId: string, orgId: string, patch: Partial<Pick<ExternalAgentRegistration, 'connected' | 'lastHeartbeat'>>) { await repo.update(extId, orgId, patch); },
+      async loadAll() { return repo.loadAll(); },
+    };
+    gateway.setStore(gatewayStore);
+    await gateway.loadFromStore();
+  }
+
   gateway.setAgentCreator(async (opts) => {
     const agent = await agentManager.createAgent({
       name: opts.name,

@@ -2936,7 +2936,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       }
       const externalId = path.split('/')[3]!;
       const orgId = url.searchParams.get('orgId') ?? 'default';
-      const deleted = this.gateway.unregister(externalId, orgId);
+      const deleted = await this.gateway.unregister(externalId, orgId);
       this.json(res, deleted ? 200 : 404, deleted ? { deleted: true } : { error: 'Not found' });
       return;
     }

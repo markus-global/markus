@@ -51,6 +51,7 @@ export type { EnhancedRoleTemplate } from './enhanced-role-loader.js';
 export { ExternalAgentGateway, GatewayError } from './external-gateway.js';
 export type {
   GatewayConfig,
+  GatewayStore,
   ExternalAgentRegistration,
   GatewayToken,
   GatewayMessage,

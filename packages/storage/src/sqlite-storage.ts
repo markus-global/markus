@@ -360,6 +360,31 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id);
+
+CREATE TABLE IF NOT EXISTS external_agent_registrations (
+  external_agent_id TEXT NOT NULL,
+  org_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  markus_agent_id TEXT,
+  capabilities TEXT DEFAULT '[]',
+  openclaw_config TEXT,
+  connected INTEGER NOT NULL DEFAULT 0,
+  last_heartbeat TEXT,
+  registered_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (external_agent_id, org_id)
+);
+
+CREATE TABLE IF NOT EXISTS gateway_message_queue (
+  id TEXT PRIMARY KEY,
+  target_agent_id TEXT NOT NULL,
+  from_agent_id TEXT NOT NULL,
+  from_agent_name TEXT,
+  content TEXT NOT NULL,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_gw_msg_target ON gateway_message_queue(target_agent_id, delivered);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -2346,5 +2371,73 @@ export class SqliteAgentKnowledgeRepo {
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
     };
+  }
+}
+
+// ─── External Agent Registration ──────────────────────────────────────────────
+
+export interface SqliteExternalAgentRegistration {
+  externalAgentId: string;
+  agentName: string;
+  orgId: string;
+  capabilities: string[];
+  openClawConfig?: string;
+  registeredAt: string;
+  markusAgentId?: string;
+  lastHeartbeat?: string;
+  connected: boolean;
+}
+
+export class SqliteExternalAgentRepo {
+  constructor(private db: Database.Database) {}
+
+  async save(reg: SqliteExternalAgentRegistration): Promise<void> {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO external_agent_registrations
+        (external_agent_id, org_id, agent_name, markus_agent_id, capabilities, openclaw_config, connected, last_heartbeat, registered_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      reg.externalAgentId,
+      reg.orgId,
+      reg.agentName,
+      reg.markusAgentId ?? null,
+      toJson(reg.capabilities),
+      reg.openClawConfig ?? null,
+      reg.connected ? 1 : 0,
+      reg.lastHeartbeat ?? null,
+      reg.registeredAt,
+      now(),
+    );
+  }
+
+  async delete(externalAgentId: string, orgId: string): Promise<boolean> {
+    const result = this.db.prepare(
+      'DELETE FROM external_agent_registrations WHERE external_agent_id = ? AND org_id = ?'
+    ).run(externalAgentId, orgId);
+    return result.changes > 0;
+  }
+
+  async update(externalAgentId: string, orgId: string, patch: { connected?: boolean; lastHeartbeat?: string }): Promise<void> {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now()];
+    if (patch.connected !== undefined) { sets.push('connected = ?'); vals.push(patch.connected ? 1 : 0); }
+    if (patch.lastHeartbeat !== undefined) { sets.push('last_heartbeat = ?'); vals.push(patch.lastHeartbeat); }
+    vals.push(externalAgentId, orgId);
+    this.db.prepare(`UPDATE external_agent_registrations SET ${sets.join(', ')} WHERE external_agent_id = ? AND org_id = ?`).run(...vals);
+  }
+
+  async loadAll(): Promise<SqliteExternalAgentRegistration[]> {
+    const rows = this.db.prepare('SELECT * FROM external_agent_registrations').all() as Record<string, unknown>[];
+    return rows.map(r => ({
+      externalAgentId: r['external_agent_id'] as string,
+      agentName: r['agent_name'] as string,
+      orgId: r['org_id'] as string,
+      capabilities: fromJson<string[]>(r['capabilities'] as string) ?? [],
+      openClawConfig: r['openclaw_config'] as string | undefined,
+      registeredAt: r['registered_at'] as string,
+      markusAgentId: r['markus_agent_id'] as string | undefined,
+      lastHeartbeat: r['last_heartbeat'] as string | undefined,
+      connected: !!(r['connected'] as number),
+    }));
   }
 }

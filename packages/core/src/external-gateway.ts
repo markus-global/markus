@@ -45,6 +45,14 @@ export interface GatewayMessageResult {
   error?: string;
 }
 
+/** Persistence layer for external agent registrations. */
+export interface GatewayStore {
+  saveRegistration(reg: ExternalAgentRegistration): Promise<void>;
+  deleteRegistration(externalAgentId: string, orgId: string): Promise<boolean>;
+  updateRegistration(externalAgentId: string, orgId: string, patch: Partial<Pick<ExternalAgentRegistration, 'connected' | 'lastHeartbeat'>>): Promise<void>;
+  loadAll(): Promise<ExternalAgentRegistration[]>;
+}
+
 type AgentCreator = (opts: {
   name: string;
   orgId: string;
@@ -80,6 +88,7 @@ export class ExternalAgentGateway {
   private agentCreator?: AgentCreator;
   private messageRouter?: MessageRouter;
   private tasksFetcher?: TasksFetcher;
+  private store?: GatewayStore;
 
   constructor(config: GatewayConfig) {
     this.config = {
@@ -99,6 +108,27 @@ export class ExternalAgentGateway {
 
   setTasksFetcher(fetcher: TasksFetcher): void {
     this.tasksFetcher = fetcher;
+  }
+
+  setStore(store: GatewayStore): void {
+    this.store = store;
+  }
+
+  /** Load persisted registrations from the store into memory. Call once at startup. */
+  async loadFromStore(): Promise<number> {
+    if (!this.store) return 0;
+    const rows = await this.store.loadAll();
+    for (const reg of rows) {
+      const key = this.registrationKey(reg.externalAgentId, reg.orgId);
+      reg.connected = false; // reset connection status on restart
+      this.registrations.set(key, reg);
+      const count = this.orgAgentCounts.get(reg.orgId) ?? 0;
+      this.orgAgentCounts.set(reg.orgId, count + 1);
+    }
+    if (rows.length > 0) {
+      log.info('Loaded external agent registrations from store', { count: rows.length });
+    }
+    return rows.length;
   }
 
   async register(request: {
@@ -149,6 +179,12 @@ export class ExternalAgentGateway {
     this.registrations.set(key, registration);
     this.orgAgentCounts.set(orgId, orgCount + 1);
 
+    if (this.store) {
+      await this.store.saveRegistration(registration).catch(err =>
+        log.error('Failed to persist registration', { externalAgentId, error: String(err) })
+      );
+    }
+
     log.info('External agent registered', { externalAgentId, orgId, markusAgentId });
     return registration;
   }
@@ -176,6 +212,10 @@ export class ExternalAgentGateway {
 
     registration.connected = true;
     registration.lastHeartbeat = new Date().toISOString();
+
+    if (this.store) {
+      this.store.updateRegistration(externalAgentId, orgId, { connected: true, lastHeartbeat: registration.lastHeartbeat }).catch(() => {});
+    }
 
     const tokenPayload: GatewayToken = {
       externalAgentId,
@@ -237,6 +277,9 @@ export class ExternalAgentGateway {
     const registration = this.registrations.get(key);
     if (registration) {
       registration.lastHeartbeat = new Date().toISOString();
+      if (this.store) {
+        this.store.updateRegistration(token.externalAgentId, token.orgId, { lastHeartbeat: registration.lastHeartbeat }).catch(() => {});
+      }
     }
 
     if (message.type === 'heartbeat') {
@@ -288,16 +331,24 @@ export class ExternalAgentGateway {
     const registration = this.registrations.get(key);
     if (registration) {
       registration.connected = false;
+      if (this.store) {
+        this.store.updateRegistration(externalAgentId, orgId, { connected: false }).catch(() => {});
+      }
       log.info('External agent disconnected', { externalAgentId, orgId });
     }
   }
 
-  unregister(externalAgentId: string, orgId: string): boolean {
+  async unregister(externalAgentId: string, orgId: string): Promise<boolean> {
     const key = this.registrationKey(externalAgentId, orgId);
     const existed = this.registrations.delete(key);
     if (existed) {
       const count = this.orgAgentCounts.get(orgId) ?? 1;
       this.orgAgentCounts.set(orgId, Math.max(0, count - 1));
+      if (this.store) {
+        await this.store.deleteRegistration(externalAgentId, orgId).catch(err =>
+          log.error('Failed to delete registration from store', { externalAgentId, error: String(err) })
+        );
+      }
       log.info('External agent unregistered', { externalAgentId, orgId });
     }
     return existed;
