@@ -218,6 +218,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const providerConfigs: Record<string, LLMProviderConfig> = {};
   let defaultProvider = config.llm.defaultProvider;
+  const llmTimeoutMs = Number(process.env['LLM_TIMEOUT_MS']) || config.llm.timeoutMs || undefined;
 
   const anthropicKey =
     config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'];
@@ -226,6 +227,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
       provider: 'anthropic',
       model: config.llm.defaultModel,
       apiKey: anthropicKey,
+      timeoutMs: llmTimeoutMs,
     };
   }
 
@@ -235,6 +237,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
       provider: 'openai',
       model: 'gpt-4o',
       apiKey: openaiKey,
+      timeoutMs: llmTimeoutMs,
     };
   }
 
@@ -248,6 +251,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
         process.env['DEEPSEEK_BASE_URL'] ??
         config.llm.providers['deepseek']?.baseUrl ??
         'https://api.deepseek.com',
+      timeoutMs: llmTimeoutMs,
     };
     if (config.llm.defaultProvider === 'deepseek') {
       defaultProvider = 'deepseek';
@@ -265,6 +269,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
         process.env['SILICONFLOW_BASE_URL'] ??
         config.llm.providers['siliconflow']?.baseUrl ??
         'https://api.siliconflow.cn/v1',
+      timeoutMs: llmTimeoutMs,
     };
     if (config.llm.defaultProvider === 'siliconflow') {
       defaultProvider = 'siliconflow';
@@ -282,6 +287,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
         process.env['OPENROUTER_BASE_URL'] ??
         config.llm.providers['openrouter']?.baseUrl ??
         'https://openrouter.ai/api/v1',
+      timeoutMs: llmTimeoutMs,
     };
     if (config.llm.defaultProvider === 'openrouter') {
       defaultProvider = 'openrouter';

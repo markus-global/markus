@@ -11,6 +11,8 @@ export interface MarkusConfig {
     defaultProvider: string;
     defaultModel: string;
     providers: Record<string, { apiKey?: string; baseUrl?: string }>;
+    /** Request timeout in ms for all LLM providers (default: 90s) */
+    timeoutMs?: number;
   };
   compute: {
     defaultType: 'docker' | 'vm';

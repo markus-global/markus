@@ -33,12 +33,16 @@ export class OpenAIProvider implements LLMProviderInterface {
   private apiKey: string;
   private baseUrl: string;
   private maxTokens: number;
+  private chatTimeoutMs: number;
+  private streamTimeoutMs: number;
 
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? 'gpt-4o';
     this.apiKey = config?.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
     this.maxTokens = config?.maxTokens ?? 4096;
+    this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
+    this.streamTimeoutMs = config?.timeoutMs ?? 120_000;
   }
 
   configure(config: LLMProviderConfig): void {
@@ -46,6 +50,10 @@ export class OpenAIProvider implements LLMProviderInterface {
     if (config.apiKey) this.apiKey = config.apiKey;
     if (config.baseUrl) this.baseUrl = config.baseUrl;
     if (config.maxTokens) this.maxTokens = config.maxTokens;
+    if (config.timeoutMs) {
+      this.chatTimeoutMs = config.timeoutMs;
+      this.streamTimeoutMs = config.timeoutMs;
+    }
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
@@ -64,7 +72,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     const base = this.baseUrl.replace(/\/+$/, '');
     const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000);
+    const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -156,7 +164,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     const base = this.baseUrl.replace(/\/+$/, '');
     const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
     let res: Response;
     try {

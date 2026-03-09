@@ -52,6 +52,8 @@ interface ProviderHealth {
   consecutiveFailures: number;
   lastFailureAt: number;
   degraded: boolean;
+  /** Per-entry reset interval; longer for non-retryable (billing/auth) failures */
+  resetMs?: number;
 }
 
 export class LLMRouter {
@@ -63,10 +65,10 @@ export class LLMRouter {
   private health = new Map<string, ProviderHealth>();
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
 
-  // After this many consecutive failures, mark provider as degraded and skip it
   private readonly CIRCUIT_OPEN_AFTER = 2;
-  // How long (ms) to keep a provider degraded before retrying
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
+  /** Non-retryable failures (auth, billing, region) get a longer cooldown */
+  private readonly CIRCUIT_RESET_FATAL_MS = 30 * 60 * 1000;
 
   constructor(defaultProvider?: string) {
     this.defaultProvider = defaultProvider ?? 'anthropic';
@@ -74,6 +76,19 @@ export class LLMRouter {
 
   get defaultProviderName(): string {
     return this.defaultProvider;
+  }
+
+  /**
+   * Detect errors that will never succeed on retry (billing, auth, region restrictions).
+   * These should immediately degrade the provider instead of waiting for CIRCUIT_OPEN_AFTER.
+   */
+  private static isNonRetryableError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return /\b(402|403|401)\b/.test(msg) ||
+      /insufficient balance/i.test(msg) ||
+      /not available in your region/i.test(msg) ||
+      /invalid.*api.*key/i.test(msg) ||
+      /authentication/i.test(msg);
   }
 
   private getHealth(name: string): ProviderHealth {
@@ -89,12 +104,22 @@ export class LLMRouter {
     h.degraded = false;
   }
 
-  private recordFailure(name: string): void {
+  private recordFailure(name: string, error?: unknown): void {
     const h = this.getHealth(name);
     h.consecutiveFailures++;
     h.lastFailureAt = Date.now();
+
+    const fatal = LLMRouter.isNonRetryableError(error);
+    if (fatal && !h.degraded) {
+      h.degraded = true;
+      h.resetMs = this.CIRCUIT_RESET_FATAL_MS;
+      log.warn(`Provider ${name} immediately degraded (non-retryable error) — skipping for ${this.CIRCUIT_RESET_FATAL_MS / 60000} min`);
+      return;
+    }
+
     if (h.consecutiveFailures >= this.CIRCUIT_OPEN_AFTER && !h.degraded) {
       h.degraded = true;
+      h.resetMs = this.CIRCUIT_RESET_MS;
       log.warn(`Provider ${name} marked as degraded after ${h.consecutiveFailures} failures — skipping for ${this.CIRCUIT_RESET_MS / 60000} min`);
     }
   }
@@ -102,7 +127,8 @@ export class LLMRouter {
   private isAvailable(name: string): boolean {
     const h = this.getHealth(name);
     if (!h.degraded) return true;
-    if (Date.now() - h.lastFailureAt > this.CIRCUIT_RESET_MS) {
+    const resetMs = h.resetMs ?? this.CIRCUIT_RESET_MS;
+    if (Date.now() - h.lastFailureAt > resetMs) {
       log.info(`Provider ${name} circuit reset — will retry`);
       h.degraded = false;
       h.consecutiveFailures = 0;
@@ -251,7 +277,7 @@ export class LLMRouter {
       return response;
     } catch (error) {
       lastError = error;
-      this.recordFailure(primary);
+      this.recordFailure(primary, error);
       log.error(`LLM request failed for ${primary}`, { error: String(error) });
 
       // Fallback to other providers
@@ -266,7 +292,7 @@ export class LLMRouter {
           return response;
         } catch (fbError) {
           lastError = fbError;
-          this.recordFailure(fallbackName);
+          this.recordFailure(fallbackName, fbError);
           log.error(`Fallback ${fallbackName} also failed`, { error: String(fbError) });
         }
       }
@@ -303,7 +329,7 @@ export class LLMRouter {
       return response;
     } catch (error) {
       lastError = error;
-      this.recordFailure(primary);
+      this.recordFailure(primary, error);
       // If externally aborted, don't try fallbacks
       if (signal?.aborted) {
         span.setError(lastError instanceof Error ? lastError : String(lastError));
@@ -330,7 +356,7 @@ export class LLMRouter {
           return response;
         } catch (fbError) {
           lastError = fbError;
-          this.recordFailure(fallbackName);
+          this.recordFailure(fallbackName, fbError);
           if (signal?.aborted) break;
           log.error(`Stream fallback ${fallbackName} failed`, { error: String(fbError) });
         }

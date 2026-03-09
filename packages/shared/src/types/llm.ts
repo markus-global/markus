@@ -7,6 +7,8 @@ export interface LLMProviderConfig {
   baseUrl?: string;
   maxTokens?: number;
   temperature?: number;
+  /** Request timeout in milliseconds (default: 90s for chat, 120s for streaming) */
+  timeoutMs?: number;
 }
 
 export interface ModelCostConfig {
