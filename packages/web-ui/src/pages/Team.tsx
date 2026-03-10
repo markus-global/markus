@@ -1185,73 +1185,144 @@ function CodeBlock({ label, code }: { label: string; code: string }) {
 }
 
 function OpenClawPanel({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
-  const [tab, setTab] = useState<'register' | 'selfservice'>('register');
   const [agentName, setAgentName] = useState('');
-  const [externalId, setExternalId] = useState('');
-  const [capabilities, setCapabilities] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [gatewayInfo, setGatewayInfo] = useState<{ gatewayUrl: string; orgId: string; orgSecretFull: string } | null>(null);
-  const [registered, setRegistered] = useState<{ externalAgentId: string; markusAgentId?: string } | null>(null);
-
-  useEffect(() => {
-    fetch('/api/gateway/info', { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => d && setGatewayInfo(d))
-      .catch(() => {});
-  }, []);
+  const [result, setResult] = useState<{
+    externalAgentId: string; markusAgentId?: string; token?: string; gatewayUrl?: string;
+  } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   const handleRegister = async () => {
-    if (!agentName.trim()) { setError('Display Name is required'); return; }
-    const extId = externalId.trim() || agentName.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!agentName.trim()) { setError('Agent name is required'); return; }
+    const extId = agentName.trim().toLowerCase().replace(/\s+/g, '-');
     setLoading(true);
     setError('');
     try {
-      const caps = capabilities ? capabilities.split(',').map(c => c.trim()).filter(Boolean) : ['general'];
       const res = await fetch('/api/external-agents/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ externalAgentId: extId, agentName: agentName.trim(), orgId: 'default', capabilities: caps }),
+        body: JSON.stringify({ externalAgentId: extId, agentName: agentName.trim(), orgId: 'default', capabilities: ['general'] }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       const data = await res.json();
-      setRegistered({ externalAgentId: extId, markusAgentId: data.registration?.markusAgentId });
+      setResult({
+        externalAgentId: extId,
+        markusAgentId: data.registration?.markusAgentId,
+        token: data.token,
+        gatewayUrl: data.gatewayUrl,
+      });
     } catch (e) {
       setError(String(e));
     }
     setLoading(false);
   };
 
-  const gwUrl = gatewayInfo?.gatewayUrl ?? `${window.location.origin}/api/gateway`;
-  const secret = gatewayInfo?.orgSecretFull ?? '<GATEWAY_SECRET>';
-  const orgId = gatewayInfo?.orgId ?? 'default';
+  const doCopy = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(null), 2000);
+  };
 
-  if (registered) {
+  if (result) {
+    const gwUrl = result.gatewayUrl ?? `${window.location.origin}/api/gateway`;
+    const baseUrl = gwUrl.replace(/\/api\/gateway$/, '');
+
+    const envBlock = [
+      `MARKUS_URL=${baseUrl}`,
+      `MARKUS_AGENT_ID=${result.externalAgentId}`,
+      result.token ? `MARKUS_TOKEN=${result.token}` : '# Token generation failed — authenticate manually via POST /api/gateway/auth',
+    ].join('\n');
+
+    const connectionPrompt = `Connect to the Markus AI platform as an external agent.
+
+Markus URL: ${baseUrl}
+Agent ID: ${result.externalAgentId}
+${result.token ? `Bearer Token: ${result.token}` : ''}
+
+Read the integration handbook: GET ${gwUrl}/manual (Authorization: Bearer <token>)
+Sync every 30s: POST ${gwUrl}/sync with your status, completed tasks, and messages.
+The sync response includes your assigned tasks, inbox messages, team context, and project context.
+
+For full API docs, read: ${gwUrl}/manual`;
+
     return (
       <>
-        <div className="text-center py-4">
+        <div className="text-center py-3">
           <div className="text-2xl mb-2 text-green-400">✓</div>
-          <div className="text-sm text-green-400 font-medium mb-1">Agent slot registered</div>
-          <div className="text-xs text-gray-400">Configure your OpenClaw agent with the info below.</div>
-        </div>
-        <div className="space-y-3 max-h-[50vh] overflow-y-auto">
-          <CodeBlock label="External Agent ID" code={registered.externalAgentId} />
-          <CodeBlock label="Gateway URL" code={gwUrl} />
-          <CodeBlock label="Org Secret" code={secret} />
-          <CodeBlock label="1. Authenticate" code={`curl -X POST ${gwUrl}/auth \\
-  -H "Content-Type: application/json" \\
-  -d '{"agentId":"${registered.externalAgentId}","orgId":"${orgId}","secret":"${secret}"}'`} />
-          <CodeBlock label="2. Start sync loop" code={`curl -X POST ${gwUrl}/sync \\
-  -H "Authorization: Bearer <TOKEN_FROM_STEP_1>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"status":"idle","completedTasks":[]}'`} />
-          <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-2">
-            For OpenClaw agents: copy the <code className="text-purple-400">templates/openclaw-markus-skill/</code> directory into your agent workspace and merge <code className="text-purple-400">config.json5</code> into your OpenClaw config. Set <code className="text-purple-400">MARKUS_URL</code> and <code className="text-purple-400">MARKUS_TOKEN</code>.
+          <div className="text-sm text-green-400 font-medium mb-1">Agent connected</div>
+          <div className="text-xs text-gray-400">
+            <strong>{agentName}</strong> is ready. Use one of the options below to connect.
           </div>
+        </div>
+        <div className="space-y-3 max-h-[55vh] overflow-y-auto">
+          {/* Option 1: Copy prompt for AI agent */}
+          <div className="bg-purple-900/15 border border-purple-500/30 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-medium text-purple-300">Option 1: Copy prompt into your AI agent</div>
+              <button onClick={() => doCopy(connectionPrompt, 'prompt')}
+                className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'prompt' ? 'bg-green-600 text-white' : 'bg-purple-700 hover:bg-purple-600 text-white'}`}
+              >{copied === 'prompt' ? 'Copied!' : 'Copy Prompt'}</button>
+            </div>
+            <div className="text-[10px] text-gray-400">
+              Paste this prompt into your OpenClaw agent, Cursor, or any AI assistant. The agent will read the handbook and start syncing automatically.
+            </div>
+          </div>
+
+          {/* Option 2: Environment variables */}
+          <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs font-medium text-gray-300">Option 2: Set environment variables</div>
+              <button onClick={() => doCopy(envBlock, 'env')}
+                className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'env' ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}
+              >{copied === 'env' ? 'Copied!' : 'Copy'}</button>
+            </div>
+            <pre className="text-[10px] font-mono text-gray-400 bg-gray-900/60 rounded p-2 overflow-x-auto whitespace-pre">{envBlock}</pre>
+          </div>
+
+          {/* Option 3: Quick reference */}
+          <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
+            <div className="text-xs font-medium text-gray-300 mb-2">Quick reference</div>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
+                <span className="font-mono text-gray-400">/api/gateway/manual</span>
+                <span className="text-gray-600 ml-auto">Integration handbook</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-amber-400 font-semibold w-8 shrink-0">POST</span>
+                <span className="font-mono text-gray-400">/api/gateway/sync</span>
+                <span className="text-gray-600 ml-auto">Exchange tasks & messages</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
+                <span className="font-mono text-gray-400">/api/gateway/team</span>
+                <span className="text-gray-600 ml-auto">List colleagues</span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px]">
+                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
+                <span className="font-mono text-gray-400">/api/gateway/projects</span>
+                <span className="text-gray-600 ml-auto">List projects</span>
+              </div>
+            </div>
+          </div>
+
+          {result.token && (
+            <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-medium text-gray-300">Bearer Token</div>
+                <button onClick={() => doCopy(result.token!, 'token')}
+                  className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'token' ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}
+                >{copied === 'token' ? 'Copied!' : 'Copy'}</button>
+              </div>
+              <pre className="text-[10px] font-mono text-gray-500 bg-gray-900/60 rounded p-2 overflow-x-auto whitespace-pre break-all">{result.token}</pre>
+              <div className="text-[10px] text-gray-600 mt-1">Expires in 24 hours. Re-authenticate via POST /api/gateway/auth with org secret.</div>
+            </div>
+          )}
         </div>
         <div className="flex justify-end gap-3 pt-4">
           <button onClick={() => { onConnected(); }} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white">Done</button>
@@ -1262,60 +1333,21 @@ function OpenClawPanel({ onClose, onConnected }: { onClose: () => void; onConnec
 
   return (
     <>
-      <div className="flex gap-1 mb-4 bg-gray-800/60 p-0.5 rounded-lg">
-        <button
-          onClick={() => setTab('register')}
-          className={`flex-1 py-1.5 text-xs rounded-md transition-colors ${tab === 'register' ? 'bg-purple-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
-        >Pre-register</button>
-        <button
-          onClick={() => setTab('selfservice')}
-          className={`flex-1 py-1.5 text-xs rounded-md transition-colors ${tab === 'selfservice' ? 'bg-purple-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
-        >Self-service</button>
+      <div className="text-xs text-gray-400 mb-4">
+        Register an OpenClaw agent to join your Markus organization. After registration, you'll get a ready-to-use connection config.
       </div>
-
-      {tab === 'register' ? (
-        <div className="space-y-4">
-          <div className="text-xs text-gray-500">Create a registration slot so an OpenClaw agent can authenticate and start syncing.</div>
-          <Field label="Display Name *">
-            <input className="input" placeholder="e.g. Alice (OpenClaw)" value={agentName} onChange={e => setAgentName(e.target.value)} autoFocus />
-          </Field>
-          <Field label="External Agent ID (auto-generated if empty)">
-            <input className="input" placeholder="e.g. my-openclaw-agent" value={externalId} onChange={e => setExternalId(e.target.value)} />
-          </Field>
-          <Field label="Capabilities (comma separated)">
-            <input className="input" placeholder="coding, code-review, testing" value={capabilities} onChange={e => setCapabilities(e.target.value)} />
-          </Field>
-          {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">{error}</div>}
-          <div className="flex justify-end gap-3 pt-2">
-            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
-            <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white disabled:opacity-50">
-              {loading ? 'Registering...' : 'Register Slot'}
-            </button>
-          </div>
+      <div className="space-y-4">
+        <Field label="Agent Name *">
+          <input className="input" placeholder="e.g. Alice" value={agentName} onChange={e => setAgentName(e.target.value)} autoFocus />
+        </Field>
+        {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">{error}</div>}
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+          <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white disabled:opacity-50">
+            {loading ? 'Connecting...' : 'Connect Agent'}
+          </button>
         </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="text-xs text-gray-500">OpenClaw agents can register themselves by calling the Gateway API. Share the info below with the agent operator.</div>
-          <CodeBlock label="Gateway URL" code={gwUrl} />
-          <CodeBlock label="Org Secret" code={secret} />
-          <CodeBlock label="1. Register" code={`curl -X POST ${gwUrl}/register \\
-  -H "Content-Type: application/json" \\
-  -d '{"agentId":"<AGENT_ID>","agentName":"<NAME>","orgId":"${orgId}","capabilities":["coding"]}'`} />
-          <CodeBlock label="2. Authenticate" code={`curl -X POST ${gwUrl}/auth \\
-  -H "Content-Type: application/json" \\
-  -d '{"agentId":"<AGENT_ID>","orgId":"${orgId}","secret":"${secret}"}'`} />
-          <CodeBlock label="3. Sync loop (every 30s)" code={`curl -X POST ${gwUrl}/sync \\
-  -H "Authorization: Bearer <TOKEN>" \\
-  -H "Content-Type: application/json" \\
-  -d '{"status":"idle","completedTasks":[]}'`} />
-          <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-2">
-            For OpenClaw agents: use the <code className="text-purple-400">templates/openclaw-markus-skill/</code> skill template which includes AGENTS.md, TOOLS.md, and heartbeat config.
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Close</button>
-          </div>
-        </div>
-      )}
+      </div>
     </>
   );
 }
@@ -1394,7 +1426,7 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
             <span className="text-2xl w-10 text-center">🐾</span>
             <div className="flex-1">
               <div className="font-medium text-sm">OpenClaw</div>
-              <div className="text-xs text-gray-500">Pre-register a slot or let an OpenClaw agent self-register</div>
+              <div className="text-xs text-gray-500">One-click registration with ready-to-use connection config</div>
             </div>
             <span className="text-gray-600">→</span>
           </button>

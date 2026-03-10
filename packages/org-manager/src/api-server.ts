@@ -3191,14 +3191,31 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       }
       const body = await this.readBody(req);
       try {
+        const orgId = (body['orgId'] as string) ?? 'default';
         const reg = await this.gateway.register({
           externalAgentId: body['externalAgentId'] as string,
           agentName: body['agentName'] as string,
-          orgId: (body['orgId'] as string) ?? 'default',
+          orgId,
           capabilities: body['capabilities'] as string[] | undefined,
           openClawConfig: body['openClawConfig'] as string | undefined,
         });
-        this.json(res, 201, { registration: reg });
+        // Auto-authenticate: generate a token immediately so the UI can
+        // show a ready-to-use connection config without manual curl steps
+        let token: string | undefined;
+        if (reg.markusAgentId && this.gatewaySecret) {
+          try {
+            const authResult = this.gateway.authenticate({
+              externalAgentId: reg.externalAgentId,
+              orgId,
+              secret: this.gatewaySecret,
+            });
+            token = authResult.token;
+          } catch { /* auth may fail if secret isn't set; token stays undefined */ }
+        }
+        const host = req.headers['host'] ?? `localhost:${this.port}`;
+        const proto = req.headers['x-forwarded-proto'] ?? 'http';
+        const gatewayUrl = `${proto}://${host}/api/gateway`;
+        this.json(res, 201, { registration: reg, token, gatewayUrl });
       } catch (err) {
         const code = (err as { statusCode?: number }).statusCode ?? 400;
         this.json(res, code, { error: String(err) });
