@@ -82,8 +82,10 @@ export function MarkdownMessage({ content, className = '' }: Props) {
               <span className="truncate text-gray-500 ml-1 group-open/think:hidden">{preview}</span>
             </summary>
             <div className="px-3 pb-3 border-t border-gray-700/50">
-              <div className="mt-2 pl-3 border-l-2 border-indigo-500/40 text-xs text-gray-400 whitespace-pre-wrap max-h-60 overflow-y-auto leading-relaxed">
-                {full}
+              <div className="mt-2 pl-3 border-l-2 border-indigo-500/40 text-xs text-gray-400 max-h-60 overflow-y-auto leading-relaxed">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                  {full}
+                </ReactMarkdown>
               </div>
             </div>
           </details>
