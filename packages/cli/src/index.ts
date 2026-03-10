@@ -281,7 +281,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openrouterKey) {
     providerConfigs['openrouter'] = {
       provider: 'openrouter',
-      model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.5',
+      model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.1',
       apiKey: openrouterKey,
       baseUrl:
         process.env['OPENROUTER_BASE_URL'] ??
