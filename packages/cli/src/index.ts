@@ -456,6 +456,24 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       roleName: 'developer',
       orgId: opts.orgId,
     });
+    // Persist to DB so chat_sessions FK constraint is satisfied
+    if (storage?.agentRepo) {
+      try {
+        await storage.agentRepo.create({
+          id: agent.id,
+          name: agent.config.name,
+          orgId: opts.orgId,
+          roleId: agent.config.roleId,
+          roleName: agent.role.name,
+          agentRole: 'worker',
+          skills: agent.config.skills,
+          llmConfig: agent.config.llmConfig,
+          heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+        });
+      } catch (err) {
+        log.warn('Failed to persist gateway agent to DB (may already exist)', { error: String(err) });
+      }
+    }
     return { id: agent.id };
   });
 
