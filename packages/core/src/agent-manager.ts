@@ -116,7 +116,7 @@ export interface TaskServiceBridge {
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string): void;
-  submitForReview(taskId: string, deliverables: TaskDeliverable[]): { id: string; status: string };
+  submitForReview(taskId: string, deliverables: TaskDeliverable[]): Promise<{ id: string; status: string }> | { id: string; status: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;

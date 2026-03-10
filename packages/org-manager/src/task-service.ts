@@ -8,7 +8,7 @@ import {
   type ApprovalTier,
   type TaskDeliverable,
 } from '@markus/shared';
-import type { AgentManager, WorkspaceManager, TaskWorkspace } from '@markus/core';
+import type { AgentManager, WorkspaceManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
@@ -75,6 +75,7 @@ export class TaskService {
   private projectService?: ProjectService;
   private requirementService?: RequirementService;
   private workspaceManager?: WorkspaceManager;
+  private reviewService?: ReviewService;
   private taskCommentRepo?: TaskCommentRepo;
 
   setAgentManager(am: AgentManager): void {
@@ -107,6 +108,10 @@ export class TaskService {
 
   setWorkspaceManager(wm: WorkspaceManager): void {
     this.workspaceManager = wm;
+  }
+
+  setReviewService(rs: ReviewService): void {
+    this.reviewService = rs;
   }
 
   setTaskCommentRepo(repo: TaskCommentRepo): void {
@@ -1437,17 +1442,58 @@ export class TaskService {
 
   // ─── Governance: Submit for Review ─────────────────────────────────────────
 
-  submitForReview(taskId: string, deliverables: TaskDeliverable[]): Task {
+  async submitForReview(taskId: string, deliverables: TaskDeliverable[]): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'in_progress' && task.status !== 'revision') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot submit for review`);
     }
 
+    // Run automated review checks if ReviewService is available
+    let reviewReport: ReviewReport | undefined;
+    if (this.reviewService) {
+      try {
+        let worktreePath: string | undefined;
+        let baseBranch: string | undefined;
+        if (task.projectId && this.workspaceManager) {
+          const project = this.projectService?.getProject(task.projectId);
+          const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
+          if (repo) {
+            worktreePath = `${repo.localPath}/.worktrees/task-${task.id}`;
+            baseBranch = repo.defaultBranch;
+          }
+        }
+
+        reviewReport = await this.reviewService.runReview({
+          taskId: task.id,
+          agentId: task.assignedAgentId,
+          description: deliverables.map(d => d.summary ?? '').join('\n'),
+          worktreePath,
+          baseBranch,
+        });
+
+        log.info('Automated review completed for task submission', {
+          taskId, overallStatus: reviewReport.overallStatus, summary: reviewReport.summary,
+        });
+      } catch (err) {
+        log.warn('Automated review failed, proceeding with submission', { taskId, error: String(err) });
+      }
+    }
+
     task.deliverables = deliverables;
     task.status = 'review';
     task.updatedAt = new Date().toISOString();
-    this.ws?.broadcastTaskUpdate(task.id, task.status, { deliverables });
+
+    const broadcastPayload: Record<string, unknown> = { deliverables };
+    if (reviewReport) {
+      broadcastPayload['reviewReport'] = {
+        id: reviewReport.id,
+        overallStatus: reviewReport.overallStatus,
+        summary: reviewReport.summary,
+        checks: reviewReport.checks,
+      };
+    }
+    this.ws?.broadcastTaskUpdate(task.id, task.status, broadcastPayload);
 
     this.emitTaskEvent({
       type: 'status_changed',
@@ -1460,18 +1506,29 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
 
+    if (reviewReport) {
+      task.notes = task.notes ?? [];
+      task.notes.push(`[${task.updatedAt}] Automated review: ${reviewReport.overallStatus} — ${reviewReport.summary}`);
+    }
+
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
   }
 
-  async acceptTask(taskId: string): Promise<Task> {
+  async acceptTask(taskId: string, reviewerAgentId?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
     }
 
+    // Enforce: reviewer must be different from the assigned worker
+    if (reviewerAgentId && task.assignedAgentId && reviewerAgentId === task.assignedAgentId) {
+      throw new Error(`Agent ${reviewerAgentId} cannot accept their own task. A different reviewer or human must approve the work.`);
+    }
+
     task.status = 'accepted';
+    task.reviewerAgentId = reviewerAgentId;
     task.updatedAt = new Date().toISOString();
     this.ws?.broadcastTaskUpdate(task.id, task.status, {});
 

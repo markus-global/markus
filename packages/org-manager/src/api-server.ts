@@ -4827,7 +4827,9 @@ Be conversational. Help the user think through tool design, edge cases, and perm
     if (path.match(/^\/api\/tasks\/[^/]+\/accept$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       try {
-        const task = await this.taskService.acceptTask(taskId);
+        const body = await this.readBody(req);
+        const reviewerAgentId = body['reviewerAgentId'] as string | undefined;
+        const task = await this.taskService.acceptTask(taskId, reviewerAgentId);
         this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });

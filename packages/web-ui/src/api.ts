@@ -333,6 +333,7 @@ export interface TaskInfo {
   projectId?: string;
   iterationId?: string;
   requirementId?: string;
+  reviewerAgentId?: string;
   createdBy?: string;
   updatedBy?: string;
   startedAt?: string;

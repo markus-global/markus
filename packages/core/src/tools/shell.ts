@@ -34,6 +34,28 @@ function injectGitCommitMeta(command: string, meta?: ShellAgentMeta): string {
   return command + authorFlag + trailerFlags;
 }
 
+const GIT_BRANCH_DENY_PATTERNS = [
+  /\bgit\s+push\s+.*\b(main|master)\b/,
+  /\bgit\s+push\s+--force/,
+  /\bgit\s+push\s+-f\b/,
+  /\bgit\s+merge\s+(?!--abort)/,
+  /\bgit\s+rebase\b/,
+  /\bgit\s+checkout\s+(?!-b\b)(?!--\s)(\S+)/,
+  /\bgit\s+switch\s+(?!-c\b)(?!--create\b)(\S+)/,
+];
+
+function validateGitBranchSafety(command: string): { allowed: boolean; reason?: string } {
+  for (const pattern of GIT_BRANCH_DENY_PATTERNS) {
+    if (pattern.test(command)) {
+      return {
+        allowed: false,
+        reason: `Git branch operation denied for workspace isolation: "${command.trim().slice(0, 80)}". Agents must work only on their assigned task branch. Do not checkout, merge, rebase, or push to protected branches.`,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
 export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
@@ -88,6 +110,14 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
           message: 'This command requires human approval before execution',
           command,
         });
+      }
+
+      // Enforce git branch isolation — deny checkout/merge/rebase/push to protected branches
+      if (workspacePath) {
+        const gitCheck = validateGitBranchSafety(command);
+        if (!gitCheck.allowed) {
+          return JSON.stringify({ status: 'denied', error: gitCheck.reason });
+        }
       }
 
       const finalCommand = injectGitCommitMeta(command, agentMeta);

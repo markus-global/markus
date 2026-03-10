@@ -611,6 +611,22 @@ function TaskDetailModal({
                 )}
               </div>
 
+              {/* Workspace isolation & review info */}
+              {(task.projectId || task.reviewerAgentId) && (
+                <div className="px-6 py-2.5 border-b border-gray-800/60 grid grid-cols-2 gap-x-4 gap-y-2">
+                  {task.projectId && (
+                    <div>
+                      <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Task Branch</p>
+                      <p className="text-xs text-cyan-400/80 font-mono">task/{task.id}</p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Reviewer</p>
+                    <p className="text-xs text-gray-400">{task.reviewerAgentId ? (agents.find(a => a.id === task.reviewerAgentId)?.name ?? task.reviewerAgentId) : <span className="text-gray-600">Pending review</span>}</p>
+                  </div>
+                </div>
+              )}
+
               <div className="px-6 py-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
@@ -690,7 +706,7 @@ function TaskDetailModal({
               <button onClick={() => void updateStatus(task.id, 'review')} disabled={busy} className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50">Submit for Review</button>
             )}
             {isTerminal && <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>}
-            {!isTerminal && task.status !== 'pending_approval' && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
+            {(task.status === 'accepted' || task.status === 'review') && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
             {!isTerminal && task.status !== 'pending_approval' && <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>}
           </div>
           <button onClick={() => setPendingDeleteParent(true)} className="px-3 py-1.5 text-xs text-gray-500 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors">Delete</button>

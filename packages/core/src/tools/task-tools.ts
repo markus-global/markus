@@ -286,10 +286,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
-          const task = await ctx.updateTaskStatus(
-            args['task_id'] as string,
-            args['status'] as string
-          );
+          const taskId = args['task_id'] as string;
+          const newStatus = args['status'] as string;
+
+          // Prevent agents from completing/accepting their own tasks
+          if (newStatus === 'completed' || newStatus === 'accepted') {
+            const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+            if (existing?.assignedAgentId === ctx.agentId) {
+              return JSON.stringify({
+                status: 'denied',
+                error: `You cannot set your own task to "${newStatus}". Workers must use task_submit_review to request independent review. Only a different reviewer agent or human can mark a task as completed or accepted.`,
+              });
+            }
+          }
+
+          const task = await ctx.updateTaskStatus(taskId, newStatus);
           const note = args['note'] as string | undefined;
           if (note && ctx.addTaskNote) {
             await ctx.addTaskNote(task.id, `[${ctx.agentName}] ${note}`).catch(() => {});
