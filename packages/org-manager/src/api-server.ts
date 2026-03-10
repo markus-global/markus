@@ -979,7 +979,18 @@ export class APIServer {
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
       const agents = this.orgService.getAgentManager().listAgents();
-      this.json(res, 200, { agents });
+      if (this.gateway) {
+        const extRegs = this.gateway.listRegistrations();
+        const disconnectedIds = new Set(
+          extRegs.filter(r => !r.connected && r.markusAgentId).map(r => r.markusAgentId!)
+        );
+        const adjusted = agents.map(a =>
+          disconnectedIds.has(a.id) ? { ...a, status: 'offline' } : a
+        );
+        this.json(res, 200, { agents: adjusted });
+      } else {
+        this.json(res, 200, { agents });
+      }
       return;
     }
 
@@ -3199,8 +3210,9 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           capabilities: body['capabilities'] as string[] | undefined,
           openClawConfig: body['openClawConfig'] as string | undefined,
         });
-        // Auto-authenticate: generate a token immediately so the UI can
-        // show a ready-to-use connection config without manual curl steps
+        // Generate a token for the UI without marking the agent as connected.
+        // authenticate() sets connected=true as a side effect, so we reset it
+        // immediately — the agent should only appear online when it actually syncs.
         let token: string | undefined;
         if (reg.markusAgentId && this.gatewaySecret) {
           try {
@@ -3210,6 +3222,9 @@ Be conversational. Help the user think through tool design, edge cases, and perm
               secret: this.gatewaySecret,
             });
             token = authResult.token;
+            reg.connected = false;
+            reg.lastHeartbeat = undefined;
+            this.gateway.resetConnectionStatus(reg.externalAgentId, orgId);
           } catch { /* auth may fail if secret isn't set; token stays undefined */ }
         }
         const host = req.headers['host'] ?? `localhost:${this.port}`;

@@ -249,6 +249,18 @@ export class ExternalAgentGateway {
     };
   }
 
+  resetConnectionStatus(externalAgentId: string, orgId: string): void {
+    const key = this.registrationKey(externalAgentId, orgId);
+    const reg = this.registrations.get(key);
+    if (reg) {
+      reg.connected = false;
+      reg.lastHeartbeat = undefined;
+      if (this.store) {
+        this.store.updateRegistration(externalAgentId, orgId, { connected: false, lastHeartbeat: undefined }).catch(() => {});
+      }
+    }
+  }
+
   verifyToken(token: string): GatewayToken {
     const parts = token.split('.');
     if (parts.length !== 2) {
