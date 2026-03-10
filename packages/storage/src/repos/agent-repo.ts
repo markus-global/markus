@@ -96,6 +96,10 @@ export class AgentRepo {
     await this.db.update(agents).set(sets).where(eq(agents.id, id));
   }
 
+  async updateTeamId(id: string, teamId: string | null): Promise<void> {
+    await this.db.update(agents).set({ teamId, updatedAt: new Date() }).where(eq(agents.id, id));
+  }
+
   async delete(id: string): Promise<void> {
     await this.db.delete(agents).where(eq(agents.id, id));
   }

@@ -274,6 +274,11 @@ export class OrganizationService {
       } catch {
         /* agent may not exist */
       }
+      if (this.storage) {
+        this.storage.agentRepo.updateTeamId(memberId, teamId).catch(error => {
+          log.warn('Failed to update agent teamId in DB', { error: String(error) });
+        });
+      }
     } else {
       if (!team.humanMemberIds) team.humanMemberIds = [];
       if (!team.humanMemberIds.includes(memberId)) team.humanMemberIds.push(memberId);
@@ -292,9 +297,9 @@ export class OrganizationService {
   removeMemberFromTeam(teamId: string, memberId: string): void {
     const team = this.teams.get(teamId);
     if (!team) return;
+    const wasAgent = team.memberAgentIds.includes(memberId);
     team.memberAgentIds = team.memberAgentIds.filter(id => id !== memberId);
     team.humanMemberIds = (team.humanMemberIds ?? []).filter(id => id !== memberId);
-    // If this member was the manager, clear it
     if (team.managerId === memberId) {
       team.managerId = undefined;
       team.managerType = undefined;
@@ -304,6 +309,11 @@ export class OrganizationService {
       if (agent.config.teamId === teamId) agent.config.teamId = undefined;
     } catch {
       /* ok */
+    }
+    if (wasAgent && this.storage) {
+      this.storage.agentRepo.updateTeamId(memberId, null).catch(error => {
+        log.warn('Failed to clear agent teamId in DB', { error: String(error) });
+      });
     }
     const user = this.humans.get(memberId);
     if (user && user.teamId === teamId) {
@@ -672,9 +682,15 @@ export class OrganizationService {
       for (const row of userRows) {
         const existing = this.humans.get(row.id);
         if (existing) {
-          // Merge DB fields (e.g. email) into the existing in-memory user
           if (row.email) existing.email = row.email;
-          if (row.teamId) existing.teamId = row.teamId;
+          if (row.teamId) {
+            existing.teamId = row.teamId;
+            const team = this.teams.get(row.teamId);
+            if (team && !team.humanMemberIds?.includes(row.id)) {
+              if (!team.humanMemberIds) team.humanMemberIds = [];
+              team.humanMemberIds.push(row.id);
+            }
+          }
           continue;
         }
         const user: HumanUser = {
