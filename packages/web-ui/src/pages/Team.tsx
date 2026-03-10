@@ -46,6 +46,12 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
   const [headerMenu, setHeaderMenu] = useState<'agent' | 'team' | null>(null);
   const headerMenuRef = useRef<HTMLDivElement>(null);
   const [busyAgent, setBusyAgent] = useState<{ id: string; name: string; taskId: string } | null>(null);
+  const [batchLoading, setBatchLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     if (!headerMenu) return;
@@ -139,17 +145,28 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     );
   };
 
-  const handleBatchStart = async (teamId: string) => {
-    await api.teams.startAll(teamId);
-    refresh();
-  };
-  const handleBatchStop = async (teamId: string) => {
-    await api.teams.stopAll(teamId);
-    refresh();
-  };
-  const handleBatchResume = async (teamId: string) => {
-    await api.teams.resumeAll(teamId);
-    refresh();
+  const handleBatchAction = async (teamId: string, action: 'start' | 'stop' | 'resume') => {
+    const key = `${action}-${teamId}`;
+    if (batchLoading) return;
+    setBatchLoading(key);
+    try {
+      const fn = action === 'start' ? api.teams.startAll : action === 'stop' ? api.teams.stopAll : api.teams.resumeAll;
+      const result = await fn(teamId);
+      const ok = result.success?.length ?? 0;
+      const fail = result.failed?.length ?? 0;
+      if (fail > 0) {
+        showToast(`${action}: ${ok} succeeded, ${fail} failed`, 'error');
+      } else if (ok > 0) {
+        showToast(`${ok} agent${ok > 1 ? 's' : ''} ${action === 'start' ? 'started' : action === 'stop' ? 'stopped' : 'resumed'}`, 'success');
+      } else {
+        showToast(`No agents to ${action}`, 'success');
+      }
+      refresh();
+    } catch (err) {
+      showToast(`Failed to ${action}: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    } finally {
+      setBatchLoading(null);
+    }
   };
 
   const handleStartStop = async (agentId: string, status: string) => {
@@ -284,9 +301,8 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
               ungrouped={ungrouped}
               externalMarkusIds={externalMarkusIds}
-              onBatchStart={handleBatchStart}
-              onBatchStop={handleBatchStop}
-              onBatchResume={handleBatchResume}
+              onBatchAction={(action) => handleBatchAction(team.id, action)}
+              batchLoading={batchLoading}
             />
           ))}
 
@@ -420,6 +436,16 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
           }}
         />
       )}
+
+      {toast && (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg shadow-xl text-sm font-medium transition-all animate-in fade-in slide-in-from-bottom-4 ${
+          toast.type === 'error'
+            ? 'bg-red-900/90 text-red-200 border border-red-700/50'
+            : 'bg-gray-800/95 text-gray-200 border border-gray-700/50'
+        }`}>
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }
@@ -431,7 +457,7 @@ function TeamCard({
   onSetManager, onRemoveFromTeam, onDeleteTeam,
   onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick,
   onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped, externalMarkusIds,
-  onBatchStart, onBatchStop, onBatchResume,
+  onBatchAction, batchLoading,
 }: {
   team: TeamInfo;
   isAdmin: boolean;
@@ -452,9 +478,8 @@ function TeamCard({
   onHireAgent: () => void;
   onAddHuman: () => void;
   onAddExisting: () => void;
-  onBatchStart: (teamId: string) => void;
-  onBatchStop: (teamId: string) => void;
-  onBatchResume: (teamId: string) => void;
+  onBatchAction: (action: 'start' | 'stop' | 'resume') => void;
+  batchLoading: string | null;
 }) {
   return (
     <div className="bg-gray-900/60 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors">
@@ -503,21 +528,34 @@ function TeamCard({
               const hasRunning = agents.some(a => a.status === 'idle' || a.status === 'working');
               const hasPaused = agents.some(a => a.status === 'paused');
               if (!hasOffline && !hasRunning && !hasPaused) return null;
+              const isLoading = batchLoading !== null;
               return (
                 <div className="flex items-center gap-1">
                   {hasOffline && (
-                    <button onClick={() => onBatchStart(team.id)} className="px-2 py-0.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors" title="Start offline agents">
-                      Start All
+                    <button
+                      onClick={() => onBatchAction('start')}
+                      disabled={isLoading}
+                      className="px-2.5 py-1 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {batchLoading?.startsWith('start-') ? 'Starting…' : 'Start All'}
                     </button>
                   )}
                   {hasRunning && (
-                    <button onClick={() => onBatchStop(team.id)} className="px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/10 rounded transition-colors" title="Stop running agents">
-                      Stop All
+                    <button
+                      onClick={() => onBatchAction('stop')}
+                      disabled={isLoading}
+                      className="px-2.5 py-1 text-xs text-red-400 hover:bg-red-500/10 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {batchLoading?.startsWith('stop-') ? 'Stopping…' : 'Stop All'}
                     </button>
                   )}
                   {hasPaused && (
-                    <button onClick={() => onBatchResume(team.id)} className="px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-500/10 rounded transition-colors" title="Resume paused agents">
-                      Resume
+                    <button
+                      onClick={() => onBatchAction('resume')}
+                      disabled={isLoading}
+                      className="px-2.5 py-1 text-xs text-blue-400 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {batchLoading?.startsWith('resume-') ? 'Resuming…' : 'Resume'}
                     </button>
                   )}
                 </div>
