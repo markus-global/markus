@@ -172,6 +172,7 @@ export class APIServer {
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
   private gateway?: ExternalAgentGateway;
+  private gatewaySecret?: string;
   private syncHandler?: GatewaySyncHandler;
   private gatewayMessageQueue = new Map<string, Array<{ id: string; from: string; fromName: string; content: string; timestamp: string }>>();
   private reviewService?: ReviewService;
@@ -305,8 +306,9 @@ export class APIServer {
     this.storage = storage;
   }
 
-  setGateway(gateway: ExternalAgentGateway): void {
+  setGateway(gateway: ExternalAgentGateway, secret?: string): void {
     this.gateway = gateway;
+    this.gatewaySecret = secret;
     this.initSyncHandler();
   }
 
@@ -983,9 +985,19 @@ export class APIServer {
 
     if (path === '/api/agents' && req.method === 'POST') {
       const body = await this.readBody(req);
+      const agentName = body['name'] as string;
+      const roleName = body['roleName'] as string;
+      if (!agentName?.trim()) {
+        this.json(res, 400, { error: 'name is required' });
+        return;
+      }
+      if (!roleName?.trim()) {
+        this.json(res, 400, { error: 'roleName is required' });
+        return;
+      }
       const agent = await this.orgService.hireAgent({
-        name: body['name'] as string,
-        roleName: body['roleName'] as string,
+        name: agentName,
+        roleName,
         orgId: (body['orgId'] as string) ?? 'default',
         teamId: body['teamId'] as string | undefined,
         skills: body['skills'] as string[] | undefined,
@@ -2069,6 +2081,30 @@ export class APIServer {
     }
 
     // ── External Agent Gateway ──────────────────────────────────────────────
+    if (path === '/api/gateway/info' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Admin access required' });
+        return;
+      }
+      const host = req.headers['host'] ?? `localhost:${this.port}`;
+      const proto = req.headers['x-forwarded-proto'] ?? 'http';
+      const gatewayUrl = `${proto}://${host}/api/gateway`;
+      const secret = this.gatewaySecret ?? '';
+      const masked = secret.length > 8
+        ? secret.slice(0, 4) + '*'.repeat(secret.length - 8) + secret.slice(-4)
+        : secret;
+      this.json(res, 200, {
+        gatewayUrl,
+        orgId: 'default',
+        orgSecret: masked,
+        orgSecretFull: secret,
+        enabled: !!this.gateway,
+      });
+      return;
+    }
+
     if (path === '/api/gateway/register' && req.method === 'POST') {
       if (!this.gateway) {
         this.json(res, 503, { error: 'Gateway not configured' });
@@ -2879,13 +2915,17 @@ Be conversational. Help the user think through tool design, edge cases, and perm
 
       try {
         if (mode === 'agent') {
+          const derivedRoleId = ((artifact.name as string) ?? '').toLowerCase().replace(/\s+/g, '-');
+          const knownRoles = this.orgService.listAvailableRoles();
+          const roleId = knownRoles.includes(derivedRoleId) ? derivedRoleId : 'developer';
           const resp = await fetch(`http://localhost:${this.port}/api/marketplace/templates`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               name: artifact.name,
               description: artifact.description,
-              roleId: ((artifact.name as string) ?? '').toLowerCase().replace(/\s+/g, '-'),
+              authorName: (artifact.authorName as string) ?? 'AI Builder',
+              roleId,
               agentRole: artifact.agentRole ?? 'worker',
               skills: typeof artifact.skills === 'string' ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean) : [],
               tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
@@ -3066,13 +3106,31 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       }
       try {
         const agentManager = this.orgService.getAgentManager();
-        const agent = await agentManager.createAgentFromTemplate({
-          templateId,
-          name,
-          orgId,
-          teamId,
-          overrides: body['overrides'] as Record<string, unknown> | undefined,
-        });
+
+        // Try template registry first, fall back to marketplace DB for mkt-tpl-* IDs
+        const registryHit = this.templateRegistry?.get(templateId);
+        const agent = (!registryHit && templateId.startsWith('mkt-tpl-') && this.storage)
+          ? await (async () => {
+              const mktTpl = await this.storage!.marketplaceTemplateRepo.findById(templateId);
+              if (!mktTpl) throw new Error(`Template not found: ${templateId}`);
+              const knownRoles = this.orgService.listAvailableRoles();
+              const resolvedRole = knownRoles.includes(mktTpl.roleId) ? mktTpl.roleId : 'developer';
+              return agentManager.createAgent({
+                name,
+                roleName: resolvedRole,
+                orgId,
+                teamId,
+                agentRole: (mktTpl.agentRole as 'manager' | 'worker') ?? 'worker',
+                skills: mktTpl.skills ?? undefined,
+              });
+            })()
+          : await agentManager.createAgentFromTemplate({
+              templateId,
+              name,
+              orgId,
+              teamId,
+              overrides: body['overrides'] as Record<string, unknown> | undefined,
+            });
         if (agentRole) agent.config.agentRole = agentRole;
         if (teamId) {
           this.orgService.addMemberToTeam(teamId, agent.id, 'agent');

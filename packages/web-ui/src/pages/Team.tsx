@@ -359,8 +359,8 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
       {showNewTeam && (
         <NewTeamModal
           onClose={() => setShowNewTeam(false)}
-          onCreate={async (name) => {
-            await api.teams.create(name);
+          onCreate={async (name, description) => {
+            await api.teams.create(name, description);
             setShowNewTeam(false);
             refresh();
           }}
@@ -894,22 +894,26 @@ function UngroupedMemberCard({
 
 // ─── Modals ───────────────────────────────────────────────────────────────────
 
-function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string) => void }) {
+function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, description?: string) => void }) {
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   return (
     <Modal onClose={onClose} title="Create a New Team">
       <div className="space-y-4">
         <Field label="Team Name">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Engineering, Marketing, Support" className="input" autoFocus
-            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim()); }}
+            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim(), description.trim() || undefined); }}
           />
+        </Field>
+        <Field label="Description (optional)">
+          <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this team work on?" className="input" rows={2} />
         </Field>
         <div className="text-xs text-gray-500">
           You can add human and AI members to this team after creating it.
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
-          <button onClick={() => name.trim() && onCreate(name.trim())} disabled={!name.trim()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg text-white">
+          <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg text-white">
             Create Team
           </button>
         </div>
@@ -1136,15 +1140,7 @@ function AddExistingModal({
 
 type ExternalProvider = { id: string; name: string; description: string; icon: string; fields: Array<{ key: string; label: string; placeholder: string; required?: boolean }> };
 
-const EXTERNAL_PROVIDERS: ExternalProvider[] = [
-  {
-    id: 'openclaw', name: 'OpenClaw', description: 'Connect an OpenClaw agent by URL', icon: '🐾',
-    fields: [
-      { key: 'name', label: 'Display Name', placeholder: 'e.g. Alice (OpenClaw)', required: true },
-      { key: 'endpoint', label: 'Agent Endpoint URL', placeholder: 'https://openclaw.example.com/agents/abc', required: true },
-      { key: 'apiKey', label: 'API Key / Token', placeholder: 'sk-...', required: false },
-    ],
-  },
+const NON_OPENCLAW_PROVIDERS: ExternalProvider[] = [
   {
     id: 'a2a', name: 'A2A Protocol', description: 'Connect any Agent-to-Agent compatible service', icon: '🔗',
     fields: [
@@ -1164,6 +1160,166 @@ const EXTERNAL_PROVIDERS: ExternalProvider[] = [
   },
 ];
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      className="ml-2 px-1.5 py-0.5 text-[10px] rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors shrink-0"
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+function CodeBlock({ label, code }: { label: string; code: string }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] text-gray-500 uppercase tracking-wide">{label}</span>
+        <CopyButton text={code} />
+      </div>
+      <pre className="text-[11px] bg-gray-900 border border-gray-700/60 rounded-lg px-3 py-2 overflow-x-auto text-gray-300 whitespace-pre-wrap break-all">{code}</pre>
+    </div>
+  );
+}
+
+function OpenClawPanel({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
+  const [tab, setTab] = useState<'register' | 'selfservice'>('register');
+  const [agentName, setAgentName] = useState('');
+  const [externalId, setExternalId] = useState('');
+  const [capabilities, setCapabilities] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [gatewayInfo, setGatewayInfo] = useState<{ gatewayUrl: string; orgId: string; orgSecretFull: string } | null>(null);
+  const [registered, setRegistered] = useState<{ externalAgentId: string; markusAgentId?: string } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/gateway/info', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setGatewayInfo(d))
+      .catch(() => {});
+  }, []);
+
+  const handleRegister = async () => {
+    if (!agentName.trim()) { setError('Display Name is required'); return; }
+    const extId = externalId.trim() || agentName.trim().toLowerCase().replace(/\s+/g, '-');
+    setLoading(true);
+    setError('');
+    try {
+      const caps = capabilities ? capabilities.split(',').map(c => c.trim()).filter(Boolean) : ['general'];
+      const res = await fetch('/api/external-agents/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ externalAgentId: extId, agentName: agentName.trim(), orgId: 'default', capabilities: caps }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setRegistered({ externalAgentId: extId, markusAgentId: data.registration?.markusAgentId });
+    } catch (e) {
+      setError(String(e));
+    }
+    setLoading(false);
+  };
+
+  const gwUrl = gatewayInfo?.gatewayUrl ?? `${window.location.origin}/api/gateway`;
+  const secret = gatewayInfo?.orgSecretFull ?? '<GATEWAY_SECRET>';
+  const orgId = gatewayInfo?.orgId ?? 'default';
+
+  if (registered) {
+    return (
+      <>
+        <div className="text-center py-4">
+          <div className="text-2xl mb-2 text-green-400">✓</div>
+          <div className="text-sm text-green-400 font-medium mb-1">Agent slot registered</div>
+          <div className="text-xs text-gray-400">Configure your OpenClaw agent with the info below.</div>
+        </div>
+        <div className="space-y-3 max-h-[50vh] overflow-y-auto">
+          <CodeBlock label="External Agent ID" code={registered.externalAgentId} />
+          <CodeBlock label="Gateway URL" code={gwUrl} />
+          <CodeBlock label="Org Secret" code={secret} />
+          <CodeBlock label="1. Authenticate" code={`curl -X POST ${gwUrl}/auth \\
+  -H "Content-Type: application/json" \\
+  -d '{"agentId":"${registered.externalAgentId}","orgId":"${orgId}","secret":"${secret}"}'`} />
+          <CodeBlock label="2. Start sync loop" code={`curl -X POST ${gwUrl}/sync \\
+  -H "Authorization: Bearer <TOKEN_FROM_STEP_1>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"status":"idle","completedTasks":[]}'`} />
+          <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-2">
+            For OpenClaw agents: copy the <code className="text-purple-400">templates/openclaw-markus-skill/</code> directory into your agent workspace and merge <code className="text-purple-400">config.json5</code> into your OpenClaw config. Set <code className="text-purple-400">MARKUS_URL</code> and <code className="text-purple-400">MARKUS_TOKEN</code>.
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-4">
+          <button onClick={() => { onConnected(); }} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white">Done</button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex gap-1 mb-4 bg-gray-800/60 p-0.5 rounded-lg">
+        <button
+          onClick={() => setTab('register')}
+          className={`flex-1 py-1.5 text-xs rounded-md transition-colors ${tab === 'register' ? 'bg-purple-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
+        >Pre-register</button>
+        <button
+          onClick={() => setTab('selfservice')}
+          className={`flex-1 py-1.5 text-xs rounded-md transition-colors ${tab === 'selfservice' ? 'bg-purple-700 text-white' : 'text-gray-400 hover:text-gray-200'}`}
+        >Self-service</button>
+      </div>
+
+      {tab === 'register' ? (
+        <div className="space-y-4">
+          <div className="text-xs text-gray-500">Create a registration slot so an OpenClaw agent can authenticate and start syncing.</div>
+          <Field label="Display Name *">
+            <input className="input" placeholder="e.g. Alice (OpenClaw)" value={agentName} onChange={e => setAgentName(e.target.value)} autoFocus />
+          </Field>
+          <Field label="External Agent ID (auto-generated if empty)">
+            <input className="input" placeholder="e.g. my-openclaw-agent" value={externalId} onChange={e => setExternalId(e.target.value)} />
+          </Field>
+          <Field label="Capabilities (comma separated)">
+            <input className="input" placeholder="coding, code-review, testing" value={capabilities} onChange={e => setCapabilities(e.target.value)} />
+          </Field>
+          {error && <div className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2">{error}</div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+            <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white disabled:opacity-50">
+              {loading ? 'Registering...' : 'Register Slot'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="text-xs text-gray-500">OpenClaw agents can register themselves by calling the Gateway API. Share the info below with the agent operator.</div>
+          <CodeBlock label="Gateway URL" code={gwUrl} />
+          <CodeBlock label="Org Secret" code={secret} />
+          <CodeBlock label="1. Register" code={`curl -X POST ${gwUrl}/register \\
+  -H "Content-Type: application/json" \\
+  -d '{"agentId":"<AGENT_ID>","agentName":"<NAME>","orgId":"${orgId}","capabilities":["coding"]}'`} />
+          <CodeBlock label="2. Authenticate" code={`curl -X POST ${gwUrl}/auth \\
+  -H "Content-Type: application/json" \\
+  -d '{"agentId":"<AGENT_ID>","orgId":"${orgId}","secret":"${secret}"}'`} />
+          <CodeBlock label="3. Sync loop (every 30s)" code={`curl -X POST ${gwUrl}/sync \\
+  -H "Authorization: Bearer <TOKEN>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"status":"idle","completedTasks":[]}'`} />
+          <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-2">
+            For OpenClaw agents: use the <code className="text-purple-400">templates/openclaw-markus-skill/</code> skill template which includes AGENTS.md, TOOLS.md, and heartbeat config.
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Close</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [formData, setFormData] = useState<Record<string, string>>({});
@@ -1171,7 +1327,7 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const provider = EXTERNAL_PROVIDERS.find(p => p.id === selectedProvider);
+  const provider = NON_OPENCLAW_PROVIDERS.find(p => p.id === selectedProvider);
 
   const handleSubmit = async () => {
     if (!provider) return;
@@ -1188,14 +1344,10 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
         : ['general'];
 
       const body = {
-        name: formData['name'],
-        endpoint: formData['endpoint'],
-        protocol: provider.id === 'a2a' ? 'a2a' : 'http',
+        externalAgentId: (formData['name'] ?? '').toLowerCase().replace(/\s+/g, '-'),
+        agentName: formData['name'],
+        orgId: 'default',
         capabilities,
-        metadata: {
-          provider: provider.id,
-          apiKey: formData['apiKey'] || undefined,
-        },
       };
 
       const res = await fetch('/api/external-agents/register', {
@@ -1216,6 +1368,14 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
     setLoading(false);
   };
 
+  if (selectedProvider === 'openclaw') {
+    return (
+      <Modal onClose={onClose} title="Connect OpenClaw Agent" width="w-[560px]">
+        <OpenClawPanel onClose={onClose} onConnected={onConnected} />
+      </Modal>
+    );
+  }
+
   return (
     <Modal onClose={onClose} title="Connect External Agent" width="w-[520px]">
       {success ? (
@@ -1227,7 +1387,18 @@ function ConnectExternalModal({ onClose, onConnected }: { onClose: () => void; o
       ) : !selectedProvider ? (
         <div className="space-y-3">
           <div className="text-xs text-gray-500 mb-4">Choose how to connect an external agent to your organization.</div>
-          {EXTERNAL_PROVIDERS.map(p => (
+          <button
+            onClick={() => { setSelectedProvider('openclaw'); setFormData({}); setError(''); }}
+            className="w-full flex items-center gap-4 px-4 py-4 rounded-xl border border-gray-700 hover:border-purple-500 hover:bg-purple-900/10 text-left transition-all"
+          >
+            <span className="text-2xl w-10 text-center">🐾</span>
+            <div className="flex-1">
+              <div className="font-medium text-sm">OpenClaw</div>
+              <div className="text-xs text-gray-500">Pre-register a slot or let an OpenClaw agent self-register</div>
+            </div>
+            <span className="text-gray-600">→</span>
+          </button>
+          {NON_OPENCLAW_PROVIDERS.map(p => (
             <button
               key={p.id}
               onClick={() => { setSelectedProvider(p.id); setFormData({}); setError(''); }}

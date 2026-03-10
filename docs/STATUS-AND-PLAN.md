@@ -70,8 +70,6 @@ Workflow DAG 引擎 · Agent 组合模式 · 团队模板（5 个内建） · �
 | WebUI | ✅ |
 | 飞书 | ✅ |
 | Telegram | ✅ |
-| Slack | ⚠️ 仅发送 |
-| WhatsApp | ⚠️ 仅发送 |
 
 ### GUI 自动化
 
@@ -97,15 +95,12 @@ Docker Compose · Kubernetes manifests · Dockerfile
 
 | 功能 | 工作量 |
 |------|--------|
-| Slack 收消息（webhook / Socket Mode） | 1-2 天 |
-| WhatsApp 收消息（webhook 验证 + 解析） | 1-2 天 |
 | `markus init` 快速启动引导 | 2-3 天 |
 
 ### 需新开发
 
 | 功能 | 优先级 | 工作量 |
 |------|--------|--------|
-| Prompt Engineering Studio | P3 | 1-2 周 |
 | Markus Cloud（多租户 SaaS） | P3 | 远期 |
 
 ---
@@ -121,6 +116,6 @@ Docker Compose · Kubernetes manifests · Dockerfile
 | `shared` | ★★★★ | — |
 | `a2a` | ★★★★ | — |
 | `cli` | ★★★★ | `markus init` 引导 |
-| `comms` | ★★★ | Slack / WhatsApp 收消息 |
+| `comms` | ★★★★ | — |
 | `compute` | ★★★★ | — |
 | `gui` | ★★★ | 依赖 VNC 服务端环境 + OmniParser 部署 |

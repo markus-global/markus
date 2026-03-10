@@ -469,9 +469,22 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const gateway = new ExternalAgentGateway({ signingSecret: gatewaySecret });
 
   gateway.setAgentCreator(async (opts) => {
+    const caps = (opts.capabilities ?? []).map((c: string) => c.toLowerCase());
+    const roleFromCaps = (cs: string[]): string => {
+      if (cs.some(c => c.includes('review'))) return 'reviewer';
+      if (cs.some(c => c.includes('test') || c.includes('qa'))) return 'qa-engineer';
+      if (cs.some(c => c.includes('devops') || c.includes('deploy') || c.includes('infra'))) return 'devops';
+      if (cs.some(c => c.includes('product'))) return 'product-manager';
+      if (cs.some(c => c.includes('project') || c.includes('manage'))) return 'project-manager';
+      if (cs.some(c => c.includes('support'))) return 'support';
+      if (cs.some(c => c.includes('content') || c.includes('write') || c.includes('doc'))) return 'content-writer';
+      if (cs.some(c => c.includes('market'))) return 'marketing';
+      if (cs.some(c => c.includes('research'))) return 'research-assistant';
+      return 'developer';
+    };
     const agent = await agentManager.createAgent({
       name: opts.name,
-      roleName: 'developer',
+      roleName: roleFromCaps(caps),
       orgId: opts.orgId,
     });
     // Persist to DB so chat_sessions FK constraint is satisfied
@@ -520,7 +533,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       priority: t.priority,
     }));
   });
-  apiServer.setGateway(gateway);
+  apiServer.setGateway(gateway, gatewaySecret);
   log.info('External Agent Gateway enabled', { secret: gatewaySecret === 'markus-gateway-default-secret-change-me' ? '(default)' : '(custom)' });
 
   apiServer.start();
