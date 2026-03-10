@@ -13,6 +13,18 @@ import crypto from 'crypto';
 
 const log = createLogger('a2a-structured-tools');
 
+const A2A_SEND_INTERVAL_MS = 30_000;
+
+// Global send queue: serialises all structured A2A dispatches so only one
+// message is in-flight at a time, with a gap between each to avoid rate-limiting.
+let sendQueue: Promise<void> = Promise.resolve();
+function enqueueSend(fn: () => Promise<void>): void {
+  sendQueue = sendQueue.then(async () => {
+    await fn();
+    await new Promise(r => setTimeout(r, A2A_SEND_INTERVAL_MS));
+  }).catch(() => { /* individual errors are already logged */ });
+}
+
 export interface A2AMessage {
   type: string;
   payload: Record<string, unknown>;
@@ -66,12 +78,16 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
       payloadSize: JSON.stringify(payload).length 
     });
     
-    // Fire-and-forget: dispatch to target agent and return immediately
-    ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName).catch((err: unknown) => {
-      log.warn(`Structured A2A message to ${targetId} failed in background`, { 
-        error: String(err),
-        messageType 
-      });
+    // Enqueue dispatch so sends are serialised globally with a gap between each
+    enqueueSend(async () => {
+      try {
+        await ctx.sendMessage(targetId, message, ctx.selfId, ctx.selfName);
+      } catch (err: unknown) {
+        log.warn(`Structured A2A message to ${targetId} failed in background`, { 
+          error: String(err),
+          messageType 
+        });
+      }
     });
     
     return JSON.stringify({ 
@@ -202,22 +218,16 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
           } : undefined,
         };
         
-        // Broadcast to all colleagues
+        // Enqueue broadcasts sequentially via the global send queue
         const colleagues = ctx.listColleagues().filter(a => a.id !== ctx.selfId);
-        const results = await Promise.allSettled(
-          colleagues.map(colleague => 
-            sendStructuredMessage(colleague.id, 'status_broadcast', statusBroadcast)
-          )
-        );
-        
-        const successful = results.filter(r => r.status === 'fulfilled').length;
-        const failed = results.filter(r => r.status === 'rejected').length;
+        for (const colleague of colleagues) {
+          await sendStructuredMessage(colleague.id, 'status_broadcast', statusBroadcast);
+        }
         
         return JSON.stringify({ 
           status: 'broadcasted', 
-          message: `Status broadcasted to ${successful} agents, ${failed} failed`,
-          broadcastCount: successful,
-          failedCount: failed,
+          message: `Status broadcast enqueued for ${colleagues.length} agents`,
+          broadcastCount: colleagues.length,
           totalAgents: colleagues.length
         });
       },

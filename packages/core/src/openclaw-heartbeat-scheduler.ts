@@ -38,7 +38,7 @@ export class OpenClawHeartbeatScheduler {
   private taskStats = new Map<string, HeartbeatTaskStats>();
   private startTime = Date.now();
 
-  private static readonly MAX_INITIAL_JITTER_MS = 10 * 60_000; // 10 minutes max jitter
+  private static readonly MAX_INITIAL_JITTER_MS = 30 * 60_000; // 30 minutes max jitter
   private static taskStartIndex = 0; // global counter for staggering across all scheduler instances
 
   constructor(
@@ -165,8 +165,8 @@ export class OpenClawHeartbeatScheduler {
 
     // Stagger first execution: deterministic spread + random jitter to avoid thundering herd
     const idx = OpenClawHeartbeatScheduler.taskStartIndex++;
-    const spreadMs = (idx * 15_000) % OpenClawHeartbeatScheduler.MAX_INITIAL_JITTER_MS;
-    const jitterMs = Math.floor(Math.random() * 30_000);
+    const spreadMs = (idx * 60_000) % OpenClawHeartbeatScheduler.MAX_INITIAL_JITTER_MS;
+    const jitterMs = Math.floor(Math.random() * 60_000);
     const initialDelay = spreadMs + jitterMs;
     
     log.info(`Scheduling interval heartbeat task: ${task.name}`, {
