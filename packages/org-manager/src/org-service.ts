@@ -430,6 +430,46 @@ export class OrganizationService {
     return [...this.teams.values()].filter(t => t.orgId === orgId);
   }
 
+  // ─── Team Batch Agent Control ─────────────────────────────────────────────
+
+  async startTeamAgents(teamId: string): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    return this.agentManager.startAgentsByIds(team.memberAgentIds);
+  }
+
+  async stopTeamAgents(teamId: string): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    return this.agentManager.stopAgentsByIds(team.memberAgentIds);
+  }
+
+  pauseTeamAgents(teamId: string, reason?: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    return this.agentManager.pauseAgentsByIds(team.memberAgentIds, reason);
+  }
+
+  resumeTeamAgents(teamId: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
+    const team = this.teams.get(teamId);
+    if (!team) throw new Error(`Team not found: ${teamId}`);
+    return this.agentManager.resumeAgentsByIds(team.memberAgentIds);
+  }
+
+  getTeamAgentStatuses(teamId: string): Array<{ id: string; name: string; status: string; role?: string }> {
+    const team = this.teams.get(teamId);
+    if (!team) return [];
+    return team.memberAgentIds.map(agentId => {
+      try {
+        const agent = this.agentManager.getAgent(agentId);
+        const state = agent.getState();
+        return { id: agentId, name: agent.config.name, status: state.status, role: agent.config.agentRole };
+      } catch {
+        return { id: agentId, name: 'unknown', status: 'not_found' };
+      }
+    });
+  }
+
   async hireAgent(request: CreateAgentRequest & { orgId: string }) {
     let org = this.orgs.get(request.orgId);
     if (!org && request.orgId === 'default') {

@@ -1,5 +1,8 @@
 import type { AgentToolHandler } from '../../agent.js';
 import type { SkillManifest, SkillInstance } from '../types.js';
+import { createLogger } from '@markus/shared';
+
+const log = createLogger('advanced-gui-skill');
 
 const manifest: SkillManifest = {
   name: 'advanced-gui',
@@ -168,13 +171,31 @@ const manifest: SkillManifest = {
 export async function createAdvancedGUISkill(
   containerId?: string,
   screenshotDir?: string,
-  options?: { debug?: boolean }
+  options?: { debug?: boolean; vncConfig?: { host: string; port: number; password?: string }; detectionConfig?: { engine: 'omniparser' | 'tesseract'; apiUrl?: string; confidence: number; timeout: number } }
 ): Promise<SkillInstance> {
-  // Create tools based on availability
   let guiTools: AgentToolHandler[] = [];
 
-  // Always use stub tools for now
-  guiTools = createStubTools();
+  if (options?.vncConfig) {
+    try {
+      const { createRealGUITools } = await import('@markus/gui');
+      const result = await createRealGUITools({
+        vnc: options.vncConfig,
+        screenshot: {
+          dir: screenshotDir ?? '/tmp/markus-screenshots',
+          format: 'png',
+          quality: 90,
+        },
+        detection: options.detectionConfig,
+      });
+      guiTools = result.tools as AgentToolHandler[];
+      log.info('Advanced GUI tools initialized with VNC + detection');
+    } catch (err) {
+      log.warn('Failed to create advanced GUI tools, falling back to stubs', { error: String(err) });
+      guiTools = createStubTools();
+    }
+  } else {
+    guiTools = createStubTools();
+  }
 
   return {
     manifest,

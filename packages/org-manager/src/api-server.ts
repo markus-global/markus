@@ -1277,6 +1277,89 @@ export class APIServer {
       return;
     }
 
+    // Team batch start
+    if (path.match(/^\/api\/teams\/[^/]+\/start$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
+      }
+      const teamId = path.split('/')[3]!;
+      try {
+        const result = await this.orgService.startTeamAgents(teamId);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    // Team batch stop
+    if (path.match(/^\/api\/teams\/[^/]+\/stop$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
+      }
+      const teamId = path.split('/')[3]!;
+      try {
+        const result = await this.orgService.stopTeamAgents(teamId);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    // Team batch pause
+    if (path.match(/^\/api\/teams\/[^/]+\/pause$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
+      }
+      const teamId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const result = this.orgService.pauseTeamAgents(teamId, body['reason'] as string | undefined);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    // Team batch resume
+    if (path.match(/^\/api\/teams\/[^/]+\/resume$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Insufficient permissions' });
+        return;
+      }
+      const teamId = path.split('/')[3]!;
+      try {
+        const result = this.orgService.resumeTeamAgents(teamId);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 404, { error: String(err) });
+      }
+      return;
+    }
+
+    // Team agent status
+    if (path.match(/^\/api\/teams\/[^/]+\/status$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const teamId = path.split('/')[3]!;
+      const statuses = this.orgService.getTeamAgentStatuses(teamId);
+      this.json(res, 200, { agents: statuses });
+      return;
+    }
+
     // Roles
     if (path === '/api/roles' && req.method === 'GET') {
       const roleNames = this.orgService.listAvailableRoles();

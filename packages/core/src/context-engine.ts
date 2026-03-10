@@ -7,6 +7,7 @@ import {
   type IdentityContext,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
+import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 
@@ -48,10 +49,15 @@ function estimateMessageTokens(msg: LLMMessage, counter?: TokenCounter): number 
 export class ContextEngine {
   private config: ContextConfig;
   private tokenCounter: TokenCounter;
+  private semanticSearch?: SemanticMemorySearch;
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.tokenCounter = config?.tokenCounter ?? getDefaultTokenCounter();
+  }
+
+  setSemanticSearch(ss: SemanticMemorySearch): void {
+    this.semanticSearch = ss;
   }
 
   buildSystemPrompt(opts: {
@@ -106,7 +112,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-  }): string {
+  }): Promise<string> {
     const parts: string[] = [];
 
     parts.push(opts.role.systemPrompt);
@@ -217,11 +223,11 @@ export class ContextEngine {
       parts.push(opts.knowledgeContext.slice(0, 3000));
     }
 
-    const relevantMemories = this.retrieveRelevantMemories(opts.memory, opts.currentQuery);
+    const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
     if (relevantMemories.length > 0) {
       parts.push('\n## Relevant Memories');
       for (const mem of relevantMemories) {
-        const ts = new Date(mem.timestamp).toLocaleDateString();
+        const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
         parts.push(`- [${ts}] ${mem.content}`);
       }
     }
@@ -835,8 +841,23 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private retrieveRelevantMemories(memory: IMemoryStore, query?: string): MemoryEntry[] {
+  private async retrieveRelevantMemories(memory: IMemoryStore, query?: string, agentId?: string): Promise<MemoryEntry[]> {
     const facts = memory.getEntries('fact', this.config.memorySearchTopK);
+
+    if (query && this.semanticSearch?.isEnabled()) {
+      try {
+        const semResults = await this.semanticSearch.search(query, {
+          agentId,
+          topK: this.config.memorySearchTopK,
+        });
+        const semEntries = semResults.map(r => r.entry);
+        const semIds = new Set(semEntries.map(e => e.id));
+        const combined = [...facts.filter(f => !semIds.has(f.id)), ...semEntries];
+        return combined.slice(0, this.config.memorySearchTopK * 2);
+      } catch {
+        // fall through to substring search
+      }
+    }
 
     if (query) {
       const searchResults = memory.search(query);

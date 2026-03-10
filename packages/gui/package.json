@@ -11,6 +11,11 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@markus/shared": "workspace:*"
+    "@markus/shared": "workspace:*",
+    "rfb2": "^0.2.2",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/sharp": "^0.32.0"
   }
 }

@@ -25,6 +25,11 @@ export interface MarkusConfig {
     apiPort: number;
     webPort: number;
   };
+  mcpServers?: Record<string, {
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+  }>;
   redis?: {
     url: string;
   };

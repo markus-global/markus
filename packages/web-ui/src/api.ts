@@ -622,6 +622,16 @@ export const api = {
       request(`/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType }) }),
     removeMember: (teamId: string, memberId: string) =>
       request(`/teams/${teamId}/members/${memberId}`, { method: 'DELETE' }),
+    startAll: (teamId: string) =>
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/start`, { method: 'POST' }),
+    stopAll: (teamId: string) =>
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/stop`, { method: 'POST' }),
+    pauseAll: (teamId: string, reason?: string) =>
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/pause`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    resumeAll: (teamId: string) =>
+      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/resume`, { method: 'POST' }),
+    status: (teamId: string) =>
+      request<{ agents: Array<{ id: string; name: string; status: string; role?: string }> }>(`/teams/${teamId}/status`),
   },
   externalAgents: {
     list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),

@@ -3,6 +3,7 @@ import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, typ
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { TaskDAG } from '../components/TaskDAG.tsx';
 import { navBus } from '../navBus.ts';
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
@@ -881,6 +882,7 @@ export function ProjectsPage() {
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
+  const [boardType, setBoardType] = useState<'kanban' | 'dag'>('kanban');
   const dragTaskRef = useRef<TaskInfo | null>(null);
   const dragReqRef = useRef<RequirementInfo | null>(null);
 
@@ -1322,6 +1324,20 @@ export function ProjectsPage() {
             {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
           </div>
           <div className="flex items-center gap-2">
+            <div className="flex items-center border border-gray-700 rounded-lg overflow-hidden mr-2">
+              <button
+                onClick={() => setBoardType('kanban')}
+                className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${boardType === 'kanban' ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              >
+                Kanban
+              </button>
+              <button
+                onClick={() => setBoardType('dag')}
+                className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${boardType === 'dag' ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              >
+                DAG
+              </button>
+            </div>
             <button onClick={() => setTriggerCreateReq(c => c + 1)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-medium">+ Requirement</button>
             <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs rounded-lg hover:bg-gray-800 transition-colors">+ Task</button>
           </div>
@@ -1390,6 +1406,12 @@ export function ProjectsPage() {
               </button>
             </div>
           </div>
+        ) : boardType === 'dag' ? (
+          <TaskDAG
+            tasks={Object.values(board).flat()}
+            agents={agents}
+            onTaskClick={(task) => setSelectedTask(task)}
+          />
         ) : (
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden p-6">
             <div className="flex gap-4 h-full">

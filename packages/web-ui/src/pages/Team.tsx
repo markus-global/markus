@@ -139,6 +139,23 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     );
   };
 
+  const handleBatchStart = async (teamId: string) => {
+    await api.teams.startAll(teamId);
+    refresh();
+  };
+  const handleBatchStop = async (teamId: string) => {
+    await api.teams.stopAll(teamId);
+    refresh();
+  };
+  const handleBatchPause = async (teamId: string) => {
+    await api.teams.pauseAll(teamId);
+    refresh();
+  };
+  const handleBatchResume = async (teamId: string) => {
+    await api.teams.resumeAll(teamId);
+    refresh();
+  };
+
   const handleStartStop = async (agentId: string, status: string) => {
     if (status === 'offline') await api.agents.start(agentId);
     else await api.agents.stop(agentId);
@@ -271,6 +288,10 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               onAddExisting={() => { setAddMemberMenuTeam(null); setShowAddExisting(team.id); }}
               ungrouped={ungrouped}
               externalMarkusIds={externalMarkusIds}
+              onBatchStart={handleBatchStart}
+              onBatchStop={handleBatchStop}
+              onBatchPause={handleBatchPause}
+              onBatchResume={handleBatchResume}
             />
           ))}
 
@@ -415,6 +436,7 @@ function TeamCard({
   onSetManager, onRemoveFromTeam, onDeleteTeam,
   onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick,
   onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped, externalMarkusIds,
+  onBatchStart, onBatchStop, onBatchPause, onBatchResume,
 }: {
   team: TeamInfo;
   isAdmin: boolean;
@@ -435,6 +457,10 @@ function TeamCard({
   onHireAgent: () => void;
   onAddHuman: () => void;
   onAddExisting: () => void;
+  onBatchStart: (teamId: string) => void;
+  onBatchStop: (teamId: string) => void;
+  onBatchPause: (teamId: string) => void;
+  onBatchResume: (teamId: string) => void;
 }) {
   return (
     <div className="bg-gray-900/60 border border-gray-800 rounded-xl hover:border-gray-700 transition-colors">
@@ -482,6 +508,38 @@ function TeamCard({
                 </div>
               )}
             </div>
+            {team.members.some(m => m.type === 'agent') && (
+              <div className="flex items-center gap-1 border border-gray-700/50 rounded-lg px-1 py-0.5">
+                <button
+                  onClick={() => onBatchStart(team.id)}
+                  className="px-2 py-0.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                  title="Start all agents"
+                >
+                  Start All
+                </button>
+                <button
+                  onClick={() => onBatchStop(team.id)}
+                  className="px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                  title="Stop all agents"
+                >
+                  Stop All
+                </button>
+                <button
+                  onClick={() => onBatchPause(team.id)}
+                  className="px-2 py-0.5 text-xs text-amber-400 hover:bg-amber-500/10 rounded transition-colors"
+                  title="Pause all agents"
+                >
+                  Pause
+                </button>
+                <button
+                  onClick={() => onBatchResume(team.id)}
+                  className="px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                  title="Resume all agents"
+                >
+                  Resume
+                </button>
+              </div>
+            )}
             <button
               onClick={() => onDeleteTeam(team.id, team.name)}
               className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded"

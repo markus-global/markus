@@ -1,5 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { IMemoryStore, MemoryEntry } from '../memory/types.js';
+import type { SemanticMemorySearch } from '../memory/semantic-search.js';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('memory-tools');
@@ -8,6 +9,7 @@ export interface AgentMemoryContext {
   agentId: string;
   agentName: string;
   memory: IMemoryStore;
+  semanticSearch?: SemanticMemorySearch;
 }
 
 export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
@@ -52,6 +54,13 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         };
 
         ctx.memory.addEntry(entry);
+
+        if (ctx.semanticSearch?.isEnabled()) {
+          ctx.semanticSearch.indexMemory(entry, ctx.agentId).catch(err => {
+            log.warn('Failed to index memory for semantic search', { error: String(err) });
+          });
+        }
+
         log.info('Agent saved memory', { agentId: ctx.agentId, type, contentLen: content.length });
         return JSON.stringify({ status: 'saved', id: entry.id, type });
       },
@@ -87,11 +96,36 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         const type = args['type'] as MemoryEntry['type'] | undefined;
         const limit = (args['limit'] as number) ?? 10;
 
+        if (ctx.semanticSearch?.isEnabled()) {
+          try {
+            const semResults = await ctx.semanticSearch.search(query, {
+              agentId: ctx.agentId,
+              topK: limit,
+            });
+            let entries = semResults.map(r => r.entry);
+            if (type) entries = entries.filter(e => e.type === type);
+
+            log.debug('Semantic memory search', { agentId: ctx.agentId, query, results: entries.length });
+            return JSON.stringify({
+              results: entries.map(e => ({
+                id: e.id,
+                type: e.type,
+                content: e.content,
+                timestamp: e.timestamp,
+                similarity: semResults.find(r => r.entry.id === e.id)?.similarity,
+              })),
+              count: entries.length,
+            });
+          } catch (err) {
+            log.warn('Semantic search failed, falling back to substring', { error: String(err) });
+          }
+        }
+
         let results = ctx.memory.search(query);
         if (type) results = results.filter(e => e.type === type);
         results = results.slice(0, limit);
 
-        log.debug('Memory search', { agentId: ctx.agentId, query, results: results.length });
+        log.debug('Memory search (substring)', { agentId: ctx.agentId, query, results: results.length });
         return JSON.stringify({
           results: results.map(e => ({
             id: e.id,

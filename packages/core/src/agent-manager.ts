@@ -22,6 +22,7 @@ import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
+import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
@@ -159,6 +160,7 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
+  private semanticSearch?: SemanticMemorySearch;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
     agentId: string,
@@ -288,6 +290,24 @@ export class AgentManager {
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
+
+    const embeddingApiKey = process.env['OPENAI_API_KEY'] ?? process.env['EMBEDDING_API_KEY'];
+    if (embeddingApiKey) {
+      const embeddingProvider = new OpenAIEmbeddingProvider({
+        apiKey: embeddingApiKey,
+        baseUrl: process.env['EMBEDDING_BASE_URL'] ?? process.env['OPENAI_BASE_URL'],
+        model: process.env['EMBEDDING_MODEL'],
+      });
+      const vectorStore = new LocalVectorStore(this.dataDir);
+      this.semanticSearch = new SemanticMemorySearch(embeddingProvider, vectorStore);
+      this.semanticSearch.initialize().then(ok => {
+        if (ok) log.info('Semantic memory search initialized (LocalVectorStore)');
+        else log.warn('Semantic memory search initialization failed');
+      }).catch(err => {
+        log.warn('Semantic memory search init error', { error: String(err) });
+      });
+    }
+
     this.a2aBus = new A2ABus();
     this.delegationManager = new DelegationManager(this.a2aBus);
     this.delegationManager.onDelegationReceived(async (envelope, delegation) => {
@@ -469,8 +489,13 @@ export class AgentManager {
       agentId: id,
       agentName: config.name,
       memory: agent.getMemory(),
+      semanticSearch: this.semanticSearch,
     })) {
       agent.registerTool(tool);
+    }
+
+    if (this.semanticSearch) {
+      agent.getContextEngine().setSemanticSearch(this.semanticSearch);
     }
 
     // Register agent on A2A bus for structured message delivery
@@ -897,8 +922,13 @@ export class AgentManager {
       agentId: id,
       agentName: config.name,
       memory: agent.getMemory(),
+      semanticSearch: this.semanticSearch,
     })) {
       agent.registerTool(tool);
+    }
+
+    if (this.semanticSearch) {
+      agent.getContextEngine().setSemanticSearch(this.semanticSearch);
     }
 
     this.a2aBus.registerAgent(id, async envelope => {
@@ -1360,6 +1390,70 @@ export class AgentManager {
       heartbeatIntervalMs: request.overrides?.heartbeatIntervalMs ?? template.heartbeatIntervalMs,
       llmProvider,
     });
+  }
+
+  // ─── Batch Agent Control ───────────────────────────────────────────────────
+
+  async startAgentsByIds(ids: string[]): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    const success: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of ids) {
+      try {
+        await this.startAgent(id);
+        success.push(id);
+      } catch (err) {
+        failed.push({ id, error: String(err) });
+      }
+    }
+    return { success, failed };
+  }
+
+  async stopAgentsByIds(ids: string[]): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    const success: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of ids) {
+      try {
+        await this.stopAgent(id);
+        success.push(id);
+      } catch (err) {
+        failed.push({ id, error: String(err) });
+      }
+    }
+    return { success, failed };
+  }
+
+  pauseAgentsByIds(ids: string[], reason?: string): { success: string[]; failed: Array<{ id: string; error: string }> } {
+    const success: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of ids) {
+      try {
+        const agent = this.getAgent(id);
+        if (agent.getState().status !== 'offline') {
+          agent.pause(reason);
+        }
+        success.push(id);
+      } catch (err) {
+        failed.push({ id, error: String(err) });
+      }
+    }
+    return { success, failed };
+  }
+
+  resumeAgentsByIds(ids: string[]): { success: string[]; failed: Array<{ id: string; error: string }> } {
+    const success: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const id of ids) {
+      try {
+        const agent = this.getAgent(id);
+        if (agent.getState().status === 'paused') {
+          agent.resume();
+        }
+        success.push(id);
+      } catch (err) {
+        failed.push({ id, error: String(err) });
+      }
+    }
+    return { success, failed };
   }
 
   // ─── Global Agent Control ──────────────────────────────────────────────────

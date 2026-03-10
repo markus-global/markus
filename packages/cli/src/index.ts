@@ -23,6 +23,7 @@ import {
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
+import { SandboxManager } from '@markus/compute';
 
 // Load .env file from project root
 const envPath = resolve(process.cwd(), '.env');
@@ -335,12 +336,29 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService.startTimeoutChecker();
   }
 
+  let sandboxFactory;
+  if (config.compute?.defaultType === 'docker') {
+    try {
+      const sandboxManager = new SandboxManager(config.compute?.docker?.socketPath);
+      sandboxFactory = sandboxManager.asSandboxFactory(
+        config.compute?.docker?.defaultImage ?? 'node:20-slim'
+      );
+      log.info('Docker sandbox factory initialized');
+    } catch (err) {
+      log.warn('Failed to initialize Docker sandbox factory, sandboxing disabled', {
+        error: String(err),
+      });
+    }
+  }
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
     dataDir: join(homedir(), '.markus', 'agents'),
     skillRegistry,
     taskService,
+    sandboxFactory,
+    mcpServers: config.mcpServers,
   });
 
   taskService.setAgentManager(agentManager);

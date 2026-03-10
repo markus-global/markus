@@ -1,5 +1,8 @@
 import type { AgentToolHandler } from '../../agent.js';
 import type { SkillManifest, SkillInstance } from '../types.js';
+import { createLogger } from '@markus/shared';
+
+const log = createLogger('gui-skill');
 
 const manifest: SkillManifest = {
   name: 'gui',
@@ -90,12 +93,31 @@ const manifest: SkillManifest = {
   ],
 };
 
-export async function createGUISkill(containerId?: string, screenshotDir?: string): Promise<SkillInstance> {
-  // Create tools based on availability
+export async function createGUISkill(containerId?: string, screenshotDir?: string, vncConfig?: { host: string; port: number; password?: string }): Promise<SkillInstance> {
   let guiTools: AgentToolHandler[] = [];
+  let cleanup: (() => Promise<void>) | undefined;
 
-  // Always use stub tools for now
-  guiTools = createStubTools();
+  if (vncConfig) {
+    try {
+      const { createRealGUITools } = await import('@markus/gui');
+      const result = await createRealGUITools({
+        vnc: vncConfig,
+        screenshot: {
+          dir: screenshotDir ?? '/tmp/markus-screenshots',
+          format: 'png',
+          quality: 90,
+        },
+      });
+      guiTools = result.tools as AgentToolHandler[];
+      cleanup = result.cleanup;
+      log.info('Real GUI tools initialized via VNC', { host: vncConfig.host, port: vncConfig.port });
+    } catch (err) {
+      log.warn('Failed to create real GUI tools, falling back to stubs', { error: String(err) });
+      guiTools = createStubTools();
+    }
+  } else {
+    guiTools = createStubTools();
+  }
 
   return {
     manifest,

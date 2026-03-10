@@ -836,7 +836,7 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
     }
 
-    const systemPrompt = this.contextEngine.buildSystemPrompt({
+    const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -1142,7 +1142,7 @@ export class Agent {
     const userContent = this.buildUserContent(userMessage, images);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
-    const systemPrompt = this.contextEngine.buildSystemPrompt({
+    const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -1521,7 +1521,7 @@ export class Agent {
 
     this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
 
-    const systemPrompt = this.contextEngine.buildSystemPrompt({
+    const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -1768,6 +1768,10 @@ export class Agent {
 
   getMemory(): IMemoryStore {
     return this.memory;
+  }
+
+  getContextEngine(): ContextEngine {
+    return this.contextEngine;
   }
 
   private getKnowledgeContext(query?: string): string | undefined {
