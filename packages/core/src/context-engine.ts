@@ -60,7 +60,7 @@ export class ContextEngine {
     this.semanticSearch = ss;
   }
 
-  buildSystemPrompt(opts: {
+  async buildSystemPrompt(opts: {
     agentId: string;
     agentName: string;
     role: RoleTemplate;

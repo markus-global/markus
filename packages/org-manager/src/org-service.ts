@@ -20,6 +20,7 @@ export class OrganizationService {
   private teams = new Map<string, Team>();
   private humans = new Map<string, HumanUser>();
   private agentManager: AgentManager;
+  private pendingAgentStartIds: string[] = [];
   private roleLoader: RoleLoader;
   private storage?: StorageBridge;
 
@@ -637,33 +638,23 @@ export class OrganizationService {
       log.warn('Failed to restore teams from DB', { error: String(error) });
     }
 
-    // 2. Restore agents (stagger starts to avoid API rate-limiting)
-    const AGENT_START_STAGGER_MS = 5_000;
+    // 2. Restore agent data (fast — no auto-start, just create agent objects)
+    this.pendingAgentStartIds = [];
     try {
       const agentRows = await this.storage.agentRepo.findByOrgId(orgId);
       let restoredCount = 0;
       for (const row of agentRows) {
-        if (this.agentManager.hasAgent(row.id)) continue; // already loaded
+        if (this.agentManager.hasAgent(row.id)) continue;
         try {
           await this.agentManager.restoreAgent(row);
+          this.pendingAgentStartIds.push(row.id);
           restoredCount++;
 
-          // Re-add to team membership
           if (row.teamId) {
             const team = this.teams.get(row.teamId);
             if (team && !team.memberAgentIds.includes(row.id)) {
               team.memberAgentIds.push(row.id);
             }
-          }
-
-          // Auto-start restored agents with staggered delay
-          try {
-            await this.agentManager.startAgent(row.id);
-            if (restoredCount < agentRows.length) {
-              await new Promise(r => setTimeout(r, AGENT_START_STAGGER_MS));
-            }
-          } catch (startErr) {
-            log.warn(`Failed to auto-start restored agent ${row.id}`, { error: String(startErr) });
           }
         } catch (agentErr) {
           log.warn(`Failed to restore agent ${row.id}`, { error: String(agentErr) });
@@ -714,6 +705,40 @@ export class OrganizationService {
 
     this.refreshIdentityContextsForOrg(orgId);
     log.info('Data restored from DB successfully', { orgId });
+  }
+
+  /**
+   * Start all restored agents in the background with staggered delays.
+   * Call this AFTER the HTTP server is already listening and all handlers are wired.
+   * Returns immediately — agents start asynchronously.
+   */
+  startRestoredAgentsInBackground(): void {
+    const ids = this.pendingAgentStartIds;
+    this.pendingAgentStartIds = [];
+    if (ids.length === 0) return;
+
+    const STAGGER_MS = 1_000;
+    log.info(`Starting ${ids.length} restored agents in background...`);
+
+    const startAll = async () => {
+      let started = 0;
+      for (const id of ids) {
+        try {
+          await this.agentManager.startAgent(id);
+          started++;
+          if (started < ids.length) {
+            await new Promise(r => setTimeout(r, STAGGER_MS));
+          }
+        } catch (err) {
+          log.warn(`Failed to auto-start restored agent ${id}`, { error: String(err) });
+        }
+      }
+      log.info(`Background agent startup complete: ${started}/${ids.length} agents started`);
+    };
+
+    startAll().catch(err => {
+      log.error('Background agent startup failed', { error: String(err) });
+    });
   }
 
   /**

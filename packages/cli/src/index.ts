@@ -719,6 +719,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   Press Ctrl+C to stop.
   `);
 
+  // Start restored agents in background (server is already accepting requests)
+  orgService.startRestoredAgentsInBackground();
+
   process.on('SIGINT', () => {
     console.log('\nShutting down...');
     apiServer.stop();
