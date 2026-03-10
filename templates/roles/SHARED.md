@@ -121,29 +121,50 @@ If you notice work that should be done but no requirement exists for it:
 
 ---
 
-## Workspace Discipline
+## Workspace Isolation
 
+Each agent works in a strictly isolated environment. This prevents interference and ensures clean collaboration.
+
+### Branch Isolation
 - You work in an **isolated git branch** for each task. Your workspace path is set automatically.
-- Do NOT modify files outside your designated workspace.
 - All your changes live on a task-specific branch (e.g., `task/task-xxx`). They will be reviewed and merged separately.
 - Do NOT attempt to merge branches yourself unless explicitly instructed.
 
+### Workspace Boundaries
+- Do NOT modify files outside your designated workspace path.
+- **NEVER** read, modify, or interfere with another agent's task branch or workspace directory. Each agent's workspace is private.
+- If you need output or artifacts from another agent's work, request it via `agent_send_message` — do NOT directly access their files or branches.
+- Do NOT cherry-pick, rebase from, or merge another agent's task branch into yours without explicit manager approval.
+
+### Conflict Prevention
+- Before starting work, check if other agents are working on overlapping files or modules. Use `agent_send_message` to coordinate if there is overlap.
+- If your task touches shared infrastructure (e.g., database schemas, API contracts, shared libraries), notify the team before making changes and wait for acknowledgment.
+- When multiple agents work on the same codebase, each must stay within their assigned scope. Scope creep into another agent's area is a protocol violation.
+
 ---
 
-## Formal Delivery
+## Formal Delivery & Mutual Review
 
-When completing a task, you must submit formal deliverables AND announce it to the team:
+When completing a task, you must submit formal deliverables AND announce it to the team. **You may NEVER approve or complete your own work — all work requires independent review by another agent or human.**
 
+### Submission Protocol
 1. Ensure all changes are committed to your task branch with clear commit messages
-2. Use `task_submit_review` to submit your work, including:
+2. Verify your changes are confined to your task branch and workspace — no stray modifications outside your scope
+3. Use `task_submit_review` to submit your work, including:
    - A summary of what was done and why
    - Test results (if applicable)
    - Any known issues or follow-up items
-3. **Announce your submission to the team** — do this immediately after calling `task_submit_review`:
+4. **Announce your submission to the team** — do this immediately after calling `task_submit_review`:
    - Use `agent_send_message` to notify the assigned reviewer (if known) and the project manager with a brief summary: what task, what was done, any known issues
    - Use `agent_broadcast_status` with `status: "idle"` to signal you are available — include the task title in `current_task_title` so teammates know what you just completed
-4. The task enters **review** status. Do NOT mark it as completed yourself — a reviewer will accept or request revisions.
-5. If revisions are requested, address them and resubmit (repeat steps 1–3).
+5. The task enters **review** status. Do NOT mark it as completed yourself — a reviewer will accept or request revisions.
+6. If revisions are requested, address them and resubmit (repeat steps 1–5).
+
+### Mutual Review Rules
+- **No self-approval**: You can NEVER mark your own task as `completed` or `accepted`. Only an independent reviewer (another agent or human) can close the loop.
+- **When you are a reviewer**: Evaluate the submission objectively. Check for correctness, adherence to project conventions, test coverage, and that the work stays within the assigned scope (no unauthorized changes to files outside the task boundary).
+- **Cross-check workspace boundaries**: As a reviewer, verify the submitter's changes are limited to their task branch and do not include modifications to shared resources without proper coordination.
+- **Escalate conflicts**: If you discover that a submission conflicts with your own work or another agent's work, flag it immediately via `agent_send_message` to the project manager before accepting or rejecting.
 
 ---
 

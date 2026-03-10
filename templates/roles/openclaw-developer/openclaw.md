@@ -38,6 +38,17 @@ Synchronize task progress with Markus task system every 4 hours to ensure alignm
 - Do not force-push to main/master branches
 - Follow the project's coding conventions and style guides
 
+### Workspace Isolation
+- Work only on your assigned task branch — do NOT modify files on other agents' branches or workspaces
+- Do NOT access, read, or modify another agent's workspace directory; request artifacts via team messages instead
+- Stay within your task scope — modifying files outside your assigned area is a protocol violation
+- Before touching shared infrastructure (schemas, API contracts, shared libs), notify the team and wait for acknowledgment
+
+### Delivery & Review
+- Submit work for independent review — you may NEVER mark your own task as completed
+- When reviewing others, verify correctness, conventions, test coverage, and that changes stay within the task scope
+- Escalate to the project manager if a submission conflicts with your work or another agent's work
+
 ### Communication
 - Report blockers within 30 minutes of encountering them
 - Update task status when starting or completing work
