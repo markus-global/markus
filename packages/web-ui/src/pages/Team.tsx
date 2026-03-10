@@ -147,10 +147,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
     await api.teams.stopAll(teamId);
     refresh();
   };
-  const handleBatchPause = async (teamId: string) => {
-    await api.teams.pauseAll(teamId);
-    refresh();
-  };
   const handleBatchResume = async (teamId: string) => {
     await api.teams.resumeAll(teamId);
     refresh();
@@ -290,7 +286,6 @@ export function TeamPage({ authUser }: { authUser?: AuthUser } = {}) {
               externalMarkusIds={externalMarkusIds}
               onBatchStart={handleBatchStart}
               onBatchStop={handleBatchStop}
-              onBatchPause={handleBatchPause}
               onBatchResume={handleBatchResume}
             />
           ))}
@@ -436,7 +431,7 @@ function TeamCard({
   onSetManager, onRemoveFromTeam, onDeleteTeam,
   onStartStop, onRemoveAgent, onRemoveHuman, onMemberClick, onBusyClick,
   onOpenAddMenu, onHireAgent, onAddHuman, onAddExisting, ungrouped, externalMarkusIds,
-  onBatchStart, onBatchStop, onBatchPause, onBatchResume,
+  onBatchStart, onBatchStop, onBatchResume,
 }: {
   team: TeamInfo;
   isAdmin: boolean;
@@ -459,7 +454,6 @@ function TeamCard({
   onAddExisting: () => void;
   onBatchStart: (teamId: string) => void;
   onBatchStop: (teamId: string) => void;
-  onBatchPause: (teamId: string) => void;
   onBatchResume: (teamId: string) => void;
 }) {
   return (
@@ -470,13 +464,7 @@ function TeamCard({
           <span className="text-sm font-semibold">{team.name}</span>
           <span className="text-xs text-gray-500">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</span>
           {team.managerId && team.managerName && (
-            <div className="flex items-center gap-1 text-xs text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
-              <span>★</span>
-              <span>{team.managerName}</span>
-            </div>
-          )}
-          {!team.managerId && (
-            <span className="text-xs text-gray-600 italic">No manager</span>
+            <span className="text-xs text-gray-400"><span className="text-amber-400">★</span> {team.managerName}</span>
           )}
         </div>
         {isAdmin && (
@@ -508,38 +496,33 @@ function TeamCard({
                 </div>
               )}
             </div>
-            {team.members.some(m => m.type === 'agent') && (
-              <div className="flex items-center gap-1 border border-gray-700/50 rounded-lg px-1 py-0.5">
-                <button
-                  onClick={() => onBatchStart(team.id)}
-                  className="px-2 py-0.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                  title="Start all agents"
-                >
-                  Start All
-                </button>
-                <button
-                  onClick={() => onBatchStop(team.id)}
-                  className="px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                  title="Stop all agents"
-                >
-                  Stop All
-                </button>
-                <button
-                  onClick={() => onBatchPause(team.id)}
-                  className="px-2 py-0.5 text-xs text-amber-400 hover:bg-amber-500/10 rounded transition-colors"
-                  title="Pause all agents"
-                >
-                  Pause
-                </button>
-                <button
-                  onClick={() => onBatchResume(team.id)}
-                  className="px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                  title="Resume all agents"
-                >
-                  Resume
-                </button>
-              </div>
-            )}
+            {(() => {
+              const agents = team.members.filter(m => m.type === 'agent');
+              if (agents.length === 0) return null;
+              const hasOffline = agents.some(a => !a.status || a.status === 'offline');
+              const hasRunning = agents.some(a => a.status === 'idle' || a.status === 'working');
+              const hasPaused = agents.some(a => a.status === 'paused');
+              if (!hasOffline && !hasRunning && !hasPaused) return null;
+              return (
+                <div className="flex items-center gap-1">
+                  {hasOffline && (
+                    <button onClick={() => onBatchStart(team.id)} className="px-2 py-0.5 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors" title="Start offline agents">
+                      Start All
+                    </button>
+                  )}
+                  {hasRunning && (
+                    <button onClick={() => onBatchStop(team.id)} className="px-2 py-0.5 text-xs text-red-400 hover:bg-red-500/10 rounded transition-colors" title="Stop running agents">
+                      Stop All
+                    </button>
+                  )}
+                  {hasPaused && (
+                    <button onClick={() => onBatchResume(team.id)} className="px-2 py-0.5 text-xs text-blue-400 hover:bg-blue-500/10 rounded transition-colors" title="Resume paused agents">
+                      Resume
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
             <button
               onClick={() => onDeleteTeam(team.id, team.name)}
               className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded"
@@ -628,9 +611,7 @@ function MemberCard({
       className={`relative group w-44 border rounded-xl p-3.5 transition-all cursor-pointer ${
         isSelected
           ? 'border-indigo-500 bg-indigo-900/20 ring-1 ring-indigo-500/30'
-          : isManager
-            ? 'border-amber-500/40 bg-amber-500/5 hover:border-amber-400/60'
-            : 'border-gray-700/60 bg-gray-800/50 hover:border-gray-500'
+          : 'border-gray-700/60 bg-gray-800/50 hover:border-gray-500'
       }`}
     >
       {isManager && (
