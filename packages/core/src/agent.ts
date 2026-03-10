@@ -793,6 +793,7 @@ export class Agent {
       maxHistory?: number;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
+      allowedTools?: Set<string>;
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -850,7 +851,10 @@ export class Agent {
       environment: this.environmentProfile,
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    if (options?.allowedTools) {
+      llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
+    }
 
     let messages: LLMMessage[];
     if (isEphemeral) {
@@ -2067,10 +2071,16 @@ export class Agent {
       'After completing your review, if you discovered anything noteworthy (status corrections made, requirements proposed), call `memory_save` with a brief summary.',
     ].join('\n');
 
+    const HEARTBEAT_ALLOWED_TOOLS = new Set([
+      'task_list', 'task_update', 'requirement_propose', 'requirement_list',
+      'memory_save', 'memory_search',
+    ]);
+
     try {
       const reply = await this.handleMessage(prompt, undefined, undefined, {
         ephemeral: true,
         maxHistory: 10,
+        allowedTools: HEARTBEAT_ALLOWED_TOOLS,
       });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true);

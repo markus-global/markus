@@ -423,6 +423,22 @@ export class AgentManager {
           }
         }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+        // Lightweight path: informational broadcasts are stored directly,
+        // skipping the expensive LLM call that would cause cascade amplification.
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed.type === 'status_broadcast') {
+            const target = this.getAgent(targetId);
+            const senderName = parsed.sender?.name ?? fromName;
+            const payload = parsed.payload ?? {};
+            target.getMemory().writeDailyLog(
+              targetId,
+              `[Status] ${senderName}: ${payload.status ?? 'unknown'}${payload.currentTask?.title ? ' — ' + payload.currentTask.title : ''}`
+            );
+            return `Status from ${senderName} noted.`;
+          }
+        } catch { /* not JSON — fall through to full LLM handling */ }
+
         const target = this.getAgent(targetId);
         return target.handleMessage(
           message,
@@ -844,6 +860,22 @@ export class AgentManager {
           }
         }),
       sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+        // Lightweight path: informational broadcasts are stored directly,
+        // skipping the expensive LLM call that would cause cascade amplification.
+        try {
+          const parsed = JSON.parse(message);
+          if (parsed.type === 'status_broadcast') {
+            const target = this.getAgent(targetId);
+            const senderName = parsed.sender?.name ?? fromName;
+            const payload = parsed.payload ?? {};
+            target.getMemory().writeDailyLog(
+              targetId,
+              `[Status] ${senderName}: ${payload.status ?? 'unknown'}${payload.currentTask?.title ? ' — ' + payload.currentTask.title : ''}`
+            );
+            return `Status from ${senderName} noted.`;
+          }
+        } catch { /* not JSON — fall through to full LLM handling */ }
+
         const target = this.getAgent(targetId);
         return target.handleMessage(
           message,
