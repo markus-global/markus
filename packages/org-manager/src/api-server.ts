@@ -1287,6 +1287,7 @@ export class APIServer {
         return;
       }
       this.orgService.addMemberToTeam(teamId, memberId, memberType);
+      this.ws.broadcastTeamUpdate(teamId, { action: 'member-added', memberId });
       this.json(res, 200, { ok: true });
       return;
     }
@@ -1302,6 +1303,7 @@ export class APIServer {
       const teamId = parts[3]!;
       const memberId = parts[5]!;
       this.orgService.removeMemberFromTeam(teamId, memberId);
+      this.ws.broadcastTeamUpdate(teamId, { action: 'member-removed', memberId });
       this.json(res, 200, { ok: true });
       return;
     }

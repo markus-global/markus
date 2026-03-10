@@ -555,6 +555,10 @@ export class SqliteAgentRepo {
       .run(tokensUsed, now(), id);
   }
 
+  updateTeamId(id: string, teamId: string | null) {
+    this.db.prepare('UPDATE agents SET team_id = ?, updated_at = ? WHERE id = ?').run(teamId, now(), id);
+  }
+
   delete(id: string) {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }

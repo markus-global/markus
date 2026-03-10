@@ -67,6 +67,14 @@ export class WSBroadcaster {
     });
   }
 
+  broadcastTeamUpdate(teamId: string, extra?: Record<string, unknown>): void {
+    this.broadcast({
+      type: 'team:update',
+      payload: { teamId, ...extra },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   broadcastChat(agentId: string, message: string, sender: 'user' | 'agent'): void {
     this.broadcast({
       type: 'chat:message',
