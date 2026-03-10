@@ -2,8 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
-import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ExecEntryRow, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
@@ -986,15 +985,12 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading...</div>;
   if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
 
+  const entries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
+
   return (
     <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
-      {logs.map((entry, i) => <LogEntryRow key={`${entry.seq}-${i}`} entry={entry} />)}
-      {streamingText && (
-        <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-          <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
-          <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
-        </div>
-      )}
+      {entries.map((entry, i) => <ExecEntryRow key={`e-${i}`} entry={entry} showTime />)}
+      {streamingText && <StreamingText content={streamingText} />}
       <div ref={endRef} />
     </div>
   );

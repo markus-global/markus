@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
+import { ExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { navBus } from '../navBus.ts';
@@ -93,19 +93,10 @@ type ViewMode = 'all' | 'project';
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
-function filterCompletedToolStarts(logs: TaskLogEntry[]): TaskLogEntry[] {
-  const matchedStartIndices = new Set<number>();
-  for (let i = 0; i < logs.length; i++) {
-    if (logs[i]!.type === 'tool_end') {
-      for (let j = i - 1; j >= 0; j--) {
-        if (logs[j]!.type === 'tool_start' && !matchedStartIndices.has(j)) {
-          matchedStartIndices.add(j);
-          break;
-        }
-      }
-    }
-  }
-  return logs.filter((_, i) => !matchedStartIndices.has(i));
+function convertLogs(logs: TaskLogEntry[]): ExecEntry[] {
+  return filterCompletedStarts(
+    logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null)
+  );
 }
 
 function CommentBubble({ comment }: { comment: TaskComment }) {
@@ -223,13 +214,13 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
 
   // Merge logs and comments into a unified timeline
   type TimelineItem =
-    | { kind: 'log'; entry: TaskLogEntry; time: number }
+    | { kind: 'log'; entry: ExecEntry; time: number }
     | { kind: 'comment'; entry: TaskComment; time: number };
 
   const timeline = useMemo(() => {
-    const filteredLogs = filterCompletedToolStarts(logs);
+    const execEntries = convertLogs(logs);
     const items: TimelineItem[] = [
-      ...filteredLogs.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.createdAt).getTime() })),
+      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.time ?? 0).getTime() })),
       ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
     ];
     items.sort((a, b) => a.time - b.time);
@@ -280,24 +271,10 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
         {timeline.map((item, i) =>
           item.kind === 'comment'
             ? <CommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
-            : <LogEntryRow key={`l-${item.entry.seq}-${i}`} entry={item.entry} />
+            : <ExecEntryRow key={`l-${i}`} entry={item.entry} showTime />
         )}
-        {streamingText && (
-          <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
-            <MarkdownMessage content={streamingText} className="text-sm text-gray-300" />
-            <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
-          </div>
-        )}
-        {isExecuting && !streamingText && (
-          <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500">
-            <span className="flex gap-0.5">
-              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-            </span>
-            Thinking…
-          </div>
-        )}
+        {streamingText && <StreamingText content={streamingText} />}
+        {isExecuting && !streamingText && <ThinkingDots label="Thinking" />}
         <div ref={endRef} />
       </div>
       {/* Comment input */}

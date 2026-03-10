@@ -8,7 +8,11 @@ import {
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
-import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
+import {
+  ToolCallRow, ExecEntryRow, ThinkingDots,
+  taskLogToEntry, activityLogToEntry, filterCompletedStarts,
+  type ExecEntry,
+} from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -305,224 +309,8 @@ function friendlyAgentError(err: unknown): string {
   return `⚠ AI service error: ${detail || raw.slice(0, 120)}`;
 }
 
-// ─── Tool icon map (inline to avoid extra file) ────────────────────────────────
-const TOOL_META: Record<string, { label: string; icon: string }> = {
-  shell_execute: { label: 'Running command', icon: '⌨' },
-  file_read:     { label: 'Reading file',    icon: '📄' },
-  file_write:    { label: 'Writing file',    icon: '✏' },
-  file_edit:     { label: 'Editing file',    icon: '✏' },
-  file_list:     { label: 'Listing files',   icon: '📂' },
-  web_fetch:     { label: 'Fetching page',   icon: '🌐' },
-  web_search:    { label: 'Searching web',   icon: '🔍' },
-  create_task:   { label: 'Creating task',   icon: '📌' },
-  create_subtask: { label: 'Adding subtask', icon: '📌' },
-  update_task:   { label: 'Updating task',   icon: '✅' },
-  add_task_note: { label: 'Adding note',     icon: '📝' },
-  git_status:    { label: 'Git status',      icon: '🔀' },
-  git_diff:      { label: 'Git diff',        icon: '🔀' },
-  git_log:       { label: 'Git log',         icon: '📜' },
-  git_commit:    { label: 'Git commit',      icon: '💾' },
-  code_search:   { label: 'Searching code',  icon: '🔍' },
-  agent_send_message: { label: 'Messaging colleague', icon: '💬' },
-};
-function toolMeta(tool: string) {
-  return TOOL_META[tool] ?? { label: tool.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), icon: '⚙' };
-}
-
 // ─── AgentMessageBody ──────────────────────────────────────────────────────────
 // Renders an agent message with tool calls and text interleaved in chronological order.
-
-// ── Tool segment tooltip/modal helpers ────────────────────────────────────────
-
-function formatSegArgs(args: unknown): string {
-  if (!args || typeof args !== 'object') return '';
-  const obj = args as Record<string, unknown>;
-  const parts: string[] = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (v == null) continue;
-    const val = typeof v === 'string' ? v : JSON.stringify(v);
-    const trimmed = val.length > 60 ? val.slice(0, 60) + '…' : val;
-    parts.push(`${k}: ${trimmed}`);
-  }
-  return parts.join(', ');
-}
-
-function formatSegArgsDetail(args: unknown): Array<{ key: string; value: string }> {
-  if (!args || typeof args !== 'object') return [];
-  const obj = args as Record<string, unknown>;
-  return Object.entries(obj)
-    .filter(([, v]) => v != null)
-    .map(([k, v]) => ({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }));
-}
-
-function formatDurationMs(ms: number | undefined): string {
-  if (ms == null) return '';
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-function SegTooltip({ seg, anchorRef }: { seg: Extract<MsgSegment, { type: 'tool' }>; anchorRef: RefObject<HTMLElement | null> }) {
-  const [position, setPosition] = useState<'above' | 'below'>('above');
-
-  useEffect(() => {
-    if (anchorRef.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      setPosition(rect.top > 200 ? 'above' : 'below');
-    }
-  }, [anchorRef]);
-
-  const argSummary = formatSegArgs(seg.args);
-  const success = seg.status !== 'error';
-
-  return (
-    <div className={`absolute z-50 left-0 ${position === 'above' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} w-80 max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs pointer-events-none`}>
-      <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
-        <span className="font-medium text-gray-200">{toolMeta(seg.tool).label}</span>
-        <div className="flex items-center gap-2">
-          {seg.durationMs != null && <span className="text-gray-500">{formatDurationMs(seg.durationMs)}</span>}
-          <span className={success ? 'text-green-400' : 'text-red-400'}>{success ? '✓ ok' : '✗ failed'}</span>
-        </div>
-      </div>
-      {argSummary && (
-        <div className="px-3 py-1.5 border-b border-gray-800">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{argSummary}</div>
-        </div>
-      )}
-      {seg.result && (
-        <div className="px-3 py-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{seg.result.length > 300 ? seg.result.slice(0, 300) + '…' : seg.result}</div>
-        </div>
-      )}
-      {seg.error && (
-        <div className="px-3 py-1.5">
-          <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-          <div className="text-red-400 font-mono text-[11px] break-all line-clamp-3">{seg.error.length > 300 ? seg.error.slice(0, 300) + '…' : seg.error}</div>
-        </div>
-      )}
-      {!argSummary && !seg.result && !seg.error && (
-        <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
-      )}
-      <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600">Click to expand full details</div>
-    </div>
-  );
-}
-
-function SegDetailModal({ seg, onClose }: { seg: Extract<MsgSegment, { type: 'tool' }>; onClose: () => void }) {
-  const argEntries = formatSegArgsDetail(seg.args);
-  const success = seg.status !== 'error';
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60" />
-      <div
-        className="relative bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="opacity-60 text-sm">{toolMeta(seg.tool).icon}</span>
-            <span className={`text-sm font-semibold ${success ? 'text-gray-100' : 'text-red-300'}`}>
-              {toolMeta(seg.tool).label}
-            </span>
-            <span className={`text-xs px-1.5 py-0.5 rounded ${success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
-              {success ? 'Success' : 'Failed'}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            {seg.durationMs != null && <span className="text-xs text-gray-500">{formatDurationMs(seg.durationMs)}</span>}
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {argEntries.length > 0 && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Arguments</h4>
-              <div className="space-y-2">
-                {argEntries.map(({ key, value }) => (
-                  <div key={key}>
-                    <div className="text-[11px] text-indigo-400 font-medium mb-0.5">{key}</div>
-                    <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{value}</pre>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {seg.result && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{seg.result}</pre>
-            </div>
-          )}
-          {seg.error && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
-              <pre className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{seg.error}</pre>
-            </div>
-          )}
-          {!argEntries.length && !seg.result && !seg.error && (
-            <div className="text-sm text-gray-600 italic py-4 text-center">No detailed data recorded for this tool call.</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ToolSegmentRow({ seg, isLast }: { seg: Extract<MsgSegment, { type: 'tool' }>; isLast: boolean }) {
-  const meta = toolMeta(seg.tool);
-  const [hovered, setHovered] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const rowRef = useRef<HTMLDivElement>(null);
-  const isDone = seg.status !== 'running';
-
-  return (
-    <>
-      <div
-        ref={rowRef}
-        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-gray-700/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-gray-800/30 transition-colors' : ''}`}
-        onMouseEnter={() => isDone && setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onClick={() => isDone && setExpanded(true)}
-      >
-        <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
-          <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-            seg.status === 'running' ? 'border-indigo-500 bg-indigo-950 animate-pulse' :
-            seg.status === 'error'   ? 'border-red-600 bg-red-950 text-red-400' :
-                                       'border-gray-600 bg-gray-800 text-gray-400'
-          }`}>
-            {seg.status === 'done' ? '✓' : seg.status === 'error' ? '✗' : ''}
-          </div>
-        </div>
-        <div className={`flex items-center gap-1 text-xs leading-snug ${
-          seg.status === 'running' ? 'text-indigo-300' :
-          seg.status === 'error'   ? 'text-red-400 line-through opacity-50' :
-                                     'text-gray-500'
-        }`}>
-          <span className="opacity-60">{meta.icon}</span>
-          <span>{meta.label}{seg.status === 'running' ? '…' : ''}</span>
-          {seg.status === 'running' && (
-            <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          )}
-          {seg.durationMs != null && seg.status !== 'running' && (
-            <span className="text-[10px] text-gray-600 ml-0.5">{formatDurationMs(seg.durationMs)}</span>
-          )}
-        </div>
-        {hovered && <SegTooltip seg={seg} anchorRef={rowRef} />}
-      </div>
-      {expanded && <SegDetailModal seg={seg} onClose={() => setExpanded(false)} />}
-    </>
-  );
-}
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
@@ -576,24 +364,6 @@ function MessageActions({
   );
 }
 
-/** Pulsing dots — used for both initial "Thinking" and inter-step pauses */
-function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-gray-400 py-0.5">
-      <span>{label}</span>
-      <span className="flex gap-0.5">
-        {[0, 150, 300].map(d => (
-          <span
-            key={d}
-            className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce"
-            style={{ animationDelay: `${d}ms`, animationDuration: '1s' }}
-          />
-        ))}
-      </span>
-    </div>
-  );
-}
-
 function AgentMessageBody({
   msg, isStreaming, liveActivities,
 }: {
@@ -626,7 +396,7 @@ function AgentMessageBody({
         {segments.map((seg, i) => {
           const isLastSeg = i === segments.length - 1;
           if (seg.type === 'tool') {
-            return <ToolSegmentRow key={seg.key} seg={seg} isLast={isLastSeg && !isWaiting} />;
+            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs }} isLast={isLastSeg && !isWaiting} />;
           }
           // text segment
           return (
@@ -2122,77 +1892,29 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
           </div>
         </div>
 
-        {/* Logs */}
+        {/* Logs — unified rendering for both task logs and activity logs */}
         <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
           {loading ? (
             <div className="text-center py-8 text-xs text-gray-600">Loading logs…</div>
           ) : currentTask && taskLogs.length > 0 ? (
             <>
-              {taskLogs.slice(-60).map((entry, i) => (
-                <div key={`${entry.seq}-${i}`}><LogEntryRow entry={entry} /></div>
+              {filterCompletedStarts(taskLogs.slice(-60).map(taskLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
+                <ExecEntryRow key={`t-${i}`} entry={entry} showTime />
               ))}
             </>
           ) : activityLogs.length > 0 ? (
             <>
-              {activityLogs.map((entry, i) => (
-                <ActivityLogEntryRow key={`${entry.seq}-${i}`} entry={entry} />
+              {filterCompletedStarts(activityLogs.map(activityLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
+                <ExecEntryRow key={`a-${i}`} entry={entry} showTime />
               ))}
             </>
           ) : (
             <div className="text-center py-8 text-xs text-gray-600">No execution logs yet.</div>
           )}
 
-          {agent.status === 'working' && (
-            <div className="flex items-center gap-2 px-2 py-1 text-xs text-gray-500">
-              <span className="flex gap-0.5">
-                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-              </span>
-              Working…
-            </div>
-          )}
+          {agent.status === 'working' && <ThinkingDots label="Working" />}
           <div ref={endRef} />
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ActivityLogEntryRow({ entry }: { entry: AgentActivityLogEntry }) {
-  const time = new Date(entry.createdAt).toLocaleTimeString();
-  const isError = entry.type === 'error';
-  const isToolStart = entry.type === 'tool_start';
-  const isToolEnd = entry.type === 'tool_end';
-  const isStatus = entry.type === 'status';
-
-  const icon = isError ? '⚠' : isToolStart ? '▶' : isToolEnd ? '✓' : isStatus ? '●' : '💬';
-  const color = isError ? 'text-red-400' : isToolStart ? 'text-yellow-400' : isToolEnd ? 'text-green-400' : isStatus ? 'text-indigo-400' : 'text-gray-300';
-
-  return (
-    <div className={`flex items-start gap-2 px-2 py-1 rounded text-xs ${isError ? 'bg-red-500/5' : ''}`}>
-      <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums">{time}</span>
-      <span className="shrink-0 w-4 text-center">{icon}</span>
-      <div className={`flex-1 min-w-0 ${color}`}>
-        <span className="break-all">{entry.content}</span>
-        {entry.metadata && isToolStart && (
-          <div className="text-[10px] text-gray-600 mt-0.5 truncate font-mono">
-            {(entry.metadata as Record<string, string>).args?.slice(0, 200)}
-          </div>
-        )}
-        {entry.metadata && isToolEnd && (() => {
-          const md = entry.metadata as Record<string, unknown>;
-          return (
-            <div className="text-[10px] text-gray-600 mt-0.5">
-              {md.durationMs != null && `${String(md.durationMs)}ms`}
-              {typeof md.preview === 'string' && (
-                <span className="ml-2 font-mono truncate inline-block max-w-[300px] align-bottom">
-                  {md.preview.slice(0, 100)}
-                </span>
-              )}
-            </div>
-          );
-        })()}
       </div>
     </div>
   );

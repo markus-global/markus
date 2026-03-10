@@ -3,7 +3,7 @@ import { api, wsClient, type TeamInfo, type TeamMemberInfo, type RoleInfo, type 
 import { AgentProfile } from './AgentProfile.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { navBus } from '../navBus.ts';
-import { LogEntryRow } from '../components/ToolCallLogEntry.tsx';
+import { ExecEntryRow, ThinkingDots, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 
 const ROLE_ICONS: Record<string, string> = {
   'developer': '💻', 'software-engineer': '💻',
@@ -1349,17 +1349,10 @@ function BusyAgentModal({ agentName, taskId, onClose, onGoToTask }: {
             <div className="text-center py-8 text-xs text-gray-600">No execution logs yet.</div>
           ) : (
             <>
-              {logs.slice(-50).map((entry, i) => (
-                <div key={`${entry.seq}-${i}`}><LogEntryRow entry={entry} /></div>
+              {filterCompletedStarts(logs.slice(-50).map(taskLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
+                <ExecEntryRow key={`e-${i}`} entry={entry} showTime />
               ))}
-              <div className="flex items-center gap-2 px-2 py-1 text-xs text-gray-500">
-                <span className="flex gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                </span>
-                Working…
-              </div>
+              <ThinkingDots label="Working" />
             </>
           )}
           <div ref={endRef} />
