@@ -555,7 +555,7 @@ export class SqliteAgentRepo {
       .run(tokensUsed, now(), id);
   }
 
-  updateTeamId(id: string, teamId: string | null) {
+  async updateTeamId(id: string, teamId: string | null) {
     this.db.prepare('UPDATE agents SET team_id = ?, updated_at = ? WHERE id = ?').run(teamId, now(), id);
   }
 
