@@ -1230,102 +1230,36 @@ function OpenClawPanel({ onClose, onConnected }: { onClose: () => void; onConnec
 
   if (result) {
     const gwUrl = result.gatewayUrl ?? `${window.location.origin}/api/gateway`;
-    const baseUrl = gwUrl.replace(/\/api\/gateway$/, '');
-
-    const envBlock = [
-      `MARKUS_URL=${baseUrl}`,
-      `MARKUS_AGENT_ID=${result.externalAgentId}`,
-      result.token ? `MARKUS_TOKEN=${result.token}` : '# Token generation failed — authenticate manually via POST /api/gateway/auth',
-    ].join('\n');
 
     const connectionPrompt = `Connect to the Markus AI platform as an external agent.
 
-Markus URL: ${baseUrl}
+Gateway URL: ${gwUrl}
 Agent ID: ${result.externalAgentId}
 ${result.token ? `Bearer Token: ${result.token}` : ''}
 
-Read the integration handbook: GET ${gwUrl}/manual (Authorization: Bearer <token>)
-Sync every 30s: POST ${gwUrl}/sync with your status, completed tasks, and messages.
-The sync response includes your assigned tasks, inbox messages, team context, and project context.
-
-For full API docs, read: ${gwUrl}/manual`;
+Step 1: Read the integration handbook at GET ${gwUrl}/manual (set header Authorization: Bearer <token above>). It describes the full Markus concept model, API endpoints, and collaboration patterns.
+Step 2: Start a sync loop — call POST ${gwUrl}/sync every 30 seconds with your status. The response includes assigned tasks, inbox messages, team context (colleagues), and project context (requirements).
+Step 3: Accept and execute tasks, report progress, and communicate with teammates via the sync message system.`;
 
     return (
       <>
-        <div className="text-center py-3">
-          <div className="text-2xl mb-2 text-green-400">✓</div>
-          <div className="text-sm text-green-400 font-medium mb-1">Agent connected</div>
-          <div className="text-xs text-gray-400">
-            <strong>{agentName}</strong> is ready. Use one of the options below to connect.
-          </div>
+        <div className="text-center py-6">
+          <div className="text-3xl mb-3 text-green-400">✓</div>
+          <div className="text-base text-green-400 font-medium mb-1">Agent registered</div>
+          <div className="text-sm text-gray-300 mt-1"><strong>{agentName}</strong></div>
         </div>
-        <div className="space-y-3 max-h-[55vh] overflow-y-auto">
-          {/* Option 1: Copy prompt for AI agent */}
-          <div className="bg-purple-900/15 border border-purple-500/30 rounded-lg p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-medium text-purple-300">Option 1: Copy prompt into your AI agent</div>
-              <button onClick={() => doCopy(connectionPrompt, 'prompt')}
-                className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'prompt' ? 'bg-green-600 text-white' : 'bg-purple-700 hover:bg-purple-600 text-white'}`}
-              >{copied === 'prompt' ? 'Copied!' : 'Copy Prompt'}</button>
-            </div>
-            <div className="text-[10px] text-gray-400">
-              Paste this prompt into your OpenClaw agent, Cursor, or any AI assistant. The agent will read the handbook and start syncing automatically.
-            </div>
-          </div>
 
-          {/* Option 2: Environment variables */}
-          <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-medium text-gray-300">Option 2: Set environment variables</div>
-              <button onClick={() => doCopy(envBlock, 'env')}
-                className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'env' ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}
-              >{copied === 'env' ? 'Copied!' : 'Copy'}</button>
-            </div>
-            <pre className="text-[10px] font-mono text-gray-400 bg-gray-900/60 rounded p-2 overflow-x-auto whitespace-pre">{envBlock}</pre>
+        <div className="bg-purple-900/15 border border-purple-500/30 rounded-xl p-4">
+          <div className="text-xs text-gray-400 mb-3">
+            Copy this prompt and paste it into your OpenClaw agent, Cursor, or any AI assistant.
           </div>
-
-          {/* Option 3: Quick reference */}
-          <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
-            <div className="text-xs font-medium text-gray-300 mb-2">Quick reference</div>
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 text-[10px]">
-                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
-                <span className="font-mono text-gray-400">/api/gateway/manual</span>
-                <span className="text-gray-600 ml-auto">Integration handbook</span>
-              </div>
-              <div className="flex items-center gap-2 text-[10px]">
-                <span className="text-amber-400 font-semibold w-8 shrink-0">POST</span>
-                <span className="font-mono text-gray-400">/api/gateway/sync</span>
-                <span className="text-gray-600 ml-auto">Exchange tasks & messages</span>
-              </div>
-              <div className="flex items-center gap-2 text-[10px]">
-                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
-                <span className="font-mono text-gray-400">/api/gateway/team</span>
-                <span className="text-gray-600 ml-auto">List colleagues</span>
-              </div>
-              <div className="flex items-center gap-2 text-[10px]">
-                <span className="text-green-400 font-semibold w-8 shrink-0">GET</span>
-                <span className="font-mono text-gray-400">/api/gateway/projects</span>
-                <span className="text-gray-600 ml-auto">List projects</span>
-              </div>
-            </div>
-          </div>
-
-          {result.token && (
-            <div className="bg-gray-800/40 border border-gray-700/40 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-medium text-gray-300">Bearer Token</div>
-                <button onClick={() => doCopy(result.token!, 'token')}
-                  className={`px-2.5 py-1 text-[10px] rounded transition-colors ${copied === 'token' ? 'bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-white'}`}
-                >{copied === 'token' ? 'Copied!' : 'Copy'}</button>
-              </div>
-              <pre className="text-[10px] font-mono text-gray-500 bg-gray-900/60 rounded p-2 overflow-x-auto whitespace-pre break-all">{result.token}</pre>
-              <div className="text-[10px] text-gray-600 mt-1">Expires in 24 hours. Re-authenticate via POST /api/gateway/auth with org secret.</div>
-            </div>
-          )}
+          <button onClick={() => doCopy(connectionPrompt, 'prompt')}
+            className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied === 'prompt' ? 'bg-green-600 text-white' : 'bg-purple-700 hover:bg-purple-600 text-white'}`}
+          >{copied === 'prompt' ? 'Copied!' : 'Copy Connection Prompt'}</button>
         </div>
-        <div className="flex justify-end gap-3 pt-4">
-          <button onClick={() => { onConnected(); }} className="px-4 py-2 text-sm bg-purple-700 hover:bg-purple-600 rounded-lg text-white">Done</button>
+
+        <div className="flex justify-end pt-5">
+          <button onClick={() => { onConnected(); }} className="px-5 py-2 text-sm bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 border border-gray-700">Done</button>
         </div>
       </>
     );
