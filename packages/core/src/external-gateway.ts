@@ -364,20 +364,20 @@ export class ExternalAgentGateway {
     }
   }
 
-  async unregister(externalAgentId: string, orgId: string): Promise<boolean> {
+  async unregister(externalAgentId: string, orgId: string): Promise<ExternalAgentRegistration | null> {
     const key = this.registrationKey(externalAgentId, orgId);
-    const existed = this.registrations.delete(key);
-    if (existed) {
-      const count = this.orgAgentCounts.get(orgId) ?? 1;
-      this.orgAgentCounts.set(orgId, Math.max(0, count - 1));
-      if (this.store) {
-        await this.store.deleteRegistration(externalAgentId, orgId).catch(err =>
-          log.error('Failed to delete registration from store', { externalAgentId, error: String(err) })
-        );
-      }
-      log.info('External agent unregistered', { externalAgentId, orgId });
+    const reg = this.registrations.get(key);
+    if (!reg) return null;
+    this.registrations.delete(key);
+    const count = this.orgAgentCounts.get(orgId) ?? 1;
+    this.orgAgentCounts.set(orgId, Math.max(0, count - 1));
+    if (this.store) {
+      await this.store.deleteRegistration(externalAgentId, orgId).catch(err =>
+        log.error('Failed to delete registration from store', { externalAgentId, error: String(err) })
+      );
     }
-    return existed;
+    log.info('External agent unregistered', { externalAgentId, orgId });
+    return reg;
   }
 
   listRegistrations(orgId?: string): ExternalAgentRegistration[] {

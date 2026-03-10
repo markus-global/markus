@@ -1119,6 +1119,12 @@ export class APIServer {
 
     if (path.startsWith('/api/agents/') && req.method === 'DELETE') {
       const agentId = path.split('/')[3]!;
+      if (this.gateway) {
+        const extReg = this.gateway.listRegistrations().find(r => r.markusAgentId === agentId);
+        if (extReg) {
+          await this.gateway.unregister(extReg.externalAgentId, extReg.orgId);
+        }
+      }
       await this.orgService.fireAgent(agentId);
       this.json(res, 200, { deleted: true });
       return;
@@ -3245,8 +3251,11 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       }
       const externalId = path.split('/')[3]!;
       const orgId = url.searchParams.get('orgId') ?? 'default';
-      const deleted = await this.gateway.unregister(externalId, orgId);
-      this.json(res, deleted ? 200 : 404, deleted ? { deleted: true } : { error: 'Not found' });
+      const reg = await this.gateway.unregister(externalId, orgId);
+      if (reg?.markusAgentId) {
+        try { await this.orgService.fireAgent(reg.markusAgentId); } catch { /* already gone */ }
+      }
+      this.json(res, reg ? 200 : 404, reg ? { deleted: true } : { error: 'Not found' });
       return;
     }
 

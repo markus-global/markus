@@ -180,16 +180,16 @@ describe('ExternalAgentGateway', () => {
 
     it('unregisters an agent', async () => {
       await gw.register({ externalAgentId: 'ext-1', agentName: 'Agent', orgId: 'org-1' });
-      const removed = gw.unregister('ext-1', 'org-1');
+      const removed = await gw.unregister('ext-1', 'org-1');
 
-      expect(removed).toBe(true);
+      expect(removed).not.toBeNull();
       expect(gw.listRegistrations('org-1')).toHaveLength(0);
     });
 
     it('rejects token after unregistration', async () => {
       await gw.register({ externalAgentId: 'ext-1', agentName: 'Agent', orgId: 'org-1' });
       const { token } = gw.authenticate({ externalAgentId: 'ext-1', orgId: 'org-1', secret: TEST_SECRET });
-      gw.unregister('ext-1', 'org-1');
+      await gw.unregister('ext-1', 'org-1');
 
       expect(() => gw.verifyToken(token)).toThrow('no longer registered');
     });
