@@ -578,10 +578,12 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
+                } else if (event.type === 'thinking_delta' && event.thinking) {
+                  onChunk?.(`<think>${event.thinking}</think>`);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                 } else if (event.type === 'error') {
@@ -743,10 +745,12 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
+                } else if (event.type === 'thinking_delta' && event.thinking) {
+                  onChunk(`<think>${event.thinking}</think>`);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
                   routedAgentId = event.agentId ?? routedAgentId;

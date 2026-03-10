@@ -219,13 +219,21 @@ export class OpenAIProvider implements LLMProviderInterface {
         try {
           const chunk = JSON.parse(trimmed.slice(6)) as {
             choices?: Array<{
-              delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> };
+              delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>; reasoning_details?: string; thinking?: string };
               finish_reason?: string;
             }>;
             usage?: { prompt_tokens?: number; completion_tokens?: number };
           };
 
           const choice = chunk.choices?.[0];
+
+          // Handle reasoning/thinking content from various providers
+          // MiniMax may return: reasoning_details, thinking, or content with 【【】 tags
+          const reasoningContent = choice?.delta?.reasoning_details ?? choice?.delta?.thinking;
+          if (reasoningContent) {
+            onEvent({ type: 'thinking_delta', thinking: reasoningContent });
+          }
+
           if (choice?.delta?.content) {
             content += choice.delta.content;
             onEvent({ type: 'text_delta', text: choice.delta.content });

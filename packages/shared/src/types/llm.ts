@@ -98,8 +98,9 @@ export interface LLMResponse {
 }
 
 export interface LLMStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool';
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool' | 'thinking_delta';
   text?: string;
+  thinking?: string;
   toolCall?: Partial<LLMToolCall>;
   usage?: { inputTokens: number; outputTokens: number };
   finishReason?: LLMResponse['finishReason'];

@@ -19,7 +19,7 @@ import { navBus } from '../navBus.ts';
 
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
-  | { type: 'text'; content: string }
+  | { type: 'text'; content: string; thinking?: string }
   | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error'; args?: unknown; result?: string; error?: string; durationMs?: number };
 
 interface ChatMsg {
@@ -373,6 +373,7 @@ function AgentMessageBody({
 }) {
   const segments = msg.segments;
   const isStopped = msg.isStopped;
+  const [expandedThinking, setExpandedThinking] = useState(false);
 
   // Messages with segment data: render interleaved
   if (segments !== undefined) {
@@ -388,10 +389,35 @@ function AgentMessageBody({
     // Initial state: nothing has arrived yet
     const isEmpty = segments.length === 0;
 
+    // Collect all thinking content from text segments
+    const allThinking = segments
+      .filter((s): s is { type: 'text'; content: string; thinking: string } => s.type === 'text' && !!s.thinking)
+      .map(s => s.thinking)
+      .join('');
+    const hasThinking = allThinking.length > 0;
+
     return (
       <div className="space-y-0.5 min-h-[1em]">
         {/* Initial thinking — no segments yet */}
         {isEmpty && isStreaming && <ThinkingDots />}
+
+        {/* Thinking collapse */}
+        {hasThinking && (
+          <div className="mb-2">
+            <button
+              onClick={() => setExpandedThinking(e => !e)}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-400 transition-colors"
+            >
+              <span className={`transition-transform ${expandedThinking ? 'rotate-90' : ''}▶`} style={{ fontSize: 8 }} />
+              <span>思考过程 ({allThinking.length} 字符)</span>
+            </button>
+            {expandedThinking && (
+              <div className="mt-1 pl-3 border-l-2 border-indigo-500/50 text-xs text-gray-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                {allThinking}
+              </div>
+            )}
+          </div>
+        )}
 
         {segments.map((seg, i) => {
           const isLastSeg = i === segments.length - 1;
@@ -883,10 +909,22 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           if (idx < 0) return prev;
           const segs = u[idx]!.segments ?? [];
           const last = segs[segs.length - 1];
+
+          // Extract thinking content from chunk (between <think> and </think> tags)
+          let thinking: string | undefined;
+          let content = chunk;
+
+          // Check for standard format <think>...</think>
+          const thinkingMatch = chunk.match(/<think>([\s\S]*?)<\/think>/);
+          if (thinkingMatch) {
+            thinking = (last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '') + thinkingMatch[1];
+            content = chunk.replace(/<think>[\s\S]*?<\/think>/, '');
+          }
+
           const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + chunk }]
-            : [...segs, { type: 'text', content: chunk }];
-          u[idx] = { ...u[idx]!, text: u[idx]!.text + chunk, segments: newSegs };
+            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: thinking ?? (last as { thinking?: string }).thinking }]
+            : [...segs, { type: 'text', content, thinking }];
+          u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
           return u;
         });
       };
