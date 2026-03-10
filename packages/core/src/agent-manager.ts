@@ -9,7 +9,7 @@ import {
   type SystemAnnouncement,
   type TaskDeliverable,
 } from '@markus/shared';
-import { Agent, type AgentToolHandler, type SandboxHandle, type AgentOptions } from './agent.js';
+import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
@@ -34,11 +34,6 @@ import { homedir } from 'node:os';
 import type { HeartbeatTask, RoleTemplate } from '@markus/shared';
 
 const log = createLogger('agent-manager');
-
-export interface SandboxFactory {
-  create(agentId: string, image?: string): Promise<SandboxHandle>;
-  destroy(agentId: string): Promise<void>;
-}
 
 /** Minimal interface that AgentManager needs from TaskService */
 export interface RequirementServiceBridge {
@@ -153,7 +148,6 @@ export class AgentManager {
   private llmRouter: LLMRouter;
   private roleLoader: RoleLoader;
   private dataDir: string;
-  private sandboxFactory?: SandboxFactory;
   private mcpManager: MCPClientManager;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
@@ -273,7 +267,6 @@ export class AgentManager {
     roleLoader?: RoleLoader;
     dataDir?: string;
     eventBus?: EventBus;
-    sandboxFactory?: SandboxFactory;
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
     skillRegistry?: SkillRegistry;
@@ -284,7 +277,6 @@ export class AgentManager {
     this.roleLoader = options.roleLoader ?? new RoleLoader();
     this.dataDir = options.dataDir ?? join(homedir(), '.markus', 'agents');
     this.eventBus = options.eventBus ?? new EventBus();
-    this.sandboxFactory = options.sandboxFactory;
     this.mcpManager = new MCPClientManager();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
@@ -381,7 +373,6 @@ export class AgentManager {
       llmConfig: request.llmProvider
         ? { modelMode: 'custom' as const, primary: request.llmProvider }
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
-      computeConfig: { type: 'docker' },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? 30 * 60 * 1000,
       createdAt: new Date().toISOString(),
@@ -832,7 +823,6 @@ export class AgentManager {
           maxTokensPerDay: raw.maxTokensPerDay as number | undefined,
         };
       })(),
-      computeConfig: { type: 'docker' },
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? 30 * 60 * 1000,
       createdAt: new Date().toISOString(),
@@ -1178,34 +1168,12 @@ export class AgentManager {
 
   async startAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
-
-    // Auto-create sandbox if factory is available
-    if (this.sandboxFactory && !agent.getState().containerId) {
-      try {
-        const sandbox = await this.sandboxFactory.create(agentId);
-        agent.setSandbox(sandbox);
-        log.info(`Sandbox created for agent ${agentId}`);
-      } catch (error) {
-        log.warn(`Failed to create sandbox for agent ${agentId}, running without isolation`, {
-          error: String(error),
-        });
-      }
-    }
-
     await agent.start();
   }
 
   async stopAgent(agentId: string): Promise<void> {
     const agent = this.getAgent(agentId);
     await agent.stop();
-
-    if (this.sandboxFactory) {
-      try {
-        await this.sandboxFactory.destroy(agentId);
-      } catch {
-        // sandbox may already be gone
-      }
-    }
   }
 
   async removeAgent(agentId: string): Promise<void> {
@@ -1214,13 +1182,6 @@ export class AgentManager {
       await agent.stop();
       this.a2aBus.unregisterAgent(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
-      if (this.sandboxFactory) {
-        try {
-          await this.sandboxFactory.destroy(agentId);
-        } catch {
-          /* ignore */
-        }
-      }
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
       log.info(`Agent removed: ${agentId}`);
@@ -1331,9 +1292,6 @@ export class AgentManager {
     return this.eventBus;
   }
 
-  setSandboxFactory(factory: SandboxFactory): void {
-    this.sandboxFactory = factory;
-  }
 
   getA2ABus(): A2ABus {
     return this.a2aBus;

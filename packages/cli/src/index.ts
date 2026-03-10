@@ -23,7 +23,6 @@ import {
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
-import { SandboxManager } from '@markus/compute';
 
 // Load .env file from project root
 const envPath = resolve(process.cwd(), '.env');
@@ -295,6 +294,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const minimaxKey =
+    config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];
+  if (minimaxKey) {
+    providerConfigs['minimax'] = {
+      provider: 'openai',
+      model: process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.5',
+      apiKey: minimaxKey,
+      baseUrl:
+        process.env['MINIMAX_BASE_URL'] ??
+        config.llm.providers['minimax']?.baseUrl ??
+        'https://api.minimax.io/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'minimax') {
+      defaultProvider = 'minimax';
+    }
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);
@@ -336,28 +353,12 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService.startTimeoutChecker();
   }
 
-  let sandboxFactory;
-  if (config.compute?.defaultType === 'docker') {
-    try {
-      const sandboxManager = new SandboxManager(config.compute?.docker?.socketPath);
-      sandboxFactory = sandboxManager.asSandboxFactory(
-        config.compute?.docker?.defaultImage ?? 'node:20-slim'
-      );
-      log.info('Docker sandbox factory initialized');
-    } catch (err) {
-      log.warn('Failed to initialize Docker sandbox factory, sandboxing disabled', {
-        error: String(err),
-      });
-    }
-  }
-
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
     dataDir: join(homedir(), '.markus', 'agents'),
     skillRegistry,
     taskService,
-    sandboxFactory,
     mcpServers: config.mcpServers,
   });
 

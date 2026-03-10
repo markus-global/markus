@@ -8,7 +8,6 @@
   "references": [
     { "path": "../shared" },
     { "path": "../core" },
-    { "path": "../compute" },
     { "path": "../comms" },
     { "path": "../org-manager" }
   ]

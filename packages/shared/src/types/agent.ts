@@ -10,7 +10,6 @@ export interface AgentConfig {
   skills: string[];
   profile?: AgentProfile;
   llmConfig: LLMAssignment;
-  computeConfig: ComputeAssignment;
   channels: ChannelBinding[];
   heartbeatIntervalMs: number;
   createdAt: string;
@@ -24,15 +23,6 @@ export interface LLMAssignment {
   fallback?: string;
   maxTokensPerRequest?: number;
   maxTokensPerDay?: number;
-}
-
-export interface ComputeAssignment {
-  type: 'docker' | 'vm';
-  image?: string;
-  cpu?: number;
-  memoryMb?: number;
-  diskMb?: number;
-  gpuEnabled?: boolean;
 }
 
 export interface ChannelBinding {

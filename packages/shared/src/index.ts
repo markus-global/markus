@@ -2,7 +2,6 @@ export * from './types/agent.js';
 export * from './types/org.js';
 export * from './types/task.js';
 export * from './types/message.js';
-export * from './types/compute.js';
 export * from './types/llm.js';
 export * from './types/governance.js';
 export * from './types/project.js';

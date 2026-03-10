@@ -497,6 +497,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   deepseek: 'DeepSeek',
   siliconflow: 'SiliconFlow',
   openrouter: 'OpenRouter',
+  minimax: 'MiniMax',
 };
 
 const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [

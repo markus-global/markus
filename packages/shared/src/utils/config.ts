@@ -14,13 +14,6 @@ export interface MarkusConfig {
     /** Request timeout in ms for all LLM providers (default: 90s) */
     timeoutMs?: number;
   };
-  compute: {
-    defaultType: 'docker' | 'vm';
-    docker?: {
-      socketPath?: string;
-      defaultImage?: string;
-    };
-  };
   server: {
     apiPort: number;
     webPort: number;
@@ -44,10 +37,6 @@ const DEFAULT_CONFIG: MarkusConfig = {
     defaultProvider: 'anthropic',
     defaultModel: 'claude-sonnet-4-20250514',
     providers: {},
-  },
-  compute: {
-    defaultType: 'docker',
-    docker: { defaultImage: 'node:20-slim' },
   },
   server: { apiPort: 3001, webPort: 3000 },
 };

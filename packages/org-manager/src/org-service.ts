@@ -508,7 +508,6 @@ export class OrganizationService {
           agentRole: agent.config.agentRole ?? 'worker',
           skills: agent.config.skills,
           llmConfig: agent.config.llmConfig,
-          computeConfig: agent.config.computeConfig,
           heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
         });
       } catch (error) {

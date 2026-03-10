@@ -2037,7 +2037,6 @@ export class APIServer {
           proficiency: agent.getSkillProficiency(),
           config: {
             llmConfig: agent.config.llmConfig,
-            computeConfig: agent.config.computeConfig,
             channels: agent.config.channels,
             heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
             orgId: agent.config.orgId,
@@ -3168,7 +3167,6 @@ Be conversational. Help the user think through tool design, edge cases, and perm
               agentRole: agent.config.agentRole ?? 'worker',
               skills: agent.config.skills,
               llmConfig: agent.config.llmConfig,
-              computeConfig: agent.config.computeConfig,
               heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
             });
           } catch (persistErr) {

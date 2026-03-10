@@ -60,17 +60,6 @@ export type ApprovalCallback = (request: {
   reason: string;
 }) => Promise<boolean>;
 
-export interface SandboxHandle {
-  exec(
-    command: string,
-    options?: { cwd?: string; timeoutMs?: number }
-  ): Promise<{ exitCode?: number; stdout: string; stderr: string }>;
-  writeFile(path: string, content: string): Promise<void>;
-  readFile(path: string): Promise<string>;
-  stop(): Promise<void>;
-  destroy(): Promise<void>;
-}
-
 export interface TaskWorkspace {
   worktreePath: string;
   branch: string;
@@ -88,7 +77,6 @@ export interface AgentOptions {
   llmRouter: LLMRouter;
   dataDir: string;
   tools?: AgentToolHandler[];
-  sandbox?: SandboxHandle;
   orgContext?: OrgContext;
   contextMdPath?: string;
   /** Optional custom memory implementation. Defaults to MemoryStore. */
@@ -115,7 +103,6 @@ export class Agent {
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private currentSessionId?: string;
-  private sandbox?: SandboxHandle;
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private identityContext?: IdentityContext;
@@ -173,7 +160,6 @@ export class Agent {
     this.config = { ...options.config, id: this.id };
     this.role = options.role;
     this.llmRouter = options.llmRouter;
-    this.sandbox = options.sandbox;
     this.orgContext = options.orgContext;
     this.contextMdPath = options.contextMdPath;
 
@@ -215,11 +201,6 @@ export class Agent {
 
     // Initialize state manager
     this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
-
-    // If sandbox is provided, replace shell/file tools with sandboxed versions
-    if (this.sandbox) {
-      this.registerSandboxedTools(this.sandbox);
-    }
 
     this.eventBus.on('heartbeat:trigger', ctx => {
       this.handleHeartbeat(
@@ -588,11 +569,6 @@ export class Agent {
     }
   }
 
-  setSandbox(sandbox: SandboxHandle): void {
-    this.sandbox = sandbox;
-    this.registerSandboxedTools(sandbox);
-    log.info(`Sandbox attached to agent ${this.id}`);
-  }
 
   setOrgContext(ctx: OrgContext): void {
     this.orgContext = ctx;
@@ -1779,75 +1755,6 @@ export class Agent {
       return this.memory.getAgentContext(this.id, query) || undefined;
     }
     return undefined;
-  }
-
-  private registerSandboxedTools(sandbox: SandboxHandle): void {
-    this.tools.set('shell_execute', {
-      name: 'shell_execute',
-      description: "Execute a shell command inside the agent's isolated sandbox container.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: 'The shell command to execute' },
-          cwd: { type: 'string', description: 'Working directory (optional)' },
-          timeout_ms: { type: 'number', description: 'Timeout in ms (default: 60000)' },
-        },
-        required: ['command'],
-      },
-      execute: async args => {
-        const result = await sandbox.exec(args['command'] as string, {
-          cwd: args['cwd'] as string | undefined,
-          timeoutMs: (args['timeout_ms'] as number) ?? 60_000,
-        });
-        const parts: string[] = [];
-        if (result.stdout?.trim()) parts.push(result.stdout.trim());
-        if (result.stderr?.trim()) parts.push(`[stderr] ${result.stderr.trim()}`);
-        if (result.exitCode !== undefined && result.exitCode !== 0) {
-          parts.push(`[exit code: ${result.exitCode}]`);
-        }
-        return parts.join('\n') || '(no output)';
-      },
-    });
-
-    this.tools.set('file_read', {
-      name: 'file_read',
-      description: "Read a file from the agent's sandbox container.",
-      inputSchema: {
-        type: 'object',
-        properties: { path: { type: 'string', description: 'File path to read' } },
-        required: ['path'],
-      },
-      execute: async args => {
-        try {
-          return await sandbox.readFile(args['path'] as string);
-        } catch (e) {
-          return JSON.stringify({ error: String(e) });
-        }
-      },
-    });
-
-    this.tools.set('file_write', {
-      name: 'file_write',
-      description: "Write content to a file in the agent's sandbox container.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'File path to write' },
-          content: { type: 'string', description: 'Content to write' },
-        },
-        required: ['path', 'content'],
-      },
-      execute: async args => {
-        try {
-          await sandbox.writeFile(args['path'] as string, args['content'] as string);
-          return JSON.stringify({ success: true, path: args['path'] });
-        } catch (e) {
-          return JSON.stringify({ error: String(e) });
-        }
-      },
-    });
-
-    log.info(`Sandboxed tools registered for agent ${this.id}`);
   }
 
   private buildUserContent(text: string, images?: string[]): string | LLMContentPart[] {
