@@ -550,23 +550,24 @@ export const api = {
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
-    message: (id: string, text: string, images?: string[]) =>
-      request<{ reply: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[]): Promise<string> => {
+    message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
+      request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
+        let fullContent = '';
+        let resultSessionId: string | undefined;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images }),
+            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
           const reader = res.body?.getReader();
           if (!reader) { reject(new Error('No reader')); return; }
           const decoder = new TextDecoder();
-          let fullContent = '';
           let buffer = '';
           while (true) {
             const { done, value } = await reader.read();
@@ -578,7 +579,7 @@ export const api = {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
+                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string }; sessionId?: string };
                 if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
@@ -586,24 +587,23 @@ export const api = {
                   onChunk?.(`<think>${event.thinking}</think>`);
                 } else if (event.type === 'done') {
                   fullContent = event.content ?? fullContent;
+                  if (event.sessionId) resultSessionId = event.sessionId;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string };
                   reject(new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error'));
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
-                  // LLM just named the tool it wants to use — show loading immediately
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  // Only propagate 'end' from agent_tool to avoid double 'start'
                   if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 }
               } catch { /* skip */ }
             }
           }
-          resolve(fullContent);
+          resolve({ content: fullContent, sessionId: resultSessionId });
         } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') { resolve(fullContent); }
+          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId }); }
           else { reject(err); }
         }
       });

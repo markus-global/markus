@@ -919,17 +919,16 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             return u;
           });
         } else {
-          await api.agents.messageStream(
+          const streamResult = await api.agents.messageStream(
             selectedAgent, text,
             appendTextChunk,
             handleToolEvent,
             abortCtrl.signal,
             imagesToSend,
+            activeSessionId,
           );
-          loadSessions(selectedAgent).then(s => {
-            setSessions(s);
-            if (!activeSessionId && s.length > 0) setActiveSessionId(s[0]!.id);
-          });
+          if (streamResult.sessionId) setActiveSessionId(streamResult.sessionId);
+          loadSessions(selectedAgent).then(s => setSessions(s));
         }
       } catch (e) {
         const errText = friendlyAgentError(e);

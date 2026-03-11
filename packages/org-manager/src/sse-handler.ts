@@ -13,12 +13,13 @@ export interface SSEMessageHandlerOptions {
   userText: string;
   images?: string[];
   senderId?: string;
+  sessionId?: string;
   senderInfo?: { name: string; role: string };
   wsBroadcaster?: {
     broadcastChat: (agentId: string, message: string, sender: 'agent' | 'user') => void;
     broadcastAgentUpdate?: (agentId: string, status: string) => void;
   };
-  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[]) => Promise<string | null>;
+  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | null>;
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
@@ -82,6 +83,7 @@ export class SSEHandler {
           this.options.userText,
           this.options.senderId,
           this.options.images,
+          this.options.sessionId,
         );
       }
 
@@ -112,6 +114,7 @@ export class SSEHandler {
           type: 'done', 
           content: reply, 
           agentId: this.options.agentId,
+          sessionId: this.sessionId,
           segments: this.msgSegments 
         });
 

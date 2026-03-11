@@ -547,17 +547,21 @@ export class APIServer {
     }
   }
 
-  /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence */
+  /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence.
+   *  When sessionId is provided, appends to that session; when null/undefined, creates a new session. */
   private async persistUserMessage(
     agentId: string,
     userMessage: string,
     senderId?: string,
     images?: string[],
+    sessionId?: string | null,
   ): Promise<string | null> {
     if (!this.storage) return null;
     try {
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1);
-      let session = sessions[0];
+      let session: { id: string; title: string | null } | undefined;
+      if (sessionId) {
+        session = await this.storage.chatSessionRepo.getSession(sessionId) ?? undefined;
+      }
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
@@ -1067,6 +1071,7 @@ export class APIServer {
         const body = await this.readBody(req);
         const stream = body['stream'] as boolean | undefined;
         const senderId = body['senderId'] as string | undefined;
+        const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
@@ -1082,6 +1087,7 @@ export class APIServer {
             images,
             senderId,
             senderInfo,
+            sessionId,
             wsBroadcaster: this.ws,
             persistUserMessage: this.persistUserMessage.bind(this),
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
@@ -1090,7 +1096,7 @@ export class APIServer {
           await sseHandler.handle(res);
         } else {
           const userText = body['text'] as string;
-          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images);
+          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
           let reply: string;
           try {
             reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
@@ -1102,7 +1108,7 @@ export class APIServer {
             throw err;
           }
           this.ws.broadcastChat(agentId!, reply, 'agent');
-          this.json(res, 200, { reply });
+          this.json(res, 200, { reply, sessionId: userMsgPersisted });
           void this.persistAssistantMessage(
             userMsgPersisted,
             agentId!,
