@@ -394,7 +394,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const handleHover = useCallback((v: boolean) => {
     clearTimeout(hoverTimeout.current);
     if (v) {
-      setHovered(true);
+      hoverTimeout.current = setTimeout(() => setHovered(true), 200);
     } else {
       hoverTimeout.current = setTimeout(() => setHovered(false), 150);
     }
