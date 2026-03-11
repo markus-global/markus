@@ -444,8 +444,8 @@ function TaskDetailModal({
             </div>
           )}
 
-          {/* Context badges — project, requirement, dependencies */}
-          {(taskProject || taskRequirement || task.parentTaskId || (task.blockedBy && task.blockedBy.length > 0)) && (
+          {/* Context badges — project, requirement */}
+          {(taskProject || taskRequirement || task.parentTaskId) && (
             <div className="px-6 py-2.5 border-b border-gray-800 flex flex-wrap items-center gap-2">
               {taskProject && (
                 <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded-full">
@@ -465,19 +465,60 @@ function TaskDetailModal({
                   <span className="font-mono">{task.parentTaskId.slice(-8)}</span>
                 </span>
               )}
-              {task.blockedBy && task.blockedBy.length > 0 && task.blockedBy.map(blockerId => {
-                const blockerTask = allTasks.find(t => t.id === blockerId);
-                const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
-                return (
-                  <span key={blockerId} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-400 line-through opacity-60' : 'bg-amber-500/10 text-amber-300'}`}>
-                    <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
-                    <span className="text-[9px] opacity-60">Blocked by</span>
-                    <span className="font-mono">{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
-                  </span>
-                );
-              })}
             </div>
           )}
+
+          {/* Dependencies — editable */}
+          <div className="px-6 py-2.5 border-b border-gray-800">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Dependencies</span>
+            </div>
+            {task.blockedBy && task.blockedBy.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {task.blockedBy.map(blockerId => {
+                  const blockerTask = allTasks.find(t => t.id === blockerId);
+                  const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
+                  return (
+                    <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-400' : 'bg-amber-500/10 text-amber-300'}`}>
+                      <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
+                      <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
+                      {!isTerminal && (
+                        <button
+                          onClick={async () => {
+                            const newBlockedBy = (task.blockedBy ?? []).filter(id => id !== blockerId);
+                            await api.tasks.update(task.id, { blockedBy: newBlockedBy });
+                            onRefresh();
+                          }}
+                          className="ml-0.5 text-current opacity-40 hover:opacity-100 transition-opacity"
+                          title="Remove dependency"
+                        >×</button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-gray-600 mb-2">No dependencies</p>
+            )}
+            {!isTerminal && (
+              <select
+                value=""
+                onChange={async (e) => {
+                  const depId = e.target.value;
+                  if (!depId) return;
+                  const newBlockedBy = [...(task.blockedBy ?? []), depId];
+                  await api.tasks.update(task.id, { blockedBy: newBlockedBy });
+                  onRefresh();
+                }}
+                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-[11px] text-gray-400 focus:border-indigo-500 outline-none"
+              >
+                <option value="">+ Add dependency…</option>
+                {allTasks
+                  .filter(t => t.id !== task.id && !t.parentTaskId && !(task.blockedBy ?? []).includes(t.id))
+                  .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+              </select>
+            )}
+          </div>
 
           {/* Tabs */}
           <div className="flex gap-1 px-6 pt-3 border-b border-gray-800 sticky top-0 z-10 bg-gray-900">
@@ -1330,6 +1371,7 @@ export function ProjectsPage() {
             tasks={Object.values(board).flat()}
             agents={agents}
             onTaskClick={(task) => setSelectedTask(task)}
+            onDependencyChange={refreshBoard}
           />
         ) : (
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden p-6">

@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   assigned_agent_id TEXT REFERENCES agents(id),
   parent_task_id TEXT,
   requirement_id TEXT,
+  blocked_by TEXT DEFAULT '[]',
   result TEXT,
   notes TEXT DEFAULT '[]',
   project_id TEXT,
@@ -405,6 +406,18 @@ export function openSqlite(dbPath: string): Database.Database {
     _db.exec(stmt);
   }
 
+  // Migrations for existing databases: add columns that were introduced after initial schema
+  const migrations: Array<{ table: string; column: string; sql: string }> = [
+    { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
+  ];
+  for (const m of migrations) {
+    const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
+    if (!cols.some(c => c.name === m.column)) {
+      _db.exec(m.sql);
+      log.info(`Migration: added column ${m.column} to ${m.table}`);
+    }
+  }
+
   log.info('SQLite database opened', { path: dbPath });
   return _db;
 }
@@ -613,6 +626,7 @@ export class SqliteTaskRepo {
     assignedAgentId?: string;
     parentTaskId?: string;
     requirementId?: string;
+    blockedBy?: string[];
     projectId?: string;
     iterationId?: string;
     createdBy?: string;
@@ -621,8 +635,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, requirement_id, project_id, iteration_id, created_by, due_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -633,6 +647,7 @@ export class SqliteTaskRepo {
         data.assignedAgentId ?? null,
         data.parentTaskId ?? null,
         data.requirementId ?? null,
+        toJson(data.blockedBy ?? []),
         data.projectId ?? null,
         data.iterationId ?? null,
         data.createdBy ?? null,
@@ -677,7 +692,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -696,6 +711,10 @@ export class SqliteTaskRepo {
     if (data.notes !== undefined) {
       sets.push('notes = ?');
       vals.push(toJson(data.notes));
+    }
+    if (data.blockedBy !== undefined) {
+      sets.push('blocked_by = ?');
+      vals.push(toJson(data.blockedBy));
     }
     if (data.projectId !== undefined) {
       sets.push('project_id = ?');
@@ -749,6 +768,12 @@ export class SqliteTaskRepo {
     ).map(r => this._map(r));
   }
 
+  async updateBlockedBy(id: string, blockedBy: string[]) {
+    this.db
+      .prepare('UPDATE tasks SET blocked_by = ?, updated_at = ? WHERE id = ?')
+      .run(toJson(blockedBy), now(), id);
+  }
+
   async delete(id: string) {
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
   }
@@ -765,6 +790,7 @@ export class SqliteTaskRepo {
       assignedAgentId: r['assigned_agent_id'],
       parentTaskId: r['parent_task_id'],
       requirementId: r['requirement_id'] as string | null,
+      blockedBy: fromJson<string[]>(r['blocked_by'] as string) ?? [],
       result: fromJson(r['result'] as string),
       notes: fromJson(r['notes'] as string),
       projectId: r['project_id'] as string | null,

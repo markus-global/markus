@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useState, useEffect } from 'react';
 import {
   ReactFlow,
   Background,
@@ -7,14 +7,18 @@ import {
   type Node,
   type Edge,
   type NodeTypes,
+  type Connection,
+  type EdgeMouseHandler,
   Handle,
   Position,
   useNodesState,
   useEdgesState,
+  MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from '@dagrejs/dagre';
 import type { TaskInfo, AgentInfo } from '../api.ts';
+import { api } from '../api.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   pending:          { bg: 'bg-blue-900/40',    border: 'border-blue-500/50',   text: 'text-blue-300' },
@@ -101,13 +105,38 @@ function layoutNodes(nodes: Node[], edges: Edge[], direction: 'TB' | 'LR' = 'TB'
   });
 }
 
+function wouldCreateCycle(taskMap: Map<string, TaskInfo>, sourceId: string, targetId: string): boolean {
+  const visited = new Set<string>();
+  const stack = [sourceId];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (id === targetId) return true;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const t = taskMap.get(id);
+    if (t?.blockedBy) {
+      for (const dep of t.blockedBy) stack.push(dep);
+    }
+  }
+  return false;
+}
+
 interface TaskDAGProps {
   tasks: TaskInfo[];
   agents: AgentInfo[];
   onTaskClick?: (task: TaskInfo) => void;
+  onDependencyChange?: () => void;
 }
 
-export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
+export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: TaskDAGProps) {
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
+
+  const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 2500);
+  }, []);
+
   const agentMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const a of agents) m.set(a.id, a.name);
@@ -119,6 +148,15 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
     for (const t of tasks) m.set(t.id, t);
     return m;
   }, [tasks]);
+
+  const makeEdge = useCallback((depId: string, taskId: string, status: string): Edge => ({
+    id: `${depId}->${taskId}`,
+    source: depId,
+    target: taskId,
+    animated: status === 'blocked',
+    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: status === 'blocked' ? '#ef4444' : '#6b7280' },
+    style: { stroke: status === 'blocked' ? '#ef4444' : '#6b7280', strokeWidth: 1.5, cursor: 'pointer' },
+  }), []);
 
   const { initialNodes, initialEdges } = useMemo(() => {
     const rootTasks = tasks.filter(t => !t.parentTaskId);
@@ -137,13 +175,7 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
       if (task.blockedBy) {
         for (const depId of task.blockedBy) {
           if (nodeIdSet.has(depId)) {
-            rawEdges.push({
-              id: `${depId}->${task.id}`,
-              source: depId,
-              target: task.id,
-              animated: task.status === 'blocked',
-              style: { stroke: task.status === 'blocked' ? '#ef4444' : '#6b7280', strokeWidth: 1.5 },
-            });
+            rawEdges.push(makeEdge(depId, task.id, task.status));
           }
         }
       }
@@ -151,12 +183,12 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
 
     const layouted = layoutNodes(rawNodes, rawEdges);
     return { initialNodes: layouted, initialEdges: rawEdges };
-  }, [tasks, agentMap, taskMap]);
+  }, [tasks, agentMap, taskMap, makeEdge]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  useMemo(() => {
+  useEffect(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
   }, [initialNodes, initialEdges, setNodes, setEdges]);
@@ -166,6 +198,54 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
     if (task && onTaskClick) onTaskClick(task);
   }, [taskMap, onTaskClick]);
 
+  // Drag from source (blocker) → target (dependent): source blocks target
+  const handleConnect = useCallback(async (connection: Connection) => {
+    const { source, target } = connection;
+    if (!source || !target || source === target) return;
+
+    const targetTask = taskMap.get(target);
+    if (!targetTask) return;
+
+    if (targetTask.blockedBy?.includes(source)) {
+      showToast('Dependency already exists', 'error');
+      return;
+    }
+
+    if (wouldCreateCycle(taskMap, source, target)) {
+      showToast('Cannot add: would create a cycle', 'error');
+      return;
+    }
+
+    const newBlockedBy = [...(targetTask.blockedBy ?? []), source];
+    try {
+      await api.tasks.update(target, { blockedBy: newBlockedBy });
+      showToast('Dependency added');
+      onDependencyChange?.();
+    } catch (err) {
+      showToast(`Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+  }, [taskMap, showToast, onDependencyChange]);
+
+  const handleEdgeClick: EdgeMouseHandler = useCallback((_event, edge) => {
+    setPendingDelete(edge);
+  }, []);
+
+  const confirmDeleteEdge = useCallback(async () => {
+    if (!pendingDelete) return;
+    const targetTask = taskMap.get(pendingDelete.target);
+    if (!targetTask) { setPendingDelete(null); return; }
+
+    const newBlockedBy = (targetTask.blockedBy ?? []).filter(id => id !== pendingDelete.source);
+    try {
+      await api.tasks.update(pendingDelete.target, { blockedBy: newBlockedBy });
+      showToast('Dependency removed');
+      onDependencyChange?.();
+    } catch (err) {
+      showToast(`Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+    setPendingDelete(null);
+  }, [pendingDelete, taskMap, showToast, onDependencyChange]);
+
   if (tasks.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
@@ -174,19 +254,25 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
     );
   }
 
+  const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
+  const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
+
   return (
-    <div className="flex-1 min-h-0" style={{ height: '100%' }}>
+    <div className="flex-1 min-h-0 relative" style={{ height: '100%' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onConnect={handleConnect}
+        onEdgeClick={handleEdgeClick}
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.3}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
+        connectionLineStyle={{ stroke: '#818cf8', strokeWidth: 2, strokeDasharray: '6 3' }}
       >
         <Background color="#374151" gap={20} size={1} />
         <Controls
@@ -205,6 +291,44 @@ export function TaskDAG({ tasks, agents, onTaskClick }: TaskDAGProps) {
           className="!bg-gray-900 !border-gray-700"
         />
       </ReactFlow>
+
+      {/* Hint bar */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-[11px] text-gray-400 pointer-events-none select-none backdrop-blur-sm">
+        Drag from one node to another to add a dependency · Click an edge to remove it
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-xs font-medium shadow-xl border backdrop-blur-sm transition-opacity ${
+          toast.type === 'success'
+            ? 'bg-emerald-900/80 border-emerald-600/50 text-emerald-200'
+            : 'bg-red-900/80 border-red-600/50 text-red-200'
+        }`}>
+          {toast.msg}
+        </div>
+      )}
+
+      {/* Confirm delete dialog */}
+      {pendingDelete && (
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-[2px]" onClick={() => setPendingDelete(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 shadow-2xl max-w-sm" onClick={e => e.stopPropagation()}>
+            <h4 className="text-sm font-semibold text-gray-200 mb-2">Remove dependency?</h4>
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              <span className="text-gray-300 font-medium">{targetTask?.title ?? pendingDelete.target.slice(-8)}</span>
+              {' '}will no longer be blocked by{' '}
+              <span className="text-gray-300 font-medium">{sourceTask?.title ?? pendingDelete.source.slice(-8)}</span>.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-600 transition-colors">
+                Cancel
+              </button>
+              <button onClick={confirmDeleteEdge} className="px-3 py-1.5 text-xs text-red-200 bg-red-600/20 hover:bg-red-600/30 rounded-lg border border-red-500/40 hover:border-red-500/60 transition-colors">
+                Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

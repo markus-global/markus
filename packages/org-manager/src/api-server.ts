@@ -1489,13 +1489,14 @@ export class APIServer {
         return;
       }
 
-      // General field update (title/description/priority/projectId/iterationId)
+      // General field update (title/description/priority/projectId/iterationId/blockedBy)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
         body['priority'] !== undefined ||
         body['projectId'] !== undefined ||
-        body['iterationId'] !== undefined
+        body['iterationId'] !== undefined ||
+        body['blockedBy'] !== undefined
       ) {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
@@ -1503,6 +1504,7 @@ export class APIServer {
           priority: body['priority'] as TaskPriority | undefined,
           projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
           iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
+          blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
         }, authUser?.userId);
         this.json(res, 200, { task });
         return;

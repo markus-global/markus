@@ -1219,7 +1219,7 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null },
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null; blockedBy?: string[] },
     updatedBy?: string
   ): Task {
     const task = this.tasks.get(id);
@@ -1229,18 +1229,66 @@ export class TaskService {
     if (data.priority !== undefined) task.priority = data.priority;
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
     if (data.iterationId !== undefined) task.iterationId = data.iterationId ?? undefined;
+
+    if (data.blockedBy !== undefined) {
+      task.blockedBy = data.blockedBy;
+      if (this.taskRepo && 'updateBlockedBy' in this.taskRepo) {
+        (this.taskRepo as any).updateBlockedBy(id, data.blockedBy)
+          .catch((err: unknown) => log.warn('Failed to persist blockedBy to DB', { error: String(err) }));
+      }
+      this.reevaluateBlockedStatus(task);
+    }
+
     task.updatedAt = new Date().toISOString();
     if (updatedBy) task.updatedBy = updatedBy;
 
     if (this.taskRepo) {
-      this.taskRepo
-        .update(id, data)
-        .catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
+      const { blockedBy: _bb, ...rest } = data;
+      if (Object.keys(rest).length > 0) {
+        this.taskRepo
+          .update(id, rest)
+          .catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
+      }
     }
 
     this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title });
 
     return task;
+  }
+
+  private reevaluateBlockedStatus(task: Task): void {
+    if (!task.blockedBy?.length) {
+      if (task.status === 'blocked') {
+        const newStatus = task.assignedAgentId ? 'assigned' : 'pending';
+        task.status = newStatus;
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, newStatus).catch(err =>
+            log.warn('Failed to persist unblocked status', { taskId: task.id, error: String(err) })
+          );
+        }
+      }
+      return;
+    }
+    if (this.areBlockersSatisfied(task)) {
+      if (task.status === 'blocked') {
+        const newStatus = task.assignedAgentId ? 'assigned' : 'pending';
+        task.status = newStatus;
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, newStatus).catch(err =>
+            log.warn('Failed to persist unblocked status', { taskId: task.id, error: String(err) })
+          );
+        }
+      }
+    } else {
+      if (task.status === 'pending' || task.status === 'assigned') {
+        task.status = 'blocked';
+        if (this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, 'blocked').catch(err =>
+            log.warn('Failed to persist blocked status', { taskId: task.id, error: String(err) })
+          );
+        }
+      }
+    }
   }
 
   deleteTask(id: string): void {
