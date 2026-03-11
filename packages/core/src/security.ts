@@ -66,19 +66,30 @@ export class SecurityGuard {
   }
 
   validateFilePath(path: string): { allowed: boolean; reason?: string } {
+    const denyCheck = this.validateFileReadPath(path);
+    if (!denyCheck.allowed) return denyCheck;
+
+    if (this.policy.pathAllowlist?.length) {
+      const allowed = this.policy.pathAllowlist.some((p) => path.startsWith(p));
+      if (!allowed) {
+        return { allowed: false, reason: 'Path not in allowlist' };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Validate a file path for read-only access.
+   * Only checks the denylist (sensitive system files) — does NOT check the allowlist.
+   */
+  validateFileReadPath(path: string): { allowed: boolean; reason?: string } {
     const denyPaths = [...DEFAULT_PATH_DENY, ...(this.policy.pathDenylist ?? [])];
 
     for (const deny of denyPaths) {
       if (path.includes(deny)) {
         log.warn('File path denied by security policy', { path });
         return { allowed: false, reason: `Access to ${deny} is blocked` };
-      }
-    }
-
-    if (this.policy.pathAllowlist?.length) {
-      const allowed = this.policy.pathAllowlist.some((p) => path.startsWith(p));
-      if (!allowed) {
-        return { allowed: false, reason: 'Path not in allowlist' };
       }
     }
 

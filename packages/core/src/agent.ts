@@ -834,6 +834,10 @@ export class Agent {
       knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
+      agentWorkspace: this.pathPolicy ? {
+        primaryWorkspace: this.pathPolicy.primaryWorkspace,
+        sharedWorkspace: this.pathPolicy.sharedWorkspace,
+      } : undefined,
     });
 
     let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -936,7 +940,7 @@ export class Agent {
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               if (currentActId) {
-                this.emitActivityLog(currentActId, 'tool_start', tc.name, { args: JSON.stringify(tc.arguments).slice(0, 300) });
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { args: JSON.stringify(tc.arguments) });
               }
               try {
                 let result = await this.executeTool(tc);
@@ -955,7 +959,7 @@ export class Agent {
                   this.emitActivityLog(currentActId, 'tool_end', tc.name, {
                     durationMs: Date.now() - toolStart,
                     success: !isToolError,
-                    preview: result.slice(0, 200),
+                    result,
                   });
                 }
                 return { toolCallId: tc.id, content: result, error: false };
@@ -969,7 +973,7 @@ export class Agent {
                   detail: String(toolErr).slice(0, 200),
                 });
                 if (currentActId) {
-                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr).slice(0, 200)}`);
+                  this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
                 }
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
               }
@@ -1141,6 +1145,10 @@ export class Agent {
       knowledgeContext: this.getKnowledgeContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario: 'chat',
+      agentWorkspace: this.pathPolicy ? {
+        primaryWorkspace: this.pathPolicy.primaryWorkspace,
+        sharedWorkspace: this.pathPolicy.sharedWorkspace,
+      } : undefined,
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1550,6 +1558,10 @@ export class Agent {
         },
         projectContext: taskWorkspace.projectContext,
       } : {}),
+      agentWorkspace: this.pathPolicy ? {
+        primaryWorkspace: this.pathPolicy.primaryWorkspace,
+        sharedWorkspace: this.pathPolicy.sharedWorkspace,
+      } : undefined,
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
@@ -1622,7 +1634,7 @@ export class Agent {
               success: !isErr,
               durationMs,
               arguments: tc.arguments,
-              result: result.slice(0, 2000),
+              result,
             });
             this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
             this.memory.appendMessage(sessionId, {
@@ -2085,12 +2097,12 @@ export class Agent {
       this.metricsCollector.recordHeartbeat(true);
 
       if (reply && reply.length > 20) {
-        this.emitActivityLog(activityId, 'text', reply.slice(0, 500));
-        this.memory.writeDailyLog(this.id, `[Heartbeat: ${ctx.task.name}] ${reply.slice(0, 500)}`);
+        this.emitActivityLog(activityId, 'text', reply);
+        this.memory.writeDailyLog(this.id, `[Heartbeat: ${ctx.task.name}] ${reply}`);
       }
       this.endActivity(activityId);
     } catch (error) {
-      this.emitActivityLog(activityId, 'error', String(error).slice(0, 500));
+      this.emitActivityLog(activityId, 'error', String(error));
       this.endActivity(activityId);
       this.metricsCollector.recordHeartbeat(false);
       log.error('Heartbeat task failed', { task: ctx.task.name, error: String(error) });

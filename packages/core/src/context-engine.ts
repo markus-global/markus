@@ -113,6 +113,10 @@ export class ContextEngine {
       anchor?: { section: string; itemId?: string };
     }>;
     scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+    agentWorkspace?: {
+      primaryWorkspace: string;
+      sharedWorkspace?: string;
+    };
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -148,9 +152,20 @@ export class ContextEngine {
     if (opts.currentWorkspace) {
       parts.push('\n## Your Workspace');
       parts.push(`- Branch: \`${opts.currentWorkspace.branch}\``);
-      parts.push(`- Working directory: ${opts.currentWorkspace.worktreePath}`);
+      parts.push(`- Working directory: \`${opts.currentWorkspace.worktreePath}\``);
       parts.push(`- Base branch: ${opts.currentWorkspace.baseBranch}`);
-      parts.push('- IMPORTANT: All file operations are restricted to this directory');
+      if (opts.agentWorkspace?.sharedWorkspace) {
+        parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
+      }
+      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
+    } else if (opts.agentWorkspace) {
+      parts.push('\n## Your Workspace');
+      parts.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
+      if (opts.agentWorkspace.sharedWorkspace) {
+        parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
+      }
+      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
+      parts.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
     }
 
     // ── Governance: Trust Level (P2 priority) ──────────────────────────
@@ -408,7 +423,7 @@ export class ContextEngine {
         lines.push('- Be concise and structured — your colleague agent needs actionable information.');
         lines.push('- Focus on the specific request or question from your colleague.');
         lines.push('- Respond with clear, factual information. Avoid conversational filler.');
-        lines.push('- **Always include file paths** when referencing content from files, documents, or deliverables. Your colleague may need to read the full content independently. Example: "The research report is at `workspace/research/report.md`" rather than just summarizing.');
+        lines.push('- **Always include absolute file paths** when referencing content from files, documents, or deliverables. Your colleague can then use `file_read` to read the full content directly. Never use relative paths — always provide the full absolute path.');
         lines.push('- **Do NOT start long tasks inline.** If work is needed, create a task via `task_create` and inform your colleague of the task ID.');
         lines.push('- If you cannot help, explain why clearly and suggest who might be able to help.');
         lines.push('- Keep responses focused on collaboration and coordination.');

@@ -7,16 +7,9 @@ import type { AgentToolHandler } from '../agent.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Check if a resolved path is within any accessible zone (rw or ro) */
-function isPathAccessible(resolvedPath: string, workspacePath?: string, policy?: PathAccessPolicy): boolean {
-  if (!policy && !workspacePath) return true;
-  if (policy) {
-    if (resolvedPath.startsWith(resolve(policy.primaryWorkspace))) return true;
-    if (policy.sharedWorkspace && resolvedPath.startsWith(resolve(policy.sharedWorkspace))) return true;
-    if (policy.readOnlyPaths?.some(p => resolvedPath.startsWith(resolve(p)))) return true;
-    return false;
-  }
-  return !workspacePath || resolvedPath.startsWith(resolve(workspacePath));
+/** Read-only search tools can access any path — no restrictions on reads */
+function isPathAccessible(_resolvedPath: string, _workspacePath?: string, _policy?: PathAccessPolicy): boolean {
+  return true;
 }
 
 /**

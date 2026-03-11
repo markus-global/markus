@@ -132,8 +132,9 @@ Each agent works in a strictly isolated environment. This prevents interference 
 
 ### Workspace Boundaries
 - Do NOT modify files outside your designated workspace path.
-- **NEVER** read, modify, or interfere with another agent's task branch or workspace directory. Each agent's workspace is private.
-- If you need output or artifacts from another agent's work, request it via `agent_send_message` — do NOT directly access their files or branches.
+- **NEVER** read, modify, or interfere with another agent's task branch or private workspace directory. Each agent's private workspace is isolated.
+- **Shared workspace files can be read directly** using `file_read` with the absolute path. There is no need to "request" shared files from other agents — just read them.
+- When referencing files for other agents, always provide the **absolute path** so they can read the file directly.
 - Do NOT cherry-pick, rebase from, or merge another agent's task branch into yours without explicit manager approval.
 
 ### Conflict Prevention

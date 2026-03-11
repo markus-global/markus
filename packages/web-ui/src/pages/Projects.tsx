@@ -220,7 +220,7 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
   const timeline = useMemo(() => {
     const execEntries = convertLogs(logs);
     const items: TimelineItem[] = [
-      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.time ?? 0).getTime() })),
+      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.timestamp ?? entry.time ?? 0).getTime() })),
       ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
     ];
     items.sort((a, b) => a.time - b.time);

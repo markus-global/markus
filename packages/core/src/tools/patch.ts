@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
-import { resolveAndCheckAccess, denyMessage } from './file.js';
+import { resolveAndCheckAccess } from './file.js';
 
 interface PatchHunk {
   file: string;
@@ -83,12 +83,8 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
       for (const patch of patches) {
         const { resolved: filePath, access } = resolveAndCheckAccess(patch.file, workspacePath, policy);
 
-        if (access === 'denied') {
-          return JSON.stringify({ status: 'denied', error: denyMessage(filePath, workspacePath, policy) });
-        }
-        // All patch actions (edit, create, delete) are write operations
-        if (access === 'readonly') {
-          return JSON.stringify({ status: 'denied', error: `Path is read-only, cannot ${patch.action}: ${patch.file}` });
+        if (access !== 'readwrite') {
+          return JSON.stringify({ status: 'denied', error: `Write operations are only allowed in your own workspace or the shared workspace. Cannot ${patch.action}: ${patch.file}` });
         }
 
         const check = guard.validateFilePath(filePath);

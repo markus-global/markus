@@ -100,12 +100,12 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
   return [
     {
       name: 'agent_request_resource',
-      description: 'Request a resource (file, data, API access) from another agent. Use this to collaborate on shared resources.',
+      description: 'Request a non-file resource (API access, compute, credentials) from another agent. Do NOT use this to read files — use file_read directly instead. This tool sends an async request to the target agent.',
       inputSchema: {
         type: 'object',
         properties: {
           agent_id: { type: 'string', description: 'The ID of the agent to request resource from' },
-          resource_type: { type: 'string', description: 'Type of resource (file, api, data, compute, etc.)' },
+          resource_type: { type: 'string', description: 'Type of resource (api, data, compute, etc.) — NOT for files, use file_read instead' },
           resource_id: { type: 'string', description: 'Identifier for the specific resource' },
           access_level: { type: 'string', description: 'Required access level (read, write, execute)', enum: ['read', 'write', 'execute'] },
           purpose: { type: 'string', description: 'Purpose of the resource request' },

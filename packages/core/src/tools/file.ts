@@ -8,7 +8,10 @@ type AccessLevel = 'readwrite' | 'readonly' | 'denied';
 
 /**
  * Resolve a raw path against the primary workspace, then check multi-tier access.
- * Returns { resolved, access } where access is 'readwrite' | 'readonly' | 'denied'.
+ * Returns { resolved, access } where access is 'readwrite' | 'readonly'.
+ *
+ * Read access is always granted — agents can read any file.
+ * Write access is limited to the agent's own workspace and shared workspace.
  */
 function resolveAndCheckAccess(
   rawPath: string,
@@ -28,15 +31,12 @@ function resolveAndCheckAccess(
     if (policy.sharedWorkspace && resolved.startsWith(resolve(policy.sharedWorkspace))) {
       return { resolved, access: 'readwrite' };
     }
-    if (policy.readOnlyPaths?.some(p => resolved.startsWith(resolve(p)))) {
-      return { resolved, access: 'readonly' };
-    }
-    return { resolved, access: 'denied' };
+    return { resolved, access: 'readonly' };
   }
 
   // Legacy single-workspace mode
   if (workspacePath && !resolved.startsWith(resolve(workspacePath))) {
-    return { resolved, access: 'denied' };
+    return { resolved, access: 'readonly' };
   }
   return { resolved, access: 'readwrite' };
 }
@@ -56,11 +56,11 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
 
   return {
     name: 'file_read',
-    description: 'Read the contents of a file. Supports offset and limit for reading large files in chunks.',
+    description: 'Read the contents of a file. Use absolute paths for reliability. Supports offset and limit for reading large files in chunks.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Path to the file' },
+        path: { type: 'string', description: 'Absolute path to the file (e.g. /data/shared/report.md). Always use absolute paths.' },
         offset: { type: 'number', description: 'Line number to start reading from (1-based, optional)' },
         limit: { type: 'number', description: 'Max number of lines to read (optional, default: all)' },
       },
@@ -69,17 +69,12 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = args['path'] as string;
-      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
-
-      if (access === 'denied') {
-        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
-      }
-      // read is allowed for both 'readwrite' and 'readonly'
+      const { resolved: path } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
       const offset = (args['offset'] as number | undefined) ?? 1;
       const limit = args['limit'] as number | undefined;
 
-      const check = guard.validateFilePath(path);
+      const check = guard.validateFileReadPath(path);
       if (!check.allowed) {
         return JSON.stringify({ status: 'denied', error: check.reason });
       }
@@ -132,11 +127,8 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
       const rawPath = args['path'] as string;
       const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      if (access === 'denied') {
-        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
-      }
-      if (access === 'readonly') {
-        return JSON.stringify({ status: 'denied', error: 'This path is read-only. Write operations are only allowed in your workspace or shared workspace.' });
+      if (access !== 'readwrite') {
+        return JSON.stringify({ status: 'denied', error: 'Write operations are only allowed in your own workspace or the shared workspace.' });
       }
 
       const content = args['content'] as string;
@@ -177,11 +169,8 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
       const rawPath = args['path'] as string;
       const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      if (access === 'denied') {
-        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
-      }
-      if (access === 'readonly') {
-        return JSON.stringify({ status: 'denied', error: 'This path is read-only. Edit operations are only allowed in your workspace or shared workspace.' });
+      if (access !== 'readwrite') {
+        return JSON.stringify({ status: 'denied', error: 'Edit operations are only allowed in your own workspace or the shared workspace.' });
       }
 
       const oldStr = args['old_string'] as string;

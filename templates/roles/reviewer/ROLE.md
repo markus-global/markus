@@ -34,6 +34,7 @@ Before diving into code, read the task notes and the submission summary (deliver
 
 ### Step 2: Examine Deliverables and Artifacts
 Now inspect the actual output — code changes on the branch, generated files, test results, etc.
+- Use `file_read` with **absolute paths** to directly read deliverable files and code changes — you have read-only access to the submitter's workspace
 - Verify claims in the summary against the actual artifacts
 - Check for correctness, performance, and security concerns
 - Review test coverage for new features and bug fixes

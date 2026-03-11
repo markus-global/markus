@@ -98,8 +98,9 @@ Each agent works in a strictly isolated environment to prevent interference betw
 
 ### Workspace Boundaries
 - Do NOT modify files outside the scope of your assigned task.
-- **NEVER** access, read, or modify another agent's workspace or task branch. Each agent's workspace is private.
-- If you need output or artifacts from another agent's work, request it via team messages — do NOT directly access their files or branches.
+- **NEVER** access, read, or modify another agent's private workspace or task branch. Each agent's private workspace is isolated.
+- **Shared workspace files can be read directly** using `file_read` with the absolute path. There is no need to "request" shared files from other agents — just read them.
+- When referencing files for other agents, always provide the **absolute path** so they can read the file directly.
 
 ### Conflict Prevention
 - Before starting work on shared infrastructure (database schemas, API contracts, shared libraries), notify the team and wait for acknowledgment.

@@ -6,8 +6,10 @@
 - Do not force-push to main/master branches
 
 ## Workspace Isolation
-- Work exclusively on your assigned task branch — do NOT touch other agents' branches or workspace directories
-- Do NOT read, modify, or interfere with another agent's files; request artifacts via `agent_send_message` instead
+- Work exclusively on your assigned task branch — do NOT touch other agents' branches or private workspace directories
+- **NEVER** read, modify, or interfere with another agent's private workspace files
+- **Shared workspace files can be read directly** using `file_read` with the absolute path — no need to request them via messages
+- Always use **absolute paths** in file operations and when referencing files for other agents
 - Stay within your task scope — modifications outside your assigned boundary require manager approval
 - Before modifying shared infrastructure (schemas, API contracts, shared libraries), notify the team and wait for acknowledgment
 

@@ -24,10 +24,10 @@ export interface ToolCallInfo {
 }
 
 export type ExecEntry =
-  | { type: 'text'; content: string; time?: string }
-  | { type: 'tool'; info: ToolCallInfo; time?: string; key?: string }
-  | { type: 'status'; content: string; time?: string }
-  | { type: 'error'; content: string; time?: string };
+  | { type: 'text'; content: string; time?: string; timestamp?: string }
+  | { type: 'tool'; info: ToolCallInfo; time?: string; key?: string; timestamp?: string }
+  | { type: 'status'; content: string; time?: string; timestamp?: string }
+  | { type: 'error'; content: string; time?: string; timestamp?: string };
 
 // ─── Tool Metadata ────────────────────────────────────────────────────────────
 
@@ -89,6 +89,15 @@ function truncate(s: string, len: number): string {
   return s.length <= len ? s : s.slice(0, len) + '…';
 }
 
+function prettyJson(s: string): string {
+  try {
+    const parsed = JSON.parse(s);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return s;
+  }
+}
+
 function formatArgs(args: unknown): string {
   if (!args || typeof args !== 'object') return '';
   const obj = args as Record<string, unknown>;
@@ -113,23 +122,24 @@ function formatArgsDetail(args: unknown): Array<{ key: string; value: string }> 
 
 export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
   const time = new Date(entry.createdAt).toLocaleTimeString();
+  const ts = entry.createdAt;
   const meta = entry.metadata as Record<string, unknown> | undefined;
   switch (entry.type) {
     case 'text':
-      return { type: 'text', content: entry.content, time };
+      return { type: 'text', content: entry.content, time, timestamp: ts };
     case 'status':
-      return { type: 'status', content: entry.content, time };
+      return { type: 'status', content: entry.content, time, timestamp: ts };
     case 'error':
-      return { type: 'error', content: entry.content, time };
+      return { type: 'error', content: entry.content, time, timestamp: ts };
     case 'tool_start':
       return {
-        type: 'tool', time,
+        type: 'tool', time, timestamp: ts,
         key: `ts_${entry.seq}`,
         info: { tool: entry.content, status: 'running', args: meta?.arguments },
       };
     case 'tool_end':
       return {
-        type: 'tool', time,
+        type: 'tool', time, timestamp: ts,
         key: `te_${entry.seq}`,
         info: {
           tool: entry.content,
@@ -281,13 +291,13 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
         {info.result && (
           <div className="px-3 py-1.5">
             <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
-            <div className="text-gray-400 font-mono text-[11px] break-all whitespace-pre-wrap">{info.result}</div>
+            <div className="text-gray-400 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(info.result)}</div>
           </div>
         )}
         {info.error && (
           <div className="px-3 py-1.5">
             <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-            <div className="text-red-400 font-mono text-[11px] break-all whitespace-pre-wrap">{String(info.error)}</div>
+            <div className="text-red-400 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(String(info.error))}</div>
           </div>
         )}
         {!argSummary && !info.result && !info.error && (
@@ -348,13 +358,13 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           {info.result && (
             <div>
               <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{info.result}</pre>
+              <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {info.error && (
             <div>
               <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
-              <pre className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{String(info.error)}</pre>
+              <pre className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
           {!argEntries.length && !info.result && !info.error && (

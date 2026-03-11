@@ -60,16 +60,9 @@ function validateGitBranchSafety(command: string): { allowed: boolean; reason?: 
 export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
-  /** Check if a resolved cwd is within any accessible zone */
-  function isCwdAllowed(resolved: string): boolean {
-    if (!policy && !workspacePath) return true;
-    if (policy) {
-      if (resolved.startsWith(resolve(policy.primaryWorkspace))) return true;
-      if (policy.sharedWorkspace && resolved.startsWith(resolve(policy.sharedWorkspace))) return true;
-      if (policy.readOnlyPaths?.some(p => resolved.startsWith(resolve(p)))) return true;
-      return false;
-    }
-    return !workspacePath || resolved.startsWith(resolve(workspacePath));
+  /** Shell commands can run from any directory — read access is unrestricted */
+  function isCwdAllowed(_resolved: string): boolean {
+    return true;
   }
 
   return {
