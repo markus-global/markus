@@ -1794,8 +1794,13 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
                 <ExecEntryRow key={`a-${i}`} entry={entry} showTime />
               ))}
             </>
+          ) : agent.status === 'working' ? (
+            <div className="text-center py-8 space-y-2">
+              <div className="text-xs text-gray-500">Agent just started processing...</div>
+              <div className="text-[10px] text-gray-600">Execution logs will appear here as the agent makes progress.</div>
+            </div>
           ) : (
-            <div className="text-center py-8 text-xs text-gray-600">No execution logs yet.</div>
+            <div className="text-center py-8 text-xs text-gray-600">No execution logs available.</div>
           )}
 
           {agent.status === 'working' && <ThinkingDots label="Working" />}

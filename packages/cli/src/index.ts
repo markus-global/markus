@@ -276,23 +276,23 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
-  const openrouterKey =
-    config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
-  if (openrouterKey) {
-    providerConfigs['openrouter'] = {
-      provider: 'openrouter',
-      model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.1',
-      apiKey: openrouterKey,
-      baseUrl:
-        process.env['OPENROUTER_BASE_URL'] ??
-        config.llm.providers['openrouter']?.baseUrl ??
-        'https://openrouter.ai/api/v1',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'openrouter') {
-      defaultProvider = 'openrouter';
-    }
-  }
+  // const openrouterKey =
+  //   config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
+  // if (openrouterKey) {
+  //   providerConfigs['openrouter'] = {
+  //     provider: 'openrouter',
+  //     model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.1',
+  //     apiKey: openrouterKey,
+  //     baseUrl:
+  //       process.env['OPENROUTER_BASE_URL'] ??
+  //       config.llm.providers['openrouter']?.baseUrl ??
+  //       'https://openrouter.ai/api/v1',
+  //     timeoutMs: llmTimeoutMs,
+  //   };
+  //   if (config.llm.defaultProvider === 'openrouter') {
+  //     defaultProvider = 'openrouter';
+  //   }
+  // }
 
   const minimaxKey =
     config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];
@@ -380,6 +380,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const billingService = new BillingService();
   billingService.setOrgPlan('default', 'free');
   const auditService = new AuditService();
+  taskService.setAuditService(auditService);
 
   return {
     agentManager,

@@ -112,6 +112,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -355,12 +356,65 @@ export class ContextEngine {
       '5. **Offload large data**: If a tool returns very large output, save it to a file and reference the file path instead of keeping it all in context.'
     );
 
+    // --- Scenario-specific behavioral guidance ---
+    const scenario = opts.scenario ?? 'chat';
+    parts.push(this.buildScenarioSection(scenario));
+
     // --- KV-Cache optimization: timestamp at end, date-only precision ---
     // Placing time at the end of the system prompt preserves cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
     parts.push(`\n---\nCurrent date: ${new Date().toISOString().split('T')[0]}`);
 
     return parts.join('\n');
+  }
+
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a'): string {
+    const lines: string[] = ['\n## Current Interaction Mode'];
+
+    switch (scenario) {
+      case 'chat':
+        lines.push('You are in a **human conversation**. Follow these behavioral rules:');
+        lines.push('- Be conversational, responsive, and helpful.');
+        lines.push('- Focus on understanding intent and providing clear, concise answers.');
+        lines.push('- **Do NOT execute long-running work inline.** If a request requires more than ~3 tool calls or significant work (writing code, running tests, file modifications), create a task via `task_create` and let the task execution handle it.');
+        lines.push('- After creating a task, briefly explain what was created and that the agent will work on it asynchronously.');
+        lines.push('- Quick lookups, simple questions, and short status checks are fine to handle inline.');
+        lines.push('- Report progress and results proactively when the human asks about ongoing work.');
+        break;
+
+      case 'task_execution':
+        lines.push('You are in **task execution** mode. Follow these behavioral rules:');
+        lines.push('- Be thorough and methodical — this is your dedicated work time.');
+        lines.push('- Complete all steps of the task before submitting for review.');
+        lines.push('- Update task notes with progress after each significant step using `task_note`.');
+        lines.push('- Use all available tools to deliver high-quality output.');
+        lines.push('- Follow the full task lifecycle: work → test → document → `task_submit_review`.');
+        lines.push('- If you discover blockers, update the task status to `blocked` with a clear explanation.');
+        lines.push('- Stay focused on the assigned task — do not wander into unrelated work.');
+        break;
+
+      case 'heartbeat':
+        lines.push('You are in **heartbeat** mode. Follow these behavioral rules:');
+        lines.push('- Be brief and efficient — this is a periodic check-in, not a work session.');
+        lines.push('- Only check task statuses and correct stale states.');
+        lines.push('- NEVER execute actual work (writing code, making changes, calling external services).');
+        lines.push('- NEVER create new tasks or start working on existing tasks.');
+        lines.push('- Minimize tool calls — aim for 5 or fewer.');
+        lines.push('- Propose untracked needs via `requirement_propose` if you notice gaps.');
+        break;
+
+      case 'a2a':
+        lines.push('You are in an **agent-to-agent conversation**. Follow these behavioral rules:');
+        lines.push('- Be concise and structured — your colleague agent needs actionable information.');
+        lines.push('- Focus on the specific request or question from your colleague.');
+        lines.push('- Respond with clear, factual information. Avoid conversational filler.');
+        lines.push('- **Do NOT start long tasks inline.** If work is needed, create a task via `task_create` and inform your colleague of the task ID.');
+        lines.push('- If you cannot help, explain why clearly and suggest who might be able to help.');
+        lines.push('- Keep responses focused on collaboration and coordination.');
+        break;
+    }
+
+    return lines.join('\n');
   }
 
   private buildIdentitySection(opts: {

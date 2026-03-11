@@ -12,6 +12,7 @@ import type { AgentManager, WorkspaceManager, TaskWorkspace, ReviewService, Revi
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
+import type { AuditService } from './audit-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
 import { mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs';
@@ -79,6 +80,7 @@ export class TaskService {
   private workspaceManager?: WorkspaceManager;
   private reviewService?: ReviewService;
   private taskCommentRepo?: TaskCommentRepo;
+  private auditService?: AuditService;
   private sharedDataDir?: string;
 
   setAgentManager(am: AgentManager): void {
@@ -119,6 +121,10 @@ export class TaskService {
 
   setTaskCommentRepo(repo: TaskCommentRepo): void {
     this.taskCommentRepo = repo;
+  }
+
+  setAuditService(audit: AuditService): void {
+    this.auditService = audit;
   }
 
   setSharedDataDir(dir: string): void {
@@ -326,9 +332,47 @@ export class TaskService {
       }
     }
 
+    // Build dependency context: include notes/deliverables from tasks this one depends on
+    let dependencyContext = '';
+    if (task.blockedBy?.length) {
+      const depSections: string[] = [];
+      for (const depId of task.blockedBy) {
+        const depTask = this.tasks.get(depId);
+        if (!depTask) continue;
+        const lines: string[] = [`### Dependency: ${depTask.title} (ID: ${depId}, status: ${depTask.status})`];
+        if (depTask.description) {
+          lines.push(`**Description:** ${depTask.description.slice(0, 300)}`);
+        }
+        if (depTask.notes?.length) {
+          lines.push('**Notes (most recent first):**');
+          for (const note of depTask.notes.slice(-5).reverse()) {
+            lines.push(`- ${note.slice(0, 500)}`);
+          }
+        }
+        if (depTask.deliverables?.length) {
+          lines.push('**Deliverables:**');
+          for (const d of depTask.deliverables) {
+            lines.push(`- ${d.summary ?? '(no summary)'}${d.type === 'branch' ? ` [branch: ${d.reference}]` : ''}`);
+          }
+        }
+        depSections.push(lines.join('\n'));
+      }
+      if (depSections.length > 0) {
+        dependencyContext = [
+          '## Dependency Tasks (completed prerequisites)',
+          'This task depends on the following completed tasks. Review their outputs before starting — they contain context and artifacts you will need.',
+          '',
+          ...depSections,
+          '',
+          '---',
+          '',
+        ].join('\n');
+      }
+    }
+
     const taskDescription = prevContext
-      ? `${prevContext}${task.title}\n\n${task.description}`
-      : `${task.title}\n\n${task.description}`;
+      ? `${prevContext}${dependencyContext}${task.title}\n\n${task.description}`
+      : `${dependencyContext}${task.title}\n\n${task.description}`;
 
     // Create git worktree for project-bound tasks
     let taskWorkspace: TaskWorkspace | undefined;
@@ -1609,6 +1653,18 @@ export class TaskService {
       task.notes.push(`[${task.updatedAt}] Automated review: ${reviewReport.overallStatus} — ${reviewReport.summary}`);
     }
 
+    this.auditService?.record({
+      orgId: task.orgId,
+      agentId: task.assignedAgentId,
+      type: 'task_submitted_for_review',
+      action: 'submit_for_review',
+      detail: `Task "${task.title}" submitted for review`,
+      taskId: task.id,
+      projectId: task.projectId,
+      success: true,
+      metadata: { deliverableCount: deliverables.length, reviewReportStatus: reviewReport?.overallStatus },
+    });
+
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
   }
@@ -1725,6 +1781,18 @@ export class TaskService {
       }
     }
 
+    this.auditService?.record({
+      orgId: task.orgId,
+      agentId: reviewerAgentId,
+      type: 'task_review_accepted',
+      action: 'accept_task',
+      detail: `Task "${task.title}" accepted by reviewer`,
+      taskId: task.id,
+      projectId: task.projectId,
+      success: true,
+      metadata: { workerAgentId: task.assignedAgentId },
+    });
+
     log.info(`Task accepted: ${task.title}`, { id: task.id });
 
     // Auto-transition accepted → completed
@@ -1752,6 +1820,28 @@ export class TaskService {
     task.notes.push(`[${new Date().toISOString()}] Revision requested: ${reason}`);
     task.updatedAt = new Date().toISOString();
     this.ws?.broadcastTaskUpdate(task.id, task.status, { reason });
+
+    this.auditService?.record({
+      orgId: task.orgId,
+      agentId: task.assignedAgentId,
+      type: 'task_review_revision_requested',
+      action: 'request_revision',
+      detail: `Revision requested for task "${task.title}": ${reason.slice(0, 200)}`,
+      taskId: task.id,
+      projectId: task.projectId,
+      success: true,
+      metadata: { reason },
+    });
+
+    if (this.taskCommentRepo) {
+      this.taskCommentRepo.add({
+        taskId: task.id,
+        authorId: 'system',
+        authorName: 'Review System',
+        authorType: 'system',
+        content: `**Revision Requested**\n\n${reason}`,
+      }).catch(err => log.warn('Failed to persist revision comment', { taskId: task.id, error: String(err) }));
+    }
 
     log.info(`Revision requested for task: ${task.title}`, { id: task.id, reason });
     return task;

@@ -775,6 +775,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -784,9 +785,10 @@ export class Agent {
     // Track chat activity (only if not already in a heartbeat or other activity)
     const isEphemeral = options?.ephemeral ?? false;
     let chatActivityId: string | undefined;
-    if (!this.state.currentActivity && !isEphemeral) {
+    if (!this.state.currentActivity) {
       const senderLabel = senderInfo?.name ?? senderId ?? 'user';
-      chatActivityId = this.startActivity('chat', `Chat with ${senderLabel}`);
+      const activityLabel = isEphemeral && senderId ? `A2A: Chat with ${senderLabel}` : `Chat with ${senderLabel}`;
+      chatActivityId = this.startActivity('chat', activityLabel);
     }
 
     // Run input guardrails
@@ -817,6 +819,7 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
     }
 
+    const scenario = options?.scenario ?? (isEphemeral && senderId ? 'a2a' : 'chat');
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -830,6 +833,7 @@ export class Agent {
       assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
       knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(effectiveMessage),
       environment: this.environmentProfile,
+      scenario,
     });
 
     let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1136,6 +1140,7 @@ export class Agent {
       assignedTasks: this.tasksFetcher?.(),
       knowledgeContext: this.getKnowledgeContext(effectiveMessage),
       environment: this.environmentProfile,
+      scenario: 'chat',
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1510,8 +1515,8 @@ export class Agent {
       description,
       '',
       isResume
-        ? 'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).'
-        : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
+        ? 'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).\nIf this task has dependency tasks listed, review their notes and deliverables — they contain context and artifacts essential for your work.'
+        : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.\nIf this task has dependency tasks listed above, review their notes and deliverables first — they contain context and artifacts essential for your work.',
       '',
       '## Completion Requirements',
       'Before calling task_submit_review, you MUST update the task notes using task_update with a detailed note that includes:',
@@ -1536,6 +1541,7 @@ export class Agent {
       assignedTasks: this.tasksFetcher?.(),
       knowledgeContext: this.getKnowledgeContext(taskPrompt),
       environment: this.environmentProfile,
+      scenario: 'task_execution',
       ...(taskWorkspace ? {
         currentWorkspace: {
           branch: taskWorkspace.branch,
@@ -2073,6 +2079,7 @@ export class Agent {
         ephemeral: true,
         maxHistory: 10,
         allowedTools: HEARTBEAT_ALLOWED_TOOLS,
+        scenario: 'heartbeat',
       });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true);

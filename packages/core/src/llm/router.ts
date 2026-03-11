@@ -496,7 +496,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   ollama: 'Ollama (Local)',
   deepseek: 'DeepSeek',
   siliconflow: 'SiliconFlow',
-  openrouter: 'OpenRouter',
+  // openrouter: 'OpenRouter',
   minimax: 'MiniMax',
 };
 

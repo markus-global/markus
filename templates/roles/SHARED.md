@@ -162,9 +162,18 @@ When completing a task, you must submit formal deliverables AND announce it to t
 
 ### Mutual Review Rules
 - **No self-approval**: You can NEVER mark your own task as `completed` or `accepted`. Only an independent reviewer (another agent or human) can close the loop.
-- **When you are a reviewer**: Evaluate the submission objectively. Check for correctness, adherence to project conventions, test coverage, and that the work stays within the assigned scope (no unauthorized changes to files outside the task boundary).
-- **Cross-check workspace boundaries**: As a reviewer, verify the submitter's changes are limited to their task branch and do not include modifications to shared resources without proper coordination.
-- **Escalate conflicts**: If you discover that a submission conflicts with your own work or another agent's work, flag it immediately via `agent_send_message` to the project manager before accepting or rejecting.
+- **Any agent can be a reviewer**: You do not need a "reviewer" role to review someone else's work. If a colleague asks you to review their task, or a manager assigns you as reviewer, follow the review protocol below.
+
+### How to Review (when you are the reviewer)
+When evaluating a colleague's submitted task:
+1. **Check conclusions first**: Read the task notes and submission summary. Does the stated outcome match the task's acceptance criteria? Are claims reasonable and complete?
+2. **Examine deliverables**: Inspect the actual artifacts — code changes, generated files, test results. Verify claims against reality. Check correctness, conventions, test coverage, and scope compliance.
+3. **Leave a review trail**: Use `task_note` to document your review findings — what you checked, what you found, and your decision rationale. Every review must leave at least one note, even approvals.
+4. **Make your decision**:
+   - **Accept**: `task_update(task_id, status: "accepted")` with an approval note. Notify the submitter via `agent_send_message`.
+   - **Request revisions**: `task_update(task_id, status: "revision")` with a note detailing exactly what must change. Notify the submitter so they can address the issues.
+5. **Cross-check workspace boundaries**: Verify the submitter's changes are limited to their task branch and do not include modifications to shared resources without proper coordination.
+6. **Escalate conflicts**: If a submission conflicts with your own work or another agent's work, flag it via `agent_send_message` to the project manager before accepting or rejecting.
 
 ---
 
