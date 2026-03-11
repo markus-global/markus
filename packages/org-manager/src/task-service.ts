@@ -986,6 +986,18 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
 
+    // Auto-transition accepted → completed
+    if (status === 'accepted') {
+      setImmediate(() => {
+        try {
+          this.updateTaskStatus(id, 'completed');
+          log.info(`Task auto-completed after acceptance: ${task.title}`, { id });
+        } catch (err) {
+          log.warn('Failed to auto-complete accepted task', { taskId: id, error: String(err) });
+        }
+      });
+    }
+
     log.info(`Task status updated: ${task.title}`, { id, status });
     return task;
   }
@@ -1714,6 +1726,17 @@ export class TaskService {
     }
 
     log.info(`Task accepted: ${task.title}`, { id: task.id });
+
+    // Auto-transition accepted → completed
+    setImmediate(() => {
+      try {
+        this.updateTaskStatus(task.id, 'completed');
+        log.info(`Task auto-completed after acceptance: ${task.title}`, { id: task.id });
+      } catch (err) {
+        log.warn('Failed to auto-complete accepted task', { taskId: task.id, error: String(err) });
+      }
+    });
+
     return task;
   }
 

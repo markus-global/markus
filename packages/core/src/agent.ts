@@ -1512,6 +1512,14 @@ export class Agent {
       isResume
         ? 'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).'
         : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
+      '',
+      '## Completion Requirements',
+      'Before calling task_submit_review, you MUST update the task notes using task_update with a detailed note that includes:',
+      '1. Key conclusions and results of your work',
+      '2. File paths of all deliverables and artifacts you created or modified',
+      '3. Any important decisions made and their rationale',
+      '4. Known limitations or follow-up items',
+      'This note serves as a permanent record for reviewers, other agents, and future reference.',
     ].join('\n');
 
     this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });

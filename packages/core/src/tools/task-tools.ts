@@ -411,6 +411,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'task_submit_review',
             description: [
               'Submit your completed work for review.',
+              'IMPORTANT: Before calling this tool, use task_update to add a detailed note with key conclusions, deliverable file paths, decisions made, and any limitations.',
               'Provide a summary of changes, the branch name with your commits, and any test results.',
               'The task enters review status and a reviewer will evaluate your deliverables.',
               'After calling this tool, you MUST notify the team: use agent_send_message to inform the reviewer and the project manager,',
