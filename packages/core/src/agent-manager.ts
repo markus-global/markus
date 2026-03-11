@@ -8,6 +8,7 @@ import {
   type HumanUser,
   type SystemAnnouncement,
   type TaskDeliverable,
+  type PathAccessPolicy,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -148,6 +149,7 @@ export class AgentManager {
   private llmRouter: LLMRouter;
   private roleLoader: RoleLoader;
   private dataDir: string;
+  private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
@@ -266,6 +268,7 @@ export class AgentManager {
     llmRouter: LLMRouter;
     roleLoader?: RoleLoader;
     dataDir?: string;
+    sharedDataDir?: string;
     eventBus?: EventBus;
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
@@ -276,6 +279,7 @@ export class AgentManager {
     this.llmRouter = options.llmRouter;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
     this.dataDir = options.dataDir ?? join(homedir(), '.markus', 'agents');
+    this.sharedDataDir = options.sharedDataDir;
     this.eventBus = options.eventBus ?? new EventBus();
     this.mcpManager = new MCPClientManager();
     this.globalSecurityPolicy = options.securityPolicy;
@@ -351,6 +355,25 @@ export class AgentManager {
     this.requirementService = requirementService;
   }
 
+  getSharedDataDir(): string | undefined {
+    return this.sharedDataDir;
+  }
+
+  /**
+   * Build a PathAccessPolicy for an agent, including shared workspace
+   * and any project repos as read-only paths.
+   */
+  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[]): PathAccessPolicy {
+    const policy: PathAccessPolicy = {
+      primaryWorkspace: workspacePath,
+      readOnlyPaths: extraReadOnlyPaths?.length ? [...extraReadOnlyPaths] : undefined,
+    };
+    if (this.sharedDataDir) {
+      policy.sharedWorkspace = this.sharedDataDir;
+    }
+    return policy;
+  }
+
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
     const id = genAgentId();
     let role = this.roleLoader.loadRole(request.roleName);
@@ -383,12 +406,15 @@ export class AgentManager {
     const workspacePath = request.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
+    const pathPolicy = this.buildPathPolicy(workspacePath);
+    const securityAllowlist = [workspacePath];
+    if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
+    if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
+
     const basePolicy = request.securityPolicy ?? this.globalSecurityPolicy;
     const security = new SecurityGuard({
       ...basePolicy,
-      pathAllowlist: workspacePath
-        ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
-        : basePolicy?.pathAllowlist,
+      pathAllowlist: [...(basePolicy?.pathAllowlist ?? []), ...securityAllowlist],
     });
     const agentMeta = {
       agentId: id,
@@ -396,7 +422,7 @@ export class AgentManager {
       teamName: request.teamId,
       orgId: request.orgId ?? 'default',
     };
-    const tools = request.tools ?? createBuiltinTools({ agentId: id, agentMeta, security, workspacePath });
+    const tools = request.tools ?? createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
 
     const agentOpts: AgentOptions = {
       config,
@@ -405,6 +431,7 @@ export class AgentManager {
       dataDir: agentDataDir,
       tools,
       orgContext: request.orgContext,
+      pathPolicy,
     };
 
     const agent = new Agent(agentOpts);
@@ -832,12 +859,15 @@ export class AgentManager {
     const workspacePath = config.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
+    const pathPolicy = this.buildPathPolicy(workspacePath);
+    const securityAllowlist = [workspacePath];
+    if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
+    if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
+
     const basePolicy = this.globalSecurityPolicy;
     const security = new SecurityGuard({
       ...basePolicy,
-      pathAllowlist: workspacePath
-        ? [...(basePolicy?.pathAllowlist ?? []), workspacePath]
-        : basePolicy?.pathAllowlist,
+      pathAllowlist: [...(basePolicy?.pathAllowlist ?? []), ...securityAllowlist],
     });
     const agentMeta = {
       agentId: id,
@@ -845,7 +875,7 @@ export class AgentManager {
       teamName: row.teamId as string | undefined,
       orgId: (row.orgId as string) ?? 'default',
     };
-    const tools = createBuiltinTools({ agentId: id, agentMeta, security, workspacePath });
+    const tools = createBuiltinTools({ agentId: id, agentMeta, security, workspacePath, pathPolicy });
 
     const agent = new Agent({
       config,
@@ -853,6 +883,7 @@ export class AgentManager {
       llmRouter: this.llmRouter,
       dataDir: agentDataDir,
       tools,
+      pathPolicy,
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
     });
 
@@ -1196,6 +1227,28 @@ export class AgentManager {
 
   hasAgent(agentId: string): boolean {
     return this.agents.has(agentId);
+  }
+
+  /**
+   * Grant a reviewer agent read-only access to a task's worktree.
+   * Called when a task enters review and a reviewer is assigned.
+   */
+  grantReviewAccess(reviewerAgentId: string, worktreePath: string): void {
+    if (!this.agents.has(reviewerAgentId)) return;
+    const reviewer = this.getAgent(reviewerAgentId);
+    reviewer.grantReadOnlyAccess(worktreePath);
+    log.info('Granted reviewer access to worktree', { reviewerAgentId, worktreePath });
+  }
+
+  /**
+   * Revoke a reviewer agent's read-only access to a task's worktree.
+   * Called when a review is complete or the reviewer changes.
+   */
+  revokeReviewAccess(reviewerAgentId: string, worktreePath: string): void {
+    if (!this.agents.has(reviewerAgentId)) return;
+    const reviewer = this.getAgent(reviewerAgentId);
+    reviewer.revokeReadOnlyAccess(worktreePath);
+    log.info('Revoked reviewer access to worktree', { reviewerAgentId, worktreePath });
   }
 
   setAuditCallback(

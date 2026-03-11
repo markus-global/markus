@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
+import { resolveAndCheckAccess, denyMessage } from './file.js';
 
 interface PatchHunk {
   file: string;
@@ -17,7 +19,7 @@ interface PatchHunk {
  * Multi-file patch tool. Supports editing multiple hunks across multiple files
  * in a single atomic operation. Inspired by OpenClaw's apply_patch.
  */
-export function createPatchTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
+export function createPatchTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -79,10 +81,14 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
 
       // Validation pass
       for (const patch of patches) {
-        const filePath = resolve(basePath, patch.file);
+        const { resolved: filePath, access } = resolveAndCheckAccess(patch.file, workspacePath, policy);
 
-        if (workspacePath && !filePath.startsWith(resolve(workspacePath))) {
-          return JSON.stringify({ status: 'denied', error: `File path outside workspace: ${patch.file}` });
+        if (access === 'denied') {
+          return JSON.stringify({ status: 'denied', error: denyMessage(filePath, workspacePath, policy) });
+        }
+        // All patch actions (edit, create, delete) are write operations
+        if (access === 'readonly') {
+          return JSON.stringify({ status: 'denied', error: `Path is read-only, cannot ${patch.action}: ${patch.file}` });
         }
 
         const check = guard.validateFilePath(filePath);

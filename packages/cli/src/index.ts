@@ -342,7 +342,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const storage = await initStorage(config.database?.url);
 
+  const markusDataDir = join(homedir(), '.markus');
+  const sharedDataDir = join(markusDataDir, 'shared');
+
   const taskService = new TaskService();
+  taskService.setSharedDataDir(sharedDataDir);
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
     taskService.setTaskLogRepo(storage.taskLogRepo);
@@ -356,7 +360,8 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
-    dataDir: join(homedir(), '.markus', 'agents'),
+    dataDir: join(markusDataDir, 'agents'),
+    sharedDataDir,
     skillRegistry,
     taskService,
     mcpServers: config.mcpServers,

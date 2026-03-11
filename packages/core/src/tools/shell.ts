@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
+import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
@@ -56,8 +57,20 @@ function validateGitBranchSafety(command: string): { allowed: boolean; reason?: 
   return { allowed: true };
 }
 
-export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta): AgentToolHandler {
+export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
+
+  /** Check if a resolved cwd is within any accessible zone */
+  function isCwdAllowed(resolved: string): boolean {
+    if (!policy && !workspacePath) return true;
+    if (policy) {
+      if (resolved.startsWith(resolve(policy.primaryWorkspace))) return true;
+      if (policy.sharedWorkspace && resolved.startsWith(resolve(policy.sharedWorkspace))) return true;
+      if (policy.readOnlyPaths?.some(p => resolved.startsWith(resolve(p)))) return true;
+      return false;
+    }
+    return !workspacePath || resolved.startsWith(resolve(workspacePath));
+  }
 
   return {
     name: 'shell_execute',
@@ -88,16 +101,15 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
       const requestedCwd = args['cwd'] as string | undefined;
       const timeoutMs = (args['timeout_ms'] as number) ?? 60_000;
 
-      // Enforce workspace isolation
+      // Enforce workspace isolation — allow cwd in any accessible zone
       let effectiveCwd = workspacePath;
-      if (requestedCwd && workspacePath) {
-        const resolved = resolve(workspacePath, requestedCwd);
-        if (!resolved.startsWith(resolve(workspacePath))) {
-          return JSON.stringify({ status: 'denied', error: `Working directory must be within workspace: ${workspacePath}` });
+      if (requestedCwd) {
+        const base = workspacePath ?? process.cwd();
+        const resolved = resolve(base, requestedCwd);
+        if (!isCwdAllowed(resolved)) {
+          return JSON.stringify({ status: 'denied', error: `Working directory must be within an accessible workspace zone` });
         }
         effectiveCwd = resolved;
-      } else if (requestedCwd) {
-        effectiveCwd = requestedCwd;
       }
 
       const check = guard.validateShellCommand(command);

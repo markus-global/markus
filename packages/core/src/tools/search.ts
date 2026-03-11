@@ -2,14 +2,27 @@ import { execFile } from 'node:child_process';
 import { resolve, relative } from 'node:path';
 import { readdirSync, statSync, existsSync } from 'node:fs';
 import { promisify } from 'node:util';
+import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Check if a resolved path is within any accessible zone (rw or ro) */
+function isPathAccessible(resolvedPath: string, workspacePath?: string, policy?: PathAccessPolicy): boolean {
+  if (!policy && !workspacePath) return true;
+  if (policy) {
+    if (resolvedPath.startsWith(resolve(policy.primaryWorkspace))) return true;
+    if (policy.sharedWorkspace && resolvedPath.startsWith(resolve(policy.sharedWorkspace))) return true;
+    if (policy.readOnlyPaths?.some(p => resolvedPath.startsWith(resolve(p)))) return true;
+    return false;
+  }
+  return !workspacePath || resolvedPath.startsWith(resolve(workspacePath));
+}
+
 /**
  * Ripgrep-based search tool. Falls back to native grep if rg is not installed.
  */
-export function createGrepTool(workspacePath?: string): AgentToolHandler {
+export function createGrepTool(workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   return {
     name: 'grep_search',
     description: 'Search file contents using regex patterns. Fast ripgrep-based search across the codebase. Use this to find function definitions, imports, string occurrences, etc.',
@@ -37,8 +50,8 @@ export function createGrepTool(workspacePath?: string): AgentToolHandler {
       const basePath = workspacePath ?? process.cwd();
       const target = searchPath ? resolve(basePath, searchPath) : basePath;
 
-      if (workspacePath && !target.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: 'Search path must be within workspace' });
+      if (!isPathAccessible(target, workspacePath, policy)) {
+        return JSON.stringify({ status: 'denied', error: 'Search path must be within an accessible workspace zone' });
       }
 
       // Try ripgrep first, fall back to grep
@@ -100,7 +113,7 @@ export function createGrepTool(workspacePath?: string): AgentToolHandler {
 /**
  * Glob-based file finder. Uses native filesystem traversal.
  */
-export function createGlobTool(workspacePath?: string): AgentToolHandler {
+export function createGlobTool(workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   return {
     name: 'glob_find',
     description: 'Find files by name pattern (glob). Use this to locate files by extension, name, or path pattern. Examples: "*.ts", "**/*.test.ts", "src/**/index.*"',
@@ -122,8 +135,8 @@ export function createGlobTool(workspacePath?: string): AgentToolHandler {
       const basePath = workspacePath ?? process.cwd();
       const target = searchPath ? resolve(basePath, searchPath) : basePath;
 
-      if (workspacePath && !target.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: 'Search path must be within workspace' });
+      if (!isPathAccessible(target, workspacePath, policy)) {
+        return JSON.stringify({ status: 'denied', error: 'Search path must be within an accessible workspace zone' });
       }
 
       try {
@@ -153,7 +166,7 @@ export function createGlobTool(workspacePath?: string): AgentToolHandler {
 /**
  * Directory listing tool with tree-like output.
  */
-export function createListDirectoryTool(workspacePath?: string): AgentToolHandler {
+export function createListDirectoryTool(workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   return {
     name: 'list_directory',
     description: 'List directory contents with file sizes and types. Provides a tree-like view of the project structure. Use this before reading files to understand the codebase layout.',
@@ -175,8 +188,8 @@ export function createListDirectoryTool(workspacePath?: string): AgentToolHandle
       const basePath = workspacePath ?? process.cwd();
       const target = dirPath ? resolve(basePath, dirPath) : basePath;
 
-      if (workspacePath && !target.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: 'Path must be within workspace' });
+      if (!isPathAccessible(target, workspacePath, policy)) {
+        return JSON.stringify({ status: 'denied', error: 'Path must be within an accessible workspace zone' });
       }
 
       if (!existsSync(target)) {

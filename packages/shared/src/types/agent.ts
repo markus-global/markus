@@ -86,3 +86,16 @@ export interface AgentProfile {
   /** Working directory constraint — agent tools restricted to this path */
   workspacePath?: string;
 }
+
+/**
+ * Multi-tier file access policy for agent tools.
+ * Replaces the single `workspacePath` with differentiated read/write zones.
+ */
+export interface PathAccessPolicy {
+  /** Agent's own workspace — full read/write access */
+  primaryWorkspace: string;
+  /** Shared deliverables area — read/write for publishing artifacts */
+  sharedWorkspace?: string;
+  /** Paths the agent can read but not write (project repos, peer worktrees) */
+  readOnlyPaths?: string[];
+}

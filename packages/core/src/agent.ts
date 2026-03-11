@@ -12,6 +12,7 @@ import {
   type LLMToolCall,
   type LLMStreamEvent,
   type IdentityContext,
+  type PathAccessPolicy,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -81,6 +82,8 @@ export interface AgentOptions {
   contextMdPath?: string;
   /** Optional custom memory implementation. Defaults to MemoryStore. */
   memory?: IMemoryStore;
+  /** Multi-tier path access policy for this agent */
+  pathPolicy?: PathAccessPolicy;
   /** Restored state from DB (used during server restart recovery) */
   restoredState?: { tokensUsedToday?: number };
 }
@@ -97,6 +100,7 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
+  private pathPolicy?: PathAccessPolicy;
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
@@ -172,6 +176,7 @@ export class Agent {
     };
 
     this.dataDir = options.dataDir;
+    this.pathPolicy = options.pathPolicy;
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
@@ -1443,6 +1448,7 @@ export class Agent {
     let taskFailed = '';
 
     let seq = 0;
+    let submittedForReview = false;
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
@@ -1457,9 +1463,22 @@ export class Agent {
     let savedTools: Map<string, AgentToolHandler> | undefined;
     if (taskWorkspace) {
       savedTools = new Map(this.tools);
+      // Build a worktree-specific path policy inheriting shared workspace and adding
+      // the project repo as read-only (for referencing the base branch)
+      const worktreePolicy: PathAccessPolicy = {
+        primaryWorkspace: taskWorkspace.worktreePath,
+        sharedWorkspace: this.pathPolicy?.sharedWorkspace,
+        readOnlyPaths: [
+          ...(this.pathPolicy?.readOnlyPaths ?? []),
+          ...(taskWorkspace.projectContext?.repositories?.map(r => r.localPath) ?? []),
+        ].filter(Boolean),
+      };
+      if (!worktreePolicy.readOnlyPaths?.length) worktreePolicy.readOnlyPaths = undefined;
+
       const worktreeTools = createBuiltinTools({
         agentId: this.id,
         workspacePath: taskWorkspace.worktreePath,
+        pathPolicy: worktreePolicy,
       });
       for (const tool of worktreeTools) {
         this.tools.set(tool.name, tool);
@@ -1582,6 +1601,9 @@ export class Agent {
             const result = await this.executeTool(tc);
             const isErr = isErrorResult(result);
             const durationMs = Date.now() - toolStart;
+            if (tc.name === 'task_submit_review' && !isErr) {
+              submittedForReview = true;
+            }
             emit('tool_end', tc.name, {
               success: !isErr,
               durationMs,
@@ -1648,10 +1670,16 @@ export class Agent {
       flushText();
       const finalReply = response.content;
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
-      emit('status', 'completed');
-      this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
-      this.eventBus.emit('task:completed', { taskId, agentId: this.id });
-      log.info(`Task execution completed`, { taskId, agentId: this.id });
+      if (submittedForReview) {
+        emit('status', 'execution_finished', { submittedForReview: true });
+        this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
+        log.info('Task execution finished (submitted for review)', { taskId, agentId: this.id });
+      } else {
+        emit('status', 'completed');
+        this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
+        this.eventBus.emit('task:completed', { taskId, agentId: this.id });
+        log.info('Task execution completed', { taskId, agentId: this.id });
+      }
     } catch (error) {
       // If abort was triggered by cancel, treat as cancellation not error
       if (cancelToken?.cancelled) {
@@ -1724,6 +1752,51 @@ export class Agent {
 
   registerTool(handler: AgentToolHandler): void {
     this.tools.set(handler.name, handler);
+  }
+
+  /**
+   * Dynamically add a read-only path to this agent's access policy and rebuild tools.
+   * Used when assigning review tasks so the reviewer can read the worker's worktree.
+   */
+  grantReadOnlyAccess(path: string): void {
+    if (!this.pathPolicy) return;
+    const existing = this.pathPolicy.readOnlyPaths ?? [];
+    if (existing.includes(path)) return;
+    this.pathPolicy = {
+      ...this.pathPolicy,
+      readOnlyPaths: [...existing, path],
+    };
+    // Rebuild file/search tools with updated policy
+    const updatedTools = createBuiltinTools({
+      agentId: this.id,
+      workspacePath: this.pathPolicy.primaryWorkspace,
+      pathPolicy: this.pathPolicy,
+    });
+    for (const tool of updatedTools) {
+      this.tools.set(tool.name, tool);
+    }
+    log.info('Granted read-only access', { agentId: this.id, path });
+  }
+
+  /**
+   * Remove a previously granted read-only path and rebuild tools.
+   */
+  revokeReadOnlyAccess(path: string): void {
+    if (!this.pathPolicy?.readOnlyPaths) return;
+    const filtered = this.pathPolicy.readOnlyPaths.filter(p => p !== path);
+    this.pathPolicy = {
+      ...this.pathPolicy,
+      readOnlyPaths: filtered.length ? filtered : undefined,
+    };
+    const updatedTools = createBuiltinTools({
+      agentId: this.id,
+      workspacePath: this.pathPolicy.primaryWorkspace,
+      pathPolicy: this.pathPolicy,
+    });
+    for (const tool of updatedTools) {
+      this.tools.set(tool.name, tool);
+    }
+    log.info('Revoked read-only access', { agentId: this.id, path });
   }
 
   getState(): AgentState {

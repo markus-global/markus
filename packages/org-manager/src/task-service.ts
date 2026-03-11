@@ -14,6 +14,8 @@ import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, T
 import type { HITLService } from './hitl-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
+import { mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const log = createLogger('task-service');
 
@@ -77,6 +79,7 @@ export class TaskService {
   private workspaceManager?: WorkspaceManager;
   private reviewService?: ReviewService;
   private taskCommentRepo?: TaskCommentRepo;
+  private sharedDataDir?: string;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -116,6 +119,16 @@ export class TaskService {
 
   setTaskCommentRepo(repo: TaskCommentRepo): void {
     this.taskCommentRepo = repo;
+  }
+
+  setSharedDataDir(dir: string): void {
+    this.sharedDataDir = dir;
+    mkdirSync(join(dir, 'tasks'), { recursive: true });
+    mkdirSync(join(dir, 'knowledge'), { recursive: true });
+  }
+
+  getSharedDataDir(): string | undefined {
+    return this.sharedDataDir;
   }
 
   onTaskEvent(webhook: TaskWebhook): void {
@@ -411,8 +424,12 @@ export class TaskService {
 
           // Handle task completion/failure from log events
           if (entry.type === 'status') {
-            if (entry.content === 'completed') {
-              this.updateTaskStatus(taskId, 'completed');
+            if (entry.content === 'completed' || entry.content === 'execution_finished') {
+              const currentTask = this.tasks.get(taskId);
+              const inReviewPipeline = currentTask && ['review', 'revision', 'accepted'].includes(currentTask.status);
+              if (!inReviewPipeline) {
+                this.updateTaskStatus(taskId, 'completed');
+              }
               // Also broadcast agent status update
               const agentState = agent.getState();
               ws?.broadcast({
@@ -901,6 +918,13 @@ export class TaskService {
     }
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
       task.completedAt = now;
+      // Revoke reviewer's worktree access when task is finalized
+      if (task.reviewerAgentId && task.projectId && this.agentManager) {
+        const worktreePath = this.getTaskWorktreePath(task);
+        if (worktreePath) {
+          this.agentManager.revokeReviewAccess(task.reviewerAgentId, worktreePath);
+        }
+      }
     }
 
     // If moving away from in_progress, cancel any running execution
@@ -1484,6 +1508,19 @@ export class TaskService {
     task.status = 'review';
     task.updatedAt = new Date().toISOString();
 
+    // Publish deliverables to shared workspace so reviewers and other agents can access them
+    if (this.sharedDataDir) {
+      this.publishDeliverablestoShared(task, deliverables);
+    }
+
+    // Grant reviewer read-only access to the task's worktree
+    if (task.reviewerAgentId && task.projectId && this.agentManager) {
+      const worktreePath = this.getTaskWorktreePath(task);
+      if (worktreePath) {
+        this.agentManager.grantReviewAccess(task.reviewerAgentId, worktreePath);
+      }
+    }
+
     const broadcastPayload: Record<string, unknown> = { deliverables };
     if (reviewReport) {
       broadcastPayload['reviewReport'] = {
@@ -1513,6 +1550,66 @@ export class TaskService {
 
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
+  }
+
+  /**
+   * Derive the git worktree path for a project-bound task.
+   */
+  private getTaskWorktreePath(task: Task): string | undefined {
+    if (!task.projectId) return undefined;
+    const project = this.projectService?.getProject(task.projectId);
+    const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
+    if (!repo) return undefined;
+    return join(repo.localPath, '.worktrees', `task-${task.id}`);
+  }
+
+  /**
+   * Copy deliverable files/summaries to the shared workspace so reviewers
+   * and other agents can access them without needing the worker's workspace.
+   */
+  private publishDeliverablestoShared(task: Task, deliverables: TaskDeliverable[]): void {
+    if (!this.sharedDataDir) return;
+    const taskSharedDir = join(this.sharedDataDir, 'tasks', task.id);
+    mkdirSync(taskSharedDir, { recursive: true });
+
+    // Write a manifest with task metadata and deliverable summaries
+    const manifest = {
+      taskId: task.id,
+      title: task.title,
+      assignedAgentId: task.assignedAgentId,
+      projectId: task.projectId,
+      publishedAt: new Date().toISOString(),
+      deliverables: deliverables.map(d => ({
+        type: d.type,
+        reference: d.reference,
+        summary: d.summary,
+        diffStats: d.diffStats,
+        testResults: d.testResults,
+      })),
+    };
+    writeFileSync(join(taskSharedDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+
+    // For file-type deliverables, try to copy the file to shared space
+    for (const d of deliverables) {
+      if (d.type === 'file' && d.reference) {
+        const src = resolve(d.reference);
+        if (existsSync(src)) {
+          try {
+            const destName = src.split('/').pop() ?? 'deliverable';
+            cpSync(src, join(taskSharedDir, destName), { recursive: true });
+          } catch (err) {
+            log.warn('Failed to copy deliverable to shared space', { taskId: task.id, ref: d.reference, error: String(err) });
+          }
+        }
+      }
+      // For document/report types, write the summary as a file
+      if ((d.type === 'document' || d.type === 'report') && d.summary) {
+        const safeName = d.reference.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+        writeFileSync(join(taskSharedDir, `${safeName}.md`), d.summary);
+      }
+    }
+
+    log.info('Deliverables published to shared workspace', { taskId: task.id, dir: taskSharedDir });
   }
 
   async acceptTask(taskId: string, reviewerAgentId?: string): Promise<Task> {

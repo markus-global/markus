@@ -1,9 +1,57 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
-export function createFileReadTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
+type AccessLevel = 'readwrite' | 'readonly' | 'denied';
+
+/**
+ * Resolve a raw path against the primary workspace, then check multi-tier access.
+ * Returns { resolved, access } where access is 'readwrite' | 'readonly' | 'denied'.
+ */
+function resolveAndCheckAccess(
+  rawPath: string,
+  workspacePath: string | undefined,
+  policy: PathAccessPolicy | undefined,
+): { resolved: string; access: AccessLevel } {
+  const resolved = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+
+  if (!policy && !workspacePath) {
+    return { resolved, access: 'readwrite' };
+  }
+
+  if (policy) {
+    if (resolved.startsWith(resolve(policy.primaryWorkspace))) {
+      return { resolved, access: 'readwrite' };
+    }
+    if (policy.sharedWorkspace && resolved.startsWith(resolve(policy.sharedWorkspace))) {
+      return { resolved, access: 'readwrite' };
+    }
+    if (policy.readOnlyPaths?.some(p => resolved.startsWith(resolve(p)))) {
+      return { resolved, access: 'readonly' };
+    }
+    return { resolved, access: 'denied' };
+  }
+
+  // Legacy single-workspace mode
+  if (workspacePath && !resolved.startsWith(resolve(workspacePath))) {
+    return { resolved, access: 'denied' };
+  }
+  return { resolved, access: 'readwrite' };
+}
+
+function denyMessage(resolved: string, workspacePath?: string, policy?: PathAccessPolicy): string {
+  if (policy) {
+    const zones = [policy.primaryWorkspace];
+    if (policy.sharedWorkspace) zones.push(policy.sharedWorkspace);
+    if (policy.readOnlyPaths) zones.push(...policy.readOnlyPaths);
+    return `File path must be within allowed zones: ${zones.join(', ')}`;
+  }
+  return `File path must be within workspace: ${workspacePath}`;
+}
+
+export function createFileReadTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -21,12 +69,13 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = args['path'] as string;
-      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      // Enforce workspace isolation
-      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      if (access === 'denied') {
+        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
       }
+      // read is allowed for both 'readwrite' and 'readonly'
+
       const offset = (args['offset'] as number | undefined) ?? 1;
       const limit = args['limit'] as number | undefined;
 
@@ -64,7 +113,7 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
   };
 }
 
-export function createFileWriteTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
+export function createFileWriteTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -81,12 +130,15 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = args['path'] as string;
-      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      // Enforce workspace isolation
-      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      if (access === 'denied') {
+        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
       }
+      if (access === 'readonly') {
+        return JSON.stringify({ status: 'denied', error: 'This path is read-only. Write operations are only allowed in your workspace or shared workspace.' });
+      }
+
       const content = args['content'] as string;
 
       const check = guard.validateFilePath(path);
@@ -105,7 +157,7 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
   };
 }
 
-export function createFileEditTool(security?: SecurityGuard, workspacePath?: string): AgentToolHandler {
+export function createFileEditTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   return {
@@ -123,12 +175,15 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = args['path'] as string;
-      const path = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
+      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      // Enforce workspace isolation
-      if (workspacePath && !path.startsWith(resolve(workspacePath))) {
-        return JSON.stringify({ status: 'denied', error: `File path must be within workspace: ${workspacePath}` });
+      if (access === 'denied') {
+        return JSON.stringify({ status: 'denied', error: denyMessage(path, workspacePath, policy) });
       }
+      if (access === 'readonly') {
+        return JSON.stringify({ status: 'denied', error: 'This path is read-only. Edit operations are only allowed in your workspace or shared workspace.' });
+      }
+
       const oldStr = args['old_string'] as string;
       const newStr = args['new_string'] as string;
 
@@ -145,7 +200,6 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
         const count = content.split(oldStr).length - 1;
 
         if (count === 0) {
-          // Include the actual file content so the LLM can self-correct with the right old_string
           const preview = content.length > 3000
             ? content.slice(0, 3000) + `\n... (truncated, total ${content.length} chars)`
             : content;
@@ -173,6 +227,9 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
     },
   };
 }
+
+// Shared access helpers exported for other tools (patch, search, shell)
+export { resolveAndCheckAccess, denyMessage, type AccessLevel };
 
 // Backward-compatible exports
 export const FileReadTool = createFileReadTool();

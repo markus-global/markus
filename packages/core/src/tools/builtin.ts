@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import type { PathAccessPolicy } from '@markus/shared';
 import { createShellTool, type ShellAgentMeta } from './shell.js';
 import { createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 import { WebFetchTool } from './web-fetch.js';
@@ -15,6 +16,8 @@ export interface BuiltinToolsOptions {
   agentMeta?: ShellAgentMeta;
   security?: SecurityGuard;
   workspacePath?: string;
+  /** Multi-tier access policy (takes precedence over workspacePath when set) */
+  pathPolicy?: PathAccessPolicy;
   enableGUI?: boolean;
   enableBackgroundExec?: boolean;
   guiConfig?: {
@@ -25,22 +28,25 @@ export interface BuiltinToolsOptions {
 }
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
+  const policy = opts?.pathPolicy;
+  const wp = policy?.primaryWorkspace ?? opts?.workspacePath;
+
   const tools: AgentToolHandler[] = [
-    createShellTool(opts?.security, opts?.workspacePath, opts?.agentMeta),
-    createFileReadTool(opts?.security, opts?.workspacePath),
-    createFileWriteTool(opts?.security, opts?.workspacePath),
-    createFileEditTool(opts?.security, opts?.workspacePath),
-    createPatchTool(opts?.security, opts?.workspacePath),
-    createGrepTool(opts?.workspacePath),
-    createGlobTool(opts?.workspacePath),
-    createListDirectoryTool(opts?.workspacePath),
+    createShellTool(opts?.security, wp, opts?.agentMeta, policy),
+    createFileReadTool(opts?.security, wp, policy),
+    createFileWriteTool(opts?.security, wp, policy),
+    createFileEditTool(opts?.security, wp, policy),
+    createPatchTool(opts?.security, wp, policy),
+    createGrepTool(wp, policy),
+    createGlobTool(wp, policy),
+    createListDirectoryTool(wp, policy),
     WebFetchTool,
     WebSearchTool,
     WebExtractTool,
   ];
 
   if (opts?.enableBackgroundExec !== false) {
-    tools.push(createBackgroundExecTool(opts?.workspacePath));
+    tools.push(createBackgroundExecTool(wp));
     tools.push(createProcessTool());
   }
 
