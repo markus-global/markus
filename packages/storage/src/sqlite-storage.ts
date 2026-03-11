@@ -622,7 +622,9 @@ export class SqliteTaskRepo {
     orgId: string;
     title: string;
     description?: string;
+    status?: string;
     priority?: string;
+    executionMode?: string;
     assignedAgentId?: string;
     parentTaskId?: string;
     requirementId?: string;
@@ -635,15 +637,17 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, priority, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
         data.orgId,
         data.title,
         data.description ?? '',
+        data.status ?? 'pending',
         data.priority ?? 'medium',
+        data.executionMode ?? null,
         data.assignedAgentId ?? null,
         data.parentTaskId ?? null,
         data.requirementId ?? null,

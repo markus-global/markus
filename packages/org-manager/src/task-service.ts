@@ -334,8 +334,8 @@ export class TaskService {
     let taskWorkspace: TaskWorkspace | undefined;
     if (task.projectId) {
       const project = this.projectService?.getProject(task.projectId);
-      const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
-      if (repo && this.workspaceManager) {
+      const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
+      if (repo?.localPath && this.workspaceManager) {
         try {
           const worktreePath = await this.workspaceManager.createWorktreeForTask(task, [repo]);
           taskWorkspace = {
@@ -560,6 +560,7 @@ export class TaskService {
           executionMode: (row.executionMode as Task['executionMode']) ?? undefined,
           assignedAgentId: row.assignedAgentId ?? undefined,
           parentTaskId: row.parentTaskId ?? undefined,
+          requirementId: (row as any).requirementId ?? undefined,
           subtaskIds: [],
           blockedBy,
           result: (row.result as Task['result']) ?? undefined,
@@ -1529,8 +1530,8 @@ export class TaskService {
         let baseBranch: string | undefined;
         if (task.projectId && this.workspaceManager) {
           const project = this.projectService?.getProject(task.projectId);
-          const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
-          if (repo) {
+          const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
+          if (repo?.localPath) {
             worktreePath = `${repo.localPath}/.worktrees/task-${task.id}`;
             baseBranch = repo.defaultBranch;
           }
@@ -1606,8 +1607,8 @@ export class TaskService {
   private getTaskWorktreePath(task: Task): string | undefined {
     if (!task.projectId) return undefined;
     const project = this.projectService?.getProject(task.projectId);
-    const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
-    if (!repo) return undefined;
+    const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
+    if (!repo?.localPath) return undefined;
     return join(repo.localPath, '.worktrees', `task-${task.id}`);
   }
 
@@ -1691,8 +1692,8 @@ export class TaskService {
     // Merge task branch and clean up worktree for project-bound tasks
     if (task.projectId && this.workspaceManager) {
       const project = this.projectService?.getProject(task.projectId);
-      const repo = project?.repositories?.find(r => r.role === 'primary') ?? project?.repositories?.[0];
-      if (repo) {
+      const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
+      if (repo?.localPath) {
         try {
           const result = await this.workspaceManager.mergeTaskBranch(repo.localPath, task.id, repo.defaultBranch);
           if (result.success) {
