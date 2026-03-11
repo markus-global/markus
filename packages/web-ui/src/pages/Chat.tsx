@@ -14,6 +14,8 @@ import {
   type ExecEntry,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
+import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
+import { AgentProfile } from './AgentProfile.tsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,152 +88,7 @@ function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
-function AgentSidebarItem({ agent: a, selected, tasks, isExternal, onSelect, onViewProfile }: {
-  agent: AgentInfo;
-  selected: boolean;
-  tasks: TaskInfo[];
-  isExternal?: boolean;
-  onSelect: () => void;
-  onViewProfile: () => void;
-}) {
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [showActivityModal, setShowActivityModal] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500 animate-pulse' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
-  const statusLabel = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
-  const isError = a.status === 'error';
-
-  const activeTask = a.status === 'working' && a.currentTaskId ? tasks.find(t => t.id === a.currentTaskId) : undefined;
-  const errorPreview = a.lastError ? (a.lastError.length > 60 ? a.lastError.slice(0, 60) + '…' : a.lastError) : 'Unknown error';
-  const activity = a.currentActivity;
-
-  // Click outside to close popover
-  useEffect(() => {
-    if (!popoverOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setPopoverOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [popoverOpen]);
-
-  return (
-    <div ref={ref} className="relative mb-0.5">
-      <button
-        onClick={onSelect}
-        className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors ${
-          selected ? 'bg-indigo-600/20 text-indigo-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-gray-800'
-        }`}
-      >
-        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-          isError ? 'bg-red-900/60 text-red-300' : selected ? 'bg-indigo-600' : 'bg-gray-700'
-        }`}>
-          {agentInitials(a.name)}
-        </div>
-        <div className="flex-1 min-w-0 text-left">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
-            {isExternal && <span className="text-[8px] px-1 py-0 rounded bg-purple-500/20 text-purple-400 font-medium shrink-0 leading-relaxed">EXT</span>}
-            {isError && <span className="text-[9px] px-1.5 py-0 rounded bg-red-500/20 text-red-400 font-medium shrink-0">error</span>}
-          </div>
-          {isError
-            ? <div className="text-red-400/60 truncate text-[9px] leading-tight mt-0.5">{errorPreview}</div>
-            : <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">{a.role}</div>
-          }
-        </div>
-        <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor} cursor-pointer`}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (a.status === 'error' || a.status === 'working' || a.status === 'paused') {
-              setPopoverOpen(o => !o);
-            }
-          }}
-        />
-      </button>
-
-      {popoverOpen && (a.status === 'error' || a.status === 'working' || a.status === 'paused') && (
-        <div className="absolute left-full top-0 ml-2 z-50 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-3 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor}`} />
-            <span className={`text-xs font-medium ${isError ? 'text-red-400' : a.status === 'working' ? 'text-yellow-400' : 'text-amber-400'}`}>
-              {statusLabel}
-            </span>
-            <span className="text-[10px] text-gray-600 ml-auto">{a.role}</span>
-          </div>
-
-          {isError && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2">
-              <div className="text-[10px] text-red-400 font-medium mb-0.5">Error Details</div>
-              <div className="text-[10px] text-red-300/80 leading-relaxed line-clamp-5 break-all font-mono">
-                {a.lastError || 'Agent encountered an error. Click "View Profile" for details.'}
-              </div>
-              {a.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1">{new Date(a.lastErrorAt).toLocaleString()}</div>}
-            </div>
-          )}
-
-          {a.status === 'working' && activeTask && (
-            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-2">
-              <div className="text-[10px] text-indigo-400 font-medium mb-0.5">Current Task</div>
-              <div className="text-[10px] text-gray-300 leading-relaxed truncate">{activeTask.title}</div>
-              <div className="text-[9px] text-gray-500 mt-0.5">{activeTask.status.replace(/_/g, ' ')} · {activeTask.priority}</div>
-            </div>
-          )}
-          {a.status === 'working' && !activeTask && activity && (
-            <div className="bg-gray-800/50 rounded-lg p-2">
-              <div className={`text-[10px] font-medium mb-0.5 ${
-                activity.type === 'heartbeat' ? 'text-cyan-400' : activity.type === 'chat' ? 'text-blue-400' : 'text-indigo-400'
-              }`}>
-                {activity.type === 'heartbeat' ? 'Heartbeat Task' : activity.type === 'chat' ? 'Chat Response' : 'Processing'}
-              </div>
-              <div className="text-[10px] text-gray-300 leading-relaxed truncate">{activity.label}</div>
-            </div>
-          )}
-          {a.status === 'working' && !activeTask && !activity && (
-            <div className="text-[10px] text-gray-500">Processing...</div>
-          )}
-
-          {a.status === 'paused' && (
-            <div className="text-[10px] text-amber-400/80">Agent is paused. Check profile for details.</div>
-          )}
-
-          <div className="flex gap-1.5">
-            {a.status === 'working' && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setPopoverOpen(false); setShowActivityModal(true); }}
-                className="flex-1 text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
-              >
-                Execution Log →
-              </button>
-            )}
-            <button
-              onClick={(e) => { e.stopPropagation(); setPopoverOpen(false); onViewProfile(); }}
-              className={`flex-1 text-center text-[10px] border rounded-lg py-1 transition-colors ${
-                isError
-                  ? 'text-red-400 hover:text-red-300 border-red-500/30 hover:border-red-500/50 hover:bg-red-500/10'
-                  : 'text-indigo-400 hover:text-indigo-300 border-gray-700 hover:border-gray-600'
-              }`}
-            >
-              Profile →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showActivityModal && (
-        <AgentActivityModal
-          agent={a}
-          currentTask={activeTask ?? null}
-          onClose={() => setShowActivityModal(false)}
-          onGoToTask={activeTask ? () => { setShowActivityModal(false); navBus.navigate('tasks', { openTask: activeTask.id }); } : undefined}
-        />
-      )}
-    </div>
-  );
-}
-
-function ChatAgentLink({ name, agentId, agents }: { name: string; agentId?: string; agents: AgentInfo[] }) {
+function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string; agentId?: string; agents: AgentInfo[]; onViewProfile?: (agentId: string) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agentId ? agents.find(a => a.id === agentId) : agents.find(a => a.name === name);
@@ -263,7 +120,7 @@ function ChatAgentLink({ name, agentId, agents }: { name: string; agentId?: stri
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
-            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
@@ -271,6 +128,55 @@ function ChatAgentLink({ name, agentId, agents }: { name: string; agentId?: stri
         </div>
       )}
     </span>
+  );
+}
+
+/** Agent avatar popover — shown when clicking an agent avatar in chat messages */
+function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
+  agent: AgentInfo;
+  anchorRect: { top: number; left: number };
+  onClose: () => void;
+  onViewProfile: (agentId: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 space-y-3"
+      style={{ top: anchorRect.top + 40, left: anchorRect.left }}
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-full bg-indigo-600/30 flex items-center justify-center text-sm font-bold text-indigo-300">
+          {agentInitials(agent.name)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-gray-200 font-medium truncate">{agent.name}</div>
+          <div className="text-[11px] text-gray-500">{agent.role}</div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+            <span className="text-[10px] text-gray-400">{statusLabel}</span>
+            {agent.agentRole && <span className="text-[10px] text-gray-600">· {agent.agentRole}</span>}
+          </div>
+        </div>
+      </div>
+      <button
+        onClick={() => { onClose(); onViewProfile(agent.id); }}
+        className="w-full py-1.5 text-xs text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg transition-colors text-center"
+      >
+        View Profile →
+      </button>
+    </div>
   );
 }
 
@@ -482,9 +388,25 @@ function AgentMessageBody({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+type MainTab = 'chat' | 'profile';
+
 export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
+
+  // Tab system: Chat vs Agent Profile
+  const [mainTab, setMainTab] = useState<MainTab>('chat');
+
+  // Avatar popover in chat messages
+  const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
+
+  const handleViewProfile = useCallback((agentId: string) => {
+    setChatMode('direct');
+    setSelectedAgent(agentId);
+    setMainTab('profile');
+    setAvatarPopover(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
@@ -528,9 +450,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number }>>([]);
 
-  // Teams (for grouping direct chats)
+  // Teams
   const [teams, setTeams] = useState<TeamInfo[]>([]);
-  const [collapsedTeams, setCollapsedTeams] = useState<Set<string>>(new Set());
 
   // External agents (OpenClaw etc.)
   const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
@@ -584,43 +505,59 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
+  const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
+  const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
+
   useEffect(() => {
-    const refreshAgents = () => api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
     refreshAgents();
     api.users.list().then(d => setHumans(d.users)).catch(() => {});
     api.tasks.list().then(d => setTasks(d.tasks)).catch(() => {});
-    api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
+    refreshTeams();
     api.externalAgents.list().then(d => setExternalAgents(d.agents)).catch(() => {});
     fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
 
-    // Keep agent list in sync — poll every 8s and react to WS events
     const timer = setInterval(refreshAgents, 8000);
+    const teamTimer = setInterval(refreshTeams, 15000);
     const unsub = wsClient.on('agent:update', refreshAgents);
+    const unsubTeam = wsClient.on('*', refreshTeams);
     const unsubGroup = wsClient.on('chat:group_created', () => {
       fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
     });
-    return () => { clearInterval(timer); unsub(); unsubGroup(); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Check for nav params (e.g., navigated here from AgentProfile)
+  // Check for nav params (e.g., navigated here from AgentProfile or Team redirect)
   useEffect(() => {
     const handleNav = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.page === 'chat' && detail.params?.agentId) {
-        setChatMode('direct');
-        setSelectedAgent(detail.params.agentId);
+      if (detail.page === 'chat' || detail.page === 'team') {
+        if (detail.params?.agentId) {
+          setChatMode('direct');
+          setSelectedAgent(detail.params.agentId);
+        }
+        if (detail.params?.selectAgent) {
+          handleViewProfile(detail.params.selectAgent);
+        }
+        if (detail.params?.openHire === 'true') {
+          // handled by ChatTeamSidebar via nav events
+        }
       }
     };
-    // Also check localStorage on initial mount (in case Chat wasn't mounted when event fired)
     const navAgent = localStorage.getItem('markus_nav_agentId');
     if (navAgent) {
       localStorage.removeItem('markus_nav_agentId');
       setChatMode('direct');
       setSelectedAgent(navAgent);
     }
+    const selectAgent = localStorage.getItem('markus_nav_selectAgent');
+    if (selectAgent) {
+      localStorage.removeItem('markus_nav_selectAgent');
+      handleViewProfile(selectAgent);
+    }
     window.addEventListener('markus:navigate', handleNav);
     return () => window.removeEventListener('markus:navigate', handleNav);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Snap to bottom immediately after DOM updates.
@@ -1238,9 +1175,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const activeGroupChat = groupChats.find(gc => gc.channelKey === activeChannel);
   const modeTitle =
-    chatMode === 'channel' ? (activeGroupChat ? `👥 ${activeGroupChat.name}` : activeChannel) :
+    chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? 'Select Agent') :
-    chatMode === 'dm'      ? (isSelfDm ? '📝 My Notes' : `💬 ${activeDmUser?.name ?? 'Direct Message'}`) :
+    chatMode === 'dm'      ? (isSelfDm ? 'My Notes' : (activeDmUser?.name ?? 'Direct Message')) :
     'Chat';
 
   const placeholder =
@@ -1251,182 +1188,29 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* ── Left sidebar ── */}
-      <div className="w-52 bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0">
-
-        {/* Group Chats */}
-        {groupChats.length > 0 && (
-          <div className="px-3 py-2 border-b border-gray-800">
-            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Group Chats</p>
-            {groupChats.map(gc => (
-              <button
-                key={gc.id}
-                onClick={() => { setChatMode('channel'); setActiveChannel(gc.channelKey); }}
-                className={`w-full text-left px-3 py-1.5 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
-                  chatMode === 'channel' && activeChannel === gc.channelKey
-                    ? 'bg-indigo-600/20 text-indigo-300'
-                    : 'text-gray-400 hover:bg-gray-800'
-                }`}
-              >
-                <span className="text-[10px]">{gc.type === 'team' ? '👥' : '💬'}</span>
-                <span className="truncate flex-1">{gc.name}</span>
-                {gc.memberCount !== undefined && gc.memberCount > 0 && (
-                  <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Agents (Direct) — grouped by team */}
-        <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
-          {agents.length === 0 && (
-            <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
-          )}
-          {(() => {
-            const externalMarkusIds = new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean));
-            const teamMap = new Map(teams.map(t => [t.id, t]));
-            const agentsByTeam = new Map<string, AgentInfo[]>();
-            const ungrouped: AgentInfo[] = [];
-            for (const a of agents) {
-              if (a.teamId && teamMap.has(a.teamId)) {
-                const list = agentsByTeam.get(a.teamId) ?? [];
-                list.push(a);
-                agentsByTeam.set(a.teamId, list);
-              } else {
-                ungrouped.push(a);
-              }
-            }
-            const teamIds = teams.filter(t => agentsByTeam.has(t.id)).map(t => t.id);
-            const hasTeams = teamIds.length > 0;
-            const toggleTeam = (tid: string) => setCollapsedTeams(prev => {
-              const next = new Set(prev);
-              if (next.has(tid)) next.delete(tid); else next.add(tid);
-              return next;
-            });
-
-            const renderTeamSection = (tid: string, label: string, agentList: AgentInfo[], collapsible: boolean) => {
-              const isCollapsed = collapsible && collapsedTeams.has(tid);
-              return (
-                <div key={tid} className="mb-0.5">
-                  <button
-                    onClick={() => collapsible && toggleTeam(tid)}
-                    className={`w-full flex items-center gap-1.5 px-1.5 py-1.5 rounded-md text-[10px] font-semibold text-gray-500 tracking-wider ${
-                      collapsible ? 'hover:bg-gray-800/50 hover:text-gray-400' : ''
-                    } transition-colors`}
-                  >
-                    {collapsible && (
-                      <svg
-                        className={`w-2.5 h-2.5 text-gray-600 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
-                        fill="currentColor" viewBox="0 0 20 20"
-                      >
-                        <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
-                      </svg>
-                    )}
-                    {!collapsible && <span className="w-2.5" />}
-                    <span className="truncate uppercase">{label}</span>
-                    <span className="ml-auto text-[9px] text-gray-700 tabular-nums font-normal">{agentList.length}</span>
-                  </button>
-                  {!isCollapsed && (
-                    <div className="ml-1">
-                      {agentList.map(a => (
-                        <AgentSidebarItem
-                          key={a.id}
-                          agent={a}
-                          selected={chatMode === 'direct' && selectedAgent === a.id}
-                          tasks={tasks}
-                          isExternal={externalMarkusIds.has(a.id)}
-                          onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
-                          onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            };
-
-            if (!hasTeams) {
-              return agents.map(a => (
-                <AgentSidebarItem
-                  key={a.id}
-                  agent={a}
-                  selected={chatMode === 'direct' && selectedAgent === a.id}
-                  tasks={tasks}
-                  isExternal={externalMarkusIds.has(a.id)}
-                  onSelect={() => { setChatMode('direct'); setSelectedAgent(a.id); }}
-                  onViewProfile={() => navBus.navigate('team', { selectAgent: a.id })}
-                />
-              ));
-            }
-
-            return (
-              <>
-                {teamIds.map(tid => {
-                  const team = teamMap.get(tid)!;
-                  return renderTeamSection(tid, team.name, agentsByTeam.get(tid)!, true);
-                })}
-                {ungrouped.length > 0 && renderTeamSection('_ungrouped', 'Other', ungrouped, true)}
-              </>
-            );
-          })()}
-
-          {/* People — human-to-human DMs + personal notepad */}
-          <div className="mt-3 pt-2 border-t border-gray-800/60">
-            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">People</p>
-
-            {/* Self / Notes */}
-            {authUser && (
-              <button
-                onClick={() => { setChatMode('dm'); setActiveDmUserId(authUser.id); }}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-indigo-600/20 text-indigo-300'
-                    : 'text-gray-400 hover:bg-gray-800'
-                }`}
-              >
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-indigo-600' : 'bg-indigo-900'
-                }`}>
-                  {authUser.name[0]?.toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{authUser.name}</div>
-                  <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">My Notes</div>
-                </div>
-                <span className="text-[9px] text-gray-600">📝</span>
-              </button>
-            )}
-
-            {/* Other humans */}
-            {humans.filter(h => h.id !== authUser?.id).map(h => (
-              <button
-                key={h.id}
-                onClick={() => { setChatMode('dm'); setActiveDmUserId(h.id); }}
-                className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                  chatMode === 'dm' && activeDmUserId === h.id
-                    ? 'bg-emerald-900/30 text-emerald-300'
-                    : 'text-gray-400 hover:bg-gray-800'
-                }`}
-              >
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                  chatMode === 'dm' && activeDmUserId === h.id ? 'bg-emerald-600' : 'bg-emerald-900/60'
-                }`}>
-                  {h.name[0]?.toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="truncate font-medium text-[11px] leading-tight">{h.name}</div>
-                  <div className="text-gray-600 truncate text-[10px] leading-tight mt-0.5">{h.email || h.role}</div>
-                </div>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* ── Left sidebar (ChatTeamSidebar) ── */}
+      <ChatTeamSidebar
+        authUser={authUser}
+        agents={agents}
+        teams={teams}
+        humans={humans}
+        tasks={tasks}
+        externalAgents={externalAgents}
+        groupChats={groupChats}
+        chatMode={chatMode}
+        selectedAgent={selectedAgent}
+        activeChannel={activeChannel}
+        activeDmUserId={activeDmUserId}
+        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
+        onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); }}
+        onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); }}
+        onRefreshTeams={refreshTeams}
+        onRefreshAgents={refreshAgents}
+        onViewProfile={handleViewProfile}
+      />
 
       {/* ── Session history sidebar (direct mode) ── */}
-      {chatMode === 'direct' && selectedAgent && showSessions && (
+      {mainTab === 'chat' && chatMode === 'direct' && selectedAgent && showSessions && (
         <div className="w-52 bg-gray-900/70 border-r border-gray-800 flex flex-col shrink-0">
           <div className="p-3 border-b border-gray-800 flex items-center justify-between">
             <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">History</span>
@@ -1455,38 +1239,74 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         </div>
       )}
 
-      {/* ── Main chat area ── */}
+      {/* ── Main area ── */}
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <div className="h-12 border-b border-gray-800 bg-gray-900 flex items-center px-5 gap-3 shrink-0">
-          <span className="font-semibold text-sm">{modeTitle}</span>
-          {(chatMode === 'channel' || chatMode === 'dm') && (
-            <span className="text-xs text-gray-500">{messages.length} messages</span>
-          )}
-          {chatMode === 'dm' && (
-            <span className="text-xs text-gray-600 ml-1">
-              {isSelfDm ? '· Private notepad' : `· Direct message with ${activeDmUser?.name ?? ''}`}
-            </span>
-          )}
-          {chatMode === 'direct' && currentAgent && (
-            <>
-              <AgentStatusBadge agent={currentAgent} tasks={tasks} />
-
+        <div className="border-b border-gray-800 bg-gray-900 shrink-0">
+          {/* Top row: title + status */}
+          <div className="flex items-center px-5 h-10 gap-3">
+            <span className="font-semibold text-sm">{modeTitle}</span>
+            {chatMode === 'direct' && currentAgent && (
+              <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
+            )}
+            {(chatMode === 'channel' || chatMode === 'dm') && (
+              <span className="text-xs text-gray-500">{messages.length} messages</span>
+            )}
+            {chatMode === 'dm' && (
+              <span className="text-xs text-gray-600 ml-1">
+                {isSelfDm ? '· Private notepad' : `· Direct message with ${activeDmUser?.name ?? ''}`}
+              </span>
+            )}
+            {chatMode === 'direct' && currentAgent && (
               <button
                 onClick={() => setShowSessions(!showSessions)}
                 className="ml-auto text-xs text-gray-500 hover:text-gray-300 px-2 py-0.5 rounded hover:bg-gray-800 transition-colors"
               >
                 ⏱ History
               </button>
-            </>
-          )}
-          {chatMode === 'smart' && (
-            <span className="text-xs text-gray-500"></span>
+            )}
+          </div>
+
+          {/* Tab row: Chat / Details (only in direct mode with an agent) */}
+          {chatMode === 'direct' && selectedAgent && (
+            <div className="flex items-center gap-0.5 px-5 -mb-px">
+              <button
+                onClick={() => setMainTab('chat')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  mainTab === 'chat'
+                    ? 'border-indigo-500 text-indigo-300'
+                    : 'border-transparent text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                Chat
+              </button>
+              <button
+                onClick={() => setMainTab('profile')}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                  mainTab === 'profile'
+                    ? 'border-indigo-500 text-indigo-300'
+                    : 'border-transparent text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                Details
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+        {/* Profile Tab */}
+        {mainTab === 'profile' && selectedAgent && (
+          <div className="flex-1 overflow-y-auto">
+            <AgentProfile
+              agentId={selectedAgent}
+              onBack={() => setMainTab('chat')}
+              inline
+            />
+          </div>
+        )}
+
+        {/* Chat Tab: Messages */}
+        <div className={`flex-1 overflow-y-auto p-5 space-y-3 ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {hasMore && (
             <div className="flex justify-center py-2">
               <button
@@ -1501,8 +1321,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-gray-600 text-sm space-y-2">
-              <div className="text-4xl opacity-20">
-                {chatMode === 'channel' ? '✉' : '💬'}
+              <div className="opacity-20">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  {chatMode === 'channel'
+                    ? <><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H6l-4 4V6c0-1.1.9-2 2-2z" /><line x1="8" y1="10" x2="16" y2="10" /><line x1="8" y1="14" x2="13" y2="14" /></>
+                    : <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  }
+                </svg>
               </div>
               {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
               {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
@@ -1513,9 +1338,17 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           {chatMode === 'channel'
             ? messages.map(msg => (
                 <div key={msg.id} className="group/msg flex gap-3">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-                    msg.sender === 'user' ? 'bg-indigo-600' : 'bg-gray-700'
-                  }`}>
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer ${
+                      msg.sender === 'user' ? 'bg-indigo-600' : 'bg-gray-700 hover:ring-1 hover:ring-indigo-500/40'
+                    }`}
+                    onClick={(e) => {
+                      if (msg.sender === 'agent' && msg.agentId) {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setAvatarPopover({ agentId: msg.agentId, top: rect.top, left: rect.right + 8 });
+                      }
+                    }}
+                  >
                     {msg.sender === 'user' ? (currentUserName?.[0] ?? 'Y') : (msg.agentName?.[0] ?? 'A')}
                   </div>
                   <div className="min-w-0 flex-1">
@@ -1564,6 +1397,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                               name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? 'Agent' : 'Agent')}
                               agentId={msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)}
                               agents={agents}
+                              onViewProfile={handleViewProfile}
                             />
                         } · {msg.time}
                       </div>
@@ -1608,8 +1442,22 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           <div ref={messagesEnd} />
         </div>
 
-        {/* Input */}
-        <div className="p-4 border-t border-gray-800 bg-gray-900 relative shrink-0" onDrop={handleDrop} onDragOver={handleDragOver}>
+        {/* Avatar popover */}
+        {avatarPopover && (() => {
+          const popAgent = agents.find(a => a.id === avatarPopover.agentId);
+          if (!popAgent) return null;
+          return (
+            <AvatarPopover
+              agent={popAgent}
+              anchorRect={{ top: avatarPopover.top, left: avatarPopover.left }}
+              onClose={() => setAvatarPopover(null)}
+              onViewProfile={handleViewProfile}
+            />
+          );
+        })()}
+
+        {/* Input (only in chat tab) */}
+        <div className={`p-4 border-t border-gray-800 bg-gray-900 relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           {mentionDropdown && filteredAgents.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10">
               {filteredAgents.map(a => (
@@ -1699,7 +1547,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   );
 }
 
-function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[] }) {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string) => void }) {
   const [open, setOpen] = useState(false);
   const [showActivityModal, setShowActivityModal] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1751,7 +1599,7 @@ function AgentStatusBadge({ agent, tasks }: { agent: AgentInfo; tasks: TaskInfo[
             {agent.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
           <button
-            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
           >
             View Agent Profile →

@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import type { PageId } from './types.ts';
 import { Dashboard } from './pages/Dashboard.tsx';
 import { Chat } from './pages/Chat.tsx';
-import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
@@ -23,7 +22,7 @@ const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'sk
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
-  if (hash === 'agents') return 'team';
+  if (hash === 'agents' || hash === 'team') return 'chat';
   if (hash === 'tasks') return 'projects';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
@@ -37,7 +36,7 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    const normalized: PageId = p === 'tasks' ? 'projects' : p;
+    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p;
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
     window.location.hash = normalized;
@@ -66,7 +65,6 @@ export function App() {
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => ({
     dashboard: <Dashboard />,
     chat: <Chat authUser={currentUser} />,
-    team: <TeamPage authUser={currentUser} />,
     usage: <Usage />,
     settings: <Settings />,
     skills: <SkillStore />,

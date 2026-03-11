@@ -931,7 +931,7 @@ export function ProjectsPage() {
     return () => { clearInterval(i); unsub(); };
   }, [refreshBoard, refreshAgents, refreshRequirements]);
 
-  // Open task from navigation params (e.g. from Dashboard)
+  // Open task or select project from navigation params
   useEffect(() => {
     const tryOpenTask = (taskId: string) => {
       const allTasks = Object.values(board).flat();
@@ -941,10 +941,21 @@ export function ProjectsPage() {
     const navTaskId = localStorage.getItem('markus_nav_openTask');
     if (navTaskId) tryOpenTask(navTaskId);
 
+    const navProjectId = localStorage.getItem('markus_nav_projectId');
+    if (navProjectId) {
+      localStorage.removeItem('markus_nav_projectId');
+      selectProject(navProjectId);
+    }
+
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if ((detail.page === 'tasks' || detail.page === 'projects') && detail.params?.openTask) {
-        tryOpenTask(detail.params.openTask);
+      if (detail.page === 'tasks' || detail.page === 'projects') {
+        if (detail.params?.openTask) tryOpenTask(detail.params.openTask);
+        if (detail.params?.projectId) selectProject(detail.params.projectId);
+        if (!detail.params?.projectId && !detail.params?.openTask) {
+          setViewMode('all');
+          setSelectedProjectId(null);
+        }
       }
     };
     window.addEventListener('markus:navigate', handler);
@@ -1197,159 +1208,90 @@ export function ProjectsPage() {
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* ── Left: Project Sidebar ── */}
-      <div className="w-56 border-r border-gray-800 flex flex-col bg-gray-950 shrink-0">
-        <div className="px-4 h-12 border-b border-gray-800 flex items-center justify-between shrink-0">
-          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Projects</span>
-          <button onClick={() => setShowCreateProject(true)} className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium">+ New</button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {/* All Work */}
-          <button
-            onClick={selectAllTasks}
-            className={`w-full text-left p-2.5 rounded-lg transition-colors flex items-center justify-between ${
-              viewMode === 'all' ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center text-[10px] text-gray-400">⊞</span>
-              <span className="text-sm font-medium text-gray-200">All Work</span>
-            </div>
-            {totalTaskCount > 0 && (
-              <span className="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full">{totalTaskCount}</span>
-            )}
-          </button>
-
-          {/* Divider */}
-          {projects.length > 0 && <div className="border-t border-gray-800/50 my-2" />}
-
-          {/* Project list */}
-          {projects.map(p => {
-            const count = allTaskCounts[p.id] ?? 0;
-            const isSelected = viewMode === 'project' && selectedProjectId === p.id;
-            return (
-              <button
-                key={p.id}
-                onClick={() => selectProject(p.id)}
-                className={`w-full text-left p-2.5 rounded-lg transition-colors flex items-center justify-between ${
-                  isSelected ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60'
-                }`}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-gray-200 truncate">{p.name}</div>
-                  <div className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-1.5">
-                    <StatusPill status={p.status} />
-                    <IterModelBadge model={p.iterationModel} />
-                  </div>
-                </div>
-                {count > 0 && (
-                  <span className="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full shrink-0 ml-2">{count}</span>
-                )}
-              </button>
-            );
-          })}
-
-          {projects.length === 0 && (
-            <div className="p-3 pt-2">
-              <div className="rounded-lg border border-dashed border-gray-800 p-3 text-center space-y-1.5">
-                <p className="text-[11px] text-gray-500">No projects yet</p>
-                <button
-                  onClick={() => setShowCreateProject(true)}
-                  className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium"
-                >
-                  + Create project
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Right: Task Board + Project Context ── */}
+      {/* ── Task Board + Project Context ── */}
       <div className="flex-1 overflow-hidden flex flex-col">
         {/* Flash */}
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-emerald-900/50 text-emerald-300 text-xs rounded-lg">{flash}</div>}
 
         {/* Top bar */}
-        <div className="flex items-center justify-between px-6 h-12 border-b border-gray-800 bg-gray-900/80 shrink-0">
-          <div className="flex items-center gap-3">
-            {viewMode === 'all' ? (
-              <h2 className="text-sm font-semibold text-gray-200">All Work</h2>
-            ) : selectedProject ? (
-              <>
-                <h2 className="text-sm font-semibold text-gray-200">{selectedProject.name}</h2>
-                <select
-                  value={selectedIterationId ?? ''}
-                  onChange={e => setSelectedIterationId(e.target.value || null)}
-                  className="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-[11px] text-gray-400 focus:border-indigo-500 outline-none"
-                >
-                  <option value="">All iterations</option>
-                  {iterations.map(it => (
-                    <option key={it.id} value={it.id}>{it.name} ({it.status})</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => setShowProjectSettings(!showProjectSettings)}
-                  className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors text-xs ${
-                    showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-                  }`}
-                  title="Project settings"
-                >⚙</button>
-              </>
-            ) : null}
-            {archivedCount > 0 && <span className="text-[10px] text-gray-600">{archivedCount} archived</span>}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center border border-gray-700 rounded-lg overflow-hidden mr-2">
+        <div className="flex items-center gap-3 px-6 h-12 border-b border-gray-800 bg-gray-900/80 shrink-0">
+          {/* Project title + settings */}
+          {selectedProject ? (
+            <div className="flex items-center gap-1 shrink-0">
+              <h2 className="text-sm font-semibold text-gray-200">{selectedProject.name}</h2>
               <button
-                onClick={() => setBoardType('kanban')}
-                className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${boardType === 'kanban' ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                onClick={() => setShowProjectSettings(!showProjectSettings)}
+                className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
+                  showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-600 hover:text-gray-300 hover:bg-gray-800'
+                }`}
+                title="Project settings"
               >
-                Kanban
-              </button>
-              <button
-                onClick={() => setBoardType('dag')}
-                className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${boardType === 'dag' ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              >
-                DAG
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
               </button>
             </div>
-            <button onClick={() => setTriggerCreateReq(c => c + 1)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-medium">+ Requirement</button>
-            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 text-gray-400 hover:text-gray-200 text-xs rounded-lg hover:bg-gray-800 transition-colors">+ Task</button>
+          ) : (
+            <h2 className="text-sm font-semibold text-gray-200 shrink-0">
+              {projects.length === 1 ? projects[0].name : `${projects.length} Projects`}
+            </h2>
+          )}
+          {archivedCount > 0 && <span className="text-[10px] text-gray-600 shrink-0">{archivedCount} archived</span>}
+
+          {/* Actions */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button onClick={() => setTriggerCreateReq(c => c + 1)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-medium transition-colors">+ Requirement</button>
+            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 bg-gray-700/80 hover:bg-gray-600 text-gray-200 text-xs rounded-lg font-medium transition-colors">+ Task</button>
           </div>
+
+          <div className="flex-1" />
+
+          {/* View toggle */}
+          <div className="flex items-center border border-gray-700/60 rounded-md overflow-hidden shrink-0">
+            <button onClick={() => setBoardType('kanban')}
+              className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === 'kanban' ? 'bg-indigo-600/25 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+            >Kanban</button>
+            <button onClick={() => setBoardType('dag')}
+              className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === 'dag' ? 'bg-indigo-600/25 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+            >DAG</button>
+          </div>
+
+          {/* Iteration (project view only) */}
+          {viewMode === 'project' && selectedProject && (
+            <>
+              <select
+                value={selectedIterationId ?? ''}
+                onChange={e => setSelectedIterationId(e.target.value || null)}
+                className="px-2 py-1 bg-gray-800/60 border border-gray-700/60 rounded-md text-[11px] text-gray-400 focus:border-indigo-500 outline-none shrink-0"
+              >
+                <option value="">All iterations</option>
+                {iterations.map(it => (
+                  <option key={it.id} value={it.id}>{it.name} ({it.status})</option>
+                ))}
+              </select>
+              {activeIteration && !selectedIterationId && (
+                <button onClick={() => setSelectedIterationId(activeIteration.id)}
+                  className="flex items-center gap-1 text-[10px] text-indigo-400/80 hover:text-indigo-300 transition-colors shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                  {activeIteration.name}
+                </button>
+              )}
+            </>
+          )}
         </div>
 
-        {/* Active iteration banner (when viewing a project with an active iteration) */}
-        {viewMode === 'project' && activeIteration && !selectedIterationId && (
-          <div className="px-6 py-2 border-b border-gray-800 bg-gray-900/40 flex items-center gap-3">
-            <span className="text-xs text-gray-500">Active:</span>
-            <button
-              onClick={() => setSelectedIterationId(activeIteration.id)}
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-medium"
-            >
-              {activeIteration.name}
-            </button>
-            {activeIteration.goal && <span className="text-xs text-gray-500">— {activeIteration.goal}</span>}
-            {activeIteration.endDate && <span className="text-[10px] text-gray-600">ends {activeIteration.endDate}</span>}
-          </div>
-        )}
-
-        {/* Agent filter bar — hide when board is empty */}
+        {/* Agent filter bar */}
         {agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-2 border-b border-gray-800 bg-gray-900/60 flex items-center gap-2 overflow-x-auto shrink-0">
-            <span className="text-[10px] text-gray-600 uppercase tracking-wider shrink-0 mr-1">Filter</span>
+          <div className="px-6 py-1.5 border-b border-gray-800/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
             {agentFilter.size > 0 && (
-              <button onClick={() => setAgentFilter(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 shrink-0">Clear</button>
+              <button onClick={() => setAgentFilter(new Set())} className="text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-gray-800/60 hover:bg-gray-700 shrink-0 transition-colors">Clear</button>
             )}
             {agents.map(a => {
               const selected = agentFilter.has(a.id);
               return (
                 <button key={a.id} onClick={() => toggleAgentFilter(a.id)}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-all shrink-0 ${
-                    selected ? 'bg-indigo-600/30 text-indigo-300 ring-1 ring-indigo-500/50' : 'bg-gray-800/60 text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
+                    selected ? 'bg-indigo-600/20 text-indigo-300 ring-1 ring-indigo-500/40' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
                   }`}>
-                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${selected ? 'bg-indigo-600' : 'bg-gray-700'}`}>{a.name[0]?.toUpperCase()}</span>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400'}`}>{a.name[0]?.toUpperCase()}</span>
                   {a.name}
                 </button>
               );

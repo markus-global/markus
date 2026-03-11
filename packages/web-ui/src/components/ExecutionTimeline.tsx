@@ -8,6 +8,7 @@
  * - Team busy-agent modal
  */
 import { useState, useRef, useEffect, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import type { TaskLogEntry, AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 
@@ -95,7 +96,7 @@ function formatArgs(args: unknown): string {
   for (const [k, v] of Object.entries(obj)) {
     if (v == null) continue;
     const val = typeof v === 'string' ? v : JSON.stringify(v);
-    parts.push(`${k}: ${truncate(val, 60)}`);
+    parts.push(`${k}: ${truncate(val, 120)}`);
   }
   return parts.join(', ');
 }
@@ -229,21 +230,35 @@ export function StreamingText({ content, className }: { content: string; classNa
 // ─── Tool Tooltip ─────────────────────────────────────────────────────────────
 
 function ToolTooltip({ info, anchorRef }: { info: ToolCallInfo; anchorRef: RefObject<HTMLElement | null> }) {
-  const [position, setPosition] = useState<'above' | 'below'>('above');
+  const [pos, setPos] = useState<{ top: number; left: number; direction: 'above' | 'below' } | null>(null);
 
   useEffect(() => {
     if (anchorRef.current) {
       const rect = anchorRef.current.getBoundingClientRect();
-      setPosition(rect.top > 200 ? 'above' : 'below');
+      const above = rect.top > 240;
+      setPos({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
+        top: above ? rect.top - 6 : rect.bottom + 6,
+        direction: above ? 'above' : 'below',
+      });
     }
   }, [anchorRef]);
+
+  if (!pos) return null;
 
   const argSummary = formatArgs(info.args);
   const success = info.status !== 'error';
   const meta = getToolMeta(info.tool);
 
-  return (
-    <div className={`absolute z-50 left-0 ${position === 'above' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} w-80 max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs pointer-events-none`}>
+  const style: React.CSSProperties = {
+    position: 'fixed',
+    left: pos.left,
+    ...(pos.direction === 'above' ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
+    zIndex: 9999,
+  };
+
+  return createPortal(
+    <div style={style} className="w-80 max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs pointer-events-none">
       <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
         <span className="font-medium text-gray-200">{meta.label}</span>
         <div className="flex items-center gap-2">
@@ -254,26 +269,27 @@ function ToolTooltip({ info, anchorRef }: { info: ToolCallInfo; anchorRef: RefOb
       {argSummary && (
         <div className="px-3 py-1.5 border-b border-gray-800">
           <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{argSummary}</div>
+          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-4">{argSummary}</div>
         </div>
       )}
       {info.result && (
         <div className="px-3 py-1.5">
           <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-3">{truncate(info.result, 300)}</div>
+          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-4">{truncate(info.result, 500)}</div>
         </div>
       )}
       {info.error && (
         <div className="px-3 py-1.5">
           <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-          <div className="text-red-400 font-mono text-[11px] break-all line-clamp-3">{truncate(String(info.error), 300)}</div>
+          <div className="text-red-400 font-mono text-[11px] break-all line-clamp-4">{truncate(String(info.error), 500)}</div>
         </div>
       )}
       {!argSummary && !info.result && !info.error && (
         <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
       )}
       <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600">Click to expand full details</div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
