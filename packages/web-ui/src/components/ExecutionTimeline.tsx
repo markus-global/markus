@@ -7,7 +7,7 @@
  * - Agent profile task logs
  * - Team busy-agent modal
  */
-import { useState, useRef, useEffect, type RefObject } from 'react';
+import { useState, useRef, useEffect, useCallback, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { TaskLogEntry, AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
@@ -229,7 +229,7 @@ export function StreamingText({ content, className }: { content: string; classNa
 
 // ─── Tool Tooltip ─────────────────────────────────────────────────────────────
 
-function ToolTooltip({ info, anchorRef }: { info: ToolCallInfo; anchorRef: RefObject<HTMLElement | null> }) {
+function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorRef: RefObject<HTMLElement | null>; onHover: (v: boolean) => void }) {
   const [pos, setPos] = useState<{ top: number; left: number; direction: 'above' | 'below' } | null>(null);
 
   useEffect(() => {
@@ -258,36 +258,43 @@ function ToolTooltip({ info, anchorRef }: { info: ToolCallInfo; anchorRef: RefOb
   };
 
   return createPortal(
-    <div style={style} className="w-80 max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs pointer-events-none">
-      <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+    <div
+      style={style}
+      className="w-96 max-w-[90vw] max-h-[60vh] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs flex flex-col"
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+    >
+      <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between shrink-0">
         <span className="font-medium text-gray-200">{meta.label}</span>
         <div className="flex items-center gap-2">
           {info.durationMs != null && <span className="text-gray-500">{formatDuration(info.durationMs)}</span>}
           <span className={success ? 'text-green-400' : 'text-red-400'}>{success ? '✓ ok' : '✗ failed'}</span>
         </div>
       </div>
-      {argSummary && (
-        <div className="px-3 py-1.5 border-b border-gray-800">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-4">{argSummary}</div>
-        </div>
-      )}
-      {info.result && (
-        <div className="px-3 py-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
-          <div className="text-gray-400 font-mono text-[11px] break-all line-clamp-4">{truncate(info.result, 500)}</div>
-        </div>
-      )}
-      {info.error && (
-        <div className="px-3 py-1.5">
-          <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-          <div className="text-red-400 font-mono text-[11px] break-all line-clamp-4">{truncate(String(info.error), 500)}</div>
-        </div>
-      )}
-      {!argSummary && !info.result && !info.error && (
-        <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
-      )}
-      <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600">Click to expand full details</div>
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {argSummary && (
+          <div className="px-3 py-1.5 border-b border-gray-800">
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
+            <div className="text-gray-400 font-mono text-[11px] break-all">{argSummary}</div>
+          </div>
+        )}
+        {info.result && (
+          <div className="px-3 py-1.5">
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
+            <div className="text-gray-400 font-mono text-[11px] break-all whitespace-pre-wrap">{info.result}</div>
+          </div>
+        )}
+        {info.error && (
+          <div className="px-3 py-1.5">
+            <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
+            <div className="text-red-400 font-mono text-[11px] break-all whitespace-pre-wrap">{String(info.error)}</div>
+          </div>
+        )}
+        {!argSummary && !info.result && !info.error && (
+          <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
+        )}
+      </div>
+      <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600 shrink-0">Click to expand full details</div>
     </div>,
     document.body,
   );
@@ -371,15 +378,27 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
   const isDone = info.status !== 'running';
+
+  const handleHover = useCallback((v: boolean) => {
+    clearTimeout(hoverTimeout.current);
+    if (v) {
+      setHovered(true);
+    } else {
+      hoverTimeout.current = setTimeout(() => setHovered(false), 150);
+    }
+  }, []);
+
+  useEffect(() => () => clearTimeout(hoverTimeout.current), []);
 
   return (
     <>
       <div
         ref={rowRef}
         className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-gray-700/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-gray-800/30 transition-colors' : ''}`}
-        onMouseEnter={() => isDone && setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onMouseEnter={() => isDone && handleHover(true)}
+        onMouseLeave={() => handleHover(false)}
         onClick={() => isDone && setExpanded(true)}
       >
         {showTime && time && (
@@ -411,7 +430,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             <span className="text-[10px] text-gray-600 ml-0.5">{formatDuration(info.durationMs)}</span>
           )}
         </div>
-        {hovered && <ToolTooltip info={info} anchorRef={rowRef} />}
+        {hovered && <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />}
       </div>
       {expanded && <ToolDetailModal info={info} onClose={() => setExpanded(false)} />}
     </>
