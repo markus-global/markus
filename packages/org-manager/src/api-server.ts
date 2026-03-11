@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
-import { createLogger, generateId, saveConfig, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, type TaskStatus, type TaskPriority } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -1797,7 +1797,7 @@ export class APIServer {
         this.json(res, 200, {
           entries: entries.map(e => ({
             type: e.type,
-            content: e.content.slice(0, 500),
+            content: e.content,
             timestamp: e.timestamp,
             importance: (e as unknown as Record<string, unknown>).importance,
           })),
@@ -1815,6 +1815,42 @@ export class APIServer {
           dailyLog: dailyLog?.slice(0, 2000) ?? null,
           recentDailyLogs: recentDailyLogs?.slice(0, 5000) ?? null,
           longTermMemory: longTermMemory?.slice(0, 3000) ?? null,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent memory session messages
+    if (path.match(/^\/api\/agents\/[^/]+\/memory\/sessions\/[^/]+$/) && req.method === 'GET') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const sessionId = decodeURIComponent(parts[6]!);
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const session = agent.getMemory().getSession(sessionId);
+        if (!session) {
+          this.json(res, 404, { error: `Session not found: ${sessionId}` });
+          return;
+        }
+        this.json(res, 200, {
+          id: session.id,
+          agentId: session.agentId,
+          startedAt: session.startedAt,
+          lastActivityAt: session.lastActivityAt,
+          messages: session.messages.map(m => ({
+            role: m.role,
+            content: getTextContent(m.content).slice(0, 2000),
+            ...(m.toolCalls?.length ? {
+              toolCalls: m.toolCalls.map(tc => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments).slice(0, 1000),
+              })),
+            } : {}),
+            ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+          })),
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -5354,9 +5390,15 @@ Be conversational. Help the user think through tool design, edge cases, and perm
 
   /** Resolve the role directory path for an agent. Uses roleId, normalized role name, or matching by display name. */
   private resolveAgentRoleDir(agent: {
-    config: { roleId?: string };
+    config: { id: string; roleId?: string };
     role: { name: string };
   }): string | null {
+    // Prefer agent's own per-agent role directory (supports self-evolution)
+    const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agent.config.id);
+    const agentRoleDir = join(agentDataDir, 'role');
+    if (existsSync(join(agentRoleDir, 'ROLE.md'))) return agentRoleDir;
+
+    // Fall back to shared template directory
     const base = join(process.cwd(), 'templates', 'roles');
     if (!existsSync(base)) return null;
 

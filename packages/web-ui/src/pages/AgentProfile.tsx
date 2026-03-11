@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
+import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
@@ -789,6 +790,10 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [editingLong, setEditingLong] = useState(false);
   const [longContent, setLongContent] = useState('');
   const [saving, setSaving] = useState(false);
+  const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [sessionMessages, setSessionMessages] = useState<Array<{ role: string; content: string; toolCalls?: Array<{ id: string; name: string; arguments: string }>; toolCallId?: string }>>([]);
+  const [sessionLoading, setSessionLoading] = useState(false);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -840,14 +845,40 @@ function MemoryTab({ agentId }: { agentId: string }) {
       {section === 'entries' && (
         <Card title="Recent Memory Entries">
           {data.entries.length === 0 ? <Empty text="No memory entries" /> : (
-            <div className="space-y-1.5 max-h-96 overflow-y-auto">
-              {data.entries.map((e, i) => (
-                <div key={i} className="flex gap-2 px-3 py-2 rounded-lg bg-gray-800/20 text-xs">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-400' : e.type === 'task' ? 'bg-green-500/15 text-green-400' : 'bg-gray-700 text-gray-400'}`}>{e.type}</span>
-                  <span className="text-gray-300 flex-1 min-w-0 truncate">{e.content}</span>
-                  <span className="text-gray-600 shrink-0">{new Date(e.timestamp).toLocaleTimeString()}</span>
-                </div>
-              ))}
+            <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
+              {data.entries.map((e, i) => {
+                const isExpanded = expandedEntryIdx === i;
+                return (
+                  <div key={i}>
+                    <button
+                      onClick={() => setExpandedEntryIdx(isExpanded ? null : i)}
+                      className="w-full flex gap-2 px-3 py-2 rounded-lg bg-gray-800/20 text-xs text-left hover:bg-gray-800/40 transition-colors cursor-pointer"
+                    >
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-400' : e.type === 'task' ? 'bg-green-500/15 text-green-400' : e.type === 'note' ? 'bg-purple-500/15 text-purple-400' : 'bg-gray-700 text-gray-400'}`}>{e.type}</span>
+                      <span className={`text-gray-300 flex-1 min-w-0 ${isExpanded ? '' : 'line-clamp-2'}`}>{e.content}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {e.importance != null && (
+                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${e.importance >= 7 ? 'bg-red-500/15 text-red-400' : e.importance >= 4 ? 'bg-amber-500/15 text-amber-400' : 'bg-gray-700 text-gray-500'}`}>
+                            P{e.importance}
+                          </span>
+                        )}
+                        <span className="text-gray-600 text-[10px]">{new Date(e.timestamp).toLocaleTimeString()}</span>
+                        <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="mx-3 mt-1 mb-2 p-3 bg-gray-800/30 rounded-lg border border-gray-700/20">
+                        <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed break-words">{e.content}</pre>
+                        <div className="flex gap-3 mt-2 pt-2 border-t border-gray-700/30 text-[10px] text-gray-600">
+                          <span>Type: {e.type}</span>
+                          {e.importance != null && <span>Importance: {e.importance}</span>}
+                          <span>{new Date(e.timestamp).toLocaleString()}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </Card>
@@ -856,14 +887,86 @@ function MemoryTab({ agentId }: { agentId: string }) {
       {section === 'sessions' && (
         <Card title="Chat Sessions">
           {data.sessions.length === 0 ? <Empty text="No sessions" /> : (
-            <div className="space-y-1.5">
-              {data.sessions.map(s => (
-                <div key={s.id} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/20">
-                  <div className="text-xs text-gray-400 font-mono flex-1 truncate">{s.id}</div>
-                  <span className="text-[10px] text-gray-500">{s.messageCount} msgs</span>
-                  <span className="text-[10px] text-gray-600">{new Date(s.updatedAt).toLocaleDateString()}</span>
-                </div>
-              ))}
+            <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
+              {data.sessions.map(s => {
+                const isExpanded = expandedSessionId === s.id;
+                const toggleSession = async () => {
+                  if (isExpanded) { setExpandedSessionId(null); setSessionMessages([]); return; }
+                  setExpandedSessionId(s.id);
+                  setSessionLoading(true);
+                  try {
+                    const res = await api.agents.getMemorySession(agentId, s.id);
+                    setSessionMessages(res.messages);
+                  } catch { setSessionMessages([]); }
+                  setSessionLoading(false);
+                };
+                return (
+                  <div key={s.id}>
+                    <button
+                      onClick={toggleSession}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/20 hover:bg-gray-800/40 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="text-xs text-gray-400 font-mono flex-1 truncate">{s.id}</div>
+                      <span className="text-[10px] text-gray-500">{s.messageCount} msgs</span>
+                      <span className="text-[10px] text-gray-600">{new Date(s.updatedAt).toLocaleDateString()}</span>
+                      <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                    </button>
+                    {isExpanded && (
+                      <div className="mx-3 mt-1 mb-2 bg-gray-800/30 rounded-lg border border-gray-700/20 max-h-96 overflow-y-auto">
+                        {sessionLoading ? (
+                          <div className="text-[10px] text-gray-600 py-3 text-center">Loading messages...</div>
+                        ) : sessionMessages.length === 0 ? (
+                          <div className="text-[10px] text-gray-600 py-3 text-center">No messages in this session</div>
+                        ) : (() => {
+                          const toolResultMap = new Map<string, string>();
+                          for (const m of sessionMessages) {
+                            if (m.role === 'tool' && m.toolCallId) toolResultMap.set(m.toolCallId, m.content);
+                          }
+                          return (
+                            <div className="divide-y divide-gray-700/30">
+                              {sessionMessages.filter(m => m.role !== 'tool').map((m, i) => (
+                                <div key={i} className="px-3 py-2">
+                                  {(m.role === 'user' || m.role === 'system') && (
+                                    <div>
+                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-400' : 'bg-gray-700 text-gray-400'}`}>{m.role}</span>
+                                      <div className="text-xs text-gray-300"><MarkdownMessage content={m.content} className="text-xs text-gray-300" /></div>
+                                    </div>
+                                  )}
+                                  {m.role === 'assistant' && (
+                                    <div className="space-y-1">
+                                      {m.content && (
+                                        <div>
+                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-400">assistant</span>
+                                          <div className="text-xs text-gray-300"><MarkdownMessage content={m.content} className="text-xs text-gray-300" /></div>
+                                        </div>
+                                      )}
+                                      {m.toolCalls && m.toolCalls.length > 0 && (
+                                        <div className="space-y-0.5">
+                                          {m.toolCalls.map(tc => {
+                                            let parsedArgs: Record<string, unknown> | undefined;
+                                            try { parsedArgs = JSON.parse(tc.arguments); } catch { /* ignore */ }
+                                            const info: ToolCallInfo = {
+                                              tool: tc.name,
+                                              status: 'done',
+                                              args: parsedArgs,
+                                              result: toolResultMap.get(tc.id),
+                                            };
+                                            return <ExecEntryRow key={tc.id} entry={{ type: 'tool', info }} />;
+                                          })}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </Card>
@@ -913,13 +1016,25 @@ function MemoryTab({ agentId }: { agentId: string }) {
 function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?: AgentHeartbeatInfo }) {
   const [data, setData] = useState<AgentHeartbeatInfo | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
+  const [recentRuns, setRecentRuns] = useState<ActivitySummary[]>([]);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   useEffect(() => {
     api.agents.getHeartbeat(agentId).then(setData).catch(() => {}).finally(() => setLoading(false));
+    api.agents.getRecentActivities(agentId).then(d => {
+      setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
+    }).catch(() => {});
   }, [agentId]);
 
   if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading heartbeat data...</div>;
   if (!data) return <div className="text-xs text-gray-600 py-8 text-center">No heartbeat data available</div>;
+
+  const formatDuration = (ms?: number) => {
+    if (!ms) return null;
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${(ms / 60000).toFixed(1)}m`;
+  };
 
   return (
     <div className="space-y-4">
@@ -941,7 +1056,9 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                   <span className="text-sm font-medium">{t.name}</span>
                   <div className="flex items-center gap-3 text-[10px] text-gray-500">
                     <span>{t.totalRuns} runs</span>
+                    {t.successfulRuns > 0 && <span className="text-green-400">{t.successfulRuns} ok</span>}
                     {t.failedRuns > 0 && <span className="text-red-400">{t.failedRuns} failed</span>}
+                    {t.avgDurationMs != null && <span>{formatDuration(t.avgDurationMs)} avg</span>}
                   </div>
                 </div>
                 <div className="flex gap-4 text-[10px] text-gray-600">
@@ -953,6 +1070,34 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           </div>
         )}
       </Card>
+      {recentRuns.length > 0 && (
+        <Card title="Recent Heartbeat Runs" action={<span className="text-[10px] text-gray-600">{recentRuns.length} runs</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {recentRuns.map(act => {
+              const isExpanded = expandedRunId === act.id;
+              return (
+                <div key={act.id}>
+                  <button
+                    onClick={() => setExpandedRunId(isExpanded ? null : act.id)}
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
+                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-gray-500 shrink-0">{act.logCount} logs</span>
+                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                  </button>
+                  {isExpanded && (
+                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                      <ActivityLog agentId={agentId} activityId={act.id} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

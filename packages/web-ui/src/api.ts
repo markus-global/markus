@@ -544,6 +544,10 @@ export const api = {
     updateConfig: (id: string, patch: Record<string, unknown>) =>
       request<{ ok: boolean; config: AgentConfigInfo }>(`/agents/${id}/config`, { method: 'PATCH', body: JSON.stringify(patch) }),
     getMemory: (id: string) => request<AgentMemorySummary>(`/agents/${id}/memory`),
+    getMemorySession: (id: string, sessionId: string) =>
+      request<{ id: string; agentId: string; startedAt: string; lastActivityAt: string; messages: Array<{ role: string; content: string; toolCalls?: Array<{ id: string; name: string; arguments: string }>; toolCallId?: string }> }>(
+        `/agents/${id}/memory/sessions/${encodeURIComponent(sessionId)}`
+      ),
     updateDailyMemory: (id: string, content: string) =>
       request<{ ok: boolean }>(`/agents/${id}/memory/daily`, { method: 'PUT', body: JSON.stringify({ content }) }),
     updateLongTermMemory: (id: string, key: string, content: string) =>

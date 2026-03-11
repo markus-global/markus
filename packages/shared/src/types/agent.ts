@@ -96,6 +96,8 @@ export interface PathAccessPolicy {
   primaryWorkspace: string;
   /** Shared deliverables area — read/write for publishing artifacts */
   sharedWorkspace?: string;
+  /** Agent's own role files directory — read/write for self-evolution */
+  roleDir?: string;
   /** Paths the agent can read but not write (project repos, peer worktrees) */
   readOnlyPaths?: string[];
 }

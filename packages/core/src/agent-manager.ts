@@ -30,7 +30,7 @@ import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import type { HeartbeatTask, RoleTemplate } from '@markus/shared';
 
@@ -359,17 +359,24 @@ export class AgentManager {
     return this.sharedDataDir;
   }
 
+  getDataDir(): string {
+    return this.dataDir;
+  }
+
   /**
    * Build a PathAccessPolicy for an agent, including shared workspace
    * and any project repos as read-only paths.
    */
-  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[]): PathAccessPolicy {
+  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[], roleDir?: string): PathAccessPolicy {
     const policy: PathAccessPolicy = {
       primaryWorkspace: workspacePath,
       readOnlyPaths: extraReadOnlyPaths?.length ? [...extraReadOnlyPaths] : undefined,
     };
     if (this.sharedDataDir) {
       policy.sharedWorkspace = this.sharedDataDir;
+    }
+    if (roleDir) {
+      policy.roleDir = roleDir;
     }
     return policy;
   }
@@ -382,6 +389,17 @@ export class AgentManager {
     }
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
+
+    // Copy template role files to agent's own directory for per-agent evolution
+    const agentRoleDir = join(agentDataDir, 'role');
+    mkdirSync(agentRoleDir, { recursive: true });
+    const templateDir = this.roleLoader.resolveTemplateDir(request.roleName);
+    if (templateDir) {
+      for (const file of ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+        const src = join(templateDir, file);
+        if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+      }
+    }
 
     const config: AgentConfig = {
       id,
@@ -406,8 +424,8 @@ export class AgentManager {
     const workspacePath = request.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
-    const pathPolicy = this.buildPathPolicy(workspacePath);
-    const securityAllowlist = [workspacePath];
+    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir);
+    const securityAllowlist = [workspacePath, agentRoleDir];
     if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
     if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
 
@@ -796,35 +814,39 @@ export class AgentManager {
     activeTaskIds?: unknown;
   }): Promise<Agent> {
     const id = row.id;
-    // Try loading role by: 1) roleId (template folder name for new agents),
-    // 2) roleName (display name stored by older agents), 3) display-name→folder lookup
-    let role = (() => {
-      // Try roleId first (it stores the folder name for agents hired after this fix)
-      try {
-        return this.roleLoader.loadRole(row.roleId);
-      } catch {
-        /* try next */
-      }
-      // Try roleName directly (might be a folder name for some agents)
-      try {
-        return this.roleLoader.loadRole(row.roleName);
-      } catch {
-        /* try next */
-      }
-      // Last resort: find by matching display name across available roles
-      const available = this.roleLoader.listAvailableRoles();
-      for (const templateName of available) {
-        try {
-          const candidate = this.roleLoader.loadRole(templateName);
-          if (candidate.name.toLowerCase() === row.roleName.toLowerCase()) return candidate;
-        } catch {
-          /* skip */
-        }
-      }
-      throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
-    })();
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
+
+    // Prefer agent's own role dir; fall back to template and migrate
+    const agentRoleDir = join(agentDataDir, 'role');
+    let role: RoleTemplate;
+    if (existsSync(join(agentRoleDir, 'ROLE.md'))) {
+      role = this.roleLoader.loadRole(agentRoleDir);
+    } else {
+      // Load from template (backward compat), then copy for future self-evolution
+      role = (() => {
+        try { return this.roleLoader.loadRole(row.roleId); } catch { /* try next */ }
+        try { return this.roleLoader.loadRole(row.roleName); } catch { /* try next */ }
+        const available = this.roleLoader.listAvailableRoles();
+        for (const templateName of available) {
+          try {
+            const candidate = this.roleLoader.loadRole(templateName);
+            if (candidate.name.toLowerCase() === row.roleName.toLowerCase()) return candidate;
+          } catch { /* skip */ }
+        }
+        throw new Error(`Role not found: ${row.roleName} (roleId: ${row.roleId})`);
+      })();
+      // Migration: copy template files to agent's own role dir
+      const templateDir = this.roleLoader.resolveTemplateDir(row.roleId)
+        ?? this.roleLoader.resolveTemplateDir(row.roleName);
+      if (templateDir) {
+        mkdirSync(agentRoleDir, { recursive: true });
+        for (const file of ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+          const src = join(templateDir, file);
+          if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
+        }
+      }
+    }
 
     const agentRole = (row.agentRole as 'manager' | 'worker') ?? 'worker';
     if (agentRole === 'manager') {
@@ -859,8 +881,8 @@ export class AgentManager {
     const workspacePath = config.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
-    const pathPolicy = this.buildPathPolicy(workspacePath);
-    const securityAllowlist = [workspacePath];
+    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir);
+    const securityAllowlist = [workspacePath, agentRoleDir];
     if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
     if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
 

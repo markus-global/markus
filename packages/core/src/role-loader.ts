@@ -35,6 +35,23 @@ export class RoleLoader {
     return roles;
   }
 
+  /**
+   * Resolve the template directory for a given role name or path.
+   * Returns the absolute path to the role's template directory, or undefined if not found.
+   */
+  resolveTemplateDir(roleNameOrPath: string): string | undefined {
+    if (existsSync(join(roleNameOrPath, 'ROLE.md'))) {
+      return roleNameOrPath;
+    }
+    for (const dir of this.templateDirs) {
+      const candidate = join(dir, roleNameOrPath);
+      if (existsSync(join(candidate, 'ROLE.md'))) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
   loadRole(roleNameOrPath: string): RoleTemplate {
     const files = this.resolveRoleFiles(roleNameOrPath);
 
