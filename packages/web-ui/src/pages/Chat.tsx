@@ -1741,7 +1741,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[580px] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[780px] max-w-[95vw] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
           <div className="flex items-center gap-3 min-w-0">

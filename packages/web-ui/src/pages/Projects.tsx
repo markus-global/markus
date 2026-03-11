@@ -428,7 +428,7 @@ function TaskDetailModal({
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[600px] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[780px] max-w-[95vw] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header – title & close only */}
         <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-800 shrink-0">
           <h3 className="text-base font-semibold leading-snug flex-1 min-w-0 pr-4">{task.title}</h3>

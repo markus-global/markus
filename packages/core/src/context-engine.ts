@@ -408,6 +408,7 @@ export class ContextEngine {
         lines.push('- Be concise and structured — your colleague agent needs actionable information.');
         lines.push('- Focus on the specific request or question from your colleague.');
         lines.push('- Respond with clear, factual information. Avoid conversational filler.');
+        lines.push('- **Always include file paths** when referencing content from files, documents, or deliverables. Your colleague may need to read the full content independently. Example: "The research report is at `workspace/research/report.md`" rather than just summarizing.');
         lines.push('- **Do NOT start long tasks inline.** If work is needed, create a task via `task_create` and inform your colleague of the task ID.');
         lines.push('- If you cannot help, explain why clearly and suggest who might be able to help.');
         lines.push('- Keep responses focused on collaboration and coordination.');

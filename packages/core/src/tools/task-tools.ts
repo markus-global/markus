@@ -260,12 +260,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update the status of a task, optionally adding a progress note.',
+        'Update a task — add a progress note, change status, or both.',
+        'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'Worker lifecycle: assigned → in_progress → (submit via task_submit_review when done).',
         'Reviewer lifecycle: review → accepted (approve) or revision (request changes) → completed (after all revisions resolved).',
         'IMPORTANT: Workers MUST NOT set status to "completed" directly.',
         'When your work is done, use task_submit_review instead — a reviewer must verify before the task closes.',
-        'Always include a progress note explaining what changed.',
+        'IMPORTANT: Do NOT set status to "cancelled" or "failed" unless you are truly abandoning the task due to an unrecoverable problem.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -274,46 +275,75 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           status: {
             type: 'string',
             enum: ['in_progress', 'blocked', 'revision', 'accepted', 'completed', 'failed', 'cancelled'],
-            description: 'New status. Workers: use only in_progress/blocked/failed/cancelled. Reviewers: use accepted/revision/completed.',
+            description: 'New status (optional — omit to keep current status). Workers: use only in_progress/blocked. Reviewers: use accepted/revision/completed.',
           },
           note: {
             type: 'string',
             description:
-              'Optional progress note — brief summary of what was done, what is blocked, or next steps',
+              'Progress note — brief summary of what was done, what is blocked, or next steps. Highly recommended.',
           },
         },
-        required: ['task_id', 'status'],
+        required: ['task_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
           const taskId = args['task_id'] as string;
-          const newStatus = args['status'] as string;
-
-          // Prevent agents from completing/accepting their own tasks
-          if (newStatus === 'completed' || newStatus === 'accepted') {
-            const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
-            if (existing?.assignedAgentId === ctx.agentId) {
-              return JSON.stringify({
-                status: 'denied',
-                error: `You cannot set your own task to "${newStatus}". Workers must use task_submit_review to request independent review. Only a different reviewer agent or human can mark a task as completed or accepted.`,
-              });
-            }
-          }
-
-          const task = await ctx.updateTaskStatus(taskId, newStatus);
+          const newStatus = args['status'] as string | undefined;
           const note = args['note'] as string | undefined;
-          if (note && ctx.addTaskNote) {
-            await ctx.addTaskNote(task.id, `[${ctx.agentName}] ${note}`).catch(() => {});
+
+          if (newStatus) {
+            // Prevent agents from completing/accepting their own tasks
+            if (newStatus === 'completed' || newStatus === 'accepted') {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.assignedAgentId === ctx.agentId) {
+                return JSON.stringify({
+                  status: 'denied',
+                  error: `You cannot set your own task to "${newStatus}". Workers must use task_submit_review to request independent review. Only a different reviewer agent or human can mark a task as completed or accepted.`,
+                });
+              }
+            }
+
+            // Prevent workers from accidentally cancelling/failing their own running task
+            if (newStatus === 'cancelled' || newStatus === 'failed') {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.assignedAgentId === ctx.agentId && existing?.status === 'in_progress') {
+                log.warn(`Agent ${ctx.agentId} attempted to set own running task to "${newStatus}"`, { taskId });
+                return JSON.stringify({
+                  status: 'denied',
+                  error: `Setting your own running task to "${newStatus}" will immediately abort all ongoing work. If you truly need to stop, confirm by adding a note explaining why. Otherwise, continue working on the task.`,
+                });
+              }
+            }
+
+            const task = await ctx.updateTaskStatus(taskId, newStatus);
+            if (note && ctx.addTaskNote) {
+              await ctx.addTaskNote(task.id, `[${ctx.agentName}] ${note}`).catch(() => {});
+            }
+            log.info(`Task updated by agent ${ctx.agentId}`, {
+              taskId: task.id,
+              status: task.status,
+            });
+            return JSON.stringify({
+              status: 'success',
+              task,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}`,
+            });
+          } else {
+            // Note-only update — no status change
+            if (!note) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status or a note.' });
+            }
+            if (ctx.addTaskNote) {
+              await ctx.addTaskNote(taskId, `[${ctx.agentName}] ${note}`);
+            }
+            const task = ctx.getTask ? await ctx.getTask(taskId) : null;
+            log.info(`Task note added by agent ${ctx.agentId}`, { taskId });
+            return JSON.stringify({
+              status: 'success',
+              task,
+              message: `Note recorded for task "${task?.title ?? taskId}"`,
+            });
           }
-          log.info(`Task updated by agent ${ctx.agentId}`, {
-            taskId: task.id,
-            status: task.status,
-          });
-          return JSON.stringify({
-            status: 'success',
-            task,
-            message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}`,
-          });
         } catch (error) {
           return JSON.stringify({ status: 'error', error: String(error) });
         }
