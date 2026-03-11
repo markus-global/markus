@@ -712,6 +712,67 @@ export class Agent {
     return this.state.currentActivity;
   }
 
+  /** Return summary of recent in-memory activities (heartbeat, chat, task) */
+  getRecentActivities(): Array<{
+    id: string;
+    type: 'task' | 'heartbeat' | 'chat';
+    label: string;
+    taskId?: string;
+    heartbeatName?: string;
+    startedAt: string;
+    logCount: number;
+  }> {
+    const result: Array<{
+      id: string;
+      type: 'task' | 'heartbeat' | 'chat';
+      label: string;
+      taskId?: string;
+      heartbeatName?: string;
+      startedAt: string;
+      logCount: number;
+    }> = [];
+
+    for (const [actId, logs] of this.activityLogs.entries()) {
+      // Parse metadata from activity ID: act-<agentId>-<timestamp>-<rand>
+      const parts = actId.split('-');
+      const tsStr = parts.length >= 3 ? parts[parts.length - 2] : undefined;
+      const startedAt = tsStr && /^\d+$/.test(tsStr) ? new Date(Number(tsStr)).toISOString() : new Date().toISOString();
+
+      // Infer type and label from the first "Started:" log entry
+      let type: 'task' | 'heartbeat' | 'chat' = 'chat';
+      let label = actId;
+      let taskId: string | undefined;
+      let heartbeatName: string | undefined;
+
+      const startLog = logs.find(l => l.type === 'status' && l.content.startsWith('Started:'));
+      if (startLog) {
+        label = startLog.content.replace('Started: ', '');
+        if (label.startsWith('Heartbeat:')) {
+          type = 'heartbeat';
+          heartbeatName = label.replace('Heartbeat: ', '').trim();
+        } else if (label.startsWith('A2A:') || label.startsWith('Chat with')) {
+          type = 'chat';
+        } else {
+          type = 'task';
+        }
+      }
+
+      // Check if this is the current activity (has richer metadata)
+      const current = this.state.currentActivity;
+      if (current && current.id === actId) {
+        type = current.type;
+        label = current.label;
+        taskId = current.taskId;
+        heartbeatName = current.heartbeatName;
+      }
+
+      result.push({ id: actId, type, label, taskId, heartbeatName, startedAt, logCount: logs.length });
+    }
+
+    // Newest first
+    return result.reverse();
+  }
+
   /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
   setTasksFetcher(
     fetcher: () => Array<{

@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { ExecEntryRow, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
@@ -112,6 +112,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
   const [recentTasks, setRecentTasks] = useState<TaskInfo[]>([]);
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
+  const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
 
   useEffect(() => {
     api.settings.getLlm().then(d => {
@@ -123,6 +125,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       const info = d.agents.find(a => a.agentId === agent.id);
       if (info) setUsageInfo(info);
     }).catch(() => {});
+    api.agents.getRecentActivities(agent.id).then(d => setRecentActivities(d.activities)).catch(() => {});
   }, [agent.id]);
 
   const configuredModels = Object.entries(providers).filter(([, v]) => v.configured).map(([k]) => k);
@@ -393,6 +396,64 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                   {isExpanded && (
                     <div className="border-t border-gray-800/60 bg-gray-950/40">
                       <TaskLog taskId={t.id} isLive={t.status === 'in_progress'} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Recent Heartbeats */}
+      {recentActivities.filter(a => a.type === 'heartbeat').length > 0 && (
+        <Card title="Recent Heartbeats" action={<span className="text-[10px] text-gray-600">{recentActivities.filter(a => a.type === 'heartbeat').length} runs</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {recentActivities.filter(a => a.type === 'heartbeat').map(act => {
+              const isExpanded = expandedActivityId === act.id;
+              return (
+                <div key={act.id}>
+                  <button
+                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
+                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                  </button>
+                  {isExpanded && (
+                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                      <ActivityLog agentId={agent.id} activityId={act.id} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* Recent A2A Communications */}
+      {recentActivities.filter(a => a.type === 'chat').length > 0 && (
+        <Card title="Recent A2A Communications" action={<span className="text-[10px] text-gray-600">{recentActivities.filter(a => a.type === 'chat').length} conversations</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {recentActivities.filter(a => a.type === 'chat').map(act => {
+              const isExpanded = expandedActivityId === act.id;
+              return (
+                <div key={act.id}>
+                  <button
+                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
+                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                  </button>
+                  {isExpanded && (
+                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                      <ActivityLog agentId={agent.id} activityId={act.id} />
                     </div>
                   )}
                 </div>
@@ -996,6 +1057,31 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   );
 }
 
+
+// ─── Activity Log (Heartbeat / A2A) ─────────────────────────────────────────
+
+function ActivityLog({ agentId, activityId }: { agentId: string; activityId: string }) {
+  const [logs, setLogs] = useState<AgentActivityLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.agents.getActivityLogs(agentId, activityId)
+      .then(d => { setLogs(d.logs); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [agentId, activityId]);
+
+  if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading...</div>;
+  if (logs.length === 0) return <div className="px-4 py-3 text-xs text-gray-600">No activity logs available.</div>;
+
+  const entries = filterCompletedStarts(logs.map(activityLogToEntry).filter((e): e is ExecEntry => e != null));
+
+  return (
+    <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
+      {entries.map((entry, i) => <ExecEntryRow key={`a-${i}`} entry={entry} showTime />)}
+    </div>
+  );
+}
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
 

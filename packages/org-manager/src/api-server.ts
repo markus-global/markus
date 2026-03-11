@@ -1970,6 +1970,19 @@ export class APIServer {
       return;
     }
 
+    // Agent recent activities — list summary of in-memory activities
+    if (path.match(/^\/api\/agents\/[^/]+\/recent-activities$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const activities = agent.getRecentActivities();
+        this.json(res, 200, { activities });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent activity logs — fetch in-memory activity log for a given activity ID
     if (path.match(/^\/api\/agents\/[^/]+\/activity-logs$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;

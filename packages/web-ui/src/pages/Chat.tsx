@@ -445,6 +445,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  const [openSessionTabs, setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
+  const historyBtnRef = useRef<HTMLButtonElement>(null);
+  const historyPanelRef = useRef<HTMLDivElement>(null);
   const oldestMsgId = useRef<string | null>(null);
 
   // Group chats
@@ -470,6 +473,21 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const abortControllerRef = useRef<AbortController | null>(null);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
+
+  // Close history panel on click outside
+  useEffect(() => {
+    if (!showSessions) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        historyPanelRef.current && !historyPanelRef.current.contains(e.target as Node) &&
+        historyBtnRef.current && !historyBtnRef.current.contains(e.target as Node)
+      ) {
+        setShowSessions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSessions]);
 
   // ── Conv-buffer helpers ───────────────────────────────────────────────────────
   const makeDmChannel = (myId: string, otherId: string) => {
@@ -664,6 +682,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     setActivities(bufferedActs);
     setSending(isSending);
 
+    // Always reload sessions list for direct mode so History panel stays accurate
+    if (chatMode === 'direct' && selectedAgent) {
+      loadSessions(selectedAgent);
+    }
+    // Reset session tabs when switching agents
+    setOpenSessionTabs([]);
+    setShowSessions(false);
+
     if (bufferedMsgs !== undefined) {
       // Already have content (possibly mid-stream) — show immediately, no DB load
       setMessages(bufferedMsgs);
@@ -685,6 +711,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         loadSessions(selectedAgent).then(s => {
           if (s.length > 0) {
             setActiveSessionId(s[0]!.id);
+            setOpenSessionTabs([s[0]!]);
             loadSessionMessages(s[0]!.id, newKey);
           } else {
             setActiveSessionId(null);
@@ -927,8 +954,20 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             imagesToSend,
             activeSessionId,
           );
-          if (streamResult.sessionId) setActiveSessionId(streamResult.sessionId);
-          loadSessions(selectedAgent).then(s => setSessions(s));
+          if (streamResult.sessionId) {
+            setActiveSessionId(streamResult.sessionId);
+            // Auto-add new session to open tabs once sessions list refreshes
+          }
+          loadSessions(selectedAgent).then(s => {
+            setSessions(s);
+            // If a new session was created, add it to open tabs
+            if (streamResult.sessionId) {
+              const newSess = s.find(ss => ss.id === streamResult.sessionId);
+              if (newSess) {
+                setOpenSessionTabs(prev => prev.some(t => t.id === newSess.id) ? prev : [...prev, newSess]);
+              }
+            }
+          });
         }
       } catch (e) {
         const errText = friendlyAgentError(e);
@@ -1076,10 +1115,24 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     setHasMore(false);
     oldestMsgId.current = null;
     const key = currentConvKeyRef.current;
-    // Clear this conv's buffer so it reloads from the selected session
     msgBuffers.current.delete(key);
     setMessages([]);
+    // Add to open tabs if not already there
+    setOpenSessionTabs(prev => prev.some(t => t.id === s.id) ? prev : [...prev, s]);
     await loadSessionMessages(s.id, key);
+  };
+
+  const closeSessionTab = (sessionId: string) => {
+    setOpenSessionTabs(prev => prev.filter(t => t.id !== sessionId));
+    if (activeSessionId === sessionId) {
+      // Switch to another open tab, or new conversation
+      const remaining = openSessionTabs.filter(t => t.id !== sessionId);
+      if (remaining.length > 0) {
+        void switchSession(remaining[remaining.length - 1]!);
+      } else {
+        newConversation();
+      }
+    }
   };
 
   const newConversation = () => {
@@ -1208,42 +1261,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         onViewProfile={handleViewProfile}
       />
 
-      {/* ── Session history sidebar (direct mode) ── */}
-      {mainTab === 'chat' && chatMode === 'direct' && selectedAgent && showSessions && (
-        <div className="w-52 bg-gray-900/70 border-r border-gray-800 flex flex-col shrink-0">
-          <div className="p-3 border-b border-gray-800 flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">History</span>
-            <button onClick={() => setShowSessions(false)} className="text-gray-600 hover:text-gray-300 text-xs">✕</button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            <button
-              onClick={newConversation}
-              className="w-full text-left px-3 py-2 text-xs text-indigo-400 hover:bg-gray-800 rounded-lg mb-1 flex items-center gap-1"
-            >
-              ＋ New conversation
-            </button>
-            {sessions.map(s => (
-              <button
-                key={s.id}
-                onClick={() => void switchSession(s)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
-                  s.id === activeSessionId ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
-                }`}
-              >
-                <div className="truncate">{s.title || 'Conversation'}</div>
-                <div className="text-gray-600 mt-0.5">{new Date(s.lastMessageAt).toLocaleDateString()}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* ── Main area ── */}
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <div className="border-b border-gray-800 bg-gray-900 shrink-0">
-          {/* Top row: title + status */}
+        <div className="border-b border-gray-800 bg-gray-900 shrink-0 relative">
+          {/* Top row: tabs left + actions right */}
           <div className="flex items-center px-5 h-10 gap-3">
+            {/* Left: agent title + status + main tabs */}
             <span className="font-semibold text-sm">{modeTitle}</span>
             {chatMode === 'direct' && currentAgent && (
               <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
@@ -1256,39 +1280,134 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 {isSelfDm ? '· Private notepad' : `· Direct message with ${activeDmUser?.name ?? ''}`}
               </span>
             )}
+
+            {chatMode === 'direct' && selectedAgent && (
+              <div className="flex items-center gap-0.5 ml-4 -mb-px">
+                <button
+                  onClick={() => setMainTab('chat')}
+                  className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                    mainTab === 'chat'
+                      ? 'border-indigo-500 text-indigo-300'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  Chat
+                </button>
+                <button
+                  onClick={() => setMainTab('profile')}
+                  className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
+                    mainTab === 'profile'
+                      ? 'border-indigo-500 text-indigo-300'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  Profile
+                </button>
+              </div>
+            )}
+
+            {/* Right: New Chat + History buttons */}
             {chatMode === 'direct' && currentAgent && (
-              <button
-                onClick={() => setShowSessions(!showSessions)}
-                className="ml-auto text-xs text-gray-500 hover:text-gray-300 px-2 py-0.5 rounded hover:bg-gray-800 transition-colors"
-              >
-                ⏱ History
-              </button>
+              <div className="ml-auto flex items-center gap-1.5">
+                <button
+                  onClick={newConversation}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded-md hover:bg-indigo-500/10 border border-indigo-500/20 transition-colors flex items-center gap-1"
+                >
+                  + New Chat
+                </button>
+                <button
+                  ref={historyBtnRef}
+                  onClick={() => setShowSessions(!showSessions)}
+                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                  title="History"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Tab row: Chat / Details (only in direct mode with an agent) */}
-          {chatMode === 'direct' && selectedAgent && (
-            <div className="flex items-center gap-0.5 px-5 -mb-px">
-              <button
-                onClick={() => setMainTab('chat')}
-                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
-                  mainTab === 'chat'
-                    ? 'border-indigo-500 text-indigo-300'
-                    : 'border-transparent text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                Chat
-              </button>
-              <button
-                onClick={() => setMainTab('profile')}
-                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
-                  mainTab === 'profile'
-                    ? 'border-indigo-500 text-indigo-300'
-                    : 'border-transparent text-gray-500 hover:text-gray-300'
-                }`}
-              >
-                Details
-              </button>
+          {/* Session tab bar (direct mode, chat tab) */}
+          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 0 && (
+            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide border-t border-gray-800/50">
+              {openSessionTabs.map(s => (
+                <div
+                  key={s.id}
+                  className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors shrink-0 max-w-[180px] ${
+                    s.id === activeSessionId
+                      ? 'border-indigo-500 text-indigo-300 bg-indigo-500/5'
+                      : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                  }`}
+                  onClick={() => void switchSession(s)}
+                >
+                  <span className="truncate">{s.title || 'Conversation'}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity shrink-0"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Floating history panel */}
+          {chatMode === 'direct' && selectedAgent && showSessions && (
+            <div
+              ref={historyPanelRef}
+              className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
+            >
+              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">History</span>
+                <button onClick={() => setShowSessions(false)} className="text-gray-600 hover:text-gray-300 text-xs">✕</button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2">
+                {sessions.length === 0 && (
+                  <div className="text-xs text-gray-600 text-center py-6">No conversations yet</div>
+                )}
+                {(() => {
+                  const now = new Date();
+                  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                  const yesterdayStart = todayStart - 86400000;
+                  const weekStart = todayStart - 7 * 86400000;
+                  const groups: Array<{ label: string; items: ChatSessionInfo[] }> = [];
+                  const today: ChatSessionInfo[] = [];
+                  const yesterday: ChatSessionInfo[] = [];
+                  const week: ChatSessionInfo[] = [];
+                  const older: ChatSessionInfo[] = [];
+                  for (const s of sessions) {
+                    const t = new Date(s.lastMessageAt).getTime();
+                    if (t >= todayStart) today.push(s);
+                    else if (t >= yesterdayStart) yesterday.push(s);
+                    else if (t >= weekStart) week.push(s);
+                    else older.push(s);
+                  }
+                  if (today.length > 0) groups.push({ label: 'Today', items: today });
+                  if (yesterday.length > 0) groups.push({ label: 'Yesterday', items: yesterday });
+                  if (week.length > 0) groups.push({ label: 'Previous 7 days', items: week });
+                  if (older.length > 0) groups.push({ label: 'Older', items: older });
+                  return groups.map(g => (
+                    <div key={g.label} className="mb-2">
+                      <div className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-3 py-1.5">{g.label}</div>
+                      {g.items.map(s => (
+                        <button
+                          key={s.id}
+                          onClick={() => void switchSession(s)}
+                          className={`w-full text-left px-3 py-2.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                            s.id === activeSessionId ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
+                          }`}
+                        >
+                          <div className="truncate font-medium">{s.title || 'Conversation'}</div>
+                          <div className="text-gray-600 text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
+                        </button>
+                      ))}
+                    </div>
+                  ));
+                })()}
+              </div>
             </div>
           )}
         </div>

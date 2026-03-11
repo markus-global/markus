@@ -256,6 +256,16 @@ export interface AgentActivityLogEntry {
   createdAt: string;
 }
 
+export interface ActivitySummary {
+  id: string;
+  type: 'task' | 'heartbeat' | 'chat';
+  label: string;
+  taskId?: string;
+  heartbeatName?: string;
+  startedAt: string;
+  logCount: number;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -548,6 +558,7 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
