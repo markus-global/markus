@@ -27,17 +27,16 @@ const mdComponents = {
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed">{children}</li>,
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
-    const isBlock = cls?.includes('language-');
-    if (isBlock) {
-      return (
-        <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto my-2 text-xs">
-          <code className="text-gray-300 font-mono">{children}</code>
-        </pre>
-      );
+    if (cls?.includes('language-')) {
+      return <code className="text-gray-300 font-mono">{children}</code>;
     }
     return <code className="bg-gray-900 px-1.5 py-0.5 rounded text-xs font-mono text-indigo-300">{children}</code>;
   },
-  pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="bg-gray-900 rounded-lg p-3 overflow-x-auto my-2 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-gray-300">
+      {children}
+    </pre>
+  ),
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-white">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-gray-300">{children}</em>,
   blockquote: ({ children }: { children?: React.ReactNode }) => (
