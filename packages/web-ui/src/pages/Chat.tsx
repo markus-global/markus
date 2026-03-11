@@ -446,6 +446,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
   const [openSessionTabs, setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
+  const sessionTabsBuffer = useRef<Map<string, ChatSessionInfo[]>>(new Map());
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const oldestMsgId = useRef<string | null>(null);
@@ -672,7 +673,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Otherwise load from DB.
   useEffect(() => {
     const newKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
+    const prevKey = currentConvKeyRef.current;
     currentConvKeyRef.current = newKey;
+
+    // Save current session tabs before switching away
+    if (prevKey && prevKey !== newKey) {
+      sessionTabsBuffer.current.set(prevKey, openSessionTabs);
+    }
 
     // Restore displayed state from this conv's buffer
     const bufferedMsgs = msgBuffers.current.get(newKey);
@@ -686,8 +693,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     if (chatMode === 'direct' && selectedAgent) {
       loadSessions(selectedAgent);
     }
-    // Reset session tabs when switching agents
-    setOpenSessionTabs([]);
+    // Restore or reset session tabs for the new agent
+    const savedTabs = sessionTabsBuffer.current.get(newKey);
+    setOpenSessionTabs(savedTabs ?? []);
     setShowSessions(false);
 
     if (bufferedMsgs !== undefined) {
