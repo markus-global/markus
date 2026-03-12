@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api } from '../api.ts';
+import { api, AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
@@ -13,48 +13,34 @@ interface InstalledSkill {
   tags?: string[];
   tools?: Array<{ name: string; description: string }>;
   requiredPermissions?: string[];
+  type: 'builtin' | 'filesystem' | 'imported';
+  sourcePath?: string;
+  agentIds: string[];
 }
 
-interface MarketplaceSkill {
-  id: string;
+interface SkillHubSkill {
+  slug: string;
   name: string;
   description: string;
-  source: string;
-  status: string;
+  description_zh?: string;
   version: string;
-  authorName: string;
-  category: string;
+  homepage: string;
   tags: string[];
-  tools: Array<{ name: string; description: string }>;
-  readme: string | null;
-  downloadCount: number;
-  avgRating: number;
-  ratingCount: number;
+  downloads: number;
+  stars: number;
+  installs: number;
+  score: number;
 }
 
-interface RegistrySkill {
-  name: string;
-  description: string;
-  category: string;
-  source: string;
-  sourceUrl: string;
-  author: string;
-  addedAt?: string;
-}
-
-interface ExternalSkill {
+interface SkillsShSkill {
   name: string;
   author: string;
   repo: string;
-  description?: string;
-  stars?: number;
   installs?: string;
   url: string;
-  source: 'skillsmp' | 'skillssh';
 }
 
-type TabId = 'installed' | 'marketplace' | 'discover';
-type DiscoverSource = 'openclaw' | 'skillsmp' | 'skillssh';
+type TabId = 'installed' | 'skillhub' | 'skillssh';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -62,150 +48,91 @@ const CATEGORY_COLORS: Record<string, string> = {
   development: 'bg-blue-500/15 text-blue-400',
   devops: 'bg-orange-500/15 text-orange-400',
   productivity: 'bg-green-500/15 text-green-400',
-  'AI Tools': 'bg-purple-500/15 text-purple-400',
-  Frontend: 'bg-cyan-500/15 text-cyan-400',
-  Backend: 'bg-amber-500/15 text-amber-400',
-  Mobile: 'bg-pink-500/15 text-pink-400',
-  Marketing: 'bg-rose-500/15 text-rose-400',
-  Database: 'bg-teal-500/15 text-teal-400',
-  Auth: 'bg-red-500/15 text-red-400',
-  DevOps: 'bg-orange-500/15 text-orange-400',
-  'Web Automation': 'bg-indigo-500/15 text-indigo-400',
-  Other: 'bg-gray-500/15 text-gray-400',
+  custom: 'bg-gray-500/15 text-gray-400',
   browser: 'bg-indigo-500/15 text-indigo-400',
   communication: 'bg-emerald-500/15 text-emerald-400',
   data: 'bg-violet-500/15 text-violet-400',
-  custom: 'bg-gray-500/15 text-gray-400',
+  'AI 智能': 'bg-purple-500/15 text-purple-400',
+  '开发工具': 'bg-blue-500/15 text-blue-400',
+  '效率提升': 'bg-green-500/15 text-green-400',
+  '数据分析': 'bg-violet-500/15 text-violet-400',
+  '内容创作': 'bg-pink-500/15 text-pink-400',
+  '安全合规': 'bg-red-500/15 text-red-400',
+  '通讯协作': 'bg-emerald-500/15 text-emerald-400',
 };
 
-const TABS: Array<{ id: TabId; label: string; icon: string }> = [
-  { id: 'installed', label: 'Installed', icon: '◆' },
-  { id: 'marketplace', label: 'Marketplace', icon: '◎' },
-  { id: 'discover', label: 'Discover', icon: '⊕' },
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'installed', label: 'Installed' },
+  { id: 'skillhub', label: 'SkillHub' },
+  { id: 'skillssh', label: 'skills.sh' },
 ];
 
-const DISCOVER_SOURCES: Array<{ id: DiscoverSource; label: string; desc: string; url: string }> = [
-  { id: 'openclaw', label: 'OpenClaw', desc: '127+ curated community skills', url: 'https://github.com/LeoYeAI/openclaw-master-skills' },
-  { id: 'skillsmp', label: 'SkillsMP', desc: '364K+ open-source skills', url: 'https://skillsmp.com' },
-  { id: 'skillssh', label: 'skills.sh', desc: '84K+ agent skills directory', url: 'https://skills.sh' },
-];
+// ─── Agent Assignment Modal ──────────────────────────────────────────────────────
 
-// ─── Rating Stars ───────────────────────────────────────────────────────────────
-
-function Stars({ rating, count }: { rating: number; count: number }) {
-  if (!count) return <span className="text-[10px] text-gray-600">No ratings</span>;
-  const full = Math.floor(rating / 20);
-  return (
-    <span className="flex items-center gap-1">
-      <span className="text-amber-400 text-xs tracking-tight">
-        {'★'.repeat(full)}{'☆'.repeat(5 - full)}
-      </span>
-      <span className="text-[10px] text-gray-500">({count})</span>
-    </span>
-  );
-}
-
-// ─── Skill Detail Modal ─────────────────────────────────────────────────────────
-
-function SkillDetailModal({ skill, onClose, onInstall }: {
-  skill: InstalledSkill | MarketplaceSkill | RegistrySkill | ExternalSkill;
+function AgentAssignModal({
+  skillName,
+  agents,
+  currentAgentIds,
+  onClose,
+  onConfirm,
+}: {
+  skillName: string;
+  agents: AgentInfo[];
+  currentAgentIds: string[];
   onClose: () => void;
-  onInstall?: () => void;
+  onConfirm: (agentIds: string[]) => void;
 }) {
-  const isMarketplace = 'id' in skill && 'downloadCount' in skill;
-  const isRegistry = 'sourceUrl' in skill && !('repo' in skill);
-  const isExternal = 'repo' in skill && 'source' in skill;
-  const name = skill.name;
-  const description = ('description' in skill ? skill.description : undefined) ?? '';
-  const category = ('category' in skill ? skill.category : undefined) ?? 'custom';
-  const author = isMarketplace ? (skill as MarketplaceSkill).authorName : ('author' in skill ? (skill as InstalledSkill | RegistrySkill | ExternalSkill).author : undefined);
-  const readme = isMarketplace ? (skill as MarketplaceSkill).readme : null;
-  const tools = 'tools' in skill ? (skill as InstalledSkill | MarketplaceSkill).tools : undefined;
-  const tags = 'tags' in skill ? (skill as InstalledSkill | MarketplaceSkill).tags : undefined;
-  const permissions = 'requiredPermissions' in skill ? (skill as InstalledSkill).requiredPermissions : undefined;
+  const [selected, setSelected] = useState<Set<string>>(new Set(currentAgentIds));
+
+  const toggle = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[640px] max-h-[80vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="px-6 pt-5 pb-4 border-b border-gray-800 flex items-start justify-between">
-          <div>
-            <h3 className="text-lg font-semibold">{name}</h3>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[category] ?? 'bg-gray-500/15 text-gray-400'} capitalize`}>{category}</span>
-              {author && <span className="text-xs text-gray-500">by {author}</span>}
-              {'version' in skill && <span className="text-xs text-gray-600">v{(skill as InstalledSkill | MarketplaceSkill).version}</span>}
-              {isExternal && <span className="text-xs text-gray-600">from {(skill as ExternalSkill).source}</span>}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">×</button>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[480px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="px-6 pt-5 pb-4 border-b border-gray-800">
+          <h3 className="text-base font-semibold">Assign to Agents</h3>
+          <p className="text-xs text-gray-400 mt-1">Select which agents can use <span className="text-indigo-400 font-medium">{skillName}</span></p>
         </div>
-
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-          <p className="text-sm text-gray-300">{description || 'No description available'}</p>
-
-          {readme && (
-            <div className="bg-gray-800/50 rounded-lg p-4">
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">README</h4>
-              <MarkdownMessage content={readme} className="text-sm text-gray-300" />
-            </div>
-          )}
-
-          {tags && tags.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Tags</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {tags.map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 rounded-full">{t}</span>)}
-              </div>
-            </div>
-          )}
-
-          {tools && tools.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Tools ({tools.length})</h4>
-              <div className="grid grid-cols-1 gap-1.5">
-                {tools.map((tool, i) => (
-                  <div key={i} className="bg-gray-800 rounded-lg px-3 py-2">
-                    <div className="text-sm font-medium text-indigo-400">{typeof tool === 'string' ? tool : tool.name}</div>
-                    {typeof tool !== 'string' && tool.description && <div className="text-xs text-gray-500 mt-0.5">{tool.description}</div>}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {agents.length === 0 ? (
+            <div className="text-sm text-gray-500 text-center py-8">No agents available</div>
+          ) : (
+            <div className="space-y-2">
+              {agents.map(agent => (
+                <label key={agent.id} className="flex items-center gap-3 p-3 rounded-lg bg-gray-800 hover:bg-gray-750 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(agent.id)}
+                    onChange={() => toggle(agent.id)}
+                    className="w-4 h-4 rounded accent-indigo-500"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{agent.name}</div>
+                    <div className="text-xs text-gray-500">{agent.role} · {agent.status}</div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {permissions && permissions.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Required Permissions</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {permissions.map(p => <span key={p} className="px-2 py-0.5 text-[10px] bg-amber-500/10 text-amber-400 rounded-full">{p}</span>)}
-              </div>
-            </div>
-          )}
-
-          {isMarketplace && (
-            <div className="flex items-center gap-4 text-sm">
-              <Stars rating={(skill as MarketplaceSkill).avgRating} count={(skill as MarketplaceSkill).ratingCount} />
-              <span className="text-xs text-gray-500">{(skill as MarketplaceSkill).downloadCount} downloads</span>
-            </div>
-          )}
-
-          {(isRegistry || isExternal) && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Source</h4>
-              <a href={isRegistry ? (skill as RegistrySkill).sourceUrl : (skill as ExternalSkill).url} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-400 hover:text-indigo-300 underline">
-                {isRegistry ? (skill as RegistrySkill).sourceUrl : (skill as ExternalSkill).url}
-              </a>
+                  {agent.skills?.includes(skillName) && (
+                    <span className="text-[10px] text-emerald-400 shrink-0">assigned</span>
+                  )}
+                </label>
+              ))}
             </div>
           )}
         </div>
-
-        {onInstall && (
-          <div className="px-6 py-4 border-t border-gray-800 flex justify-end">
-            <button onClick={onInstall} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">
-              Install Skill
-            </button>
-          </div>
-        )}
+        <div className="px-6 py-4 border-t border-gray-800 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg hover:bg-gray-800">
+            Cancel
+          </button>
+          <button onClick={() => onConfirm([...selected])} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">
+            Confirm ({selected.size} agent{selected.size !== 1 ? 's' : ''})
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -215,461 +142,484 @@ function SkillDetailModal({ skill, onClose, onInstall }: {
 
 export function SkillStore() {
   const [tab, setTab] = useState<TabId>('installed');
-  const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [discoverSource, setDiscoverSource] = useState<DiscoverSource>('openclaw');
-
-  // Data
-  const [installed, setInstalled] = useState<InstalledSkill[]>([]);
-  const [marketplace, setMarketplace] = useState<MarketplaceSkill[]>([]);
-  const [registry, setRegistry] = useState<RegistrySkill[]>([]);
-  const [externalSkills, setExternalSkills] = useState<ExternalSkill[]>([]);
-  const [loadingInstalled, setLoadingInstalled] = useState(true);
-  const [loadingMarketplace, setLoadingMarketplace] = useState(false);
-  const [loadingRegistry, setLoadingRegistry] = useState(false);
-  const [loadingExternal, setLoadingExternal] = useState(false);
-  const [selectedSkill, setSelectedSkill] = useState<InstalledSkill | MarketplaceSkill | RegistrySkill | ExternalSkill | null>(null);
-  const [flash, setFlash] = useState('');
+  const [flash, setFlash] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [installing, setInstalling] = useState<Set<string>>(new Set());
-  // For skillsmp search
-  const [externalSearch, setExternalSearch] = useState('');
 
-  const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 4000); };
+  // Installed tab
+  const [installed, setInstalled] = useState<InstalledSkill[]>([]);
+  const [loadingInstalled, setLoadingInstalled] = useState(true);
+  const [installedSearch, setInstalledSearch] = useState('');
+
+  // SkillHub tab
+  const [skillhubSkills, setSkillhubSkills] = useState<SkillHubSkill[]>([]);
+  const [skillhubTotal, setSkillhubTotal] = useState(0);
+  const [skillhubPage, setSkillhubPage] = useState(1);
+  const [skillhubCategories, setSkillhubCategories] = useState<string[]>([]);
+  const [skillhubCategory, setSkillhubCategory] = useState('');
+  const [skillhubSort, setSkillhubSort] = useState('score');
+  const [skillhubSearch, setSkillhubSearch] = useState('');
+  const [loadingSkillhub, setLoadingSkillhub] = useState(false);
+
+  // skills.sh tab
+  const [skillsshList, setSkillsshList] = useState<SkillsShSkill[]>([]);
+  const [skillsshSearch, setSkillsshSearch] = useState('');
+  const [loadingSkillssh, setLoadingSkillssh] = useState(false);
+
+  // Agents
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+
+  // Assignment modal
+  const [assignModal, setAssignModal] = useState<{ skillName: string; currentAgentIds: string[] } | null>(null);
+
+  const msg = (m: string, type: 'success' | 'error' = 'success') => {
+    setFlash({ text: m, type });
+    setTimeout(() => setFlash(null), type === 'error' ? 10000 : 4000);
+  };
+
+  // ── Load functions ────────────────────────────────────────────────────────────
 
   const loadInstalled = useCallback(async () => {
     setLoadingInstalled(true);
-    try { const d = await api.skills.list(); setInstalled(d.skills); } catch { /* */ }
+    try {
+      const d = await api.skills.list();
+      setInstalled(d.skills as InstalledSkill[]);
+    } catch { /* */ }
     setLoadingInstalled(false);
   }, []);
 
-  const loadMarketplace = useCallback(async () => {
-    setLoadingMarketplace(true);
-    try { const d = await api.marketplace.skills({ q: search || undefined, category: categoryFilter || undefined }); setMarketplace(d.skills); } catch { /* */ }
-    setLoadingMarketplace(false);
-  }, [search, categoryFilter]);
-
-  const loadRegistry = useCallback(async () => {
-    setLoadingRegistry(true);
-    try { const d = await api.skills.registry('openclaw'); setRegistry(d.skills); } catch { /* */ }
-    setLoadingRegistry(false);
-  }, []);
-
-  const loadSkillsmp = useCallback(async (q: string) => {
-    if (!q.trim()) return;
-    setLoadingExternal(true);
+  const loadAgents = useCallback(async () => {
     try {
-      const d = await api.skills.registrySkillsmp(q);
-      if (d.success && d.data) {
-        setExternalSkills(d.data.results.map(s => ({
-          name: s.name,
-          author: s.owner,
-          repo: s.repo,
-          description: s.description,
-          stars: s.stars,
-          url: s.url,
-          source: 'skillsmp' as const,
-        })));
-      }
+      const d = await api.agents.list();
+      setAgents(d.agents);
     } catch { /* */ }
-    setLoadingExternal(false);
   }, []);
+
+  const loadSkillhub = useCallback(async (opts?: { q?: string; category?: string; page?: number; sort?: string }) => {
+    setLoadingSkillhub(true);
+    try {
+      const d = await api.skills.registrySkillhub({
+        q: opts?.q,
+        category: opts?.category,
+        page: opts?.page ?? 1,
+        limit: 24,
+        sort: opts?.sort ?? skillhubSort,
+      });
+      setSkillhubSkills(d.skills);
+      setSkillhubTotal(d.total);
+      if (d.categories?.length) setSkillhubCategories(d.categories);
+    } catch { /* */ }
+    setLoadingSkillhub(false);
+  }, [skillhubSort]);
 
   const loadSkillssh = useCallback(async (q?: string) => {
-    setLoadingExternal(true);
+    setLoadingSkillssh(true);
     try {
       const d = await api.skills.registrySkillssh(q);
-      setExternalSkills(d.skills.map(s => ({
-        name: s.name,
-        author: s.author,
-        repo: s.repo,
-        installs: s.installs,
-        url: s.url,
-        source: 'skillssh' as const,
-      })));
+      setSkillsshList(d.skills);
     } catch { /* */ }
-    setLoadingExternal(false);
+    setLoadingSkillssh(false);
   }, []);
 
-  useEffect(() => { loadInstalled(); }, [loadInstalled]);
-  useEffect(() => { if (tab === 'marketplace') loadMarketplace(); }, [tab, loadMarketplace]);
-  useEffect(() => {
-    if (tab === 'discover') {
-      if (discoverSource === 'openclaw') loadRegistry();
-      else if (discoverSource === 'skillssh') loadSkillssh();
-      else setExternalSkills([]);
-    }
-  }, [tab, discoverSource, loadRegistry, loadSkillssh]);
+  useEffect(() => { loadInstalled(); loadAgents(); }, [loadInstalled, loadAgents]);
+  useEffect(() => { if (tab === 'skillhub' && skillhubSkills.length === 0) loadSkillhub(); }, [tab]);
+  useEffect(() => { if (tab === 'skillssh' && skillsshList.length === 0) loadSkillssh(); }, [tab]);
 
-  const installFromRegistry = async (skill: RegistrySkill) => {
+  // ── Install helpers ───────────────────────────────────────────────────────────
+
+  const installSkillhub = async (skill: SkillHubSkill) => {
     setInstalling(prev => new Set(prev).add(skill.name));
     try {
-      await api.skills.import(skill.name, skill.sourceUrl, skill.description, skill.category);
-      msg(`Installed "${skill.name}" successfully`);
+      const result = await api.skills.install({
+        name: skill.name,
+        source: 'skillhub',
+        slug: skill.slug,
+        sourceUrl: skill.homepage,
+        description: skill.description_zh ?? skill.description,
+        category: 'custom',
+        version: skill.version,
+      });
+      await loadInstalled();
+      msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
+      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
-      msg(`Failed to install: ${err}`);
+      msg(`Download failed for "${skill.name}". You can try manually from: ${skill.homepage}`, 'error');
     }
     setInstalling(prev => { const next = new Set(prev); next.delete(skill.name); return next; });
   };
 
-  const installFromMarketplace = async (skill: MarketplaceSkill) => {
-    setInstalling(prev => new Set(prev).add(skill.id));
-    try {
-      await api.marketplace.installSkill(skill.id);
-      msg(`Installed "${skill.name}" successfully`);
-    } catch (err) {
-      msg(`Failed to install: ${err}`);
-    }
-    setInstalling(prev => { const next = new Set(prev); next.delete(skill.id); return next; });
-  };
-
-  const installExternal = async (skill: ExternalSkill) => {
+  const installSkillssh = async (skill: SkillsShSkill) => {
     setInstalling(prev => new Set(prev).add(skill.name));
     try {
-      await api.skills.import(skill.name, skill.url, skill.description, 'custom');
-      msg(`Installed "${skill.name}" successfully`);
+      const result = await api.skills.install({
+        name: skill.name,
+        source: 'skillssh',
+        sourceUrl: skill.url,
+        githubRepo: `${skill.author}/${skill.repo}`,
+        githubSkillPath: skill.name,
+      });
+      await loadInstalled();
+      msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
+      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
-      msg(`Failed to install: ${err}`);
+      msg(`Download failed for "${skill.name}". You can try manually from: ${skill.url}`, 'error');
     }
     setInstalling(prev => { const next = new Set(prev); next.delete(skill.name); return next; });
   };
 
-  // Categories for sidebar
-  const getCategories = (): Array<{ name: string; count: number }> => {
-    let items: Array<{ category?: string }> = [];
-    if (tab === 'installed') items = installed;
-    else if (tab === 'marketplace') items = marketplace;
-    else if (tab === 'discover' && discoverSource === 'openclaw') items = registry;
-    const counts = new Map<string, number>();
-    for (const item of items) {
-      const cat = item.category ?? 'Other';
-      counts.set(cat, (counts.get(cat) ?? 0) + 1);
+  const handleAssignConfirm = async (skillName: string, newAgentIds: string[]) => {
+    // Find current assignment
+    const skill = installed.find(s => s.name === skillName);
+    const currentIds = new Set(skill?.agentIds ?? []);
+    const newIds = new Set(newAgentIds);
+
+    // Add to new agents
+    for (const agentId of newIds) {
+      if (!currentIds.has(agentId)) {
+        try { await api.agents.addSkill(agentId, skillName); } catch { /* */ }
+      }
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+    // Remove from unselected agents
+    for (const agentId of currentIds) {
+      if (!newIds.has(agentId)) {
+        try { await api.agents.removeSkill(agentId, skillName); } catch { /* */ }
+      }
+    }
+    await loadInstalled();
+    await loadAgents();
+    setAssignModal(null);
+    msg(`Assignment updated for "${skillName}"`);
   };
 
-  // Filter
-  const filterBySearch = <T extends { name: string; description?: string }>(items: T[]): T[] => {
-    if (!search) return items;
-    const lower = search.toLowerCase();
-    return items.filter(i => i.name.toLowerCase().includes(lower) || i.description?.toLowerCase().includes(lower));
+  const uninstallSkill = async (name: string) => {
+    if (!confirm(`Uninstall "${name}"? This will delete the skill files from ~/.markus/skills/.`)) return;
+    try {
+      await api.skills.uninstall(name);
+      await loadInstalled();
+      msg(`"${name}" uninstalled`);
+    } catch (err) {
+      msg(`Uninstall failed: ${err}`, 'error');
+    }
   };
 
-  const filterByCategory = <T extends { category?: string }>(items: T[]): T[] => {
-    if (!categoryFilter) return items;
-    return items.filter(i => (i.category ?? 'Other') === categoryFilter);
-  };
+  // ── Filter ────────────────────────────────────────────────────────────────────
 
-  const filteredInstalled = filterByCategory(filterBySearch(installed));
-  const filteredMarketplace = filterByCategory(filterBySearch(marketplace));
-  const filteredRegistry = filterByCategory(filterBySearch(registry));
-  const categories = getCategories();
-  const showSidebar = tab !== 'discover' || discoverSource === 'openclaw';
+  const filteredInstalled = installed.filter(s => {
+    if (!installedSearch) return true;
+    const q = installedSearch.toLowerCase();
+    return s.name.toLowerCase().includes(q) || s.description?.toLowerCase().includes(q);
+  });
+
+  const filteredSkillssh = skillsshList.filter(s => {
+    if (!skillsshSearch) return true;
+    const q = skillsshSearch.toLowerCase();
+    return s.name.toLowerCase().includes(q) || s.repo.toLowerCase().includes(q);
+  });
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-4 px-7 h-14 border-b border-gray-800 bg-gray-900 shrink-0">
         <h2 className="text-lg font-semibold">Skill Store</h2>
-        <div className="flex-1 max-w-md">
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search skills..."
-            className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none"
-          />
-        </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 ml-2">
           {TABS.map(t => (
-            <button key={t.id} onClick={() => { setTab(t.id); setCategoryFilter(''); }}
-              className={`px-3 py-1.5 text-xs rounded-lg transition-colors flex items-center gap-1.5 ${
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                 tab === t.id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
               }`}>
-              <span>{t.icon}</span>
               {t.label}
             </button>
           ))}
         </div>
       </div>
 
-      {flash && <div className="mx-7 mt-2 px-3 py-1.5 bg-emerald-900/50 text-emerald-300 text-xs rounded-lg">{flash}</div>}
+      {flash && (
+        <div className={`mx-7 mt-2 px-3 py-1.5 text-xs rounded-lg shrink-0 ${
+          flash.type === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-emerald-900/50 text-emerald-300'
+        }`}>{flash.text}</div>
+      )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden flex">
-        {/* Category Sidebar — shown for installed, marketplace, and openclaw discover */}
-        {showSidebar && (
-          <div className="w-48 border-r border-gray-800 overflow-y-auto p-3 shrink-0 bg-gray-950">
-            <div className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-2 mb-2">Categories</div>
-            <button onClick={() => setCategoryFilter('')}
-              className={`w-full text-left px-2 py-1.5 rounded-lg text-xs transition-colors mb-0.5 ${!categoryFilter ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'}`}>
-              All
-            </button>
-            {categories.map(c => (
-              <button key={c.name} onClick={() => setCategoryFilter(f => f === c.name ? '' : c.name)}
-                className={`w-full text-left px-2 py-1.5 rounded-lg text-xs transition-colors mb-0.5 flex justify-between ${
-                  categoryFilter === c.name ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
-                }`}>
-                <span className="capitalize truncate">{c.name}</span>
-                <span className="text-[10px] text-gray-600 ml-1">{c.count}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Main grid */}
+      {/* ── Installed Tab ─────────────────────────────────────────────────────── */}
+      {tab === 'installed' && (
         <div className="flex-1 overflow-y-auto p-6">
-          {/* Installed */}
-          {tab === 'installed' && (
-            loadingInstalled ? (
-              <div className="text-center text-gray-500 py-20">Loading...</div>
-            ) : filteredInstalled.length === 0 ? (
-              <div className="text-center text-gray-500 py-20">
-                <div className="text-4xl mb-3 opacity-30">◆</div>
-                <div>No installed skills found.</div>
-                <div className="text-xs mt-1">Check the Discover tab to find and import skills.</div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredInstalled.map(skill => (
-                  <div key={skill.name} onClick={() => setSelectedSkill(skill)}
-                    className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors">
+          <div className="flex items-center gap-3 mb-5">
+            <input
+              value={installedSearch}
+              onChange={e => setInstalledSearch(e.target.value)}
+              placeholder="Search installed skills..."
+              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+            />
+            <span className="text-xs text-gray-500">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {loadingInstalled ? (
+            <div className="text-center text-gray-500 py-20">Loading...</div>
+          ) : filteredInstalled.length === 0 ? (
+            <div className="text-center text-gray-500 py-20">
+              <div className="text-4xl mb-3 opacity-30">◆</div>
+              <div>No installed skills found.</div>
+              <div className="text-xs mt-1">Browse SkillHub or skills.sh to discover and install skills.</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredInstalled.map(skill => {
+                const agentNames = skill.agentIds.map(id => agents.find(a => a.id === id)?.name ?? id).filter(Boolean);
+                return (
+                  <div key={skill.name} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
                     <div className="flex items-start justify-between">
-                      <div>
-                        <div className="font-semibold text-sm">{skill.name}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">{skill.author ? `by ${skill.author}` : ''} {skill.version ? `v${skill.version}` : ''}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <div className="font-semibold text-sm truncate">{skill.name}</div>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] shrink-0 ${
+                            skill.type === 'builtin' ? 'bg-blue-500/15 text-blue-400' :
+                            skill.type === 'filesystem' ? 'bg-emerald-500/15 text-emerald-400' :
+                            'bg-amber-500/15 text-amber-400'
+                          }`}>{skill.type === 'builtin' ? 'built-in' : skill.type === 'filesystem' ? 'local' : 'imported'}</span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {skill.author ? `by ${skill.author} · ` : ''}{skill.version ? `v${skill.version}` : ''}
+                          {skill.sourcePath && <span className="ml-1 text-gray-600" title={skill.sourcePath}>📁 {skill.sourcePath.replace(/^.*\/\.([^/]+)\/skills\//, '~/.$1/skills/')}</span>}
+                        </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-gray-400'} capitalize`}>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-gray-400'} capitalize shrink-0 ml-2`}>
                         {skill.category ?? 'custom'}
                       </span>
                     </div>
+
                     <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {skill.tags?.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
-                    </div>
-                    <div className="mt-2 pt-2 border-t border-gray-800 text-xs text-gray-500">
-                      {skill.tools?.length ?? 0} tool{(skill.tools?.length ?? 0) !== 1 ? 's' : ''}
-                      {skill.requiredPermissions?.length ? ` · ${skill.requiredPermissions.join(', ')}` : ''}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )
-          )}
 
-          {/* Marketplace */}
-          {tab === 'marketplace' && (
-            loadingMarketplace ? (
-              <div className="text-center text-gray-500 py-20">Loading marketplace...</div>
-            ) : filteredMarketplace.length === 0 ? (
-              <div className="text-center text-gray-500 py-20">
-                <div className="text-4xl mb-3 opacity-30">◎</div>
-                <div>No marketplace skills found.</div>
-                <div className="text-xs mt-1">Create skills using the Skill Architect in the Builder tab.</div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredMarketplace.map(skill => (
-                  <div key={skill.id} onClick={() => setSelectedSkill(skill)}
-                    className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="font-semibold text-sm">{skill.name}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">by {skill.authorName} · v{skill.version}</div>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category] ?? 'bg-gray-500/15 text-gray-400'} capitalize`}>
-                        {skill.category}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description}</p>
                     <div className="flex flex-wrap gap-1.5 mt-2">
-                      {skill.tags?.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
+                      {skill.tags?.slice(0, 3).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
                     </div>
-                    <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Stars rating={skill.avgRating} count={skill.ratingCount} />
-                        <span className="text-[10px] text-gray-600">{skill.downloadCount} installs</span>
-                      </div>
-                      <button onClick={e => { e.stopPropagation(); void installFromMarketplace(skill); }}
-                        disabled={installing.has(skill.id)}
-                        className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50">
-                        {installing.has(skill.id) ? '...' : 'Install'}
+
+                    <div className="mt-3 pt-2 border-t border-gray-800 flex items-center justify-between">
+                      <button
+                        onClick={() => setAssignModal({ skillName: skill.name, currentAgentIds: skill.agentIds })}
+                        className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-400 transition-colors"
+                      >
+                        <span>
+                          {agentNames.length === 0
+                            ? '＋ Assign to agents'
+                            : `${agentNames.length} agent${agentNames.length !== 1 ? 's' : ''}: ${agentNames.slice(0, 2).join(', ')}${agentNames.length > 2 ? '…' : ''}`}
+                        </span>
                       </button>
+                      <div className="flex items-center gap-2">
+                        {skill.tools && skill.tools.length > 0 && (
+                          <span className="text-[10px] text-gray-600">{skill.tools.length} tool{skill.tools.length !== 1 ? 's' : ''}</span>
+                        )}
+                        {skill.type !== 'builtin' && (
+                          <button
+                            onClick={() => void uninstallSkill(skill.name)}
+                            className="px-2 py-0.5 text-[10px] text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                          >
+                            Uninstall
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            )
-          )}
-
-          {/* Discover — multi-source browser */}
-          {tab === 'discover' && (
-            <div>
-              {/* Source selector */}
-              <div className="flex items-center gap-3 mb-5">
-                {DISCOVER_SOURCES.map(src => (
-                  <button key={src.id} onClick={() => { setDiscoverSource(src.id); setExternalSkills([]); setExternalSearch(''); }}
-                    className={`flex-1 p-3 rounded-xl text-left transition-all border ${
-                      discoverSource === src.id
-                        ? 'bg-indigo-600/15 border-indigo-500/40 text-white'
-                        : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-300'
-                    }`}>
-                    <div className="text-sm font-medium">{src.label}</div>
-                    <div className="text-[10px] opacity-60 mt-0.5">{src.desc}</div>
-                  </button>
-                ))}
-              </div>
-
-              {/* Source header with link */}
-              <div className="flex items-center gap-3 mb-4">
-                <div className="text-sm font-semibold text-gray-200">
-                  {DISCOVER_SOURCES.find(s => s.id === discoverSource)?.label}
-                </div>
-                <a href={DISCOVER_SOURCES.find(s => s.id === discoverSource)?.url} target="_blank" rel="noopener noreferrer"
-                  className="text-xs text-indigo-400 hover:text-indigo-300">
-                  Visit site →
-                </a>
-
-                {/* Search for external sources */}
-                {(discoverSource === 'skillsmp' || discoverSource === 'skillssh') && (
-                  <div className="ml-auto flex gap-2 items-center">
-                    <input
-                      value={externalSearch}
-                      onChange={e => setExternalSearch(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' && externalSearch.trim()) {
-                          if (discoverSource === 'skillsmp') void loadSkillsmp(externalSearch);
-                          else void loadSkillssh(externalSearch);
-                        }
-                      }}
-                      placeholder={`Search ${discoverSource === 'skillsmp' ? 'SkillsMP' : 'skills.sh'}...`}
-                      className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-64"
-                    />
-                    <button
-                      onClick={() => {
-                        if (externalSearch.trim()) {
-                          if (discoverSource === 'skillsmp') void loadSkillsmp(externalSearch);
-                          else void loadSkillssh(externalSearch);
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
-                    >
-                      Search
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* OpenClaw grid */}
-              {discoverSource === 'openclaw' && (
-                loadingRegistry ? (
-                  <div className="text-center text-gray-500 py-20">Fetching from OpenClaw...</div>
-                ) : filteredRegistry.length === 0 ? (
-                  <div className="text-center text-gray-500 py-20">
-                    <div className="text-4xl mb-3 opacity-30">⊕</div>
-                    <div>No matching skills from OpenClaw.</div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {filteredRegistry.map(skill => (
-                      <div key={skill.name} onClick={() => setSelectedSkill(skill)}
-                        className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm truncate">{skill.name}</div>
-                            <div className="text-xs text-gray-500 mt-0.5">{skill.author}</div>
-                          </div>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category] ?? 'bg-gray-500/15 text-gray-400'} capitalize shrink-0 ml-2`}>
-                            {skill.category}
-                          </span>
-                        </div>
-                        <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description || 'No description'}</p>
-                        {skill.addedAt && <div className="text-[10px] text-gray-600 mt-2">Added: {skill.addedAt}</div>}
-                        <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
-                          <a href={skill.sourceUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300">Source →</a>
-                          <button onClick={e => { e.stopPropagation(); void installFromRegistry(skill); }}
-                            disabled={installing.has(skill.name)}
-                            className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50">
-                            {installing.has(skill.name) ? '...' : 'Import'}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              )}
-
-              {/* SkillsMP / skills.sh grid */}
-              {(discoverSource === 'skillsmp' || discoverSource === 'skillssh') && (
-                loadingExternal ? (
-                  <div className="text-center text-gray-500 py-20">
-                    <div className="animate-pulse">Searching {discoverSource === 'skillsmp' ? 'SkillsMP' : 'skills.sh'}...</div>
-                  </div>
-                ) : externalSkills.length === 0 ? (
-                  <div className="text-center text-gray-500 py-20">
-                    <div className="text-4xl mb-3 opacity-30">{discoverSource === 'skillsmp' ? '◎' : '⬡'}</div>
-                    {discoverSource === 'skillsmp' ? (
-                      <>
-                        <div>Search 364,000+ skills on SkillsMP</div>
-                        <div className="text-xs mt-1">Enter a search query above to discover skills.</div>
-                      </>
-                    ) : (
-                      <>
-                        <div>Browse 84,000+ skills on skills.sh</div>
-                        <div className="text-xs mt-1">The top skills are loaded automatically. Search for specific skills above.</div>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {externalSkills.map(skill => (
-                      <div key={`${skill.source}-${skill.name}-${skill.repo}`} onClick={() => setSelectedSkill(skill)}
-                        className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-gray-700 transition-colors">
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm truncate">{skill.name}</div>
-                            <div className="text-xs text-gray-500 mt-0.5">{skill.author} / {skill.repo}</div>
-                          </div>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">
-                            {skill.source === 'skillsmp' ? 'SkillsMP' : 'skills.sh'}
-                          </span>
-                        </div>
-                        {skill.description && <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description}</p>}
-                        <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            {skill.stars !== undefined && <span className="text-[10px] text-amber-400">★ {skill.stars}</span>}
-                            {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <a href={skill.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-                              className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
-                            <button onClick={e => { e.stopPropagation(); void installExternal(skill); }}
-                              disabled={installing.has(skill.name)}
-                              className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50">
-                              {installing.has(skill.name) ? '...' : 'Import'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              )}
+                );
+              })}
             </div>
           )}
         </div>
-      </div>
+      )}
 
-      {/* Detail modal */}
-      {selectedSkill && (
-        <SkillDetailModal
-          skill={selectedSkill}
-          onClose={() => setSelectedSkill(null)}
-          onInstall={
-            'sourceUrl' in selectedSkill && !('repo' in selectedSkill) ? () => { void installFromRegistry(selectedSkill as RegistrySkill); setSelectedSkill(null); } :
-            'id' in selectedSkill && 'downloadCount' in selectedSkill ? () => { void installFromMarketplace(selectedSkill as MarketplaceSkill); setSelectedSkill(null); } :
-            'repo' in selectedSkill ? () => { void installExternal(selectedSkill as ExternalSkill); setSelectedSkill(null); } :
-            undefined
-          }
+      {/* ── SkillHub Tab ──────────────────────────────────────────────────────── */}
+      {tab === 'skillhub' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* Controls */}
+          <div className="flex items-center gap-2 mb-5 flex-wrap">
+            <select
+              value={skillhubCategory}
+              onChange={e => { setSkillhubCategory(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: e.target.value || undefined, page: 1 }); }}
+              className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 outline-none"
+            >
+              <option value="">全部分类</option>
+              {skillhubCategories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select
+              value={skillhubSort}
+              onChange={e => { setSkillhubSort(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1, sort: e.target.value }); }}
+              className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 outline-none"
+            >
+              <option value="score">综合排序</option>
+              <option value="downloads">下载量</option>
+              <option value="stars">收藏数</option>
+              <option value="installs">安装量</option>
+            </select>
+            <input
+              value={skillhubSearch}
+              onChange={e => setSkillhubSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); } }}
+              placeholder="搜索 SkillHub 技能..."
+              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-64"
+            />
+            <button
+              onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
+            >
+              Search
+            </button>
+            <span className="text-xs text-gray-500 ml-auto">
+              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">Visit site →</a>
+            </span>
+          </div>
+
+          {loadingSkillhub ? (
+            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">正在加载 SkillHub 技能...</div></div>
+          ) : skillhubSkills.length === 0 ? (
+            <div className="text-center text-gray-500 py-20">
+              <div className="text-4xl mb-3 opacity-30">◎</div>
+              <div>未找到匹配的技能</div>
+            </div>
+          ) : (
+            <>
+              <div className="text-xs text-gray-500 mb-3">共 {skillhubTotal.toLocaleString()} 个技能</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {skillhubSkills.map(skill => {
+                  const isInstalled = installed.some(s => s.name === skill.name || s.name === skill.slug);
+                  return (
+                    <div key={skill.slug} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-sm truncate">{skill.name}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">v{skill.version}</div>
+                        </div>
+                        {skill.tags?.[0] && (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${CATEGORY_COLORS[skill.tags[0]] ?? 'bg-indigo-500/15 text-indigo-400'}`}>
+                            {skill.tags[0]}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
+                      <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {skill.stars > 0 && <span className="text-[10px] text-amber-400">★ {skill.stars.toLocaleString()}</span>}
+                          {skill.downloads > 0 && <span className="text-[10px] text-gray-500">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} 下载</span>}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
+                          {isInstalled ? (
+                            <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                          ) : (
+                            <button
+                              onClick={() => void installSkillhub(skill)}
+                              disabled={installing.has(skill.name)}
+                              className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+                            >
+                              {installing.has(skill.name) ? '...' : 'Install'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {skillhubTotal > 24 && (
+                <div className="flex items-center justify-center gap-2 mt-6">
+                  <button
+                    disabled={skillhubPage <= 1}
+                    onClick={() => { const p = skillhubPage - 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
+                    className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 disabled:opacity-30">
+                    ← 上一页
+                  </button>
+                  <span className="text-xs text-gray-500">第 {skillhubPage} / {Math.ceil(skillhubTotal / 24)} 页</span>
+                  <button
+                    disabled={skillhubPage >= Math.ceil(skillhubTotal / 24)}
+                    onClick={() => { const p = skillhubPage + 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
+                    className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 disabled:opacity-30">
+                    下一页 →
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── skills.sh Tab ─────────────────────────────────────────────────────── */}
+      {tab === 'skillssh' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <input
+              value={skillsshSearch}
+              onChange={e => setSkillsshSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
+              placeholder="Search skills.sh..."
+              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+            />
+            <button
+              onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
+            >
+              Search
+            </button>
+            <span className="text-xs text-gray-500 ml-auto">
+              <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">Visit site →</a>
+            </span>
+          </div>
+
+          {loadingSkillssh ? (
+            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Searching skills.sh...</div></div>
+          ) : filteredSkillssh.length === 0 ? (
+            <div className="text-center text-gray-500 py-20">
+              <div className="text-4xl mb-3 opacity-30">⬡</div>
+              <div>Browse 84,000+ skills on skills.sh</div>
+              <div className="text-xs mt-1">Top skills are loaded automatically. Search for specific skills above.</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredSkillssh.map(skill => {
+                const isInstalled = installed.some(s => s.name === skill.name);
+                return (
+                  <div key={`${skill.author}-${skill.name}`} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-sm truncate">{skill.name}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">{skill.author} / {skill.repo}</div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">
+                        skills.sh
+                      </span>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
+                        {isInstalled ? (
+                          <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                        ) : (
+                          <button
+                            onClick={() => void installSkillssh(skill)}
+                            disabled={installing.has(skill.name)}
+                            className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+                          >
+                            {installing.has(skill.name) ? '...' : 'Install'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Agent Assignment Modal ────────────────────────────────────────────── */}
+      {assignModal && (
+        <AgentAssignModal
+          skillName={assignModal.skillName}
+          agents={agents}
+          currentAgentIds={assignModal.currentAgentIds}
+          onClose={() => setAssignModal(null)}
+          onConfirm={agentIds => void handleAssignConfirm(assignModal.skillName, agentIds)}
         />
       )}
     </div>

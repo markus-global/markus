@@ -271,6 +271,7 @@ export interface AgentInfo {
   name: string;
   role: string;
   status: string;
+  skills: string[];
   activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
@@ -820,14 +821,26 @@ export const api = {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
   },
   skills: {
-    list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[] }> }>('/skills'),
+    list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
     registry: (source?: string) => request<{ skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }>; source: string; cached: boolean }>(`/skills/registry${source ? `?source=${source}` : ''}`),
-    registrySkillsmp: (q: string, page?: number, limit?: number) =>
-      request<{ success: boolean; data?: { results: Array<{ name: string; description: string; owner: string; repo: string; stars: number; url: string }>; total: number } }>(`/skills/registry/skillsmp?q=${encodeURIComponent(q)}&page=${page ?? 1}&limit=${limit ?? 20}`),
+    registrySkillhub: (opts?: { q?: string; category?: string; page?: number; limit?: number; sort?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.q) params.set('q', opts.q);
+      if (opts?.category) params.set('category', opts.category);
+      if (opts?.page) params.set('page', String(opts.page));
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.sort) params.set('sort', opts.sort);
+      const qs = params.toString();
+      return request<{ skills: Array<{ slug: string; name: string; description: string; description_zh?: string; version: string; homepage: string; tags: string[]; downloads: number; stars: number; installs: number; score: number }>; total: number; page: number; limit: number; categories: string[]; featured: string[]; cached: boolean }>(`/skills/registry/skillhub${qs ? `?${qs}` : ''}`);
+    },
     registrySkillssh: (q?: string) =>
       request<{ skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }>; cached: boolean }>(`/skills/registry/skillssh${q ? `?q=${encodeURIComponent(q)}` : ''}`),
     import: (name: string, sourceUrl?: string, description?: string, category?: string) =>
       request('/skills/import', { method: 'POST', body: JSON.stringify({ name, sourceUrl, description, category }) }),
+    install: (opts: { name: string; source?: string; slug?: string; sourceUrl?: string; description?: string; category?: string; version?: string; githubRepo?: string; githubSkillPath?: string }) =>
+      request<{ installed: boolean; name: string; path: string; method: string }>('/skills/install', { method: 'POST', body: JSON.stringify(opts) }),
+    uninstall: (name: string) =>
+      request<{ deleted: boolean; name: string; path: string }>(`/skills/installed/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   },
   marketplace: {
     skills: (opts?: { source?: string; category?: string; q?: string }) => {

@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { readdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { createLogger, generateId, saveConfig, getTextContent, type TaskStatus, type TaskPriority } from '@markus/shared';
 import {
   GatewayError,
@@ -22,6 +24,8 @@ import {
   type SyncRequest,
   type HandbookColleague,
   type HandbookProject,
+  discoverSkillsInDir,
+  WELL_KNOWN_SKILL_DIRS,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -2728,8 +2732,64 @@ export class APIServer {
 
     // Skills
     if (path === '/api/skills' && req.method === 'GET') {
-      const skills = this.skillRegistry?.list() ?? [];
-      this.json(res, 200, { skills });
+      // Built-in skills from in-memory registry (no sourcePath)
+      const builtinSkills = (this.skillRegistry?.list() ?? [])
+        .filter(s => !s.sourcePath)
+        .map(s => ({ ...s, type: 'builtin' as const }));
+      const seen = new Set(builtinSkills.map(s => s.name));
+
+      // Live filesystem scan — always fresh
+      const fsSkills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; sourcePath: string; type: 'filesystem' }> = [];
+      for (const dir of WELL_KNOWN_SKILL_DIRS) {
+        for (const discovered of discoverSkillsInDir(dir)) {
+          if (seen.has(discovered.manifest.name)) continue;
+          seen.add(discovered.manifest.name);
+          fsSkills.push({
+            name: discovered.manifest.name,
+            version: discovered.manifest.version,
+            description: discovered.manifest.description,
+            author: discovered.manifest.author,
+            category: discovered.manifest.category,
+            tags: discovered.manifest.tags,
+            tools: discovered.manifest.tools?.map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })),
+            sourcePath: discovered.path,
+            type: 'filesystem' as const,
+          });
+        }
+      }
+
+      // DB imported skills
+      let imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; type: 'imported' }> = [];
+      if (this.storage) {
+        try {
+          const mktSkills = (await this.storage.marketplaceSkillRepo.list()) as Array<{ name: string; description: string; category: string; version: string; tags: unknown }>;
+          imported = mktSkills
+            .filter(s => !seen.has(s.name))
+            .map(s => ({
+              name: s.name,
+              description: s.description,
+              category: s.category,
+              version: s.version,
+              tags: Array.isArray(s.tags) ? s.tags as string[] : [],
+              type: 'imported' as const,
+            }));
+        } catch { /* storage unavailable */ }
+      }
+
+      const agents = this.orgService.getAgentManager().listAgents();
+      const skillAgents: Record<string, string[]> = {};
+      for (const agent of agents) {
+        for (const skillName of agent.skills) {
+          if (!skillAgents[skillName]) skillAgents[skillName] = [];
+          skillAgents[skillName]!.push(agent.id);
+        }
+      }
+      const all = [
+        ...builtinSkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
+        ...fsSkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
+        ...imported.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
+      ];
+      this.json(res, 200, { skills: all });
       return;
     }
 
@@ -2807,43 +2867,186 @@ export class APIServer {
       return;
     }
 
-    // Import a skill from external source
-    if (path === '/api/skills/import' && req.method === 'POST') {
+    // Install a skill: download to ~/.markus/skills/ and register
+    if (path === '/api/skills/install' && req.method === 'POST') {
       const body = await this.readBody(req);
       const skillName = body['name'] as string;
-      const sourceUrl = body['sourceUrl'] as string;
+      const source = body['source'] as string | undefined; // 'skillhub' | 'skillssh' | 'openclaw'
+      const slug = body['slug'] as string | undefined;
+      const sourceUrl = body['sourceUrl'] as string | undefined;
       const description = body['description'] as string | undefined;
       const category = body['category'] as string | undefined;
+      const version = body['version'] as string | undefined;
+      const githubRepo = body['githubRepo'] as string | undefined; // e.g. "owner/repo"
+      const githubSkillPath = body['githubSkillPath'] as string | undefined; // e.g. "skill-name"
 
       if (!skillName) {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
 
-      // Save to marketplace DB if storage is available
-      if (this.storage) {
-        try {
-          const id = generateId('mkt-skill');
-          const skill = await this.storage.marketplaceSkillRepo.create({
-            id,
-            name: skillName,
-            description: description ?? `Imported skill: ${skillName}`,
-            source: 'community',
-            status: 'published',
-            version: '1.0.0',
-            authorName: 'Community',
-            category: category ?? 'custom',
-            tags: ['imported'],
-            tools: [],
+      const skillsDir = join(homedir(), '.markus', 'skills');
+      const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      const targetDir = join(skillsDir, safeName);
+
+      try {
+        mkdirSync(skillsDir, { recursive: true });
+
+        let installed = false;
+        let installMethod = 'metadata-only';
+
+        // Strategy 1: SkillHub/ClawHub — download ZIP via Convex API
+        if (source === 'skillhub' && slug) {
+          try {
+            const zipUrl = `https://wry-manatee-359.convex.site/api/v1/download?slug=${encodeURIComponent(slug)}`;
+            const zipResp = await fetch(zipUrl);
+            if (zipResp.ok) {
+              const tmpZip = join(skillsDir, `_tmp_${safeName}.zip`);
+              const buffer = Buffer.from(await zipResp.arrayBuffer());
+              writeFileSync(tmpZip, buffer);
+              mkdirSync(targetDir, { recursive: true });
+              try {
+                execSync(`unzip -o "${tmpZip}" -d "${targetDir}"`, { timeout: 30000 });
+                installed = true;
+                installMethod = 'clawhub-zip';
+              } catch {
+                console.warn('[skills/install] unzip failed');
+              }
+              try { execSync(`rm -f "${tmpZip}"`); } catch { /* cleanup */ }
+            }
+          } catch (err) {
+            console.warn(`[skills/install] ClawHub download failed for ${slug}: ${String(err)}`);
+          }
+        }
+
+        // Strategy 2: skills.sh — try to download SKILL.md from GitHub
+        if (!installed && source === 'skillssh' && githubRepo) {
+          try {
+            const rawBase = `https://raw.githubusercontent.com/${githubRepo}/refs/heads/main`;
+            const skillPath = githubSkillPath || safeName;
+            const skillMdUrl = `${rawBase}/${skillPath}/SKILL.md`;
+            const mdResp = await fetch(skillMdUrl, { signal: AbortSignal.timeout(15000) });
+            if (mdResp.ok) {
+              mkdirSync(targetDir, { recursive: true });
+              writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
+              installed = true;
+              installMethod = 'github-skillmd';
+            }
+          } catch (err) {
+            console.warn(`[skills/install] GitHub SKILL.md download failed: ${String(err)}`);
+          }
+
+          if (!installed) {
+            try {
+              const rawBase = `https://raw.githubusercontent.com/${githubRepo}/refs/heads/main`;
+              const rootMd = `${rawBase}/SKILL.md`;
+              const mdResp = await fetch(rootMd, { signal: AbortSignal.timeout(15000) });
+              if (mdResp.ok) {
+                mkdirSync(targetDir, { recursive: true });
+                writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
+                installed = true;
+                installMethod = 'github-root-skillmd';
+              }
+            } catch { /* fallthrough */ }
+          }
+        }
+
+        // Strategy 3: Try sourceUrl directly if it points to a SKILL.md or manifest.json
+        if (!installed && sourceUrl) {
+          try {
+            if (sourceUrl.endsWith('.md') || sourceUrl.includes('SKILL.md')) {
+              const mdResp = await fetch(sourceUrl, { signal: AbortSignal.timeout(15000) });
+              if (mdResp.ok) {
+                mkdirSync(targetDir, { recursive: true });
+                writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
+                installed = true;
+                installMethod = 'direct-url';
+              }
+            }
+          } catch { /* fallthrough */ }
+        }
+
+        if (!installed) {
+          const hint = sourceUrl ?? (slug ? `https://clawhub.ai/${slug}` : '');
+          this.json(res, 502, {
+            error: `Download failed for "${skillName}". Please visit the source page and download manually.`,
+            sourceUrl: hint,
           });
-          this.json(res, 201, { skill, imported: true, sourceUrl });
-          return;
-        } catch (err) {
-          this.json(res, 500, { error: `Import failed: ${String(err)}` });
           return;
         }
+
+        // Supplement manifest.json from metadata if download didn't include one
+        if (!existsSync(join(targetDir, 'manifest.json'))) {
+          const manifest = {
+            name: skillName,
+            version: version ?? '1.0.0',
+            description: description ?? `Skill: ${skillName}`,
+            category: category ?? 'custom',
+            tools: [],
+            requirements: { permissions: [] },
+            source: source ?? 'unknown',
+            sourceUrl: sourceUrl ?? '',
+          };
+          writeFileSync(join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
+        }
+
+        this.json(res, 201, {
+          installed: true,
+          name: skillName,
+          path: targetDir,
+          method: installMethod,
+        });
+        return;
+      } catch (err) {
+        this.json(res, 500, { error: `Install failed: ${String(err)}` });
+        return;
       }
-      this.json(res, 200, { imported: true, name: skillName, sourceUrl });
+    }
+
+    // Uninstall a skill: delete from filesystem and/or DB
+    if (path.startsWith('/api/skills/installed/') && req.method === 'DELETE') {
+      const skillName = decodeURIComponent(path.slice('/api/skills/installed/'.length));
+      if (!skillName) {
+        this.json(res, 400, { error: 'skill name is required' });
+        return;
+      }
+
+      let deletedFs = false;
+      let deletedDb = false;
+
+      // Try delete from filesystem (~/.markus/skills/)
+      const skillsDir = join(homedir(), '.markus', 'skills');
+      const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      const targetDir = join(skillsDir, safeName);
+      if (existsSync(targetDir)) {
+        try {
+          execSync(`rm -rf "${targetDir}"`, { timeout: 10000 });
+          deletedFs = true;
+        } catch (err) {
+          console.warn(`[skills/uninstall] fs delete failed: ${String(err)}`);
+        }
+      }
+
+      // Try delete from marketplace_skills DB
+      if (this.storage) {
+        try {
+          const dbSkills = (await this.storage.marketplaceSkillRepo.list()) as Array<{ id: string; name: string }>;
+          const match = dbSkills.find(s => s.name === skillName);
+          if (match) {
+            await this.storage.marketplaceSkillRepo.delete(match.id);
+            deletedDb = true;
+          }
+        } catch (err) {
+          console.warn(`[skills/uninstall] db delete failed: ${String(err)}`);
+        }
+      }
+
+      if (!deletedFs && !deletedDb) {
+        this.json(res, 404, { error: `Skill "${skillName}" not found` });
+        return;
+      }
+
+      this.json(res, 200, { deleted: true, name: skillName, deletedFs, deletedDb });
       return;
     }
 
@@ -3059,26 +3262,69 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
-    // Skills registry: Proxy search to skillsmp.com
-    if (path === '/api/skills/registry/skillsmp' && req.method === 'GET') {
+    // Skills registry: SkillHub (skillhub.tencent.com) — static JSON from Tencent CDN
+    if (path === '/api/skills/registry/skillhub' && req.method === 'GET') {
       const q = url.searchParams.get('q') ?? '';
-      const page = url.searchParams.get('page') ?? '1';
-      const limit = url.searchParams.get('limit') ?? '20';
-      if (!q) {
-        this.json(res, 400, { error: 'q query parameter is required' });
-        return;
-      }
+      const category = url.searchParams.get('category') ?? '';
+      const page = parseInt(url.searchParams.get('page') ?? '1', 10);
+      const limit = parseInt(url.searchParams.get('limit') ?? '24', 10);
+      const sort = url.searchParams.get('sort') ?? 'score';
+
+      const cacheKey = 'skillhub-data';
+      const now = Date.now();
+      const cached = this.registryCache?.get(cacheKey) as { data: { total: number; generated_at: string; featured: string[]; categories: Record<string, string[]>; skills: Array<{ slug: string; name: string; description: string; description_zh?: string; version: string; homepage: string; tags: string[]; downloads: number; stars: number; installs: number; updated_at: number; score: number }> }; ts: number } | undefined;
+
       try {
-        const apiUrl = `https://skillsmp.com/api/v1/skills/search?q=${encodeURIComponent(q)}&page=${page}&limit=${limit}`;
-        const resp = await fetch(apiUrl);
-        if (resp.ok) {
-          const data = await resp.json();
-          this.json(res, 200, data);
-        } else {
-          this.json(res, resp.status, { error: `SkillsMP API error: ${resp.statusText}` });
+        let allData = cached && now - cached.ts < 3_600_000 ? cached.data : null;
+        if (!allData) {
+          const dataUrl = 'https://cloudcache.tencentcs.com/qcloud/tea/app/data/skills.66a05e01.json';
+          const resp = await fetch(dataUrl);
+          if (!resp.ok) {
+            this.json(res, 502, { error: `SkillHub CDN returned ${resp.status}` });
+            return;
+          }
+          allData = await resp.json() as typeof cached extends undefined ? never : NonNullable<typeof cached>['data'];
+          if (!this.registryCache) this.registryCache = new Map();
+          this.registryCache.set(cacheKey, { data: allData, ts: now });
         }
+
+        let skills = allData!.skills;
+        const categoryMap = allData!.categories ?? {};
+
+        if (category && categoryMap[category]) {
+          const catTags = new Set(categoryMap[category]!.map(t => t.toLowerCase()));
+          skills = skills.filter(s => s.tags?.some(t => catTags.has(t.toLowerCase())));
+        }
+
+        if (q) {
+          const lower = q.toLowerCase();
+          skills = skills.filter(s =>
+            s.name.toLowerCase().includes(lower) ||
+            s.slug.toLowerCase().includes(lower) ||
+            (s.description_zh ?? s.description ?? '').toLowerCase().includes(lower)
+          );
+        }
+
+        if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
+        else if (sort === 'stars') skills.sort((a, b) => b.stars - a.stars);
+        else if (sort === 'installs') skills.sort((a, b) => b.installs - a.installs);
+        else skills.sort((a, b) => b.score - a.score);
+
+        const total = skills.length;
+        const start = (page - 1) * limit;
+        const pageSkills = skills.slice(start, start + limit);
+
+        this.json(res, 200, {
+          skills: pageSkills,
+          total,
+          page,
+          limit,
+          categories: Object.keys(categoryMap),
+          featured: allData!.featured,
+          cached: !!(cached && now - cached.ts < 3_600_000),
+        });
       } catch (err) {
-        this.json(res, 500, { error: `SkillsMP fetch failed: ${String(err)}` });
+        this.json(res, 500, { error: `SkillHub fetch failed: ${String(err)}` });
       }
       return;
     }
@@ -3104,6 +3350,15 @@ Be conversational. Help the user think through tool design, edge cases, and perm
         }
         const html = await resp.text();
         const skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }> = [];
+        const seen = new Set<string>();
+        const addSkill = (name: string, author: string, repo: string, installs: string, fullPath: string) => {
+          const key = `${author}/${repo}/${name}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          skills.push({ name, author, repo, installs, url: `https://skills.sh/${fullPath}` });
+        };
+
+        // Try markdown-style patterns (skills.sh used to serve these)
         const skillRegex = /###\s+(.+?)\n\n\[.*?([\w-]+\/[\w-]+(?:\/[\w-]+)?)[\d.K]*\]\(https:\/\/skills\.sh\/(.*?)\)/g;
         let match: RegExpExecArray | null;
         while ((match = skillRegex.exec(html)) !== null) {
@@ -3111,16 +3366,20 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           const pathParts = (match[3] ?? '').split('/');
           const author = pathParts[0] ?? '';
           const repo = pathParts.slice(0, 2).join('/');
-          skills.push({ name, author, repo, installs: '', url: `https://skills.sh/${match[3]}` });
+          addSkill(name, author, repo, '', match[3] ?? '');
         }
-        // Fallback: parse simpler patterns from the HTML
+
+        // Fallback: parse href links that look like skill paths (owner/repo/skill-name)
         if (skills.length === 0) {
-          const linkRegex = /href="\/([^"]+?\/[^"]+?\/[^"]+?)"/g;
+          const IGNORED_PREFIXES = new Set(['_next', 'static', 'api', 'assets', 'images', 'fonts', 'css', 'js']);
+          const HAS_EXT = /\.\w{1,5}$/;
+          const linkRegex = /href="\/([\w-]+\/[\w-]+\/[\w][\w.-]*)"/g;
           while ((match = linkRegex.exec(html)) !== null) {
             const parts = match[1]!.split('/');
-            if (parts.length >= 3) {
-              skills.push({ name: parts[2]!, author: parts[0]!, repo: `${parts[0]}/${parts[1]}`, installs: '', url: `https://skills.sh/${match[1]}` });
-            }
+            if (parts.length < 3) continue;
+            if (IGNORED_PREFIXES.has(parts[0]!)) continue;
+            if (HAS_EXT.test(parts[parts.length - 1]!)) continue;
+            addSkill(parts[2]!, parts[0]!, `${parts[0]}/${parts[1]}`, '', match[1]!);
           }
         }
         if (!this.registryCache) this.registryCache = new Map();

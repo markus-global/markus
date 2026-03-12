@@ -10,6 +10,8 @@ export interface SkillManifest {
   tools: SkillToolDef[];
   requiredEnv?: string[];
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
+  /** Filesystem path where this skill was loaded from (undefined for built-in skills) */
+  sourcePath?: string;
 }
 
 export type SkillCategory =

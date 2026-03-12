@@ -151,6 +151,8 @@ export {
   createDefaultSkillRegistry,
   createGitSkill,
   createCodeAnalysisSkill,
+  discoverSkillsInDir,
+  WELL_KNOWN_SKILL_DIRS,
 } from './skills/index.js';
 export {
   SkillLoader,
