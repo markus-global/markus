@@ -136,7 +136,7 @@ export class OrganizationService {
       name,
       ownerId,
       plan: 'free',
-      maxAgents: 5,
+      maxAgents: -1,
       createdAt: new Date().toISOString(),
     };
 
@@ -481,14 +481,14 @@ export class OrganizationService {
     });
   }
 
-  async hireAgent(request: CreateAgentRequest & { orgId: string; skipLimitCheck?: boolean }) {
+  async hireAgent(request: CreateAgentRequest & { orgId: string }) {
     let org = this.orgs.get(request.orgId);
     if (!org && request.orgId === 'default') {
       org = this.getDefaultOrganization();
     }
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
 
-    if (!request.skipLimitCheck) {
+    if (org.maxAgents > 0) {
       const currentAgents = this.agentManager.listAgents();
       if (currentAgents.length >= org.maxAgents) {
         throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
@@ -837,7 +837,6 @@ export class OrganizationService {
           teamId: defaultTeamId,
           agentRole: 'worker',
           heartbeatIntervalMs: 0,
-          skipLimitCheck: true,
         });
         log.info(`Seeded builder agent: ${cfg.name}`);
       } catch (err) {
