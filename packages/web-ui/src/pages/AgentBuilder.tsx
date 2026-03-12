@@ -57,14 +57,13 @@ export function AgentBuilder() {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
   }, []);
 
-  const navigateToBuilder = (roleId: string, roleName: string) => {
+  const navigateToBuilder = (_roleId: string, roleName: string) => {
     const builderAgent = agents.find(a => a.role === roleName || a.name === roleName);
     if (builderAgent) {
-      localStorage.setItem('markus_select_builder', builderAgent.id);
+      navBus.navigate('chat', { agentId: builderAgent.id });
     } else {
-      localStorage.setItem('markus_select_builder', roleId);
+      navBus.navigate('chat');
     }
-    navBus.navigate('chat');
   };
 
   return (

@@ -580,22 +580,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-select builder agent when redirected from Builder page
-  useEffect(() => {
-    const builderKey = localStorage.getItem('markus_select_builder');
-    if (!builderKey || agents.length === 0) return;
-    localStorage.removeItem('markus_select_builder');
-    // builderKey may be an agent ID (if resolved from Builder page) or a role-id fallback
-    const roleMap: Record<string, string> = { 'agent-father': 'Agent Father', 'team-factory': 'Team Factory', 'skill-architect': 'Skill Architect' };
-    const builderAgent = agents.find(a => a.id === builderKey)
-      ?? agents.find(a => a.role === (roleMap[builderKey] ?? builderKey) || a.name === (roleMap[builderKey] ?? builderKey));
-    if (builderAgent) {
-      setChatMode('direct');
-      setSelectedAgent(builderAgent.id);
-      setMainTab('chat');
-    }
-  }, [agents]);
-
   // Snap to bottom immediately after DOM updates.
   // Use `instant` so there's no scroll animation — the bottom is simply the initial position.
   // When `loadMore` prepends older messages we set skipScrollRef so the view doesn't jump.
