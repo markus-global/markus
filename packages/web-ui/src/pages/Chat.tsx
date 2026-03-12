@@ -582,12 +582,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Auto-select builder agent when redirected from Builder page
   useEffect(() => {
-    const builderRole = localStorage.getItem('markus_select_builder');
-    if (!builderRole || agents.length === 0) return;
+    const builderKey = localStorage.getItem('markus_select_builder');
+    if (!builderKey || agents.length === 0) return;
     localStorage.removeItem('markus_select_builder');
+    // builderKey may be an agent ID (if resolved from Builder page) or a role-id fallback
     const roleMap: Record<string, string> = { 'agent-father': 'Agent Father', 'team-factory': 'Team Factory', 'skill-architect': 'Skill Architect' };
-    const displayName = roleMap[builderRole] ?? builderRole;
-    const builderAgent = agents.find(a => a.role === displayName || a.name === displayName);
+    const builderAgent = agents.find(a => a.id === builderKey)
+      ?? agents.find(a => a.role === (roleMap[builderKey] ?? builderKey) || a.name === (roleMap[builderKey] ?? builderKey));
     if (builderAgent) {
       setChatMode('direct');
       setSelectedAgent(builderAgent.id);
