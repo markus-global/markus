@@ -481,16 +481,18 @@ export class OrganizationService {
     });
   }
 
-  async hireAgent(request: CreateAgentRequest & { orgId: string }) {
+  async hireAgent(request: CreateAgentRequest & { orgId: string; skipLimitCheck?: boolean }) {
     let org = this.orgs.get(request.orgId);
     if (!org && request.orgId === 'default') {
       org = this.getDefaultOrganization();
     }
     if (!org) throw new Error(`Organization not found: ${request.orgId}`);
 
-    const currentAgents = this.agentManager.listAgents();
-    if (currentAgents.length >= org.maxAgents) {
-      throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
+    if (!request.skipLimitCheck) {
+      const currentAgents = this.agentManager.listAgents();
+      if (currentAgents.length >= org.maxAgents) {
+        throw new Error(`Agent limit reached (${org.maxAgents}) for organization ${org.name}`);
+      }
     }
 
     const agent = await this.agentManager.createAgent(request);
@@ -835,6 +837,7 @@ export class OrganizationService {
           teamId: defaultTeamId,
           agentRole: 'worker',
           heartbeatIntervalMs: 0,
+          skipLimitCheck: true,
         });
         log.info(`Seeded builder agent: ${cfg.name}`);
       } catch (err) {
