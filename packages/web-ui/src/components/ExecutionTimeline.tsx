@@ -21,6 +21,7 @@ export interface ToolCallInfo {
   result?: string;
   error?: string;
   durationMs?: number;
+  liveOutput?: string;
 }
 
 export type ExecEntry =
@@ -76,6 +77,13 @@ export function getToolMeta(tool: string): { label: string; icon: string } {
     label: tool.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
     icon: '⚙',
   };
+}
+
+/** Extract the shell command text from tool args, if applicable */
+function getShellCommand(info: ToolCallInfo): string | null {
+  if (info.tool !== 'shell_execute' || !info.args || typeof info.args !== 'object') return null;
+  const cmd = (info.args as Record<string, unknown>).command;
+  return typeof cmd === 'string' ? cmd : null;
 }
 
 // ─── Format Helpers ───────────────────────────────────────────────────────────
@@ -402,6 +410,15 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 
   useEffect(() => () => clearTimeout(hoverTimeout.current), []);
 
+  const shellCmd = getShellCommand(info);
+  const outputRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [info.liveOutput]);
+
   return (
     <>
       <div
@@ -423,21 +440,35 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : ''}
           </div>
         </div>
-        <div className={`flex items-center gap-1 text-xs leading-snug ${
-          info.status === 'running' ? 'text-indigo-300'
-          : info.status === 'error' ? 'text-red-400 line-through opacity-50'
-          : 'text-gray-500'
-        }`}>
-          <span className="opacity-60">{meta.icon}</span>
-          <span>{meta.label}{info.status === 'running' ? '…' : ''}</span>
-          {info.status === 'running' && (
-            <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
+        <div className="flex-1 min-w-0">
+          <div className={`flex items-center gap-1 text-xs leading-snug ${
+            info.status === 'running' ? 'text-indigo-300'
+            : info.status === 'error' ? 'text-red-400 line-through opacity-50'
+            : 'text-gray-500'
+          }`}>
+            <span className="opacity-60">{meta.icon}</span>
+            <span>{meta.label}{info.status === 'running' ? '…' : ''}</span>
+            {info.status === 'running' && (
+              <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            )}
+            {info.durationMs != null && info.status !== 'running' && (
+              <span className="text-[10px] text-gray-600 ml-0.5">{formatDuration(info.durationMs)}</span>
+            )}
+          </div>
+          {/* Show shell command being executed */}
+          {shellCmd && (
+            <div className={`mt-0.5 font-mono text-[11px] truncate max-w-full ${info.status === 'running' ? 'text-gray-400' : 'text-gray-600'}`} title={shellCmd}>
+              <span className="text-gray-600 select-none">$ </span>{truncate(shellCmd, 120)}
+            </div>
           )}
-          {info.durationMs != null && info.status !== 'running' && (
-            <span className="text-[10px] text-gray-600 ml-0.5">{formatDuration(info.durationMs)}</span>
+          {/* Live streaming output */}
+          {info.liveOutput && info.status === 'running' && (
+            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-gray-500 bg-gray-900/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
+              {info.liveOutput}
+            </pre>
           )}
         </div>
         {hovered && <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />}

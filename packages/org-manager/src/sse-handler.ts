@@ -101,18 +101,29 @@ export class SSEHandler {
         this.textBuf = '';
       }
 
+      // Build the best available reply content for persistence.
+      // If the agent returned empty/cancelled, reconstruct from accumulated segments.
+      let persistReply = reply;
+      if (!reply || reply === '[Stream cancelled]') {
+        const segText = this.msgSegments
+          .filter(s => s.type === 'text')
+          .map(s => (s as { content: string }).content)
+          .join('');
+        if (segText) persistReply = segText;
+      }
+
       if (this.sseDisconnected) {
         log.info('Agent finished but SSE was disconnected — delivering reply via WebSocket fallback', {
           agentId: this.options.agentId,
-          replyLength: reply.length,
+          replyLength: persistReply.length,
         });
         if (this.options.wsBroadcaster) {
-          this.options.wsBroadcaster.broadcastChat(this.options.agentId, reply, 'agent');
+          this.options.wsBroadcaster.broadcastChat(this.options.agentId, persistReply, 'agent');
         }
       } else {
         this.sseBuffer.send({ 
           type: 'done', 
-          content: reply, 
+          content: persistReply, 
           agentId: this.options.agentId,
           sessionId: this.sessionId,
           segments: this.msgSegments 
@@ -128,13 +139,17 @@ export class SSEHandler {
 
       if (this.options.persistAssistantMessage && this.sessionId) {
         const msgMeta = this.msgSegments.length > 0 ? { segments: this.msgSegments } : undefined;
-        await this.options.persistAssistantMessage(
-          this.sessionId,
-          this.options.agentId,
-          reply,
-          this.options.agent.getState().tokensUsedToday,
-          msgMeta
-        );
+        try {
+          await this.options.persistAssistantMessage(
+            this.sessionId,
+            this.options.agentId,
+            persistReply,
+            this.options.agent.getState().tokensUsedToday,
+            msgMeta
+          );
+        } catch (e) {
+          log.error('Failed to persist assistant message', { agentId: this.options.agentId, error: String(e) });
+        }
       }
 
       if (this.options.onComplete) {
@@ -159,19 +174,31 @@ export class SSEHandler {
       
       this.handleError(error, res);
 
-      // Persist error as assistant message so it survives page reloads
-      const errText = `⚠ ${String(error).slice(0, 500)}`;
+      // Persist error as assistant message so it survives page reloads.
+      // Include any partial text that was accumulated before the error.
+      const errSuffix = `\n\n⚠ ${String(error).slice(0, 500)}`;
       if (this.textBuf) {
         this.msgSegments.push({ type: 'text', content: this.textBuf });
         this.textBuf = '';
       }
-      this.msgSegments.push({ type: 'text', content: errText });
+      this.msgSegments.push({ type: 'text', content: errSuffix.trim() });
+
+      // Reconstruct reply from accumulated text segments so partial content is preserved
+      const partialText = this.msgSegments
+        .filter(s => s.type === 'text')
+        .map(s => (s as { content: string }).content)
+        .join('');
+      const errReply = partialText || errSuffix.trim();
       const errMeta = { isError: true, segments: this.msgSegments };
 
       if (this.options.persistAssistantMessage && this.sessionId) {
-        void this.options.persistAssistantMessage(
-          this.sessionId, this.options.agentId, errText, 0, errMeta,
-        ).catch(e => log.warn('Failed to persist error message', { error: String(e) }));
+        try {
+          await this.options.persistAssistantMessage(
+            this.sessionId, this.options.agentId, errReply, 0, errMeta,
+          );
+        } catch (e) {
+          log.error('Failed to persist error message', { agentId: this.options.agentId, error: String(e) });
+        }
       }
       if (this.options.onError) {
         void this.options.onError(error, this.msgSegments)

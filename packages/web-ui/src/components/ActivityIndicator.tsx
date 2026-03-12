@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 export interface ActivityStep {
   tool: string;
-  phase: 'start' | 'end';
+  phase: 'start' | 'end' | 'output';
   success?: boolean;
   ts: number;
 }
@@ -59,11 +59,11 @@ function buildTimeline(activities: ActivityStep[]): ToolItem[] {
   const items: ToolItem[] = [];
 
   for (const step of activities) {
+    if (step.phase === 'output') continue;
     if (step.phase === 'start') {
       const key = `${step.tool}_${step.ts}`;
       items.push({ key, tool: step.tool, status: 'running' });
     } else {
-      // find last running item for this tool
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i]!.tool === step.tool && items[i]!.status === 'running') {
           items[i] = { ...items[i]!, status: step.success === false ? 'error' : 'done' };

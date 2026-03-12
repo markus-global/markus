@@ -1691,7 +1691,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             </div>
           )}
           <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} />
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-end">
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && !selectedAgent}
@@ -1704,14 +1704,20 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 <path d="M21 15l-5-5L5 21" />
               </svg>
             </button>
-            <input
+            <textarea
               value={input}
-              onChange={e => handleInputChange(e.target.value)}
+              onChange={e => {
+                handleInputChange(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+              }}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
-              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors"
+              rows={1}
+              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-y-auto leading-5"
+              style={{ maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
               <button

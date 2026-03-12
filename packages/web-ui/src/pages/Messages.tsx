@@ -261,13 +261,19 @@ export function Messages() {
               ))}
             </div>
           )}
-          <div className="flex gap-3">
-            <input
+          <div className="flex gap-3 items-end">
+            <textarea
               value={input}
-              onChange={e => handleInputChange(e.target.value)}
+              onChange={e => {
+                handleInputChange(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+              }}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               placeholder={`Message ${activeChannel}… (use @name to mention)`}
-              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none"
+              rows={1}
+              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none resize-none overflow-y-auto leading-5"
+              style={{ maxHeight: '120px' }}
             />
             <button
               onClick={() => void send()}

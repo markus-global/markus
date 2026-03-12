@@ -1,11 +1,8 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 import type { PathAccessPolicy } from '@markus/shared';
-import type { AgentToolHandler } from '../agent.js';
+import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
-
-const execFileAsync = promisify(execFile);
 
 export interface ShellAgentMeta {
   agentId: string;
@@ -89,12 +86,11 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
       required: ['command'],
     },
 
-    async execute(args: Record<string, unknown>): Promise<string> {
+    async execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string> {
       const command = args['command'] as string;
       const requestedCwd = args['cwd'] as string | undefined;
       const timeoutMs = (args['timeout_ms'] as number) ?? 60_000;
 
-      // Enforce workspace isolation — allow cwd in any accessible zone
       let effectiveCwd = workspacePath;
       if (requestedCwd) {
         const base = workspacePath ?? process.cwd();
@@ -117,7 +113,6 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         });
       }
 
-      // Enforce git branch isolation — deny checkout/merge/rebase/push to protected branches
       if (workspacePath) {
         const gitCheck = validateGitBranchSafety(command);
         if (!gitCheck.allowed) {
@@ -127,28 +122,97 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
 
       const finalCommand = injectGitCommitMeta(command, agentMeta);
 
-      try {
-        const { stdout, stderr } = await execFileAsync('sh', ['-c', finalCommand], {
-          cwd: effectiveCwd,
-          timeout: timeoutMs,
-          maxBuffer: 10 * 1024 * 1024,
+      return new Promise<string>((resolve) => {
+        const child = spawn('sh', ['-c', finalCommand], {
+          cwd: effectiveCwd ?? undefined,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env },
         });
 
-        return JSON.stringify({
-          status: 'success',
-          stdout: stdout.trim() || undefined,
-          stderr: stderr.trim() || undefined,
+        let stdout = '';
+        let stderr = '';
+        let killed = false;
+        const maxBuffer = 10 * 1024 * 1024;
+
+        const timeout = setTimeout(() => {
+          killed = true;
+          child.kill('SIGTERM');
+          setTimeout(() => { if (!child.killed) child.kill('SIGKILL'); }, 2000);
+        }, timeoutMs);
+
+        // Throttle streaming output to avoid flooding the SSE connection
+        let outputBuffer = '';
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        const FLUSH_INTERVAL = 200;
+
+        const flushOutput = () => {
+          if (outputBuffer && onOutput) {
+            onOutput(outputBuffer);
+            outputBuffer = '';
+          }
+          flushTimer = null;
+        };
+
+        const bufferOutput = (chunk: string) => {
+          if (!onOutput) return;
+          outputBuffer += chunk;
+          if (!flushTimer) {
+            flushTimer = setTimeout(flushOutput, FLUSH_INTERVAL);
+          }
+        };
+
+        child.stdout.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          if (stdout.length < maxBuffer) stdout += chunk;
+          bufferOutput(chunk);
         });
-      } catch (error) {
-        const err = error as { stdout?: string; stderr?: string; code?: number; message?: string };
-        return JSON.stringify({
-          status: 'error',
-          error: err.message ?? String(error),
-          exitCode: err.code,
-          stdout: err.stdout?.slice(0, 4000),
-          stderr: err.stderr?.slice(0, 4000),
+
+        child.stderr.on('data', (data: Buffer) => {
+          const chunk = data.toString();
+          if (stderr.length < maxBuffer) stderr += chunk;
+          bufferOutput(chunk);
         });
-      }
+
+        child.on('close', (code) => {
+          clearTimeout(timeout);
+          if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
+
+          if (killed) {
+            resolve(JSON.stringify({
+              status: 'error',
+              error: `Command timed out after ${timeoutMs}ms`,
+              exitCode: code,
+              stdout: stdout.slice(0, 4000),
+              stderr: stderr.slice(0, 4000),
+            }));
+          } else if (code !== 0) {
+            resolve(JSON.stringify({
+              status: 'error',
+              error: stderr.trim() || `Process exited with code ${code}`,
+              exitCode: code,
+              stdout: stdout.slice(0, 4000),
+              stderr: stderr.slice(0, 4000),
+            }));
+          } else {
+            resolve(JSON.stringify({
+              status: 'success',
+              stdout: stdout.trim() || undefined,
+              stderr: stderr.trim() || undefined,
+            }));
+          }
+        });
+
+        child.on('error', (err) => {
+          clearTimeout(timeout);
+          if (flushTimer) { clearTimeout(flushTimer); flushOutput(); }
+          resolve(JSON.stringify({
+            status: 'error',
+            error: err.message,
+            stdout: stdout.slice(0, 4000),
+            stderr: stderr.slice(0, 4000),
+          }));
+        });
+      });
     },
   };
 }

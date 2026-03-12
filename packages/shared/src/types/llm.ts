@@ -98,7 +98,7 @@ export interface LLMResponse {
 }
 
 export interface LLMStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool' | 'thinking_delta';
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool' | 'thinking_delta' | 'tool_output';
   text?: string;
   thinking?: string;
   toolCall?: Partial<LLMToolCall>;

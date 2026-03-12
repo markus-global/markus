@@ -2,12 +2,13 @@ const BASE = '/api';
 
 export interface AgentToolEvent {
   tool: string;
-  phase: 'start' | 'end';
+  phase: 'start' | 'end' | 'output';
   success?: boolean;
   arguments?: unknown;
   result?: string;
   error?: string;
   durationMs?: number;
+  output?: string;
 }
 
 export interface AuthUser {
@@ -614,7 +615,10 @@ export const api = {
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                  if (event.phase === 'start') onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
+                  else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                } else if (event.type === 'tool_output' && event.tool) {
+                  onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 }
               } catch { /* skip */ }
             }
@@ -780,7 +784,10 @@ export const api = {
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
                   onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                  if (event.phase === 'start') onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
+                  else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                } else if (event.type === 'tool_output' && event.tool) {
+                  onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 }
               } catch { /* skip */ }
             }
@@ -857,6 +864,8 @@ export const api = {
       request(`/marketplace/skills/${skillId}/install`, { method: 'POST' }),
     publishSkill: (data: { name: string; description: string; authorName: string; category: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; readme?: string; requiredPermissions?: string[]; requiredEnv?: string[]; publish?: boolean }) =>
       request('/marketplace/skills', { method: 'POST', body: JSON.stringify(data) }),
+    shareTemplate: (data: { name: string; description: string; roleId: string; agentRole: string; category: string; authorName: string; skills?: string[]; tags?: string[]; config?: Record<string, unknown>; publish?: boolean }) =>
+      request('/marketplace/templates', { method: 'POST', body: JSON.stringify(data) }),
   },
   builder: {
     chat: (mode: 'agent' | 'team' | 'skill', messages: Array<{ role: string; content: string }>) =>
