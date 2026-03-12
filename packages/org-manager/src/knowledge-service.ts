@@ -6,11 +6,35 @@ import {
   type KnowledgeCategory,
   type KnowledgeStatus,
 } from '@markus/shared';
+import type { FileKnowledgeStore } from './file-knowledge-store.js';
 
 const log = createLogger('knowledge-service');
 
 export class KnowledgeService {
   private entries = new Map<string, KnowledgeEntry>();
+  private fileStore?: FileKnowledgeStore;
+
+  constructor(fileStore?: FileKnowledgeStore) {
+    if (fileStore) {
+      this.fileStore = fileStore;
+      for (const entry of fileStore.loadAll()) {
+        this.entries.set(entry.id, entry);
+      }
+      log.info('Knowledge loaded from file store', { count: this.entries.size });
+    }
+  }
+
+  /** Returns the absolute file path of a knowledge entry (for agent file_read). */
+  getEntryPath(entry: KnowledgeEntry): string | undefined {
+    return this.fileStore?.entryPath(entry);
+  }
+
+  /** Lookup by ID and return the file path. */
+  getEntryFilePath(id: string): string | undefined {
+    const entry = this.entries.get(id);
+    if (!entry || !this.fileStore) return undefined;
+    return this.fileStore.entryPath(entry);
+  }
 
   // ─── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -53,8 +77,11 @@ export class KnowledgeService {
       if (old) {
         old.status = 'outdated';
         old.updatedAt = now;
+        this.fileStore?.saveEntry(old);
       }
     }
+
+    this.persistScope(entry.scope, entry.scopeId);
 
     log.info('Knowledge contributed', {
       id: entry.id,
@@ -94,6 +121,12 @@ export class KnowledgeService {
     if (opts.category) results = results.filter(e => e.category === opts.category);
 
     results = results.filter(e => e.status !== 'outdated');
+
+    if (keywords.length === 0) {
+      return results
+        .sort((a, b) => b.importance - a.importance || b.createdAt.localeCompare(a.createdAt))
+        .slice(0, limit);
+    }
 
     const scored = results.map(entry => {
       const text = `${entry.title} ${entry.content} ${entry.tags.join(' ')}`.toLowerCase();
@@ -160,6 +193,7 @@ export class KnowledgeService {
     if (!entry) return;
     entry.status = 'outdated';
     entry.updatedAt = new Date().toISOString();
+    this.persistScope(entry.scope, entry.scopeId);
     log.info('Knowledge flagged as outdated', { id, reason });
   }
 
@@ -168,6 +202,7 @@ export class KnowledgeService {
     if (!entry) return;
     entry.status = 'disputed';
     entry.updatedAt = new Date().toISOString();
+    this.persistScope(entry.scope, entry.scopeId);
     log.info('Knowledge flagged as disputed', { id, reason });
   }
 
@@ -177,6 +212,7 @@ export class KnowledgeService {
     entry.status = 'verified';
     entry.verifiedBy = verifiedBy;
     entry.updatedAt = new Date().toISOString();
+    this.persistScope(entry.scope, entry.scopeId);
     log.info('Knowledge verified', { id, verifiedBy });
   }
 
@@ -193,5 +229,15 @@ export class KnowledgeService {
     return [...this.entries.values()].filter(
       e => e.scope === scope && e.scopeId === scopeId && e.status !== 'outdated'
     ).length;
+  }
+
+  // ─── Persistence helpers ───────────────────────────────────────────────────
+
+  private persistScope(scope: string, scopeId: string): void {
+    if (!this.fileStore) return;
+    const scopeEntries = [...this.entries.values()].filter(
+      e => e.scope === scope && e.scopeId === scopeId
+    );
+    this.fileStore.rebuildIndex(scope, scopeId, scopeEntries);
   }
 }

@@ -16,6 +16,7 @@ import {
   ProjectService,
   RequirementService,
   KnowledgeService,
+  FileKnowledgeStore,
   ReportService,
   TrustService,
   initStorage,
@@ -425,7 +426,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     projectService.setIterationRepo(storage.iterationRepo);
   }
   await projectService.loadFromDB('default');
-  const knowledgeService = new KnowledgeService();
+  const knowledgeStore = new FileKnowledgeStore(join(homedir(), '.markus', 'knowledge'));
+  const knowledgeService = new KnowledgeService(knowledgeStore);
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
   const requirementService = new RequirementService();

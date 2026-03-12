@@ -18,13 +18,14 @@ export interface KnowledgeServiceBridge {
     scopeId?: string;
     category?: string;
     limit?: number;
-  }): Array<{ id: string; title: string; category: string; content: string; importance: number }>;
+  }): Array<{ id: string; title: string; category: string; content: string; importance: number; filePath?: string }>;
   browse(opts: {
     scope: string;
     scopeId: string;
     category?: string;
   }): Record<string, number> | Array<{ id: string; title: string; content: string }>;
   flagOutdated(id: string, reason: string): void;
+  getEntryFilePath?(id: string): string | undefined;
 }
 
 export interface ProjectServiceBridge {
@@ -99,7 +100,7 @@ export interface ProjectToolsContext {
     importance?: number;
     tags?: string;
     supersedes?: string;
-  }) => Promise<{ id: string; status: string }>;
+  }) => Promise<{ id: string; status: string; filePath?: string }>;
   knowledgeSearch?: (
     query: string,
     scope?: string,
@@ -301,6 +302,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   status: 'success',
                   knowledgeId: result.id,
                   knowledgeStatus: result.status,
+                  ...(result.filePath ? { filePath: result.filePath } : {}),
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

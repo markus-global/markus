@@ -222,13 +222,14 @@ export class AgentManager {
           tags: opts.tags?.split(',').map(t => t.trim()).filter(Boolean),
           supersedes: opts.supersedes,
         });
-        return { id: entry.id, status: entry.status };
+        return { id: entry.id, status: entry.status, filePath: ks.getEntryFilePath?.(entry.id) };
       },
       knowledgeSearch: async (query, scope, category, limit) => {
         const results = ks.search({ query, scope: scope as any, category: category as any, limit });
         return results.map(e => ({
           id: e.id, title: e.title, category: e.category,
           content: e.content, importance: e.importance,
+          filePath: ks.getEntryFilePath?.(e.id),
         }));
       },
       knowledgeBrowse: async (category, scope) => {
