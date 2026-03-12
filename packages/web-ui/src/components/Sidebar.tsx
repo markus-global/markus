@@ -234,7 +234,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-xs text-gray-300 truncate">{authUser.name ?? authUser.email}</div>
-              <div className="text-[10px] text-gray-600 truncate">{authUser.role}</div>
+              <div className="text-[10px] text-gray-600 truncate">{authUser.email ?? (authUser.role?.[0]?.toUpperCase() + authUser.role?.slice(1))}</div>
             </div>
             <button
               onClick={handleLogout}

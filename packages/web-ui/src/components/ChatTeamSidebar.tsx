@@ -105,6 +105,18 @@ export function ChatTeamSidebar({
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [editTeamName, setEditTeamName] = useState('');
 
+  const adjustMenuPosition = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    if (rect.bottom > window.innerHeight) {
+      el.style.top = `${Math.max(pad, window.innerHeight - rect.height - pad)}px`;
+    }
+    if (rect.right > window.innerWidth) {
+      el.style.left = `${Math.max(pad, window.innerWidth - rect.width - pad)}px`;
+    }
+  }, []);
+
   // ── Data loading ──────────────────────────────────────────────────────────
   const refreshUngrouped = useCallback(() => {
     api.teams.list().then(d => setUngrouped(d.ungrouped)).catch(() => {});
@@ -583,6 +595,7 @@ export function ChatTeamSidebar({
         const hasActive = teamAgents.some(a => a.status !== 'offline');
         return (
           <div
+            ref={adjustMenuPosition}
             className="fixed bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-50 w-44"
             style={{ left: teamMenu.x, top: teamMenu.y }}
             onClick={e => e.stopPropagation()}
@@ -663,6 +676,7 @@ export function ChatTeamSidebar({
         const isSelf = a.id === authUser?.id;
         return (
           <div
+            ref={adjustMenuPosition}
             className="fixed bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-50 w-44"
             style={{ left: agentMenu.x, top: agentMenu.y }}
             onClick={e => e.stopPropagation()}

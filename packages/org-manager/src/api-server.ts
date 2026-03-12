@@ -479,7 +479,7 @@ export class APIServer {
     await this.storage.userRepo.upsert({
       id: 'default',
       orgId,
-      name: 'Owner',
+      name: 'Admin',
       email: 'admin@markus.local',
       role: 'owner',
       passwordHash: hash,
@@ -1037,7 +1037,7 @@ export class APIServer {
       return;
     }
 
-    if (path.startsWith('/api/agents/') && req.method === 'POST') {
+    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|daily-report|a2a|message)$/) && req.method === 'POST') {
       const parts = path.split('/');
       const agentId = parts[3];
       const action = parts[4];
@@ -1137,7 +1137,7 @@ export class APIServer {
       }
     }
 
-    if (path.startsWith('/api/agents/') && req.method === 'DELETE') {
+    if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'DELETE') {
       const agentId = path.split('/')[3]!;
       if (this.gateway) {
         const extReg = this.gateway.listRegistrations().find(r => r.markusAgentId === agentId);
@@ -2079,7 +2079,7 @@ export class APIServer {
     }
 
     // Agent detail (GET) — enriched with config, tools, heartbeat summary
-    if (path.startsWith('/api/agents/') && req.method === 'GET') {
+    if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
