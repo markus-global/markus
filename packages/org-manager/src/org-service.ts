@@ -796,34 +796,50 @@ export class OrganizationService {
         managerType: 'agent',
       });
 
-      // Hire built-in builder agents (no heartbeat, no scheduled tasks)
-      const builderConfigs = [
-        { name: 'Agent Father', roleName: 'agent-father' },
-        { name: 'Team Factory', roleName: 'team-factory' },
-        { name: 'Skill Architect', roleName: 'skill-architect' },
-      ] as const;
-
-      for (const cfg of builderConfigs) {
-        try {
-          await this.hireAgent({
-            name: cfg.name,
-            roleName: cfg.roleName,
-            orgId,
-            teamId: team.id,
-            agentRole: 'worker',
-            heartbeatIntervalMs: 0,
-          });
-        } catch (err) {
-          log.warn(`Failed to seed builder agent: ${cfg.name}`, { error: String(err) });
-        }
-      }
-
       log.info('Default team seeded', {
         teamId: team.id,
         secretaryId: secretary.id,
       });
     } catch (error) {
       log.warn('Failed to seed default team', { error: String(error) });
+    }
+  }
+
+  /**
+   * Ensure the three built-in builder agents exist (Agent Father, Team Factory, Skill Architect).
+   * Safe to call on every startup — skips agents that already exist.
+   */
+  async seedBuilderAgents(orgId: string): Promise<void> {
+    const builderConfigs = [
+      { name: 'Agent Father', roleName: 'agent-father' },
+      { name: 'Team Factory', roleName: 'team-factory' },
+      { name: 'Skill Architect', roleName: 'skill-architect' },
+    ] as const;
+
+    const teams = this.listTeams(orgId);
+    if (teams.length === 0) return;
+    const defaultTeamId = teams[0]!.id;
+
+    const existingAgents = this.agentManager.listAgents();
+    for (const cfg of builderConfigs) {
+      const alreadyExists = existingAgents.some(
+        a => a.name === cfg.name || a.role === cfg.name
+      );
+      if (alreadyExists) continue;
+
+      try {
+        await this.hireAgent({
+          name: cfg.name,
+          roleName: cfg.roleName,
+          orgId,
+          teamId: defaultTeamId,
+          agentRole: 'worker',
+          heartbeatIntervalMs: 0,
+        });
+        log.info(`Seeded builder agent: ${cfg.name}`);
+      } catch (err) {
+        log.warn(`Failed to seed builder agent: ${cfg.name}`, { error: String(err) });
+      }
     }
   }
 }

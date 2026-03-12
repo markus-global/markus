@@ -467,6 +467,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, 'default');
 
+  // Ensure builder agents exist (idempotent — skips if already created)
+  await orgService.seedBuilderAgents(firstOrgId);
+
   // Do NOT auto-resume in_progress tasks on startup.
   // Previous behavior called taskService.resumeInProgressTasks() here,
   // which caused all agents to immediately start working without approval.
