@@ -10,7 +10,7 @@ import {
   type HumanUser,
   type HumanRole,
 } from '@markus/shared';
-import { RoleLoader, type AgentManager, type CreateAgentRequest } from '@markus/core';
+import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
 
 const log = createLogger('org-service');
@@ -810,8 +810,9 @@ export class OrganizationService {
   /**
    * Ensure the three built-in builder agents exist (Agent Father, Team Factory, Skill Architect).
    * Safe to call on every startup — skips agents that already exist.
+   * Also registers dynamic context providers so builder agents can see available skills/roles at runtime.
    */
-  async seedBuilderAgents(orgId: string): Promise<void> {
+  async seedBuilderAgents(orgId: string, skillRegistry?: SkillRegistry): Promise<void> {
     const builderConfigs = [
       { name: 'Agent Father', roleName: 'agent-father' },
       { name: 'Team Factory', roleName: 'team-factory' },
@@ -843,5 +844,77 @@ export class OrganizationService {
         log.warn(`Failed to seed builder agent: ${cfg.name}`, { error: String(err) });
       }
     }
+
+    this.registerBuilderContextProviders(skillRegistry);
+  }
+
+  /**
+   * Register dynamic context providers on all builder agents so they see
+   * the live list of available skills and roles at message-handling time.
+   */
+  private registerBuilderContextProviders(skillRegistry?: SkillRegistry): void {
+    const builderNames = new Set(['Agent Father', 'Team Factory', 'Skill Architect']);
+    const allAgents = this.agentManager.listAgents();
+
+    for (const info of allAgents) {
+      if (!builderNames.has(info.name)) continue;
+      try {
+        const agent = this.agentManager.getAgent(info.id);
+        agent.addDynamicContextProvider(() => this.buildBuilderDynamicContext(skillRegistry));
+      } catch {
+        log.warn(`Could not register dynamic context for builder: ${info.name}`);
+      }
+    }
+  }
+
+  private buildBuilderDynamicContext(skillRegistry?: SkillRegistry): string {
+    const parts: string[] = [];
+
+    // Available skills
+    const skillNames = new Set<string>();
+    const skillEntries: Array<{ name: string; description: string; type: string }> = [];
+
+    if (skillRegistry) {
+      for (const s of skillRegistry.list()) {
+        skillNames.add(s.name);
+        skillEntries.push({ name: s.name, description: s.description ?? '', type: s.sourcePath ? 'installed' : 'builtin' });
+      }
+    }
+    for (const dir of WELL_KNOWN_SKILL_DIRS) {
+      for (const { manifest } of discoverSkillsInDir(dir)) {
+        if (skillNames.has(manifest.name)) continue;
+        skillNames.add(manifest.name);
+        skillEntries.push({ name: manifest.name, description: manifest.description ?? '', type: 'installed' });
+      }
+    }
+
+    if (skillEntries.length > 0) {
+      parts.push('## Available Skills (live from system)');
+      parts.push('');
+      parts.push('The `skills` field must ONLY use skill IDs from this table:');
+      parts.push('');
+      parts.push('| Skill ID | Description | Type |');
+      parts.push('|----------|-------------|------|');
+      for (const s of skillEntries) {
+        parts.push(`| \`${s.name}\` | ${s.description.slice(0, 80)} | ${s.type} |`);
+      }
+      parts.push('');
+      parts.push('Do NOT invent skill names. Only use IDs listed above.');
+    }
+
+    // Available roles
+    const roleNames = this.listAvailableRoles();
+    if (roleNames.length > 0) {
+      parts.push('');
+      parts.push('## Available Role Templates (live from system)');
+      parts.push('');
+      parts.push('The `roleName` field must be one of:');
+      parts.push('');
+      for (const r of roleNames) {
+        parts.push(`- \`${r}\``);
+      }
+    }
+
+    return parts.join('\n');
   }
 }

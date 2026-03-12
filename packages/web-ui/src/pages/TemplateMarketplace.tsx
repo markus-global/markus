@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, type TeamTemplateInfo } from '../api.ts';
+import { api, type TeamTemplateInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 
 type TabId = 'agent' | 'team';
@@ -62,7 +62,7 @@ function StarRating({ rating, count }: { rating: number; count: number }) {
   );
 }
 
-export function TemplateMarketplace() {
+export function TemplateMarketplace({ authUser }: { authUser?: AuthUser } = {}) {
   const [activeTab, setActiveTab] = useState<TabId>('agent');
 
   useEffect(() => {
@@ -103,12 +103,12 @@ export function TemplateMarketplace() {
         </div>
       </div>
 
-      {activeTab === 'agent' ? <AgentTemplatesTab /> : <TeamTemplatesTab />}
+      {activeTab === 'agent' ? <AgentTemplatesTab authUser={authUser} /> : <TeamTemplatesTab />}
     </div>
   );
 }
 
-function AgentTemplatesTab() {
+function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [selected, setSelected] = useState<TemplateInfo | null>(null);
   const [filter, setFilter] = useState<'all' | 'official' | 'community'>('all');
@@ -116,6 +116,7 @@ function AgentTemplatesTab() {
   const [search, setSearch] = useState('');
   const [showHireModal, setShowHireModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
@@ -130,7 +131,11 @@ function AgentTemplatesTab() {
       ]);
 
       const registry: TemplateInfo[] = Array.isArray(registryRes.templates) ? registryRes.templates : [];
-      const marketplace: TemplateInfo[] = Array.isArray(marketplaceRes.templates) ? marketplaceRes.templates : [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const marketplace: TemplateInfo[] = (Array.isArray(marketplaceRes.templates) ? marketplaceRes.templates : []).map((t: any) => ({
+        ...t,
+        author: t.author || t.authorName || 'Unknown',
+      }));
 
       const seen = new Set<string>();
       const merged: TemplateInfo[] = [];
@@ -166,6 +171,23 @@ function AgentTemplatesTab() {
       setSelected(null);
     } catch (err) {
       alert(`Failed to create agent: ${err}`);
+    }
+  };
+
+  const isAuthor = (tpl: TemplateInfo) =>
+    authUser?.name && tpl.author && tpl.author === authUser.name;
+
+  const handleDelete = async (tpl: TemplateInfo) => {
+    if (!confirm(`Delete template "${tpl.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await api.marketplace.deleteTemplate(tpl.id);
+      setSelected(null);
+      loadTemplates();
+    } catch (err) {
+      alert(`Failed to delete: ${err}`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -249,6 +271,15 @@ function AgentTemplatesTab() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {isAuthor(selected) && (
+                  <button
+                    onClick={() => handleDelete(selected)}
+                    disabled={deleting}
+                    className="px-4 py-2 bg-red-600/20 text-red-400 text-sm rounded-lg hover:bg-red-600/30 border border-red-500/30 transition-colors disabled:opacity-50"
+                  >
+                    {deleting ? 'Deleting...' : 'Delete'}
+                  </button>
+                )}
                 <button
                   onClick={() => setShowHireModal(true)}
                   className="px-5 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 transition-colors font-medium"

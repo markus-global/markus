@@ -468,7 +468,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await orgService.seedDefaultTeam(firstOrgId, 'default');
 
   // Ensure builder agents exist (idempotent — skips if already created)
-  await orgService.seedBuilderAgents(firstOrgId);
+  await orgService.seedBuilderAgents(firstOrgId, skillRegistry);
 
   // Do NOT auto-resume in_progress tasks on startup.
   // Previous behavior called taskService.resumeInProgressTasks() here,

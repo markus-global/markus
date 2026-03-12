@@ -117,10 +117,16 @@ export class ContextEngine {
       primaryWorkspace: string;
       sharedWorkspace?: string;
     };
+    dynamicContext?: string;
   }): Promise<string> {
     const parts: string[] = [];
 
     parts.push(opts.role.systemPrompt);
+
+    if (opts.dynamicContext) {
+      parts.push(opts.dynamicContext);
+    }
+
     parts.push(this.buildIdentitySection(opts));
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);

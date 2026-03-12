@@ -3165,6 +3165,26 @@ export class APIServer {
         ? this.templateRegistry.search({}).templates.map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }))
         : [];
 
+      // Build dynamic skills/roles context
+      const skillEntries: Array<{ name: string; desc: string; type: string }> = [];
+      const seenSkills = new Set<string>();
+      if (this.skillRegistry) {
+        for (const s of this.skillRegistry.list()) {
+          seenSkills.add(s.name);
+          skillEntries.push({ name: s.name, desc: s.description ?? '', type: s.sourcePath ? 'installed' : 'builtin' });
+        }
+      }
+      for (const dir of WELL_KNOWN_SKILL_DIRS) {
+        for (const { manifest } of discoverSkillsInDir(dir)) {
+          if (seenSkills.has(manifest.name)) continue;
+          seenSkills.add(manifest.name);
+          skillEntries.push({ name: manifest.name, desc: manifest.description ?? '', type: 'installed' });
+        }
+      }
+      const skillTable = skillEntries.map(s => `| \`${s.name}\` | ${s.desc.slice(0, 80)} | ${s.type} |`).join('\n');
+      const availableRoles = this.orgService.listAvailableRoles();
+      const roleList = availableRoles.map(r => `\`${r}\``).join(', ');
+
       const SYSTEM_PROMPTS: Record<string, string> = {
         agent: `You are Agent Father — an expert AI agent architect. You help users design and create powerful AI agents through natural conversation.
 
@@ -3180,9 +3200,10 @@ When outputting the final configuration, wrap it in a JSON code block with these
 {
   "name": "Agent Name",
   "description": "What this agent does",
+  "roleName": "developer",
   "agentRole": "manager" | "worker",
   "category": "development" | "devops" | "management" | "productivity" | "general",
-  "skills": "comma-separated skills",
+  "skills": "git,code-analysis,browser",
   "tags": "comma-separated tags",
   "systemPrompt": "Detailed system prompt...",
   "llmProvider": "anthropic" | "openai" | "google" | "",
@@ -3192,6 +3213,18 @@ When outputting the final configuration, wrap it in a JSON code block with these
   "requiredEnv": ["git", "node", "python3", "docker", "browser", "pnpm", "java", "go"]
 }
 \`\`\`
+
+## Available Skills (from system)
+| Skill ID | Description | Type |
+|----------|-------------|------|
+${skillTable}
+
+CRITICAL: The \`skills\` field must ONLY contain skill IDs from the table above. Do NOT invent skill names or use generic concepts.
+
+## Available Role Templates
+${roleList}
+
+The \`roleName\` field must be one of the role templates listed above.
 
 Always be conversational first. Only output the JSON when you have enough context. If the user's first message is already very detailed, you may output the JSON right away along with your explanation.`,
 
@@ -3293,9 +3326,13 @@ Be conversational. Help the user think through tool design, edge cases, and perm
             ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean)
             : [];
 
+          const requestedRole = (artifact.roleName as string) ?? 'developer';
+          const knownRoles = this.orgService.listAvailableRoles();
+          const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
+
           const agent = await this.orgService.hireAgent({
             name: agentName,
-            roleName: 'developer',
+            roleName,
             orgId: 'default',
             teamId: body['teamId'] as string | undefined,
             agentRole: (artifact.agentRole as 'manager' | 'worker') ?? 'worker',

@@ -866,6 +866,8 @@ export const api = {
       request('/marketplace/skills', { method: 'POST', body: JSON.stringify(data) }),
     shareTemplate: (data: { name: string; description: string; roleId: string; agentRole: string; category: string; authorName: string; skills?: string[]; tags?: string[]; config?: Record<string, unknown>; publish?: boolean }) =>
       request('/marketplace/templates', { method: 'POST', body: JSON.stringify(data) }),
+    deleteTemplate: (templateId: string) =>
+      request(`/marketplace/templates/${templateId}`, { method: 'DELETE' }),
   },
   builder: {
     chat: (mode: 'agent' | 'team' | 'skill', messages: Array<{ role: string; content: string }>) =>

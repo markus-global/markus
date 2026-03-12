@@ -68,7 +68,7 @@ export function App() {
     chat: <Chat authUser={currentUser} />,
     settings: <Settings />,
     skills: <SkillStore />,
-    templates: <TemplateMarketplace />,
+    templates: <TemplateMarketplace authUser={currentUser} />,
     builder: <AgentBuilder />,
     governance: <GovernancePage />,
     projects: <ProjectsPage />,

@@ -157,6 +157,7 @@ export class Agent {
   /** In-memory activity log buffer (keyed by activity ID) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
+  private dynamicContextProviders: Array<() => string> = [];
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
   private static readonly MAX_CONCURRENT_TASKS = 5;
@@ -611,6 +612,16 @@ export class Agent {
     this.identityContext = ctx;
   }
 
+  addDynamicContextProvider(provider: () => string): void {
+    this.dynamicContextProviders.push(provider);
+  }
+
+  private getDynamicContext(): string | undefined {
+    if (this.dynamicContextProviders.length === 0) return undefined;
+    const parts = this.dynamicContextProviders.map(p => p()).filter(Boolean);
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
+  }
+
   setAuditCallback(
     cb: (event: {
       type: string;
@@ -927,6 +938,7 @@ export class Agent {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
+      dynamicContext: this.getDynamicContext(),
     });
 
     let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1238,6 +1250,7 @@ export class Agent {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
+      dynamicContext: this.getDynamicContext(),
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1666,6 +1679,7 @@ export class Agent {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
+      dynamicContext: this.getDynamicContext(),
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });

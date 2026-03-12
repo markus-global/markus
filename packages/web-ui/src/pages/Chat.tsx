@@ -1746,6 +1746,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         <BuilderArtifactPanel
           mode={getBuilderMode(currentAgent.role)!}
           messages={messages.map(m => ({ sender: m.sender, text: m.text }))}
+          authorName={authUser?.name ?? 'Anonymous'}
         />
       )}
     </div>

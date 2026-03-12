@@ -164,9 +164,10 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
 
 // ─── Artifact Sidebar Panel (for Chat page) ──────────────────────────────────
 
-export function BuilderArtifactPanel({ mode, messages }: {
+export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous' }: {
   mode: BuilderMode;
   messages: Array<{ sender: string; text: string }>;
+  authorName?: string;
 }) {
   const [creating, setCreating] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -251,7 +252,7 @@ export function BuilderArtifactPanel({ mode, messages }: {
           roleId,
           agentRole: (artifact.agentRole as string) ?? 'worker',
           category: (artifact.category as string) ?? 'general',
-          authorName: 'Builder',
+          authorName,
           skills: typeof artifact.skills === 'string'
             ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean)
             : [],
@@ -277,7 +278,7 @@ export function BuilderArtifactPanel({ mode, messages }: {
           roleId,
           agentRole: 'manager',
           category: (artifact.category as string) ?? 'general',
-          authorName: 'Builder',
+          authorName,
           tags: typeof artifact.tags === 'string'
             ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean)
             : Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
@@ -292,7 +293,7 @@ export function BuilderArtifactPanel({ mode, messages }: {
         await api.marketplace.publishSkill({
           name: (artifact.name as string) ?? 'unnamed-skill',
           description: (artifact.description as string) ?? '',
-          authorName: (artifact.author as string) ?? 'Builder',
+          authorName: (artifact.author as string) ?? authorName,
           category: (artifact.category as string) ?? 'custom',
           tags: Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
           tools: Array.isArray(artifact.tools) ? (artifact.tools as Array<{ name: string; description: string }>) : [],
@@ -308,7 +309,7 @@ export function BuilderArtifactPanel({ mode, messages }: {
     } finally {
       setSharing(false);
     }
-  }, [artifact, sharing, mode]);
+  }, [artifact, sharing, mode, authorName]);
 
   const modeLabels = { agent: 'Agent Config', team: 'Team Config', skill: 'Skill Manifest' };
   const modeIcons = { agent: '\u2726', team: '\u25C8', skill: '\u2B21' };
