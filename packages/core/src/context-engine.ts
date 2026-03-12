@@ -456,6 +456,7 @@ export class ContextEngine {
       );
       if (self.skills.length > 0) {
         lines.push(`- Skills: ${self.skills.join(', ')}`);
+        lines.push(`  (Use \`discover_tools\` with skill names to activate their tools, or \`discover_tools({ mode: "list_skills" })\` to browse all available skills)`);
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);

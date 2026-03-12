@@ -1970,6 +1970,10 @@ export class APIServer {
         if (skillName && !agent.config.skills.includes(skillName)) {
           agent.config.skills.push(skillName);
         }
+        if (this.storage) {
+          try { await this.storage.agentRepo.updateConfig(agentId, { skills: agent.config.skills }); }
+          catch (e) { log.warn('Failed to persist skill assignment', { agentId, error: String(e) }); }
+        }
         this.json(res, 200, { ok: true, skills: agent.config.skills });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -1985,6 +1989,10 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         agent.config.skills = agent.config.skills.filter(s => s !== skillName);
+        if (this.storage) {
+          try { await this.storage.agentRepo.updateConfig(agentId, { skills: agent.config.skills }); }
+          catch (e) { log.warn('Failed to persist skill removal', { agentId, error: String(e) }); }
+        }
         this.json(res, 200, { ok: true, skills: agent.config.skills });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });

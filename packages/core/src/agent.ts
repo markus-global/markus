@@ -27,6 +27,7 @@ import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metric
 import { ContextEngine, type OrgContext } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
+import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBuiltinTools } from './tools/builtin.js';
@@ -86,6 +87,8 @@ export interface AgentOptions {
   pathPolicy?: PathAccessPolicy;
   /** Restored state from DB (used during server restart recovery) */
   restoredState?: { tokensUsedToday?: number };
+  /** Skill registry for runtime skill discovery and activation */
+  skillRegistry?: SkillRegistry;
 }
 
 export class Agent {
@@ -101,6 +104,7 @@ export class Agent {
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private pathPolicy?: PathAccessPolicy;
+  private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
@@ -177,6 +181,7 @@ export class Agent {
 
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
+    this.skillRegistry = options.skillRegistry;
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
@@ -1949,26 +1954,93 @@ export class Agent {
       recentToolNames: recentPlusActivated,
       isManager,
       isTaskExecution: context?.isTaskExecution,
+      skillCatalog: this.skillRegistry?.list(),
     });
   }
 
-  private async executeTool(toolCall: LLMToolCall): Promise<string> {
-    // Handle the discover_tools meta-tool: activate requested tools
-    if (toolCall.name === 'discover_tools') {
-      const requested = (toolCall.arguments.tool_names as string[]) ?? [];
-      for (const name of requested) {
-        if (this.tools.has(name)) {
-          this.activatedExtraTools.add(name);
-        }
+  /**
+   * Handle the discover_tools meta-tool. Supports:
+   * - mode="list_skills": list all skills in the registry with their tools
+   * - tool_names with skill names: resolve skill -> register & activate all its tools
+   * - tool_names with tool names: activate individual tools (original behavior)
+   */
+  private handleDiscoverTools(args: Record<string, unknown>): string {
+    const mode = (args.mode as string) ?? 'activate';
+
+    if (mode === 'list_skills') {
+      const skills = this.skillRegistry?.list() ?? [];
+      if (skills.length === 0) {
+        return JSON.stringify({
+          status: 'ok',
+          skills: [],
+          message: 'No skills available in the registry.',
+        });
       }
-      const activated = requested.filter(n => this.tools.has(n));
-      const unknown = requested.filter(n => !this.tools.has(n));
+      const catalog = skills.map(s => ({
+        name: s.name,
+        description: s.description,
+        category: s.category,
+        tools: s.tools.map(t => t.name),
+      }));
       return JSON.stringify({
         status: 'ok',
-        activated,
-        unknown,
-        message: `${activated.length} tools activated. They are now available for your next response.`,
+        skills: catalog,
+        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill or specific tools.`,
       });
+    }
+
+    // mode === 'activate' (default)
+    const requested = (args.tool_names as string[]) ?? [];
+    const activated: string[] = [];
+    const unknown: string[] = [];
+
+    for (const name of requested) {
+      // 1. Check if it's an existing tool name on this agent
+      if (this.tools.has(name)) {
+        this.activatedExtraTools.add(name);
+        activated.push(name);
+        continue;
+      }
+
+      // 2. Check if it's a skill name in the registry
+      if (this.skillRegistry) {
+        const skill = this.skillRegistry.get(name);
+        if (skill) {
+          for (const tool of skill.tools) {
+            this.tools.set(tool.name, tool);
+            this.activatedExtraTools.add(tool.name);
+            activated.push(tool.name);
+          }
+          log.info('Skill activated via discover_tools', {
+            agentId: this.id, skill: name,
+            tools: skill.tools.map(t => t.name),
+          });
+          continue;
+        }
+      }
+
+      // 3. Not found as tool or skill
+      unknown.push(name);
+    }
+
+    const result: Record<string, unknown> = {
+      status: 'ok',
+      activated,
+      message: `${activated.length} tools activated. They are now available for your next response.`,
+    };
+    if (unknown.length > 0) {
+      result.unknown = unknown;
+      result.hint = 'These names were not found as tools or skills. '
+        + 'Use discover_tools({ mode: "list_skills" }) to see all available skills, '
+        + 'or check the tool list in the discover_tools description for exact tool names.';
+    }
+    return JSON.stringify(result);
+  }
+
+  private async executeTool(toolCall: LLMToolCall): Promise<string> {
+    // Handle the discover_tools meta-tool: activate requested tools and skills
+    if (toolCall.name === 'discover_tools') {
+      return this.handleDiscoverTools(toolCall.arguments);
     }
 
     // Enforce agent profile tool restrictions

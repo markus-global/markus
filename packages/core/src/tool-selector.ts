@@ -1,5 +1,6 @@
 import { createLogger } from '@markus/shared';
 import type { LLMTool } from '@markus/shared';
+import type { SkillManifest } from './skills/types.js';
 
 const log = createLogger('tool-selector');
 
@@ -131,6 +132,7 @@ export class ToolSelector {
     recentToolNames?: string[];
     isManager?: boolean;
     isTaskExecution?: boolean;
+    skillCatalog?: SkillManifest[];
   }): LLMTool[] {
     const selected = new Set<string>();
 
@@ -194,7 +196,7 @@ export class ToolSelector {
     }
 
     // 7. Always add the discover_tools meta-tool so agent can request more
-    result.push(this.buildDiscoverTool(opts.allTools, selected));
+    result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
 
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
@@ -206,37 +208,59 @@ export class ToolSelector {
   }
 
   /**
-   * A meta-tool that lists all available tool groups and their tools.
+   * A meta-tool that lists all available tool groups/skills and their tools.
    * The agent can call this to discover what other tools exist and
-   * request them by describing what it needs to do.
+   * request them by skill name or tool name.
    */
   private buildDiscoverTool(
     allTools: Map<string, { name: string; description: string }>,
     alreadySelected: Set<string>,
+    skillCatalog?: SkillManifest[],
   ): LLMTool {
-    // Build a compact catalog of available (but not currently loaded) tools
+    const parts: string[] = [];
+    parts.push(`You have ${alreadySelected.size} tools active.`);
+
+    // Skill catalog: show skills with their tool lists
+    if (skillCatalog && skillCatalog.length > 0) {
+      parts.push(`\nSkills available (activate by skill name):`);
+      for (const skill of skillCatalog) {
+        const toolList = skill.tools.map(t => t.name).join(', ');
+        parts.push(`  [${skill.name}] ${skill.description.slice(0, 50)} → tools: ${toolList}`);
+      }
+    }
+
+    // Individual tools not in any skill
     const unloaded: string[] = [];
     for (const [name, tool] of allTools) {
       if (!alreadySelected.has(name)) {
         unloaded.push(`${name}: ${tool.description.slice(0, 60)}`);
       }
     }
+    if (unloaded.length > 0) {
+      parts.push(`\nIndividual tools available (${unloaded.length}):`);
+      parts.push(unloaded.join('\n'));
+    }
+
+    parts.push('\nUsage: pass skill names or tool names in tool_names to activate them.');
+    parts.push('Use mode="list_skills" to get full skill details.');
 
     return {
       name: 'discover_tools',
-      description: `List additional tools not currently loaded. You have ${alreadySelected.size} tools active. ` +
-        `${unloaded.length} more available:\n${unloaded.join('\n')}\n\n` +
-        `Call this with the names of tools you need, and they will be activated for your next response.`,
+      description: parts.join('\n'),
       inputSchema: {
         type: 'object',
         properties: {
           tool_names: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Names of tools to activate',
+            description: 'Names of skills or individual tools to activate',
+          },
+          mode: {
+            type: 'string',
+            enum: ['activate', 'list_skills'],
+            description: 'Mode: "activate" (default) to activate tools/skills, "list_skills" to browse all available skills',
           },
         },
-        required: ['tool_names'],
       },
     };
   }

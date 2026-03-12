@@ -498,12 +498,20 @@ export class AgentManager {
       tools,
       orgContext: request.orgContext,
       pathPolicy,
+      skillRegistry: this.skillRegistry,
     };
 
     const agent = new Agent(agentOpts);
 
     // Inject skill tools based on agent's configured skills
     if (this.skillRegistry && config.skills.length > 0) {
+      const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
+      if (missingSkills.length > 0) {
+        log.warn(`Agent ${config.name} (${id}) references skills not found in registry`, {
+          missing: missingSkills,
+          available: this.skillRegistry.list().map(s => s.name),
+        });
+      }
       const skillTools = this.skillRegistry.getToolsForSkills(config.skills);
       for (const tool of skillTools) {
         agent.registerTool(tool);
@@ -956,9 +964,17 @@ export class AgentManager {
       tools,
       pathPolicy,
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
+      skillRegistry: this.skillRegistry,
     });
 
     if (this.skillRegistry && config.skills.length > 0) {
+      const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
+      if (missingSkills.length > 0) {
+        log.warn(`Restored agent ${config.name} (${id}) references skills not found in registry`, {
+          missing: missingSkills,
+          available: this.skillRegistry.list().map(s => s.name),
+        });
+      }
       for (const tool of this.skillRegistry.getToolsForSkills(config.skills)) {
         agent.registerTool(tool);
       }
