@@ -834,7 +834,7 @@ export const api = {
       return request<{ skills: Array<{ slug: string; name: string; description: string; description_zh?: string; version: string; homepage: string; tags: string[]; downloads: number; stars: number; installs: number; score: number }>; total: number; page: number; limit: number; categories: string[]; featured: string[]; cached: boolean }>(`/skills/registry/skillhub${qs ? `?${qs}` : ''}`);
     },
     registrySkillssh: (q?: string) =>
-      request<{ skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }>; cached: boolean }>(`/skills/registry/skillssh${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+      request<{ skills: Array<{ name: string; author: string; repo: string; installs: string; url: string; description?: string }>; cached: boolean }>(`/skills/registry/skillssh${q ? `?q=${encodeURIComponent(q)}` : ''}`),
     import: (name: string, sourceUrl?: string, description?: string, category?: string) =>
       request('/skills/import', { method: 'POST', body: JSON.stringify({ name, sourceUrl, description, category }) }),
     install: (opts: { name: string; source?: string; slug?: string; sourceUrl?: string; description?: string; category?: string; version?: string; githubRepo?: string; githubSkillPath?: string }) =>

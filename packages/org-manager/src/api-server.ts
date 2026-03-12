@@ -2951,19 +2951,29 @@ export class APIServer {
           }
         }
 
-        // Strategy 3: Try sourceUrl directly if it points to a SKILL.md or manifest.json
-        if (!installed && sourceUrl) {
+        // Strategy 3: Try ClawHub ZIP as fallback (many skills.sh skills are cross-listed)
+        if (!installed) {
+          const trySlug = slug || safeName;
           try {
-            if (sourceUrl.endsWith('.md') || sourceUrl.includes('SKILL.md')) {
-              const mdResp = await fetch(sourceUrl, { signal: AbortSignal.timeout(15000) });
-              if (mdResp.ok) {
-                mkdirSync(targetDir, { recursive: true });
-                writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
+            const zipUrl = `https://wry-manatee-359.convex.site/api/v1/download?slug=${encodeURIComponent(trySlug)}`;
+            const zipResp = await fetch(zipUrl, { signal: AbortSignal.timeout(20000) });
+            if (zipResp.ok) {
+              const tmpZip = join(skillsDir, `_tmp_${safeName}.zip`);
+              const buffer = Buffer.from(await zipResp.arrayBuffer());
+              writeFileSync(tmpZip, buffer);
+              mkdirSync(targetDir, { recursive: true });
+              try {
+                execSync(`unzip -o "${tmpZip}" -d "${targetDir}"`, { timeout: 30000 });
                 installed = true;
-                installMethod = 'direct-url';
+                installMethod = 'clawhub-zip-fallback';
+              } catch {
+                console.warn('[skills/install] unzip failed (fallback)');
               }
+              try { execSync(`rm -f "${tmpZip}"`); } catch { /* cleanup */ }
             }
-          } catch { /* fallthrough */ }
+          } catch {
+            console.warn(`[skills/install] ClawHub fallback failed for ${trySlug}`);
+          }
         }
 
         if (!installed) {
@@ -3349,39 +3359,60 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           return;
         }
         const html = await resp.text();
-        const skills: Array<{ name: string; author: string; repo: string; installs: string; url: string }> = [];
+        const skills: Array<{ name: string; author: string; repo: string; installs: string; url: string; description?: string }> = [];
         const seen = new Set<string>();
-        const addSkill = (name: string, author: string, repo: string, installs: string, fullPath: string) => {
+
+        // Parse the leaderboard HTML: each skill is an <a> block with h3 (name), p (author/repo), span (installs)
+        const blockRegex = /<a[^>]*href="\/([\w-]+\/[\w.-]+\/[\w][\w.-]*)"[^>]*>([\s\S]*?)<\/a>/g;
+        const IGNORED_PREFIXES = new Set(['_next', 'static', 'api', 'assets', 'images', 'fonts', 'css', 'js']);
+        let match: RegExpExecArray | null;
+        while ((match = blockRegex.exec(html)) !== null) {
+          const fullPath = match[1]!;
+          const parts = fullPath.split('/');
+          if (parts.length < 3) continue;
+          if (IGNORED_PREFIXES.has(parts[0]!)) continue;
+
+          const author = parts[0]!;
+          const repo = `${parts[0]}/${parts[1]}`;
+          const block = match[2]!;
+
+          // Extract skill name from <h3>
+          const nameMatch = block.match(/<h3[^>]*>(.*?)<\/h3>/);
+          const name = nameMatch?.[1]?.trim() ?? parts[2]!;
+
+          // Extract install count from last <span class="font-mono ...">
+          const installMatches = [...block.matchAll(/<span[^>]*font-mono[^>]*>([\d.]+[KMB]?)<\/span>/g)];
+          const installs = installMatches.length > 0 ? installMatches[installMatches.length - 1]![1] ?? '' : '';
+
           const key = `${author}/${repo}/${name}`;
-          if (seen.has(key)) return;
+          if (seen.has(key)) continue;
           seen.add(key);
           skills.push({ name, author, repo, installs, url: `https://skills.sh/${fullPath}` });
-        };
-
-        // Try markdown-style patterns (skills.sh used to serve these)
-        const skillRegex = /###\s+(.+?)\n\n\[.*?([\w-]+\/[\w-]+(?:\/[\w-]+)?)[\d.K]*\]\(https:\/\/skills\.sh\/(.*?)\)/g;
-        let match: RegExpExecArray | null;
-        while ((match = skillRegex.exec(html)) !== null) {
-          const name = match[1]?.trim() ?? '';
-          const pathParts = (match[3] ?? '').split('/');
-          const author = pathParts[0] ?? '';
-          const repo = pathParts.slice(0, 2).join('/');
-          addSkill(name, author, repo, '', match[3] ?? '');
         }
 
-        // Fallback: parse href links that look like skill paths (owner/repo/skill-name)
-        if (skills.length === 0) {
-          const IGNORED_PREFIXES = new Set(['_next', 'static', 'api', 'assets', 'images', 'fonts', 'css', 'js']);
-          const HAS_EXT = /\.\w{1,5}$/;
-          const linkRegex = /href="\/([\w-]+\/[\w-]+\/[\w][\w.-]*)"/g;
-          while ((match = linkRegex.exec(html)) !== null) {
-            const parts = match[1]!.split('/');
-            if (parts.length < 3) continue;
-            if (IGNORED_PREFIXES.has(parts[0]!)) continue;
-            if (HAS_EXT.test(parts[parts.length - 1]!)) continue;
-            addSkill(parts[2]!, parts[0]!, `${parts[0]}/${parts[1]}`, '', match[1]!);
+        // Fetch descriptions for top skills in parallel (batch of first 20)
+        const toFetch = skills.slice(0, 20).filter(s => !s.description);
+        if (toFetch.length > 0) {
+          const descResults = await Promise.allSettled(
+            toFetch.map(async (s) => {
+              const pageResp = await fetch(s.url, { signal: AbortSignal.timeout(8000) });
+              if (!pageResp.ok) return { name: s.name, desc: '' };
+              const pageHtml = await pageResp.text();
+              const pMatch = pageHtml.match(/<p[^>]*class="[^"]*text-muted[^"]*"[^>]*>(.*?)<\/p>/);
+              if (pMatch) return { name: s.name, desc: pMatch[1]!.replace(/<[^>]+>/g, '').trim() };
+              const firstP = pageHtml.match(/<article[^>]*>[\s\S]*?<p[^>]*>(.*?)<\/p>/);
+              if (firstP) return { name: s.name, desc: firstP[1]!.replace(/<[^>]+>/g, '').trim() };
+              return { name: s.name, desc: '' };
+            })
+          );
+          for (const r of descResults) {
+            if (r.status === 'fulfilled' && r.value.desc) {
+              const skill = skills.find(s => s.name === r.value.name);
+              if (skill) skill.description = r.value.desc;
+            }
           }
         }
+
         if (!this.registryCache) this.registryCache = new Map();
         this.registryCache.set(cacheKey, { data: skills, ts: now });
         this.json(res, 200, { skills, cached: false });

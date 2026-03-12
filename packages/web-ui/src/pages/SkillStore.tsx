@@ -38,6 +38,7 @@ interface SkillsShSkill {
   repo: string;
   installs?: string;
   url: string;
+  description?: string;
 }
 
 type TabId = 'installed' | 'skillhub' | 'skillssh';
@@ -220,9 +221,7 @@ export function SkillStore() {
     setLoadingSkillssh(false);
   }, []);
 
-  useEffect(() => { loadInstalled(); loadAgents(); }, [loadInstalled, loadAgents]);
-  useEffect(() => { if (tab === 'skillhub' && skillhubSkills.length === 0) loadSkillhub(); }, [tab]);
-  useEffect(() => { if (tab === 'skillssh' && skillsshList.length === 0) loadSkillssh(); }, [tab]);
+  useEffect(() => { loadInstalled(); loadAgents(); loadSkillhub(); loadSkillssh(); }, []);
 
   // ── Install helpers ───────────────────────────────────────────────────────────
 
@@ -578,17 +577,19 @@ export function SkillStore() {
                   <div key={`${skill.author}-${skill.name}`} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-sm truncate">{skill.name}</div>
+                        <div className="flex items-center gap-2">
+                          <div className="font-semibold text-sm truncate">{skill.name}</div>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0">
+                            skills.sh
+                          </span>
+                        </div>
                         <div className="text-xs text-gray-500 mt-0.5">{skill.author} / {skill.repo}</div>
                       </div>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">
-                        skills.sh
-                      </span>
+                      {skill.installs && <span className="text-xs text-gray-500 shrink-0 ml-2 font-mono">{skill.installs}</span>}
                     </div>
+                    {skill.description && <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description}</p>}
                     <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
-                      </div>
+                      <div className="flex items-center gap-3" />
                       <div className="flex items-center gap-2">
                         <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
                         {isInstalled ? (
