@@ -788,8 +788,35 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const send = async (retryText?: string) => {
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
-    if (sending) return;
     if (chatMode === 'direct' && !selectedAgent) return;
+
+    // If agent is currently streaming, interrupt it first then proceed
+    if (sending) {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      const prevKey = currentConvKeyRef.current;
+      sendingConvs.current.delete(prevKey);
+      actBuffers.current.delete(prevKey);
+      // Mark the current agent message as stopped
+      updateConvMsgs(prevKey, prev => {
+        const u = [...prev];
+        for (let i = u.length - 1; i >= 0; i--) {
+          if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
+            const msg = u[i]!;
+            const segs = (msg.segments ?? []).map(s =>
+              s.type === 'tool' && s.status === 'running' ? { ...s, status: 'error' as const } : s
+            );
+            u[i] = { ...msg, isStopped: true, segments: segs };
+            break;
+          }
+        }
+        return u;
+      });
+      setSending(false);
+      setActivities([]);
+      // Small delay to let abort propagate before starting new stream
+      await new Promise(r => setTimeout(r, 50));
+    }
 
     const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
@@ -1627,7 +1654,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           <div className="flex gap-2">
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm')}
+              disabled={chatMode === 'direct' && !selectedAgent}
               className="px-2.5 py-2.5 text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors rounded-xl hover:bg-gray-800"
               title="Attach images"
             >
@@ -1643,29 +1670,27 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               onPaste={handlePaste}
               placeholder={placeholder}
-              disabled={(chatMode === 'direct' && !selectedAgent) || (sending && chatMode !== 'dm')}
+              disabled={chatMode === 'direct' && !selectedAgent}
               className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors"
             />
-            {sending && chatMode !== 'dm' ? (
+            {sending && chatMode !== 'dm' && (
               <button
                 onClick={stopSending}
-                className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm rounded-xl transition-colors flex items-center gap-1.5"
+                className="px-3 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm rounded-xl transition-colors flex items-center gap-1.5"
                 title="Stop agent"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
                   <rect x="4" y="4" width="16" height="16" rx="2" />
                 </svg>
-                Stop
-              </button>
-            ) : (
-              <button
-                onClick={() => void send()}
-                disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
-              >
-                Send
               </button>
             )}
+            <button
+              onClick={() => void send()}
+              disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+            >
+              Send
+            </button>
           </div>
         </div>
       </div>
