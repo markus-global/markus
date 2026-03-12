@@ -38,19 +38,26 @@ pnpm build
 export OPENAI_API_KEY=sk-...   # or DEEPSEEK_API_KEY / ANTHROPIC_API_KEY
 ```
 
-**Terminal 1 — start the backend:**
+**One command to start everything (API + Web UI):**
 
 ```bash
-node packages/cli/dist/index.js start
-```
-
-**Terminal 2 — start the frontend:**
-
-```bash
-pnpm --filter @markus/web-ui dev
+pnpm dev
 ```
 
 Open **`http://localhost:3000`** in your browser. The API runs on `http://localhost:3001`.
+
+<details>
+<summary>Or start backend and frontend separately</summary>
+
+```bash
+# Terminal 1 — backend
+pnpm dev:api
+
+# Terminal 2 — frontend
+pnpm dev:ui
+```
+
+</details>
 
 ### Create Your First Agent
 
