@@ -45,7 +45,6 @@ const navItems: Array<{ id: PageId; label: string; section: string }> = [
   { id: 'chat', label: 'Chat', section: 'workspace' },
   { id: 'reports', label: 'Reports', section: 'insights' },
   { id: 'knowledge', label: 'Knowledge', section: 'insights' },
-  { id: 'usage', label: 'Usage', section: 'insights' },
   { id: 'builder', label: 'Builder', section: 'build' },
   { id: 'templates', label: 'Templates', section: 'build' },
   { id: 'skills', label: 'Skills', section: 'build' },

@@ -6,7 +6,6 @@ import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
-import { Usage } from './pages/Usage.tsx';
 import { GovernancePage } from './pages/Governance.tsx';
 import { ProjectsPage } from './pages/Projects.tsx';
 import { KnowledgePage } from './pages/Knowledge.tsx';
@@ -24,6 +23,7 @@ function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
   if (hash === 'agents' || hash === 'team') return 'chat';
   if (hash === 'tasks') return 'projects';
+  if (hash === 'usage') return 'reports';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -36,7 +36,7 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p;
+    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p;
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
     window.location.hash = normalized;
@@ -65,7 +65,6 @@ export function App() {
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => ({
     dashboard: <Dashboard />,
     chat: <Chat authUser={currentUser} />,
-    usage: <Usage />,
     settings: <Settings />,
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,

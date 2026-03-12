@@ -5491,15 +5491,42 @@ Be conversational. Help the user think through tool design, edge cases, and perm
         return;
       }
       const body = await this.readBody(req);
+      const period = (body['period'] as string) ?? (body['type'] as string) ?? 'weekly';
+      const scope = (body['scope'] as string) ?? 'org';
+      const scopeId = (body['orgId'] as string) ?? (body['scopeId'] as string) ?? 'default';
+
+      const now = new Date();
+      let periodStart: Date;
+      if (body['periodStart']) {
+        periodStart = new Date(body['periodStart'] as string);
+      } else {
+        switch (period) {
+          case 'daily': {
+            periodStart = new Date(now);
+            periodStart.setHours(0, 0, 0, 0);
+            break;
+          }
+          case 'monthly': {
+            periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+            break;
+          }
+          default: {
+            periodStart = new Date(now.getTime() - 7 * 86400000);
+            break;
+          }
+        }
+      }
+      const periodEnd = body['periodEnd'] ? new Date(body['periodEnd'] as string) : now;
+
       const report = await this.reportService.generateReport({
-        type: (body['type'] as any) ?? 'weekly',
-        scope: (body['scope'] as any) ?? 'project',
-        scopeId: (body['scopeId'] as string) ?? 'default',
-        periodStart: new Date((body['periodStart'] as string) ?? Date.now() - 7 * 86400000),
-        periodEnd: new Date((body['periodEnd'] as string) ?? Date.now()),
+        type: period as any,
+        scope: scope as any,
+        scopeId,
+        periodStart,
+        periodEnd,
         includePlan: body['includePlan'] as boolean,
       });
-      this.json(res, 201, { report });
+      this.json(res, 200, { report });
       return;
     }
 
