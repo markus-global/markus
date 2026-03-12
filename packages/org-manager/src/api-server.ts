@@ -5643,6 +5643,32 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
+    if (path.match(/^\/api\/knowledge\/[^/]+\/flag-outdated$/) && req.method === 'POST') {
+      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      const knowledgeId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      this.knowledgeService.flagOutdated(knowledgeId, (body['reason'] as string) ?? '');
+      this.json(res, 200, { status: 'flagged' });
+      return;
+    }
+
+    if (path.match(/^\/api\/knowledge\/[^/]+\/verify$/) && req.method === 'POST') {
+      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      const knowledgeId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      this.knowledgeService.verify(knowledgeId, (body['verifiedBy'] as string) ?? 'human');
+      this.json(res, 200, { status: 'verified' });
+      return;
+    }
+
+    if (path.match(/^\/api\/knowledge\/[^/]+$/) && req.method === 'DELETE') {
+      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      const knowledgeId = path.split('/')[3]!;
+      this.knowledgeService.flagOutdated(knowledgeId, 'deleted by user');
+      this.json(res, 200, { status: 'deleted' });
+      return;
+    }
+
     this.json(res, 404, { error: 'Not found' });
   }
 

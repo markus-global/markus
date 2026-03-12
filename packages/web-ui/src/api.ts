@@ -169,6 +169,8 @@ export interface KnowledgeEntryInfo {
   accessCount: number;
   createdAt: string;
   updatedAt: string;
+  filePath?: string;
+  verifiedBy?: string;
 }
 
 export interface ReportMetricsInfo {
@@ -992,17 +994,21 @@ export const api = {
 
   // ─── Knowledge ─────────────────────────────────────────────────────
   knowledge: {
-    search: (query: string, scope?: string) => {
-      const params = new URLSearchParams({ query });
+    search: (query: string, scope?: string, category?: string) => {
+      const params = new URLSearchParams();
+      if (query) params.set('query', query);
       if (scope) params.set('scope', scope);
+      if (category) params.set('category', category);
       return request<{ results: KnowledgeEntryInfo[] }>(`/knowledge/search?${params}`);
-    },
-    list: (scope?: string) => {
-      const params = scope ? `?scope=${scope}` : '';
-      return request<{ entries: KnowledgeEntryInfo[] }>(`/knowledge${params}`);
     },
     contribute: (data: Partial<KnowledgeEntryInfo>) =>
       request<{ entry: KnowledgeEntryInfo }>('/knowledge', { method: 'POST', body: JSON.stringify(data) }),
+    flagOutdated: (id: string, reason: string) =>
+      request<{ status: string }>(`/knowledge/${id}/flag-outdated`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    verify: (id: string) =>
+      request<{ status: string }>(`/knowledge/${id}/verify`, { method: 'POST', body: JSON.stringify({ verifiedBy: 'human' }) }),
+    remove: (id: string) =>
+      request<{ status: string }>(`/knowledge/${id}`, { method: 'DELETE' }),
   },
 
   // ─── Reports ───────────────────────────────────────────────────────
