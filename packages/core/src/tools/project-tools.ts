@@ -1,5 +1,32 @@
 import type { AgentToolHandler } from '../agent.js';
 
+export interface KnowledgeServiceBridge {
+  contribute(opts: {
+    scope: string;
+    scopeId: string;
+    category: string;
+    title: string;
+    content: string;
+    source: string;
+    importance?: number;
+    tags?: string[];
+    supersedes?: string;
+  }): { id: string; status: string };
+  search(opts: {
+    query: string;
+    scope?: string;
+    scopeId?: string;
+    category?: string;
+    limit?: number;
+  }): Array<{ id: string; title: string; category: string; content: string; importance: number }>;
+  browse(opts: {
+    scope: string;
+    scopeId: string;
+    category?: string;
+  }): Record<string, number> | Array<{ id: string; title: string; content: string }>;
+  flagOutdated(id: string, reason: string): void;
+}
+
 export interface ProjectServiceBridge {
   listProjects(orgId?: string): Array<{
     id: string;

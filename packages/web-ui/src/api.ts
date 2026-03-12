@@ -158,12 +158,12 @@ export interface IterationInfo {
 export interface KnowledgeEntryInfo {
   id: string;
   scope: string;
+  scopeId: string;
   category: string;
   title: string;
   content: string;
   tags: string[];
   source: string;
-  projectId?: string;
   importance: number;
   status: string;
   accessCount: number;

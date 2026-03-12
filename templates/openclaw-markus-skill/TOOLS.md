@@ -75,6 +75,47 @@ Returns array of `{ id, title, status, priority, projectId, description }`.
 
 Use this to understand *why* a task exists — every task traces back to a requirement.
 
+## Knowledge Base Endpoints
+
+### markus_knowledge_search
+
+**`GET /api/gateway/knowledge/search?query=xxx`**
+
+Search the shared project knowledge base. Returns matching entries sorted by relevance.
+
+Query parameters:
+- `query` — search keywords
+- `scope` — `project` | `org` (default: searches all)
+- `category` — filter by: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`
+
+Search before starting work to check existing conventions and architectural decisions.
+
+### markus_knowledge_contribute
+
+**`POST /api/gateway/knowledge`**
+
+Contribute knowledge to the shared knowledge base. Body:
+```json
+{
+  "scope": "project",
+  "category": "convention",
+  "title": "Clear, searchable title",
+  "content": "Detailed knowledge with context and rationale",
+  "importance": 60,
+  "tags": ["tag1", "tag2"],
+  "supersedes": "kb-xxx (optional, ID of entry this replaces)"
+}
+```
+
+Categories: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`.
+Importance: 80+ critical, 50-79 useful, <50 nice-to-know.
+
+### markus_knowledge_flag_outdated
+
+**`POST /api/gateway/knowledge/:id/flag-outdated`**
+
+Flag a knowledge entry as outdated. Body: `{ "reason": "Why this is no longer accurate" }`
+
 ## Task Lifecycle Endpoints
 
 ### markus_task_accept

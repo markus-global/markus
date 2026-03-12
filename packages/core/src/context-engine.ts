@@ -318,12 +318,18 @@ export class ContextEngine {
       '**Never browse the filesystem to discover project structure.** Always use these tools first.'
     );
 
-    parts.push('\n## Memory & Tools');
+    parts.push('\n## Memory & Knowledge');
     parts.push(
       '- `memory_save` — Persist important facts/decisions. `memory_search` — Recall past context.'
     );
     parts.push(
-      '- Save only meaningful information (preferences, decisions, outcomes). Skip trivial data.'
+      '- `knowledge_search` — Search the shared project/org knowledge base before starting work.'
+    );
+    parts.push(
+      '- `knowledge_contribute` — Share valuable discoveries (conventions, gotchas, decisions) with the team.'
+    );
+    parts.push(
+      '- Save personal notes to memory; share team-relevant insights to knowledge base.'
     );
 
     if (opts.environment) {

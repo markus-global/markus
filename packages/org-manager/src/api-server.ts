@@ -2416,6 +2416,71 @@ export class APIServer {
       return;
     }
 
+    // ── Gateway: Knowledge ──────────────────────────────────────────────────
+    if (path === '/api/gateway/knowledge/search' && req.method === 'GET') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        this.gateway.verifyToken(authHeader.slice(7));
+        const query = url.searchParams.get('query') ?? '';
+        const scope = url.searchParams.get('scope') as any;
+        const category = url.searchParams.get('category') as any;
+        this.json(res, 200, {
+          results: this.knowledgeService?.search({ query, scope, category }) ?? [],
+        });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path === '/api/gateway/knowledge' && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        const token = this.gateway.verifyToken(authHeader.slice(7));
+        if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+        const body = await this.readBody(req);
+        const entry = this.knowledgeService.contribute({
+          scope: body['scope'] as any,
+          scopeId: body['scopeId'] as string ?? token.orgId,
+          category: body['category'] as any,
+          title: body['title'] as string,
+          content: body['content'] as string,
+          source: token.markusAgentId ?? 'external',
+          importance: body['importance'] as number,
+          tags: body['tags'] as string[],
+          supersedes: body['supersedes'] as string,
+        });
+        this.json(res, 201, { entry });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/gateway\/knowledge\/[^/]+\/flag-outdated$/) && req.method === 'POST') {
+      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
+      const authHeader = req.headers['authorization'];
+      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
+      try {
+        this.gateway.verifyToken(authHeader.slice(7));
+        if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+        const knowledgeId = path.split('/')[4]!;
+        const body = await this.readBody(req);
+        this.knowledgeService.flagOutdated(knowledgeId, (body['reason'] as string) ?? '');
+        this.json(res, 200, { status: 'flagged' });
+      } catch (err) {
+        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Gateway: Sync Endpoint ──────────────────────────────────────────────
     if (path === '/api/gateway/sync' && req.method === 'POST') {
       if (!this.gateway || !this.syncHandler) {

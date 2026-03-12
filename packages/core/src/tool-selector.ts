@@ -81,6 +81,13 @@ const TOOL_GROUPS: ToolGroup[] = [
     keywords: ['todo', 'plan', 'checklist', '待办', '计划', '清单'],
     toolNames: ['todo_write', 'todo_read'],
   },
+  {
+    name: 'knowledge',
+    keywords: ['knowledge', 'knowledge base', 'contribute', 'convention', 'architecture decision',
+      'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern',
+      '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
+    toolNames: ['knowledge_contribute', 'knowledge_search', 'knowledge_browse', 'knowledge_flag_outdated'],
+  },
 ];
 
 /**
@@ -98,6 +105,8 @@ const BASE_TOOL_NAMES = new Set([
   // Memory (critical for context continuity)
   'memory_save',
   'memory_search',
+  // Knowledge (shared team knowledge)
+  'knowledge_search',
 ]);
 
 export class ToolSelector {

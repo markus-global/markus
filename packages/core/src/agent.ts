@@ -1594,6 +1594,14 @@ export class Agent {
       '3. Any important decisions made and their rationale',
       '4. Known limitations or follow-up items',
       'This note serves as a permanent record for reviewers, other agents, and future reference.',
+      '',
+      '## Knowledge Contribution',
+      'Before submitting, review what you learned during this task. If you discovered any of the following, use `knowledge_contribute` to share with the team:',
+      '- Architectural decisions or patterns worth documenting',
+      '- Coding conventions or best practices established',
+      '- Gotchas, pitfalls, or troubleshooting steps that would save others time',
+      '- API details, integration notes, or dependency quirks',
+      'This is how your team builds collective intelligence. Skip if nothing novel was learned.',
     ].join('\n');
 
     this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });

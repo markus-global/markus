@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, type KnowledgeEntryInfo } from '../api.ts';
 
-const CATEGORIES = ['guideline', 'decision', 'pattern', 'lesson_learned', 'faq', 'reference', 'convention', 'other'] as const;
+const CATEGORIES = ['architecture', 'convention', 'api', 'decision', 'gotcha', 'troubleshooting', 'dependency', 'process', 'reference'] as const;
 const SCOPES = ['org', 'project', 'personal'] as const;
 
 export function KnowledgePage() {
@@ -17,7 +17,7 @@ export function KnowledgePage() {
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [newScope, setNewScope] = useState<string>('org');
-  const [newCategory, setNewCategory] = useState<string>('guideline');
+  const [newCategory, setNewCategory] = useState<string>('convention');
   const [newTags, setNewTags] = useState('');
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
@@ -44,9 +44,10 @@ export function KnowledgePage() {
         title: newTitle,
         content: newContent,
         scope: newScope,
+        scopeId: 'default',
         category: newCategory,
         tags: newTags.split(',').map(t => t.trim()).filter(Boolean),
-      } as Partial<KnowledgeEntryInfo>);
+      });
       setShowContribute(false);
       setNewTitle(''); setNewContent(''); setNewTags('');
       msg('Knowledge entry added');

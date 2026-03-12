@@ -21,7 +21,7 @@ import { createManagerTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
-import { createProjectTools, type ProjectServiceBridge } from './tools/project-tools.js';
+import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -156,6 +156,7 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
+  private knowledgeService?: KnowledgeServiceBridge;
   private semanticSearch?: SemanticMemorySearch;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
@@ -200,6 +201,48 @@ export class AgentManager {
   };
 
   private managerHeartbeatCache?: HeartbeatTask[];
+
+  private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
+    import('./tools/project-tools.js').ProjectToolsContext,
+    'knowledgeContribute' | 'knowledgeSearch' | 'knowledgeBrowse' | 'knowledgeFlagOutdated'
+  > {
+    if (!this.knowledgeService) return {};
+    const ks = this.knowledgeService;
+    return {
+      knowledgeContribute: async (opts) => {
+        const scopeId = opts.scope === 'org' ? orgId : (opts.scope === 'project' ? orgId : agentId);
+        const entry = ks.contribute({
+          scope: opts.scope as 'project' | 'org',
+          scopeId,
+          category: opts.category as any,
+          title: opts.title,
+          content: opts.content,
+          source: agentId,
+          importance: opts.importance,
+          tags: opts.tags?.split(',').map(t => t.trim()).filter(Boolean),
+          supersedes: opts.supersedes,
+        });
+        return { id: entry.id, status: entry.status };
+      },
+      knowledgeSearch: async (query, scope, category, limit) => {
+        const results = ks.search({ query, scope: scope as any, category: category as any, limit });
+        return results.map(e => ({
+          id: e.id, title: e.title, category: e.category,
+          content: e.content, importance: e.importance,
+        }));
+      },
+      knowledgeBrowse: async (category, scope) => {
+        return ks.browse({
+          scope: (scope ?? 'project') as 'project' | 'org',
+          scopeId: orgId,
+          category: category as any,
+        });
+      },
+      knowledgeFlagOutdated: async (id, reason) => {
+        ks.flagOutdated(id, reason);
+      },
+    };
+  }
 
   /**
    * Load and parse the base MANAGER_HEARTBEAT.md template.
@@ -353,6 +396,10 @@ export class AgentManager {
 
   setRequirementService(requirementService: RequirementServiceBridge): void {
     this.requirementService = requirementService;
+  }
+
+  setKnowledgeService(knowledgeService: KnowledgeServiceBridge): void {
+    this.knowledgeService = knowledgeService;
   }
 
   getSharedDataDir(): string | undefined {
@@ -671,6 +718,7 @@ export class AgentManager {
         agentId: id,
         orgId: config.orgId,
         projectService: this.projectService,
+        ...this.buildKnowledgeCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
       }
@@ -1080,6 +1128,7 @@ export class AgentManager {
         agentId: id,
         orgId: config.orgId,
         projectService: this.projectService,
+        ...this.buildKnowledgeCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
       }
