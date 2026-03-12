@@ -28,7 +28,7 @@ import { ContextEngine, type OrgContext } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import type { SkillRegistry } from './skills/types.js';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBuiltinTools } from './tools/builtin.js';
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
@@ -47,11 +47,13 @@ function isErrorResult(result: string): boolean {
   }
 }
 
+export type ToolOutputCallback = (chunk: string) => void;
+
 export interface AgentToolHandler {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  execute(args: Record<string, unknown>): Promise<string>;
+  execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string>;
 }
 
 export type ApprovalCallback = (request: {
@@ -94,7 +96,7 @@ export interface AgentOptions {
 export class Agent {
   readonly id: string;
   readonly config: AgentConfig;
-  readonly role: RoleTemplate;
+  role: RoleTemplate;
 
   private state: AgentState;
   private eventBus: EventBus;
@@ -306,6 +308,27 @@ export class Agent {
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`);
+  }
+
+  /**
+   * Reload the agent's role from its ROLE.md file on disk.
+   * Used after overwriting ROLE.md with a custom system prompt (e.g., from Agent Father).
+   */
+  reloadRole(): void {
+    const roleFile = join(this.dataDir, 'role', 'ROLE.md');
+    if (!existsSync(roleFile)) return;
+    try {
+      const content = readFileSync(roleFile, 'utf-8');
+      const name = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || this.role.name;
+      this.role = {
+        ...this.role,
+        name,
+        systemPrompt: content,
+      };
+      log.info(`Role reloaded from disk for agent ${this.config.name}`);
+    } catch (err) {
+      log.warn(`Failed to reload role for agent ${this.config.name}`, { error: String(err) });
+    }
   }
 
   pause(reason?: string): void {
@@ -1241,6 +1264,7 @@ export class Agent {
       }, 500);
     }
 
+    let lastResponseContent = '';
     try {
       const llmStart = Date.now();
       let response = await this.llmRouter.chatStream(
@@ -1251,6 +1275,7 @@ export class Agent {
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
+      lastResponseContent = response.content || '';
       this.emitAudit({
         type: 'llm_request',
         action: 'chat_stream',
@@ -1278,7 +1303,7 @@ export class Agent {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
-          return response.content || '[Stream cancelled]';
+          return response.content || '';
         }
 
         // Handle max_tokens continuation
@@ -1303,8 +1328,11 @@ export class Agent {
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start', arguments: tc.arguments });
+              const toolOutputCb: ToolOutputCallback = (chunk) => {
+                onEvent({ type: 'tool_output', tool: tc.name, text: chunk });
+              };
               try {
-                let result = await this.executeTool(tc);
+                let result = await this.executeTool(tc, toolOutputCb);
                 result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
                 const durationMs = Date.now() - toolStart;
@@ -1356,7 +1384,7 @@ export class Agent {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
-          return response.content || '[Stream cancelled]';
+          return response.content || '';
         }
 
         const llmStart2 = Date.now();
@@ -1368,6 +1396,7 @@ export class Agent {
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
+        lastResponseContent = response.content || lastResponseContent;
         this.emitAudit({
           type: 'llm_request',
           action: 'chat_stream',
@@ -1400,9 +1429,10 @@ export class Agent {
     } catch (error) {
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
       // If abort was triggered by cancel, treat as cancellation not error
+      // Preserve partial content from the last successful response
       if (cancelToken?.cancelled) {
         if (this.activeTasks.size === 0) this.setStatus('idle');
-        return '[Stream cancelled]';
+        return lastResponseContent || '';
       }
       if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
@@ -2037,7 +2067,7 @@ export class Agent {
     return JSON.stringify(result);
   }
 
-  private async executeTool(toolCall: LLMToolCall): Promise<string> {
+  private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback): Promise<string> {
     // Handle the discover_tools meta-tool: activate requested tools and skills
     if (toolCall.name === 'discover_tools') {
       return this.handleDiscoverTools(toolCall.arguments);
@@ -2135,7 +2165,7 @@ export class Agent {
         log.debug(`Executing tool: ${toolCall.name}`, { args: effectiveArgs, attempt });
         const span = startSpan('agent.tool', { tool: toolCall.name, attempt });
         try {
-          const result = await handler.execute(effectiveArgs);
+          const result = await handler.execute(effectiveArgs, onOutput);
           this.recordToolUsage(toolCall.name, true);
           this.consecutiveFailures = 0;
           const toolDurationMs = Date.now() - span.startTime;

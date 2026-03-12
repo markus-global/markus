@@ -16,13 +16,14 @@ import {
 import { navBus } from '../navBus.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
+import { BuilderArtifactPanel, getBuilderMode } from '../components/BuilderArtifact.tsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
   | { type: 'text'; content: string; thinking?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error'; args?: unknown; result?: string; error?: string; durationMs?: number };
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string };
 
 interface ChatMsg {
   id: string;
@@ -328,7 +329,7 @@ function AgentMessageBody({
         {segments.map((seg, i) => {
           const isLastSeg = i === segments.length - 1;
           if (seg.type === 'tool') {
-            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs }} isLast={isLastSeg && !isWaiting} />;
+            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, liveOutput: seg.liveOutput }} isLast={isLastSeg && !isWaiting} />;
           }
           // text segment
           return (
@@ -578,6 +579,21 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     return () => window.removeEventListener('markus:navigate', handleNav);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-select builder agent when redirected from Builder page
+  useEffect(() => {
+    const builderRole = localStorage.getItem('markus_select_builder');
+    if (!builderRole || agents.length === 0) return;
+    localStorage.removeItem('markus_select_builder');
+    const roleMap: Record<string, string> = { 'agent-father': 'Agent Father', 'team-factory': 'Team Factory', 'skill-architect': 'Skill Architect' };
+    const displayName = roleMap[builderRole] ?? builderRole;
+    const builderAgent = agents.find(a => a.role === displayName || a.name === displayName);
+    if (builderAgent) {
+      setChatMode('direct');
+      setSelectedAgent(builderAgent.id);
+      setMainTab('chat');
+    }
+  }, [agents]);
 
   // Snap to bottom immediately after DOM updates.
   // Use `instant` so there's no scroll animation — the bottom is simply the initial position.
@@ -928,17 +944,52 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         });
       };
 
-      /** Handle a tool event: start adds a 'running' segment, end updates it */
+      /** Handle a tool event: start adds a 'running' segment, end updates it, output appends live text */
       const handleToolEvent = (event: AgentToolEvent) => {
-        appendConvActivity(sendKey, { ...event, ts: Date.now() });
+        if (event.phase !== 'output') {
+          appendConvActivity(sendKey, { ...event, ts: Date.now() });
+        }
         if (event.phase === 'start') {
-          const toolKey = `${event.tool}_${Date.now()}`;
           updateConvMsgs(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
-            const segs = u[idx]!.segments ?? [];
-            u[idx] = { ...u[idx]!, segments: [...segs, { type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments }] };
+            const segs = [...(u[idx]!.segments ?? [])];
+            // If there's already a running segment for this tool (from tool_call_start),
+            // update it with the arguments instead of creating a duplicate
+            let updated = false;
+            if (event.arguments) {
+              for (let i = segs.length - 1; i >= 0; i--) {
+                const s = segs[i]!;
+                if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+                  segs[i] = { ...s, args: event.arguments };
+                  updated = true;
+                  break;
+                }
+              }
+            }
+            if (!updated) {
+              const toolKey = `${event.tool}_${Date.now()}`;
+              segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments });
+            }
+            u[idx] = { ...u[idx]!, segments: segs };
+            return u;
+          });
+        } else if (event.phase === 'output') {
+          // Streaming output from a running tool — append to liveOutput
+          updateConvMsgs(sendKey, prev => {
+            const u = [...prev];
+            const idx = u.findIndex(m => m.id === agentMsgId);
+            if (idx < 0) return prev;
+            const segs = [...(u[idx]!.segments ?? [])];
+            for (let i = segs.length - 1; i >= 0; i--) {
+              const s = segs[i]!;
+              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+                segs[i] = { ...s, liveOutput: (s.liveOutput ?? '') + (event.output ?? '') };
+                break;
+              }
+            }
+            u[idx] = { ...u[idx]!, segments: segs };
             return u;
           });
         } else {
@@ -948,11 +999,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
             const segs = [...(u[idx]!.segments ?? [])];
-            // scan backwards for last 'running' entry of this tool
             for (let i = segs.length - 1; i >= 0; i--) {
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs };
+                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined };
                 break;
               }
             }
@@ -1024,9 +1074,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
               const msg = u[idx]!;
-              const hasContent = msg.text || (msg.segments && msg.segments.some(s => s.type === 'text' && (s as { content: string }).content));
+              const hasContent = msg.text
+                || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
+                  (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
+                ));
               if (!hasContent) {
-                // No content at all — remove the bubble silently
                 return prev.filter(m => m.id !== agentMsgId);
               }
               u[idx] = { ...msg, isStopped: true };
@@ -1057,7 +1109,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx >= 0) {
             const msg = u[idx]!;
-            const hasContent = msg.text || (msg.segments && msg.segments.some(s => s.type === 'text' && (s as { content: string }).content));
+            const hasContent = msg.text
+              || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
+                (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
+              ));
             if (!hasContent) {
               return prev.filter(m => m.id !== agentMsgId);
             }
@@ -1694,6 +1749,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           </div>
         </div>
       </div>
+
+      {/* Builder artifact sidebar — shown when chatting with a builder agent */}
+      {chatMode === 'direct' && currentAgent && getBuilderMode(currentAgent.role) && (
+        <BuilderArtifactPanel
+          mode={getBuilderMode(currentAgent.role)!}
+          messages={messages.map(m => ({ sender: m.sender, text: m.text }))}
+        />
+      )}
     </div>
   );
 }

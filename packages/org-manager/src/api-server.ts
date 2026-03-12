@@ -12,12 +12,14 @@ import {
   PromptStudio,
   generateHandbook,
   GatewaySyncHandler,
+  createStubToolsFromManifest,
   type TeamTemplateRegistry,
   type AgentToolHandler,
   type ExternalAgentGateway,
   type LLMRouter,
   type ReviewService,
   type SkillRegistry,
+  type SkillCategory,
   type TemplateRegistry,
   type WorkflowExecutor,
   type WorkflowDefinition,
@@ -1081,8 +1083,16 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
+        // Inject dynamic context for builder agents
+        let contextPrefix = '';
+        if (agent.config.roleId === 'team-factory' && this.templateRegistry) {
+          const templates = this.templateRegistry.search({}).templates
+            .map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }));
+          contextPrefix = `[System context — available agent templates: ${JSON.stringify(templates)}]\n\n`;
+        }
+
         if (stream) {
-          const userText = body['text'] as string;
+          const userText = contextPrefix + (body['text'] as string);
 
           const sseHandler = new SSEHandler({
             agentId: agentId!,
@@ -1099,7 +1109,7 @@ export class APIServer {
 
           await sseHandler.handle(res);
         } else {
-          const userText = body['text'] as string;
+          const userText = contextPrefix + (body['text'] as string);
           const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
           let reply: string;
           try {
@@ -3264,7 +3274,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
       return;
     }
 
-    // Builder: Create artifact from chat (actually saves the agent/team/skill)
+    // Builder: Create artifact from chat — actually creates real, usable resources
     if (path === '/api/builder/create' && req.method === 'POST') {
       const body = await this.readBody(req);
       const mode = body['mode'] as string;
@@ -3276,66 +3286,146 @@ Be conversational. Help the user think through tool design, edge cases, and perm
 
       try {
         if (mode === 'agent') {
-          const derivedRoleId = ((artifact.name as string) ?? '').toLowerCase().replace(/\s+/g, '-');
-          const knownRoles = this.orgService.listAvailableRoles();
-          const roleId = knownRoles.includes(derivedRoleId) ? derivedRoleId : 'developer';
-          const resp = await fetch(`http://localhost:${this.port}/api/marketplace/templates`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: artifact.name,
-              description: artifact.description,
-              authorName: (artifact.authorName as string) ?? 'AI Builder',
-              roleId,
-              agentRole: artifact.agentRole ?? 'worker',
-              skills: typeof artifact.skills === 'string' ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean) : [],
-              tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
-              category: artifact.category ?? 'general',
-              source: 'community',
-              systemPrompt: artifact.systemPrompt ?? '',
-              config: {
-                llmModel: artifact.llmModel || undefined,
-                temperature: artifact.temperature ?? 0.7,
-                toolWhitelist: artifact.toolWhitelist || undefined,
-                requiredEnv: artifact.requiredEnv || undefined,
-              },
-            }),
+          // Hire a real agent with the custom systemPrompt written as ROLE.md
+          const agentManager = this.orgService.getAgentManager();
+          const agentName = (artifact.name as string) ?? 'New Agent';
+          const skills = typeof artifact.skills === 'string'
+            ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean)
+            : [];
+
+          const agent = await this.orgService.hireAgent({
+            name: agentName,
+            roleName: 'developer',
+            orgId: 'default',
+            teamId: body['teamId'] as string | undefined,
+            agentRole: (artifact.agentRole as 'manager' | 'worker') ?? 'worker',
+            skills,
           });
-          const data = await resp.json();
-          this.json(res, resp.ok ? 201 : 500, data);
-        } else if (mode === 'team') {
-          const resp = await fetch(`http://localhost:${this.port}/api/team-templates`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: artifact.name,
-              description: artifact.description,
-              members: artifact.members ?? [],
-              tags: typeof artifact.tags === 'string' ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean) : [],
-              category: artifact.category ?? 'general',
-            }),
-          });
-          const data = await resp.json();
-          this.json(res, resp.ok ? 201 : 500, data);
-        } else if (mode === 'skill') {
-          if (!this.storage) {
-            this.json(res, 503, { error: 'Database not configured' });
-            return;
+
+          // Overwrite the copied ROLE.md with the custom systemPrompt
+          const customPrompt = (artifact.systemPrompt as string) ?? '';
+          if (customPrompt) {
+            const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+            mkdirSync(agentRoleDir, { recursive: true });
+            writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${agentName}\n\n${customPrompt}`);
+            agent.reloadRole();
           }
-          const id = generateId('mkt-skill');
-          const skill = await this.storage.marketplaceSkillRepo.create({
-            id,
-            name: (artifact.name as string) ?? 'unnamed-skill',
-            description: (artifact.description as string) ?? '',
-            source: 'community',
-            status: 'published',
+
+          await agentManager.startAgent(agent.id);
+          this.json(res, 201, {
+            agent: { id: agent.id, name: agent.config.name, role: agent.role.name, status: agent.getState().status },
+          });
+
+        } else if (mode === 'team') {
+          // Create a real team and deploy real agents for each member
+          const agentManager = this.orgService.getAgentManager();
+          const teamName = (artifact.name as string) ?? 'New Team';
+          const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
+          const members = Array.isArray(artifact.members) ? artifact.members as Array<Record<string, unknown>> : [];
+          const createdAgents: Array<{ id: string; name: string; role: string }> = [];
+
+          for (const member of members) {
+            const count = (member.count as number) ?? 1;
+            const memberRole = (member.role as 'manager' | 'worker') ?? 'worker';
+            const templateId = (member.templateId as string) ?? '';
+            const memberName = (member.name as string) ?? templateId;
+
+            for (let i = 0; i < count; i++) {
+              const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
+
+              // Resolve role name from templateId
+              const knownRoles = this.orgService.listAvailableRoles();
+              let roleName = 'developer';
+              const registryHit = this.templateRegistry?.get(templateId);
+              if (registryHit) {
+                roleName = registryHit.roleId;
+              } else if (knownRoles.includes(templateId)) {
+                roleName = templateId;
+              }
+
+              // Use hireAgent for uniform creation, DB persist, and team membership
+              const agent = await this.orgService.hireAgent({
+                name: displayName,
+                roleName,
+                orgId: 'default',
+                teamId: team.id,
+                agentRole: memberRole,
+              });
+
+              if (memberRole === 'manager') {
+                await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });
+              }
+
+              await agentManager.startAgent(agent.id);
+              createdAgents.push({ id: agent.id, name: agent.config.name, role: agent.role.name });
+            }
+          }
+
+          this.json(res, 201, { team: { id: team.id, name: teamName }, agents: createdAgents });
+
+        } else if (mode === 'skill') {
+          // Write manifest.json to filesystem and register into runtime SkillRegistry
+          const skillName = (artifact.name as string) ?? 'unnamed-skill';
+          const manifest = {
+            name: skillName,
             version: (artifact.version as string) ?? '1.0.0',
-            authorName: (artifact.author as string) ?? 'AI Generated',
+            description: (artifact.description as string) ?? '',
+            author: (artifact.author as string) ?? 'AI Generated',
             category: (artifact.category as string) ?? 'custom',
             tags: Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
-            tools: Array.isArray(artifact.tools) ? artifact.tools as Array<{ name: string; description: string }> : [],
-          });
-          this.json(res, 201, { skill });
+            tools: Array.isArray(artifact.tools) ? artifact.tools as Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }> : [],
+            requiredPermissions: Array.isArray(artifact.requiredPermissions) ? artifact.requiredPermissions as ('shell' | 'file' | 'network' | 'browser')[] : [],
+            requiredEnv: Array.isArray(artifact.requiredEnv) ? artifact.requiredEnv as string[] : [],
+          };
+
+          // Write to filesystem so it gets discovered by the skill loader
+          const skillDir = join(homedir(), '.markus', 'skills', skillName);
+          mkdirSync(skillDir, { recursive: true });
+          writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+
+          // Register into runtime SkillRegistry immediately
+          if (this.skillRegistry) {
+            try {
+              const fullManifest = {
+                ...manifest,
+                category: manifest.category as SkillCategory,
+                tools: manifest.tools.map(t => ({
+                  name: t.name,
+                  description: t.description,
+                  inputSchema: (t.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>,
+                })),
+                sourcePath: skillDir,
+              };
+              const stubTools = createStubToolsFromManifest(fullManifest);
+              this.skillRegistry.register({ manifest: fullManifest, tools: stubTools });
+            } catch (regErr) {
+              log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
+            }
+          }
+
+          // Also save to marketplace DB for persistence
+          if (this.storage) {
+            try {
+              const id = generateId('mkt-skill');
+              await this.storage.marketplaceSkillRepo.create({
+                id,
+                name: skillName,
+                description: manifest.description,
+                source: 'community',
+                status: 'published',
+                version: manifest.version,
+                authorName: manifest.author,
+                category: manifest.category,
+                tags: manifest.tags,
+                tools: manifest.tools as Array<{ name: string; description: string }>,
+              });
+            } catch (dbErr) {
+              log.warn('Failed to persist skill to marketplace DB', { error: String(dbErr) });
+            }
+          }
+
+          this.json(res, 201, { skill: { name: skillName, path: skillDir, status: 'registered' } });
+
         } else {
           this.json(res, 400, { error: `Unknown mode: ${mode}` });
         }

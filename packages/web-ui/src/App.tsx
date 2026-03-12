@@ -5,7 +5,6 @@ import { Chat } from './pages/Chat.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
-import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { GovernancePage } from './pages/Governance.tsx';
 import { ProjectsPage } from './pages/Projects.tsx';
 import { KnowledgePage } from './pages/Knowledge.tsx';
@@ -24,6 +23,7 @@ function getPageFromHash(): PageId {
   if (hash === 'agents' || hash === 'team') return 'chat';
   if (hash === 'tasks') return 'projects';
   if (hash === 'usage') return 'reports';
+  if (hash === 'builder' || hash === 'prompts') return 'chat';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -36,7 +36,12 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p;
+    let normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p;
+    // Builder/prompts redirect to chat and auto-select the builder agent
+    if (p === 'builder' || p === 'prompts') {
+      normalized = 'chat';
+      localStorage.setItem('markus_select_builder', p === 'prompts' ? 'skill-architect' : 'agent-father');
+    }
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
     window.location.hash = normalized;
@@ -68,8 +73,6 @@ export function App() {
     settings: <Settings />,
     skills: <SkillStore />,
     templates: <TemplateMarketplace />,
-    builder: <AgentBuilder />,
-    prompts: <AgentBuilder />,
     governance: <GovernancePage />,
     projects: <ProjectsPage />,
     knowledge: <KnowledgePage />,

@@ -796,6 +796,28 @@ export class OrganizationService {
         managerType: 'agent',
       });
 
+      // Hire built-in builder agents (no heartbeat, no scheduled tasks)
+      const builderConfigs = [
+        { name: 'Agent Father', roleName: 'agent-father' },
+        { name: 'Team Factory', roleName: 'team-factory' },
+        { name: 'Skill Architect', roleName: 'skill-architect' },
+      ] as const;
+
+      for (const cfg of builderConfigs) {
+        try {
+          await this.hireAgent({
+            name: cfg.name,
+            roleName: cfg.roleName,
+            orgId,
+            teamId: team.id,
+            agentRole: 'worker',
+            heartbeatIntervalMs: 0,
+          });
+        } catch (err) {
+          log.warn(`Failed to seed builder agent: ${cfg.name}`, { error: String(err) });
+        }
+      }
+
       log.info('Default team seeded', {
         teamId: team.id,
         secretaryId: secretary.id,

@@ -147,6 +147,7 @@ export {
   type SkillInstance,
   type SkillRegistry,
   type SkillCategory,
+  type SkillToolDef,
   InMemorySkillRegistry,
   createDefaultSkillRegistry,
   createGitSkill,
@@ -156,6 +157,7 @@ export {
 } from './skills/index.js';
 export {
   SkillLoader,
+  createStubToolsFromManifest,
   type SkillPackage,
   type SkillSearchResult,
   type SkillLoadResult,
