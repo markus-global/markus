@@ -486,11 +486,9 @@ export function SkillStore() {
                           <div className="font-semibold text-sm truncate">{skill.name}</div>
                           <div className="text-xs text-gray-500 mt-0.5">v{skill.version}</div>
                         </div>
-                        {skill.tags?.[0] && (
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${CATEGORY_COLORS[skill.tags[0]] ?? 'bg-indigo-500/15 text-indigo-400'}`}>
-                            {skill.tags[0]}
-                          </span>
-                        )}
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-indigo-500/15 text-indigo-400') : 'bg-indigo-500/15 text-indigo-400'}`}>
+                          {skill.tags?.[0] ?? 'SkillHub'}
+                        </span>
                       </div>
                       <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
                       <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
@@ -577,19 +575,16 @@ export function SkillStore() {
                   <div key={`${skill.author}-${skill.name}`} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <div className="font-semibold text-sm truncate">{skill.name}</div>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0">
-                            skills.sh
-                          </span>
-                        </div>
+                        <div className="font-semibold text-sm truncate">{skill.name}</div>
                         <div className="text-xs text-gray-500 mt-0.5">{skill.author} / {skill.repo}</div>
                       </div>
-                      {skill.installs && <span className="text-xs text-gray-500 shrink-0 ml-2 font-mono">{skill.installs}</span>}
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">skills.sh</span>
                     </div>
-                    {skill.description && <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description}</p>}
+                    <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description || 'No description'}</p>
                     <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
-                      <div className="flex items-center gap-3" />
+                      <div className="flex items-center gap-3">
+                        {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
+                      </div>
                       <div className="flex items-center gap-2">
                         <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
                         {isInstalled ? (
