@@ -1,5 +1,4 @@
 import { createLogger } from '@markus/shared';
-import type { AgentToolHandler } from '../agent.js';
 import type { SkillInstance, SkillManifest, SkillRegistry } from './types.js';
 
 const log = createLogger('skill-registry');
@@ -13,7 +12,7 @@ export class InMemorySkillRegistry implements SkillRegistry {
     }
     this.skills.set(skill.manifest.name, skill);
     log.info(`Skill registered: ${skill.manifest.name} v${skill.manifest.version}`, {
-      tools: skill.tools.map(t => t.name),
+      hasInstructions: !!skill.manifest.instructions,
     });
   }
 
@@ -30,14 +29,14 @@ export class InMemorySkillRegistry implements SkillRegistry {
     return [...this.skills.values()].map(s => s.manifest);
   }
 
-  getToolsForSkills(skillNames: string[]): AgentToolHandler[] {
-    const tools: AgentToolHandler[] = [];
+  getInstructionsForSkills(skillNames: string[]): Map<string, string> {
+    const result = new Map<string, string>();
     for (const name of skillNames) {
       const skill = this.skills.get(name);
-      if (skill) {
-        tools.push(...skill.tools);
+      if (skill?.manifest.instructions) {
+        result.set(name, skill.manifest.instructions);
       }
     }
-    return tools;
+    return result;
   }
 }

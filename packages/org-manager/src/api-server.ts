@@ -12,7 +12,7 @@ import {
   PromptStudio,
   generateHandbook,
   GatewaySyncHandler,
-  createStubToolsFromManifest,
+  readSkillInstructions,
   type TeamTemplateRegistry,
   type AgentToolHandler,
   type ExternalAgentGateway,
@@ -1975,11 +1975,11 @@ export class APIServer {
         const skillName = (body['skillName'] as string) ?? '';
         if (skillName && !agent.config.skills.includes(skillName)) {
           agent.config.skills.push(skillName);
-          // Inject skill tools into the running agent so it can use them immediately
+          // Inject skill instructions into the running agent so it can use them immediately
           if (this.skillRegistry) {
-            const skillTools = this.skillRegistry.getToolsForSkills([skillName]);
-            for (const tool of skillTools) {
-              agent.registerTool(tool);
+            const skill = this.skillRegistry.get(skillName);
+            if (skill?.manifest.instructions) {
+              agent.injectSkillInstructions(skillName, skill.manifest.instructions);
             }
           }
         }
@@ -2818,14 +2818,23 @@ export class APIServer {
 
     // Skills
     if (path === '/api/skills' && req.method === 'GET') {
-      // Built-in skills from in-memory registry (no sourcePath)
-      const builtinSkills = (this.skillRegistry?.list() ?? [])
-        .filter(s => !s.sourcePath)
-        .map(s => ({ ...s, type: 'builtin' as const }));
-      const seen = new Set(builtinSkills.map(s => s.name));
+      // Skills from in-memory registry
+      const registrySkills = (this.skillRegistry?.list() ?? [])
+        .map(s => ({
+          name: s.name,
+          version: s.version,
+          description: s.description,
+          author: s.author,
+          category: s.category,
+          tags: s.tags,
+          hasInstructions: !!s.instructions,
+          sourcePath: s.sourcePath,
+          type: (s.sourcePath ? 'filesystem' : 'registry') as string,
+        }));
+      const seen = new Set(registrySkills.map(s => s.name));
 
-      // Live filesystem scan — always fresh
-      const fsSkills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; sourcePath: string; type: 'filesystem' }> = [];
+      // Live filesystem scan for any skills not yet in registry
+      const fsSkills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; hasInstructions: boolean; sourcePath: string; type: string }> = [];
       for (const dir of WELL_KNOWN_SKILL_DIRS) {
         for (const discovered of discoverSkillsInDir(dir)) {
           if (seen.has(discovered.manifest.name)) continue;
@@ -2837,15 +2846,15 @@ export class APIServer {
             author: discovered.manifest.author,
             category: discovered.manifest.category,
             tags: discovered.manifest.tags,
-            tools: discovered.manifest.tools?.map((t: { name: string; description: string }) => ({ name: t.name, description: t.description })),
+            hasInstructions: !!discovered.manifest.instructions,
             sourcePath: discovered.path,
-            type: 'filesystem' as const,
+            type: 'filesystem',
           });
         }
       }
 
       // DB imported skills
-      let imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; type: 'imported' }> = [];
+      let imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; hasInstructions: boolean; type: string }> = [];
       if (this.storage) {
         try {
           const mktSkills = (await this.storage.marketplaceSkillRepo.list()) as Array<{ name: string; description: string; category: string; version: string; tags: unknown }>;
@@ -2857,7 +2866,8 @@ export class APIServer {
               category: s.category,
               version: s.version,
               tags: Array.isArray(s.tags) ? s.tags as string[] : [],
-              type: 'imported' as const,
+              hasInstructions: false,
+              type: 'imported',
             }));
         } catch { /* storage unavailable */ }
       }
@@ -2871,7 +2881,7 @@ export class APIServer {
         }
       }
       const all = [
-        ...builtinSkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
+        ...registrySkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
         ...fsSkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
         ...imported.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
       ];
@@ -2891,12 +2901,13 @@ export class APIServer {
         return;
       }
       const manifest = skill.manifest;
-      const toolDetails = skill.tools.map(t => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: (t as unknown as { inputSchema?: unknown }).inputSchema,
-      }));
-      this.json(res, 200, { skill: { ...manifest, toolDetails } });
+      this.json(res, 200, {
+        skill: {
+          ...manifest,
+          hasInstructions: !!manifest.instructions,
+          instructionsPreview: manifest.instructions?.slice(0, 500),
+        },
+      });
       return;
     }
 
@@ -3073,17 +3084,18 @@ export class APIServer {
 
         // Supplement manifest.json from metadata if download didn't include one
         if (!existsSync(join(targetDir, 'manifest.json'))) {
-          const manifest = {
+          const manifestData: Record<string, unknown> = {
             name: skillName,
             version: version ?? '1.0.0',
             description: description ?? `Skill: ${skillName}`,
             category: category ?? 'custom',
-            tools: [],
-            requirements: { permissions: [] },
             source: source ?? 'unknown',
             sourceUrl: sourceUrl ?? '',
           };
-          writeFileSync(join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
+          // Read SKILL.md for instructions
+          const instructions = readSkillInstructions(targetDir);
+          if (instructions) manifestData.instructions = instructions;
+          writeFileSync(join(targetDir, 'manifest.json'), JSON.stringify(manifestData, null, 2), 'utf-8');
         }
 
         // Register into runtime SkillRegistry so the skill is immediately available
@@ -3094,10 +3106,7 @@ export class APIServer {
             );
             if (discovered && !this.skillRegistry.get(discovered.manifest.name)) {
               discovered.manifest.sourcePath = discovered.path;
-              const stubTools = discovered.manifest.tools.length > 0
-                ? createStubToolsFromManifest(discovered.manifest)
-                : [];
-              this.skillRegistry.register({ manifest: discovered.manifest, tools: stubTools });
+              this.skillRegistry.register({ manifest: discovered.manifest });
             }
           } catch (regErr) {
             log.warn('Failed to register installed skill into runtime registry', { error: String(regErr) });
@@ -3315,31 +3324,39 @@ CRITICAL: Do NOT use \`templateId\`. Always use \`roleName\` + \`systemPrompt\`.
 
 Every team needs exactly one manager and at least one worker. Be conversational and proactive.`,
 
-        skill: `You are Skill Architect — an expert AI skill designer. You help users create new agent skills through natural conversation.
+        skill: `You are Skill Architect — an expert at creating agent skills following the Agent Skills open standard.
+
+A skill is a SKILL.md file that teaches agents how to accomplish specific tasks using their existing tools (shell_execute, file_read, file_write, web_fetch, web_search, gui, etc.). Skills contain step-by-step instructions, not executable code.
 
 Your job:
-1. Understand what capability the user wants to create — ask about use cases, inputs/outputs, and integrations
-2. Design the skill — suggest tool definitions, permissions, and implementation approach
-3. When ready, output the final skill manifest as a JSON block
+1. Understand what capability the user wants to create — ask about use cases, workflows, and expected behavior
+2. Design the skill — plan the step-by-step instructions that guide an agent to accomplish the task using existing tools
+3. When ready, output the final SKILL.md content in a markdown code block
 
-When outputting the final configuration, wrap it in a JSON code block:
-\`\`\`json
-{
-  "name": "skill-name-kebab-case",
-  "version": "1.0.0",
-  "description": "What this skill does",
-  "author": "Author Name",
-  "category": "development" | "devops" | "communication" | "data" | "productivity" | "browser" | "custom",
-  "tags": ["tag1", "tag2"],
-  "tools": [
-    { "name": "tool_name", "description": "What this tool does", "inputSchema": { "type": "object", "properties": {} } }
-  ],
-  "requiredPermissions": ["shell", "file", "network", "browser"],
-  "requiredEnv": ["git", "node", "python3", "docker"]
-}
+When outputting the final skill, wrap it in a markdown code block with the \`skill\` language tag:
+\`\`\`skill
+---
+name: skill-name-kebab-case
+description: When and why an agent should use this skill
+---
+
+# Skill Name
+
+## Overview
+Brief description of what this skill helps agents accomplish.
+
+## Instructions
+Step-by-step instructions for the agent to follow, including:
+- CLI commands to run via shell_execute
+- Files to read or create
+- Web resources to fetch
+- Patterns, tips, and error handling guidance
+
+## Examples
+Example workflows or command sequences.
 \`\`\`
 
-Be conversational. Help the user think through tool design, edge cases, and permission requirements. If the user's request is clear, generate the manifest immediately along with your explanation.`,
+Be conversational. Help the user think through the workflow, edge cases, and what existing tools the agent will use. If the user's request is clear, generate the SKILL.md immediately along with your explanation.`,
       };
 
       try {
@@ -3356,11 +3373,28 @@ Be conversational. Help the user think through tool design, edge cases, and perm
 
         const reply = response.content?.trim() ?? '';
 
-        // Try to extract JSON artifact from the reply
+        // Try to extract artifact from the reply
         let artifact: Record<string, unknown> | null = null;
-        const jsonMatch = reply.match(/```json\s*\n([\s\S]*?)\n```/);
-        if (jsonMatch?.[1]) {
-          try { artifact = JSON.parse(jsonMatch[1]); } catch { /* no valid JSON */ }
+
+        if (mode === 'skill') {
+          // Extract SKILL.md content from ```skill code block
+          const skillMatch = reply.match(/```skill\s*\n([\s\S]*?)\n```/);
+          if (skillMatch?.[1]) {
+            const skillMd = skillMatch[1].trim();
+            const nameMatch = skillMd.match(/^---\s*\n[\s\S]*?name:\s*(.+)[\s\S]*?\n---/m);
+            const descMatch = skillMd.match(/^---\s*\n[\s\S]*?description:\s*(.+)[\s\S]*?\n---/m);
+            artifact = {
+              name: nameMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? 'unnamed-skill',
+              description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? '',
+              skillMd,
+            };
+          }
+        } else {
+          // JSON artifact for team/prompt modes
+          const jsonMatch = reply.match(/```json\s*\n([\s\S]*?)\n```/);
+          if (jsonMatch?.[1]) {
+            try { artifact = JSON.parse(jsonMatch[1]); } catch { /* no valid JSON */ }
+          }
         }
 
         this.json(res, 200, { reply, artifact, mode });
@@ -3482,40 +3516,37 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           this.json(res, 201, { team: { id: team.id, name: teamName }, agents: createdAgents });
 
         } else if (mode === 'skill') {
-          // Write manifest.json to filesystem and register into runtime SkillRegistry
+          // Write SKILL.md to filesystem and register into runtime SkillRegistry
           const skillName = (artifact.name as string) ?? 'unnamed-skill';
+          const skillMd = (artifact.skillMd as string) ?? '';
+          const description = (artifact.description as string) ?? `Skill: ${skillName}`;
+          const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-');
+          const skillDir = join(homedir(), '.markus', 'skills', safeName);
+          mkdirSync(skillDir, { recursive: true });
+
+          // Write the SKILL.md file
+          writeFileSync(join(skillDir, 'SKILL.md'), skillMd, 'utf-8');
+
+          // Extract instructions (body without frontmatter)
+          const instructions = skillMd.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
+
+          // Write manifest.json for metadata
           const manifest = {
             name: skillName,
-            version: (artifact.version as string) ?? '1.0.0',
-            description: (artifact.description as string) ?? '',
-            author: (artifact.author as string) ?? 'AI Generated',
-            category: (artifact.category as string) ?? 'custom',
-            tags: Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
-            tools: Array.isArray(artifact.tools) ? artifact.tools as Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }> : [],
-            requiredPermissions: Array.isArray(artifact.requiredPermissions) ? artifact.requiredPermissions as ('shell' | 'file' | 'network' | 'browser')[] : [],
-            requiredEnv: Array.isArray(artifact.requiredEnv) ? artifact.requiredEnv as string[] : [],
+            version: '1.0.0',
+            description,
+            author: 'AI Generated',
+            category: 'custom' as SkillCategory,
+            source: 'builder',
+            instructions: instructions || undefined,
+            sourcePath: skillDir,
           };
-
-          // Write to filesystem so it gets discovered by the skill loader
-          const skillDir = join(homedir(), '.markus', 'skills', skillName);
-          mkdirSync(skillDir, { recursive: true });
           writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
           // Register into runtime SkillRegistry immediately
           if (this.skillRegistry) {
             try {
-              const fullManifest = {
-                ...manifest,
-                category: manifest.category as SkillCategory,
-                tools: manifest.tools.map(t => ({
-                  name: t.name,
-                  description: t.description,
-                  inputSchema: (t.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>,
-                })),
-                sourcePath: skillDir,
-              };
-              const stubTools = createStubToolsFromManifest(fullManifest);
-              this.skillRegistry.register({ manifest: fullManifest, tools: stubTools });
+              this.skillRegistry.register({ manifest });
             } catch (regErr) {
               log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
             }
@@ -3528,14 +3559,14 @@ Be conversational. Help the user think through tool design, edge cases, and perm
               await this.storage.marketplaceSkillRepo.create({
                 id,
                 name: skillName,
-                description: manifest.description,
+                description,
                 source: 'community',
                 status: 'published',
-                version: manifest.version,
-                authorName: manifest.author,
-                category: manifest.category,
-                tags: manifest.tags,
-                tools: manifest.tools as Array<{ name: string; description: string }>,
+                version: '1.0.0',
+                authorName: 'AI Generated',
+                category: 'custom',
+                tags: [],
+                tools: [],
               });
             } catch (dbErr) {
               log.warn('Failed to persist skill to marketplace DB', { error: String(dbErr) });

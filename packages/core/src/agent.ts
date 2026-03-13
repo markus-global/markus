@@ -112,6 +112,7 @@ export class Agent {
   private toolHooks: ToolHookRegistry;
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
+  private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
   private currentSessionId?: string;
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -626,9 +627,15 @@ export class Agent {
     this.dynamicContextProviders.push(provider);
   }
 
+  injectSkillInstructions(skillName: string, instructions: string): void {
+    this.activatedSkillInstructions.set(skillName, instructions);
+  }
+
   private getDynamicContext(): string | undefined {
-    if (this.dynamicContextProviders.length === 0) return undefined;
     const parts = this.dynamicContextProviders.map(p => p()).filter(Boolean);
+    for (const [name, instructions] of this.activatedSkillInstructions) {
+      parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
+    }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
 
@@ -2045,9 +2052,9 @@ export class Agent {
 
   /**
    * Handle the discover_tools meta-tool. Supports:
-   * - mode="list_skills": list all skills in the registry with their tools
-   * - tool_names with skill names: resolve skill -> register & activate all its tools
-   * - tool_names with tool names: activate individual tools (original behavior)
+   * - mode="list_skills": list all available skills (prompt-based instruction packages)
+   * - tool_names with skill names: activate skill by injecting its instructions into context
+   * - tool_names with tool names: activate individual tools already registered on the agent
    */
   private handleDiscoverTools(args: Record<string, unknown>): string {
     const mode = (args.mode as string) ?? 'activate';
@@ -2065,12 +2072,12 @@ export class Agent {
         name: s.name,
         description: s.description,
         category: s.category,
-        tools: s.tools.map(t => t.name),
+        hasInstructions: !!s.instructions,
       }));
       return JSON.stringify({
         status: 'ok',
         skills: catalog,
-        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill or specific tools.`,
+        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill (loads its instructions into your context).`,
       });
     }
 
@@ -2087,19 +2094,19 @@ export class Agent {
         continue;
       }
 
-      // 2. Check if it's a skill name in the registry
+      // 2. Check if it's a skill name in the registry -- inject instructions
       if (this.skillRegistry) {
         const skill = this.skillRegistry.get(name);
         if (skill) {
-          for (const tool of skill.tools) {
-            this.tools.set(tool.name, tool);
-            this.activatedExtraTools.add(tool.name);
-            activated.push(tool.name);
+          if (skill.manifest.instructions) {
+            this.activatedSkillInstructions.set(name, skill.manifest.instructions);
+            activated.push(`${name} (skill instructions loaded)`);
+            log.info('Skill instructions activated via discover_tools', {
+              agentId: this.id, skill: name,
+            });
+          } else {
+            activated.push(`${name} (skill found but has no instructions)`);
           }
-          log.info('Skill activated via discover_tools', {
-            agentId: this.id, skill: name,
-            tools: skill.tools.map(t => t.name),
-          });
           continue;
         }
       }
@@ -2111,13 +2118,14 @@ export class Agent {
     const result: Record<string, unknown> = {
       status: 'ok',
       activated,
-      message: `${activated.length} tools activated. They are now available for your next response.`,
+      message: activated.length > 0
+        ? `${activated.length} items activated. Skill instructions are now part of your context.`
+        : 'Nothing was activated.',
     };
     if (unknown.length > 0) {
       result.unknown = unknown;
       result.hint = 'These names were not found as tools or skills. '
-        + 'Use discover_tools({ mode: "list_skills" }) to see all available skills, '
-        + 'or check the tool list in the discover_tools description for exact tool names.';
+        + 'Use discover_tools({ mode: "list_skills" }) to see all available skills.';
     }
     return JSON.stringify(result);
   }

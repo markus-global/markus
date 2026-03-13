@@ -8,10 +8,8 @@ const log = createLogger('tool-selector');
  * Tool group definitions. Each group has activation keywords that trigger
  * its tools to be included in the LLM context.
  *
- * Design based on the 3-layer architecture pattern:
- * - Base tools: always included (~8 tools)
- * - Group tools: activated by keyword matching on the current context
- * - discover_tools meta-tool: always included, lets the agent request more
+ * Tool names must correspond to actual tools from createBuiltinTools() or
+ * other tool providers (A2A, task, memory, etc.).
  */
 
 export interface ToolGroup {
@@ -22,36 +20,29 @@ export interface ToolGroup {
 
 const TOOL_GROUPS: ToolGroup[] = [
   {
-    name: 'git',
-    keywords: ['git', 'commit', 'branch', 'merge', 'pull', 'push', 'diff', 'repo', '仓库', '代码库', '提交', '分支'],
-    toolNames: ['git_status', 'git_diff', 'git_log', 'git_branch'],
+    name: 'shell',
+    keywords: ['shell', 'command', 'terminal', 'run', 'execute', 'bash', 'npm', 'pip', 'install', 'build', 'test',
+      'git', 'commit', 'branch', 'merge', 'pull', 'push', 'diff', 'repo',
+      '命令', '终端', '执行', '运行', '编译', '安装', '测试', '仓库', '代码库', '提交', '分支'],
+    toolNames: ['shell_execute'],
   },
   {
     name: 'code',
     keywords: ['code', 'search', 'file', 'read', 'write', 'edit', 'project', 'structure', 'directory',
       '代码', '文件', '搜索', '目录', '编辑', '读取', '写入', '项目结构'],
-    toolNames: ['code_search', 'project_structure', 'code_stats', 'file_read', 'file_write', 'file_edit'],
-  },
-  {
-    name: 'shell',
-    keywords: ['shell', 'command', 'terminal', 'run', 'execute', 'bash', 'npm', 'pip', 'install', 'build', 'test',
-      '命令', '终端', '执行', '运行', '编译', '安装', '测试'],
-    toolNames: ['shell_execute'],
+    toolNames: ['file_read', 'file_write', 'file_edit', 'grep', 'glob', 'list_directory', 'patch_apply'],
   },
   {
     name: 'browser',
-    keywords: ['browser', 'web', 'url', 'http', 'navigate', 'screenshot', 'click', 'page',
-      '浏览器', '网页', '网站', '截图', '链接'],
-    toolNames: ['browser_navigate', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_extract', 'browser_evaluate',
-      'web_search', 'web_fetch'],
+    keywords: ['browser', 'web', 'url', 'http', 'navigate', 'page', 'fetch', 'scrape',
+      '浏览器', '网页', '网站', '链接'],
+    toolNames: ['web_fetch', 'web_search', 'web_extract'],
   },
   {
     name: 'gui',
-    keywords: ['gui', 'screen', 'mouse', 'keyboard', 'window', 'desktop', 'click', 'type',
-      '桌面', '鼠标', '键盘', '窗口', '屏幕'],
-    toolNames: ['gui_screenshot', 'gui_click', 'gui_double_click', 'gui_type', 'gui_key_press',
-      'gui_scroll', 'gui_get_window_title', 'gui_analyze_screen', 'gui_find_element',
-      'gui_click_element', 'gui_type_to_element', 'gui_automate_task'],
+    keywords: ['gui', 'screen', 'mouse', 'keyboard', 'window', 'desktop', 'screenshot',
+      '桌面', '鼠标', '键盘', '窗口', '屏幕', '截图'],
+    toolNames: ['gui'],
   },
   {
     name: 'structured-a2a',
@@ -72,12 +63,6 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['team_list', 'team_status', 'delegate_message', 'create_task'],
   },
   {
-    name: 'feishu',
-    keywords: ['feishu', 'lark', '飞书', 'approval', '审批', '文档'],
-    toolNames: ['feishu_send_message', 'feishu_send_card', 'feishu_search_docs',
-      'feishu_read_doc', 'feishu_create_approval', 'feishu_approval_status'],
-  },
-  {
     name: 'todo',
     keywords: ['todo', 'plan', 'checklist', '待办', '计划', '清单'],
     toolNames: ['todo_write', 'todo_read'],
@@ -93,20 +78,15 @@ const TOOL_GROUPS: ToolGroup[] = [
 
 /**
  * Base tools that are ALWAYS included in every LLM call.
- * These are universally useful and represent the minimum viable toolset.
  */
 const BASE_TOOL_NAMES = new Set([
-  // Communication (essential for any agent interaction)
   'agent_send_message',
   'agent_list_colleagues',
-  // Task management (mandatory per system prompt)
   'task_create',
   'task_list',
   'task_update',
-  // Memory (critical for context continuity)
   'memory_save',
   'memory_search',
-  // Knowledge (shared team knowledge)
   'knowledge_search',
 ]);
 
@@ -119,13 +99,6 @@ export class ToolSelector {
     this.baseToolNames = new Set(BASE_TOOL_NAMES);
   }
 
-  /**
-   * Select which tools to include in the LLM context based on:
-   * 1. Base tools (always included)
-   * 2. A `discover_tools` meta-tool (always included) so agent can request more
-   * 3. Tools from groups whose keywords match the context
-   * 4. Tools the agent used in recent messages (keep those active)
-   */
   selectTools(opts: {
     allTools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>;
     userMessage: string;
@@ -136,12 +109,10 @@ export class ToolSelector {
   }): LLMTool[] {
     const selected = new Set<string>();
 
-    // 1. Always include base tools
     for (const name of this.baseToolNames) {
       if (opts.allTools.has(name)) selected.add(name);
     }
 
-    // 2. Manager tools are always available for managers
     if (opts.isManager) {
       const managerGroup = this.groups.find(g => g.name === 'manager');
       if (managerGroup) {
@@ -151,25 +122,22 @@ export class ToolSelector {
       }
     }
 
-    // 3. Task execution gets code + shell + task tools by default
     if (opts.isTaskExecution) {
       for (const group of this.groups) {
-        if (['code', 'shell', 'git'].includes(group.name)) {
+        if (['code', 'shell'].includes(group.name)) {
           for (const name of group.toolNames) {
             if (opts.allTools.has(name)) selected.add(name);
           }
         }
       }
-      // Also include full task management tools
       for (const name of ['task_get', 'task_note', 'task_assign']) {
         if (opts.allTools.has(name)) selected.add(name);
       }
     }
 
-    // 4. Keyword matching: activate groups whose keywords appear in context
     const contextLower = opts.userMessage.toLowerCase();
     for (const group of this.groups) {
-      if (group.toolNames.some(n => selected.has(n))) continue; // already activated
+      if (group.toolNames.some(n => selected.has(n))) continue;
       const matched = group.keywords.some(kw => contextLower.includes(kw));
       if (matched) {
         for (const name of group.toolNames) {
@@ -179,14 +147,12 @@ export class ToolSelector {
       }
     }
 
-    // 5. Keep tools that were recently used (agent might need them in tool chains)
     if (opts.recentToolNames) {
       for (const name of opts.recentToolNames) {
         if (opts.allTools.has(name)) selected.add(name);
       }
     }
 
-    // 6. Build the final tool list
     const result: LLMTool[] = [];
     for (const name of selected) {
       const tool = opts.allTools.get(name);
@@ -195,7 +161,6 @@ export class ToolSelector {
       }
     }
 
-    // 7. Always add the discover_tools meta-tool so agent can request more
     result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
 
     log.debug('Tool selection complete', {
@@ -208,9 +173,8 @@ export class ToolSelector {
   }
 
   /**
-   * A meta-tool that lists all available tool groups/skills and their tools.
-   * The agent can call this to discover what other tools exist and
-   * request them by skill name or tool name.
+   * Build the discover_tools meta-tool description.
+   * Lists inactive tools and available skills (prompt-based instruction packages).
    */
   private buildDiscoverTool(
     allTools: Map<string, { name: string; description: string }>,
@@ -220,16 +184,15 @@ export class ToolSelector {
     const parts: string[] = [];
     parts.push(`You have ${alreadySelected.size} tools active.`);
 
-    // Skill catalog: show skills with their tool lists
     if (skillCatalog && skillCatalog.length > 0) {
-      parts.push(`\nSkills available (activate by skill name):`);
+      parts.push(`\nSkills available (activate by name to load instructions into your context):`);
       for (const skill of skillCatalog) {
-        const toolList = skill.tools.map(t => t.name).join(', ');
-        parts.push(`  [${skill.name}] ${skill.description.slice(0, 50)} → tools: ${toolList}`);
+        const desc = skill.description.slice(0, 80);
+        const tag = skill.instructions ? 'has instructions' : 'no instructions';
+        parts.push(`  [${skill.name}] ${desc} (${tag})`);
       }
     }
 
-    // Individual tools not in any skill
     const unloaded: string[] = [];
     for (const [name, tool] of allTools) {
       if (!alreadySelected.has(name)) {
@@ -237,11 +200,12 @@ export class ToolSelector {
       }
     }
     if (unloaded.length > 0) {
-      parts.push(`\nIndividual tools available (${unloaded.length}):`);
+      parts.push(`\nInactive tools (${unloaded.length}):`);
       parts.push(unloaded.join('\n'));
     }
 
     parts.push('\nUsage: pass skill names or tool names in tool_names to activate them.');
+    parts.push('Skills inject instructions into your context; tools become callable.');
     parts.push('Use mode="list_skills" to get full skill details.');
 
     return {
@@ -258,7 +222,7 @@ export class ToolSelector {
           mode: {
             type: 'string',
             enum: ['activate', 'list_skills'],
-            description: 'Mode: "activate" (default) to activate tools/skills, "list_skills" to browse all available skills',
+            description: 'Mode: "activate" (default) to activate tools/skills, "list_skills" to browse available skills',
           },
         },
       },

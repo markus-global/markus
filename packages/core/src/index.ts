@@ -150,14 +150,12 @@ export {
   type SkillToolDef,
   InMemorySkillRegistry,
   createDefaultSkillRegistry,
-  createGitSkill,
-  createCodeAnalysisSkill,
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
 } from './skills/index.js';
 export {
   SkillLoader,
-  createStubToolsFromManifest,
+  readSkillInstructions,
   type SkillPackage,
   type SkillSearchResult,
   type SkillLoadResult,

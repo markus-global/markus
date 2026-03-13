@@ -999,12 +999,10 @@ async function listSkills() {
   console.log('\nAvailable Skills:');
   console.log('─'.repeat(70));
   for (const s of skills) {
+    const instrTag = s.instructions ? ' [has instructions]' : '';
     console.log(
-      `  ${s.name.padEnd(20)} v${s.version.padEnd(8)} ${s.category.padEnd(14)} ${s.description}`
+      `  ${s.name.padEnd(20)} v${s.version.padEnd(8)} ${s.category.padEnd(14)} ${s.description}${instrTag}`
     );
-    for (const t of s.tools) {
-      console.log(`    └ ${t.name.padEnd(24)} ${t.description}`);
-    }
   }
 }
 

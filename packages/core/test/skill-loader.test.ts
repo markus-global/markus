@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SkillLoader, createStubToolsFromManifest } from '../src/skills/loader.js';
+import { SkillLoader, readSkillInstructions } from '../src/skills/loader.js';
 import type { SkillManifest } from '../src/skills/types.js';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 
 const TEST_DIR = join(tmpdir(), `markus-skill-loader-test-${Date.now()}`);
 
-function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}): string {
+function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}, skillMd?: string): string {
   const skillDir = join(TEST_DIR, name);
   mkdirSync(skillDir, { recursive: true });
 
@@ -17,12 +17,16 @@ function createTestSkill(name: string, manifest: Partial<SkillManifest> = {}): s
     description: `Test skill: ${name}`,
     author: 'test',
     category: 'development',
-    tools: [{ name: `${name}_tool`, description: 'A test tool', inputSchema: { type: 'object' } }],
     ...manifest,
   };
 
   writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(fullManifest, null, 2));
   writeFileSync(join(skillDir, 'README.md'), `# ${name}\nTest skill readme`);
+
+  if (skillMd) {
+    writeFileSync(join(skillDir, 'SKILL.md'), skillMd);
+  }
+
   return skillDir;
 }
 
@@ -78,6 +82,13 @@ describe('SkillLoader', () => {
       const packages = loader2.discoverSkills();
       expect(packages).toHaveLength(0);
     });
+
+    it('should read SKILL.md instructions', () => {
+      createTestSkill('instruction-skill', {}, '---\nname: instruction-skill\ndescription: A skill with instructions\n---\n\n# Instructions\n\nDo the thing.');
+      const packages = loader.discoverSkills();
+      expect(packages).toHaveLength(1);
+      expect(packages[0].manifest.instructions).toContain('Do the thing');
+    });
   });
 
   describe('validateManifest', () => {
@@ -88,7 +99,6 @@ describe('SkillLoader', () => {
         description: 'A valid skill',
         author: 'test',
         category: 'development',
-        tools: [{ name: 'tool1', description: 'A tool', inputSchema: {} }],
       });
       expect(result.valid).toBe(true);
       expect(result.errors).toHaveLength(0);
@@ -101,23 +111,9 @@ describe('SkillLoader', () => {
         description: 'A skill',
         author: 'test',
         category: 'development',
-        tools: [{ name: 'tool1', description: 'A tool', inputSchema: {} }],
       });
       expect(result.valid).toBe(false);
       expect(result.errors).toContain('name is required');
-    });
-
-    it('should reject invalid name format', () => {
-      const result = loader.validateManifest({
-        name: 'Invalid Name!',
-        version: '1.0.0',
-        description: 'A skill',
-        author: 'test',
-        category: 'development',
-        tools: [{ name: 'tool1', description: 'A tool', inputSchema: {} }],
-      });
-      expect(result.valid).toBe(false);
-      expect(result.errors.some(e => e.includes('lowercase'))).toBe(true);
     });
 
     it('should reject invalid semver', () => {
@@ -127,22 +123,21 @@ describe('SkillLoader', () => {
         description: 'A skill',
         author: 'test',
         category: 'development',
-        tools: [{ name: 'tool1', description: 'A tool', inputSchema: {} }],
       });
       expect(result.valid).toBe(false);
       expect(result.errors.some(e => e.includes('semver'))).toBe(true);
     });
 
-    it('should require at least one tool', () => {
+    it('should accept skills with no tools (prompt-based)', () => {
       const result = loader.validateManifest({
-        name: 'test',
+        name: 'prompt-skill',
         version: '1.0.0',
-        description: 'A skill',
+        description: 'A prompt-based skill',
         author: 'test',
-        category: 'development',
-        tools: [],
+        category: 'custom',
+        instructions: 'Do this and that',
       });
-      expect(result.valid).toBe(false);
+      expect(result.valid).toBe(true);
     });
   });
 
@@ -150,7 +145,7 @@ describe('SkillLoader', () => {
     it('should check permissions', () => {
       const manifest: SkillManifest = {
         name: 'test', version: '1.0.0', description: 'test', author: 'test',
-        category: 'development', tools: [{ name: 't', description: 't', inputSchema: {} }],
+        category: 'development',
         requiredPermissions: ['shell', 'network'],
       };
       const result = loader.checkPermissions(manifest, ['shell']);
@@ -161,7 +156,7 @@ describe('SkillLoader', () => {
     it('should pass when all permissions granted', () => {
       const manifest: SkillManifest = {
         name: 'test', version: '1.0.0', description: 'test', author: 'test',
-        category: 'development', tools: [{ name: 't', description: 't', inputSchema: {} }],
+        category: 'development',
         requiredPermissions: ['shell'],
       };
       const result = loader.checkPermissions(manifest, ['shell', 'file', 'network']);
@@ -171,7 +166,7 @@ describe('SkillLoader', () => {
     it('should check env requirements', () => {
       const manifest: SkillManifest = {
         name: 'test', version: '1.0.0', description: 'test', author: 'test',
-        category: 'development', tools: [{ name: 't', description: 't', inputSchema: {} }],
+        category: 'development',
         requiredEnv: ['NONEXISTENT_VAR_12345'],
       };
       const result = loader.checkEnvRequirements(manifest);
@@ -212,22 +207,26 @@ describe('SkillLoader', () => {
   });
 });
 
-describe('createStubToolsFromManifest', () => {
-  it('should create stub tools with error messages', async () => {
-    const manifest: SkillManifest = {
-      name: 'test-skill', version: '1.0.0', description: 'test', author: 'test',
-      category: 'development',
-      tools: [
-        { name: 'tool_a', description: 'Tool A', inputSchema: { type: 'object' } },
-        { name: 'tool_b', description: 'Tool B', inputSchema: { type: 'object' } },
-      ],
-    };
+describe('readSkillInstructions', () => {
+  const tempDir = join(tmpdir(), `markus-skill-instructions-test-${Date.now()}`);
 
-    const tools = createStubToolsFromManifest(manifest);
-    expect(tools).toHaveLength(2);
-    expect(tools[0].name).toBe('tool_a');
+  beforeEach(() => mkdirSync(tempDir, { recursive: true }));
+  afterEach(() => rmSync(tempDir, { recursive: true, force: true }));
 
-    const result = JSON.parse(await tools[0].execute({}));
-    expect(result.error).toContain('no implementation loaded');
+  it('should read SKILL.md and strip frontmatter', () => {
+    writeFileSync(join(tempDir, 'SKILL.md'), '---\nname: test\n---\n\n# Hello\n\nInstructions here.');
+    const result = readSkillInstructions(tempDir);
+    expect(result).toBe('# Hello\n\nInstructions here.');
+  });
+
+  it('should return undefined if no SKILL.md', () => {
+    const result = readSkillInstructions(tempDir);
+    expect(result).toBeUndefined();
+  });
+
+  it('should return undefined for empty SKILL.md body', () => {
+    writeFileSync(join(tempDir, 'SKILL.md'), '---\nname: test\n---\n');
+    const result = readSkillInstructions(tempDir);
+    expect(result).toBeUndefined();
   });
 });

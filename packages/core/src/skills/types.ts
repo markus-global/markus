@@ -1,5 +1,3 @@
-import type { AgentToolHandler } from '../agent.js';
-
 export interface SkillManifest {
   name: string;
   version: string;
@@ -7,11 +5,17 @@ export interface SkillManifest {
   author: string;
   category: SkillCategory;
   tags?: string[];
-  tools: SkillToolDef[];
+  /** Full SKILL.md body content -- the actual skill instructions */
+  instructions?: string;
+  /** @deprecated Kept for backward compat with old manifest.json files; ignored by system */
+  tools?: SkillToolDef[];
   requiredEnv?: string[];
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
-  /** Filesystem path where this skill was loaded from (undefined for built-in skills) */
+  /** Filesystem path where this skill was loaded from */
   sourcePath?: string;
+  /** Origin of this skill: skillhub, skillssh, local, builder */
+  source?: string;
+  sourceUrl?: string;
 }
 
 export type SkillCategory =
@@ -23,6 +27,7 @@ export type SkillCategory =
   | 'browser'
   | 'custom';
 
+/** @deprecated Tool definitions inside skills are no longer used */
 export interface SkillToolDef {
   name: string;
   description: string;
@@ -31,7 +36,6 @@ export interface SkillToolDef {
 
 export interface SkillInstance {
   manifest: SkillManifest;
-  tools: AgentToolHandler[];
 }
 
 export interface SkillRegistry {
@@ -39,5 +43,6 @@ export interface SkillRegistry {
   unregister(skillName: string): void;
   get(skillName: string): SkillInstance | undefined;
   list(): SkillManifest[];
-  getToolsForSkills(skillNames: string[]): AgentToolHandler[];
+  /** Return instructions for all prompt-based skills in the given list */
+  getInstructionsForSkills(skillNames: string[]): Map<string, string>;
 }

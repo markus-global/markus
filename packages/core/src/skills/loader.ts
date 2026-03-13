@@ -1,6 +1,5 @@
 import { createLogger } from '@markus/shared';
 import type { SkillManifest, SkillInstance, SkillCategory } from './types.js';
-import type { AgentToolHandler } from '../agent.js';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -23,15 +22,23 @@ export interface SkillLoadResult {
 }
 
 /**
+ * Read SKILL.md from a skill directory, strip YAML frontmatter, return the instruction body.
+ */
+export function readSkillInstructions(skillDir: string): string | undefined {
+  const skillMdPath = join(skillDir, 'SKILL.md');
+  if (!existsSync(skillMdPath)) return undefined;
+  try {
+    const content = readFileSync(skillMdPath, 'utf-8');
+    const body = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
+    return body || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Loads skills from a filesystem directory structure.
- * Each skill is a directory containing a manifest.json and tool implementations.
- *
- * Expected structure:
- *   skills-dir/
- *     my-skill/
- *       manifest.json     — SkillManifest
- *       README.md          — optional description
- *       tools.js           — default export: (manifest) => AgentToolHandler[]
+ * Each skill is a directory containing a SKILL.md (instructions) and/or manifest.json (metadata).
  */
 export class SkillLoader {
   private loadedPackages = new Map<string, SkillPackage>();
@@ -45,9 +52,6 @@ export class SkillLoader {
     }
   }
 
-  /**
-   * Scan configured directories and discover all valid skill packages.
-   */
   discoverSkills(): SkillPackage[] {
     const packages: SkillPackage[] = [];
 
@@ -75,6 +79,9 @@ export class SkillLoader {
             continue;
           }
 
+          const instructions = readSkillInstructions(skillDir);
+          if (instructions) manifest.instructions = instructions;
+
           let readme: string | undefined;
           const readmePath = join(skillDir, 'README.md');
           if (existsSync(readmePath)) {
@@ -87,7 +94,7 @@ export class SkillLoader {
 
           log.info(`Discovered skill: ${manifest.name} v${manifest.version}`, {
             category: manifest.category,
-            tools: manifest.tools.length,
+            hasInstructions: !!manifest.instructions,
           });
         } catch (err) {
           log.warn(`Failed to read skill at ${skillDir}`, { error: String(err) });
@@ -98,33 +105,16 @@ export class SkillLoader {
     return packages;
   }
 
-  /**
-   * Validate a skill manifest against required fields and constraints.
-   */
   validateManifest(manifest: SkillManifest): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
 
     if (!manifest.name || typeof manifest.name !== 'string') errors.push('name is required');
     if (!manifest.version || typeof manifest.version !== 'string') errors.push('version is required');
     if (!manifest.description) errors.push('description is required');
-    if (!manifest.author) errors.push('author is required');
 
     const validCategories: SkillCategory[] = ['development', 'devops', 'communication', 'data', 'productivity', 'browser', 'custom'];
-    if (!validCategories.includes(manifest.category)) {
+    if (manifest.category && !validCategories.includes(manifest.category)) {
       errors.push(`category must be one of: ${validCategories.join(', ')}`);
-    }
-
-    if (!Array.isArray(manifest.tools) || manifest.tools.length === 0) {
-      errors.push('at least one tool is required');
-    } else {
-      for (const tool of manifest.tools) {
-        if (!tool.name) errors.push(`tool missing name`);
-        if (!tool.description) errors.push(`tool ${tool.name ?? '?'} missing description`);
-      }
-    }
-
-    if (manifest.name && !/^[a-z0-9-]+$/.test(manifest.name)) {
-      errors.push('name must contain only lowercase letters, numbers, and hyphens');
     }
 
     if (manifest.version && !/^\d+\.\d+\.\d+/.test(manifest.version)) {
@@ -134,27 +124,18 @@ export class SkillLoader {
     return { valid: errors.length === 0, errors };
   }
 
-  /**
-   * Check whether required permissions are satisfied.
-   */
   checkPermissions(manifest: SkillManifest, grantedPermissions: string[]): { allowed: boolean; missing: string[] } {
     const required = manifest.requiredPermissions ?? [];
     const missing = required.filter(p => !grantedPermissions.includes(p));
     return { allowed: missing.length === 0, missing };
   }
 
-  /**
-   * Check whether required environment variables are available.
-   */
   checkEnvRequirements(manifest: SkillManifest): { satisfied: boolean; missing: string[] } {
     const required = manifest.requiredEnv ?? [];
     const missing = required.filter(v => !process.env[v]);
     return { satisfied: missing.length === 0, missing };
   }
 
-  /**
-   * Search discovered skills by query (name, description, tags, category).
-   */
   searchSkills(query?: { text?: string; category?: SkillCategory; tags?: string[] }): SkillSearchResult {
     let manifests = [...this.loadedPackages.values()].map(p => p.manifest);
 
@@ -187,19 +168,4 @@ export class SkillLoader {
   listPackages(): SkillPackage[] {
     return [...this.loadedPackages.values()];
   }
-}
-
-/**
- * Create stub tool handlers from a skill manifest.
- * Used when a skill's tools.js module cannot be loaded but the manifest is valid.
- */
-export function createStubToolsFromManifest(manifest: SkillManifest): AgentToolHandler[] {
-  return manifest.tools.map(toolDef => ({
-    name: toolDef.name,
-    description: toolDef.description,
-    inputSchema: toolDef.inputSchema,
-    async execute(): Promise<string> {
-      return JSON.stringify({ error: `Skill '${manifest.name}' tool '${toolDef.name}' has no implementation loaded` });
-    },
-  }));
 }
