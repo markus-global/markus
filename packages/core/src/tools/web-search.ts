@@ -36,40 +36,54 @@ export const WebSearchTool: AgentToolHandler = {
     const query = args['query'] as string;
     const maxResults = (args['maxResults'] as number) ?? 8;
 
-    // Try backends in priority order
-    const backends = [searchSerper, searchBrave, searchDuckDuckGoLite];
-    for (const backend of backends) {
+    // Try backends in priority order, collecting per-backend errors for diagnostics
+    const backends: Array<{ name: string; fn: typeof searchSerper }> = [
+      { name: 'Serper', fn: searchSerper },
+      { name: 'Brave', fn: searchBrave },
+      { name: 'DuckDuckGo', fn: searchDuckDuckGoLite },
+    ];
+    const errors: Array<{ backend: string; error: string }> = [];
+
+    for (const { name, fn } of backends) {
       try {
-        const results = await backend(query, maxResults);
+        const results = await fn(query, maxResults);
         if (results.length > 0) {
           return JSON.stringify({ status: 'success', query, results, count: results.length });
         }
-      } catch {
-        // try next backend
+        errors.push({ backend: name, error: 'Returned 0 results' });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push({ backend: name, error: message });
       }
     }
 
     return JSON.stringify({
       status: 'error',
-      error: 'All search backends failed. Configure SERPER_API_KEY or BRAVE_SEARCH_API_KEY for better results.',
+      error: 'All search backends failed.',
+      details: errors,
     });
   },
 };
 
 async function searchSerper(query: string, maxResults: number): Promise<SearchResult[]> {
   const apiKey = process.env['SERPER_API_KEY'];
-  if (!apiKey) throw new Error('No SERPER_API_KEY');
+  if (!apiKey) throw new Error('SERPER_API_KEY not configured');
 
-  const res = await fetch('https://google.serper.dev/search', {
-    method: 'POST',
-    headers: {
-      'X-API-KEY': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ q: query, num: maxResults }),
-  });
+  let res: Response;
+  try {
+    res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: query, num: maxResults }),
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-  if (!res.ok) throw new Error(`Serper HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
   const data = (await res.json()) as {
     organic?: Array<{ title: string; link: string; snippet: string; date?: string }>;
@@ -85,18 +99,23 @@ async function searchSerper(query: string, maxResults: number): Promise<SearchRe
 
 async function searchBrave(query: string, maxResults: number): Promise<SearchResult[]> {
   const apiKey = process.env['BRAVE_SEARCH_API_KEY'];
-  if (!apiKey) throw new Error('No BRAVE_SEARCH_API_KEY');
+  if (!apiKey) throw new Error('BRAVE_SEARCH_API_KEY not configured');
 
   const params = new URLSearchParams({ q: query, count: String(maxResults) });
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
-    headers: {
-      'Accept': 'application/json',
-      'Accept-Encoding': 'gzip',
-      'X-Subscription-Token': apiKey,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': apiKey,
+      },
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-  if (!res.ok) throw new Error(`Brave HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
   const data = (await res.json()) as {
     web?: { results?: Array<{ title: string; url: string; description: string; page_age?: string }> };
@@ -117,16 +136,19 @@ async function searchBrave(query: string, maxResults: number): Promise<SearchRes
 async function searchDuckDuckGoLite(query: string, maxResults: number): Promise<SearchResult[]> {
   const encoded = encodeURIComponent(query);
 
-  // Try the lite endpoint first (table-based, very stable HTML)
-  const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (!res.ok) {
-    // Fallback to the HTML endpoint
     return searchDuckDuckGoHtml(query, maxResults);
   }
 
@@ -182,14 +204,19 @@ function parseDDGLite(html: string, max: number): SearchResult[] {
 
 async function searchDuckDuckGoHtml(query: string, maxResults: number): Promise<SearchResult[]> {
   const encoded = encodeURIComponent(query);
-  const res = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://html.duckduckgo.com/html/?q=${encoded}`, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+  } catch (err: unknown) {
+    throw new Error(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-  if (!res.ok) throw new Error(`DDG HTML HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
   const html = await res.text();
   const results: SearchResult[] = [];

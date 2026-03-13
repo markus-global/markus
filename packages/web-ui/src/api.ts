@@ -608,8 +608,11 @@ export const api = {
                   fullContent = event.content ?? fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
                 } else if (event.type === 'error') {
-                  const errEvent = event as { type: string; message?: string; error?: string };
-                  reject(new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error'));
+                  const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
+                  if (errEvent.sessionId) resultSessionId = errEvent.sessionId;
+                  const err = new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error');
+                  (err as Error & { sessionId?: string }).sessionId = errEvent.sessionId;
+                  reject(err);
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
@@ -777,8 +780,10 @@ export const api = {
                   fullContent = event.content ?? fullContent;
                   routedAgentId = event.agentId ?? routedAgentId;
                 } else if (event.type === 'error') {
-                  const errEvent = event as { type: string; message?: string; error?: string };
-                  reject(new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error'));
+                  const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
+                  const err = new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error');
+                  (err as Error & { sessionId?: string }).sessionId = errEvent.sessionId;
+                  reject(err);
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {

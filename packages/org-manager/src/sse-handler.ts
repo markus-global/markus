@@ -277,7 +277,14 @@ export class SSEHandler {
   private handleError(error: unknown, res: ServerResponse): void {
     try {
       if (this.sseBuffer && !this.sseDisconnected) {
-        this.sseBuffer.sendError(error instanceof Error ? error : String(error), false);
+        const errMsg = typeof error === 'string' ? error : (error instanceof Error ? error.message : String(error));
+        this.sseBuffer.send({
+          type: 'error',
+          error: errMsg,
+          sessionId: this.sessionId,
+          recoverable: false,
+          timestamp: Date.now(),
+        });
         setTimeout(() => {
           if (this.sseBuffer) {
             this.sseBuffer.close();
@@ -290,7 +297,7 @@ export class SSEHandler {
           Connection: 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
-        res.write(`data: ${JSON.stringify({ type: 'error', message: String(error) })}\\n\\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', message: String(error), sessionId: this.sessionId })}\\n\\n`);
         res.end();
       }
     } catch (e) {

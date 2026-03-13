@@ -260,7 +260,7 @@ function MessageActions({
       {isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-400 hover:text-amber-300 hover:bg-amber-900/30 transition-colors"
           title="Retry"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
@@ -1040,6 +1040,19 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           });
         }
       } catch (e) {
+        // Preserve sessionId from error so subsequent messages stay in the same session
+        const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
+        if (errSessionId && chatMode === 'direct') {
+          setActiveSessionId(errSessionId);
+          loadSessions(selectedAgent!).then(s => {
+            setSessions(s);
+            const newSess = s.find(ss => ss.id === errSessionId);
+            if (newSess) {
+              setOpenSessionTabs(prev => prev.some(t => t.id === newSess.id) ? prev : [...prev, newSess]);
+            }
+          });
+        }
+
         const errText = friendlyAgentError(e);
         if (errText) {
           updateConvMsgs(sendKey, prev => {
@@ -1552,11 +1565,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       <span className="text-xs text-gray-600">{msg.time}</span>
                     </div>
                     <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                      ? 'mt-0.5 px-3 py-2 rounded-lg bg-red-900/20 border border-red-800/30'
+                      ? 'mt-0.5 px-3 py-2 rounded-lg bg-amber-900/15 border border-amber-700/25'
                       : 'mt-0.5'
                     }>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className={`text-sm ${msg.isError || msg.text.startsWith('⚠') ? 'text-red-200' : 'text-gray-300'}`} />
+                        ? <MarkdownMessage content={msg.text} className={`text-sm ${msg.isError || msg.text.startsWith('⚠') ? 'text-amber-200/90' : 'text-gray-300'}`} />
                         : <div className="text-sm text-gray-300 whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -1598,7 +1611,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                         msg.sender === 'user'
                           ? 'bg-indigo-600 text-white rounded-br-sm'
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                            ? 'bg-red-900/30 border border-red-800/40 text-red-200 rounded-bl-sm'
+                            ? 'bg-amber-900/20 border border-amber-700/30 text-amber-200/90 rounded-bl-sm'
                             : 'bg-gray-800 text-gray-200 rounded-bl-sm'
                       }`}>
                         {msg.sender === 'user'

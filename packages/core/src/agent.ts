@@ -1199,6 +1199,18 @@ export class Agent {
       return reply;
     } catch (error) {
       if (chatActivityId) this.endActivity(chatActivityId);
+
+      // Append error as assistant message so the next conversation turn has full context
+      if (!isEphemeral && this.currentSessionId) {
+        const errContent = `[Error: ${String(error).slice(0, 300)}]`;
+        try {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: errContent,
+          });
+        } catch { /* avoid masking the original error */ }
+      }
+
       if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
         type: 'error',
@@ -1464,6 +1476,20 @@ export class Agent {
         if (this.activeTasks.size === 0) this.setStatus('idle');
         return lastResponseContent || '';
       }
+
+      // Append error as assistant message so the next conversation turn has full context
+      if (this.currentSessionId) {
+        const errContent = lastResponseContent
+          ? `${lastResponseContent}\n\n[Error: ${String(error).slice(0, 300)}]`
+          : `[Error: ${String(error).slice(0, 300)}]`;
+        try {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: errContent,
+          });
+        } catch { /* avoid masking the original error */ }
+      }
+
       if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
       this.emitAudit({
         type: 'error',
