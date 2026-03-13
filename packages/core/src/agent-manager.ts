@@ -1299,7 +1299,7 @@ export class AgentManager {
   async removeAgent(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
-      await agent.stop();
+      try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
       this.a2aBus.unregisterAgent(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);

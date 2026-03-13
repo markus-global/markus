@@ -1280,8 +1280,7 @@ export class APIServer {
         return;
       }
       const teamId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      const deleteMembers = body['deleteMembers'] === true;
+      const deleteMembers = url.searchParams.get('deleteMembers') === 'true';
       await this.orgService.deleteTeam(teamId, deleteMembers);
       this.json(res, 200, { deleted: true });
       return;
