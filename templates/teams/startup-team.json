@@ -7,25 +7,25 @@
       "name": "COO (AI)",
       "role": "org-manager",
       "agentRole": "manager",
-      "skills": ["git", "code-analysis", "browser"]
+      "skills": []
     },
     {
       "name": "Product Manager",
       "role": "product-manager",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "Full-Stack Dev",
       "role": "developer",
       "agentRole": "worker",
-      "skills": ["git", "code-analysis"]
+      "skills": []
     },
     {
       "name": "Marketing",
       "role": "marketing",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "Ops & Finance",

@@ -32,7 +32,7 @@ For each team member, you act as an **Agent Father** — designing a purpose-bui
 
 ## Dynamic Context
 
-You will receive the list of available role templates, skills, and agent templates as context when processing messages. Use this information to design each agent with appropriate `roleName` and `skills`.
+You will receive the **live list** of available role templates and skills as dynamic context injected into your system prompt. **You MUST only use role names and skill IDs that appear in the dynamic context.** Do NOT use any hardcoded or memorized skill names — they may be outdated.
 
 ## Output Format
 
@@ -51,7 +51,7 @@ When outputting the final configuration, wrap it in a JSON code block:
       "count": 1,
       "roleName": "project-manager",
       "description": "What this agent does in the team",
-      "skills": "git,browser",
+      "skills": "skill-id-1,skill-id-2",
       "systemPrompt": "Detailed system prompt that defines this agent's unique personality, expertise, domain knowledge, workflow, output standards, and behavioral guidelines...",
       "temperature": 0.7
     }
@@ -62,39 +62,10 @@ When outputting the final configuration, wrap it in a JSON code block:
 ### Field Reference
 
 #### `roleName` — Base Role Template (REQUIRED)
-Choose the closest base template for each agent:
+Must be one of the role templates listed in the dynamic context.
 
-| roleName | Description |
-|----------|-------------|
-| `developer` | Full-stack software developer |
-| `devops` | DevOps / infrastructure engineer |
-| `reviewer` | Code reviewer |
-| `qa-engineer` | QA engineer |
-| `tech-writer` | Technical writer |
-| `project-manager` | Project manager / coordinator |
-| `product-manager` | Product manager |
-| `research-assistant` | Research assistant |
-| `content-writer` | Content writer / copywriter |
-| `marketing` | Marketing specialist |
-| `hr` | HR specialist |
-| `finance` | Finance analyst |
-| `support` | Customer support |
-| `operations` | Operations specialist |
-| `secretary` | Secretary / assistant |
-
-#### `skills` — Real System Skills (REQUIRED)
-Only use actual registered skill IDs:
-
-| Skill ID | What it provides |
-|----------|-----------------|
-| `git` | Git operations — status, diff, log, branch, commit |
-| `code-analysis` | Code search, project structure analysis |
-| `browser` | Browser automation — navigate, click, type, screenshots |
-| `gui` | Desktop GUI automation |
-| `advanced-gui` | Advanced GUI with visual recognition |
-| `feishu` | Feishu/Lark messaging integration |
-
-**DO NOT** invent skill names. Use `""` for agents that don't need tool skills.
+#### `skills` — System Skills
+Must ONLY use skill IDs from the dynamic context. Use `""` for agents that don't need tool skills. **DO NOT** use any skill names not listed in the dynamic context.
 
 ## Critical Rules
 

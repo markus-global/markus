@@ -7,31 +7,31 @@
       "name": "Tech Lead",
       "role": "org-manager",
       "agentRole": "manager",
-      "skills": ["git", "code-analysis"]
+      "skills": []
     },
     {
       "name": "Backend Dev",
       "role": "developer",
       "agentRole": "worker",
-      "skills": ["git", "code-analysis"]
+      "skills": []
     },
     {
       "name": "Frontend Dev",
       "role": "developer",
       "agentRole": "worker",
-      "skills": ["git", "code-analysis", "browser"]
+      "skills": []
     },
     {
       "name": "QA Engineer",
       "role": "qa-engineer",
       "agentRole": "worker",
-      "skills": ["git", "browser"]
+      "skills": []
     },
     {
       "name": "DevOps",
       "role": "devops",
       "agentRole": "worker",
-      "skills": ["git"]
+      "skills": []
     }
   ]
 }

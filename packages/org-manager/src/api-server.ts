@@ -3251,7 +3251,7 @@ When outputting the final configuration, wrap it in a JSON code block with these
   "roleName": "developer",
   "agentRole": "manager" | "worker",
   "category": "development" | "devops" | "management" | "productivity" | "general",
-  "skills": "git,code-analysis,browser",
+  "skills": "skill-id-1,skill-id-2",
   "tags": "comma-separated tags",
   "systemPrompt": "Detailed system prompt...",
   "llmProvider": "anthropic" | "openai" | "google" | "",
