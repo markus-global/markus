@@ -344,6 +344,11 @@ export interface TaskInfo {
   subtaskIds?: string[];
   blockedBy?: string[];
   notes?: string[];
+  deliverables?: Array<{
+    type: string;
+    reference: string;
+    summary: string;
+  }>;
   projectId?: string;
   iterationId?: string;
   requirementId?: string;
@@ -705,6 +710,10 @@ export const api = {
     getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
     addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>) =>
       request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorName: authorName ?? 'User', authorType: 'human', attachments }) }),
+  },
+  files: {
+    preview: (filePath: string) =>
+      request<{ type: string; name: string; content: string; mimeType?: string }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; iterationId?: string }) => {

@@ -616,6 +616,7 @@ export class TaskService {
           subtaskIds: [],
           blockedBy,
           result: (row.result as Task['result']) ?? undefined,
+          deliverables: Array.isArray((row as any).deliverables) ? ((row as any).deliverables as Task['deliverables']) : undefined,
           notes: Array.isArray(row.notes) ? (row.notes as string[]) : undefined,
           createdAt:
             row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
@@ -888,9 +889,18 @@ export class TaskService {
 
     const finalAssignee = task.assignedAgentId;
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0;
-    task.status = hasBlockers ? 'blocked' : finalAssignee ? 'assigned' : 'pending';
+    const shouldAutoStart = !hasBlockers && !!finalAssignee;
+    task.status = hasBlockers ? 'blocked' : finalAssignee ? 'in_progress' : 'pending';
     task.approvedVia = approvalTier ?? 'human';
     task.updatedAt = new Date().toISOString();
+    if (shouldAutoStart && !task.startedAt) {
+      task.startedAt = task.updatedAt;
+    }
+
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(task.id, task.status)
+        .catch(err => log.warn('Failed to persist approved task status to DB', { taskId: task.id, error: String(err) }));
+    }
 
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId: finalAssignee });
     this.emitTaskEvent({
@@ -904,6 +914,20 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
     log.info(`Task approved: ${task.title}`, { id: task.id, status: task.status, approvedVia: task.approvedVia });
+
+    // Auto-start execution when approved with an assigned agent and no blockers
+    if (shouldAutoStart && this.agentManager) {
+      const activeToken = this.taskCancelTokens.get(task.id);
+      if (!activeToken || activeToken.cancelled) {
+        log.info('Auto-starting task execution after approval', { taskId: task.id, agentId: finalAssignee });
+        setImmediate(() => {
+          this.runTask(task.id).catch(err =>
+            log.warn('Auto-start after approval failed', { taskId: task.id, error: String(err) })
+          );
+        });
+      }
+    }
+
     return task;
   }
 
@@ -1620,6 +1644,12 @@ export class TaskService {
     task.deliverables = deliverables;
     task.status = 'review';
     task.updatedAt = new Date().toISOString();
+
+    // Persist deliverables to DB
+    if (this.taskRepo) {
+      this.taskRepo.updateDeliverables(task.id, deliverables)
+        .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
+    }
 
     // Publish deliverables to shared workspace so reviewers and other agents can access them
     if (this.sharedDataDir) {

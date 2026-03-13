@@ -5433,6 +5433,70 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       return;
     }
 
+    // ── File preview ──────────────────────────────────────────────────────
+
+    if (path === '/api/files/preview' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" query parameter' });
+        return;
+      }
+
+      try {
+        const { resolve, extname } = await import('node:path');
+        const { readFileSync, existsSync, statSync } = await import('node:fs');
+        const resolved = resolve(filePath);
+
+        // Security: only allow files under home/.markus (agent workspaces & shared data)
+        const markusBase = join(homedir(), '.markus');
+        if (!resolved.startsWith(markusBase)) {
+          this.json(res, 403, { error: 'Access denied: file is outside the allowed directory' });
+          return;
+        }
+
+        if (!existsSync(resolved)) {
+          this.json(res, 404, { error: 'File not found' });
+          return;
+        }
+
+        const stat = statSync(resolved);
+        if (!stat.isFile()) {
+          this.json(res, 400, { error: 'Path is not a file' });
+          return;
+        }
+
+        const maxSize = 2 * 1024 * 1024; // 2MB limit
+        if (stat.size > maxSize) {
+          this.json(res, 413, { error: 'File too large for preview', size: stat.size, maxSize });
+          return;
+        }
+
+        const ext = extname(resolved).toLowerCase();
+        const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+        if (imageExts.includes(ext)) {
+          const data = readFileSync(resolved);
+          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+          this.json(res, 200, {
+            type: 'image',
+            name: resolved.split('/').pop(),
+            mimeType: mimeMap[ext] ?? 'application/octet-stream',
+            content: data.toString('base64'),
+          });
+        } else {
+          const content = readFileSync(resolved, 'utf-8');
+          const mdExts = ['.md', '.markdown'];
+          this.json(res, 200, {
+            type: mdExts.includes(ext) ? 'markdown' : 'text',
+            name: resolved.split('/').pop(),
+            content,
+          });
+        }
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to read file: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── Requirements ─────────────────────────────────────────────────────
 
     if (path === '/api/requirements' && req.method === 'GET') {

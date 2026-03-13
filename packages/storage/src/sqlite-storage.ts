@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   requirement_id TEXT,
   blocked_by TEXT DEFAULT '[]',
   result TEXT,
+  deliverables TEXT,
   notes TEXT DEFAULT '[]',
   project_id TEXT,
   iteration_id TEXT,
@@ -409,6 +410,7 @@ export function openSqlite(dbPath: string): Database.Database {
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
+    { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -745,6 +747,12 @@ export class SqliteTaskRepo {
       .run(toJson(result), now(), id);
   }
 
+  updateDeliverables(id: string, deliverables: unknown[]) {
+    this.db
+      .prepare('UPDATE tasks SET deliverables = ?, updated_at = ? WHERE id = ?')
+      .run(toJson(deliverables), now(), id);
+  }
+
   listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
     const vals: unknown[] = [orgId];
@@ -800,6 +808,7 @@ export class SqliteTaskRepo {
       requirementId: r['requirement_id'] as string | null,
       blockedBy: fromJson<string[]>(r['blocked_by'] as string) ?? [],
       result: fromJson(r['result'] as string),
+      deliverables: fromJson(r['deliverables'] as string),
       notes: fromJson(r['notes'] as string),
       projectId: r['project_id'] as string | null,
       iterationId: r['iteration_id'] as string | null,

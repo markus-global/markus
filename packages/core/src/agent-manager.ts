@@ -113,6 +113,7 @@ export interface TaskServiceBridge {
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string): void;
+  updateTask(id: string, data: { description?: string }, updatedBy?: string): { id: string; title: string; status: string };
   submitForReview(taskId: string, deliverables: TaskDeliverable[]): Promise<{ id: string; status: string }> | { id: string; status: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
@@ -648,7 +649,11 @@ export class AgentManager {
         addTaskNote: async (taskId, note) => {
           ts.addTaskNote(taskId, note);
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues) => {
+        updateTaskFields: async (taskId, fields) => {
+          const task = ts.updateTask(taskId, fields, id);
+          return { id: task.id, title: task.title, status: task.status };
+        },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables) => {
           const deliverables: TaskDeliverable[] = [{
             type: 'branch',
             reference: branchName ?? `task/${taskId}`,
@@ -657,6 +662,15 @@ export class AgentManager {
           }];
           if (knownIssues) {
             deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
+          }
+          if (fileDeliverables?.length) {
+            for (const fd of fileDeliverables) {
+              deliverables.push({
+                type: (fd.type as TaskDeliverable['type']) ?? 'file',
+                reference: fd.path,
+                summary: fd.summary,
+              });
+            }
           }
           return ts.submitForReview(taskId, deliverables);
         },
@@ -1074,7 +1088,11 @@ export class AgentManager {
         addTaskNote: async (taskId, note) => {
           ts.addTaskNote(taskId, note);
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues) => {
+        updateTaskFields: async (taskId, fields) => {
+          const task = ts.updateTask(taskId, fields, id);
+          return { id: task.id, title: task.title, status: task.status };
+        },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables) => {
           const deliverables: TaskDeliverable[] = [{
             type: 'branch',
             reference: branchName ?? `task/${taskId}`,
@@ -1083,6 +1101,15 @@ export class AgentManager {
           }];
           if (knownIssues) {
             deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
+          }
+          if (fileDeliverables?.length) {
+            for (const fd of fileDeliverables) {
+              deliverables.push({
+                type: (fd.type as TaskDeliverable['type']) ?? 'file',
+                reference: fd.path,
+                summary: fd.summary,
+              });
+            }
           }
           return ts.submitForReview(taskId, deliverables);
         },

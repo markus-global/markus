@@ -305,6 +305,57 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning }: { taskId: string; i
   );
 }
 
+// ─── File Preview Modal ─────────────────────────────────────────────────────────
+
+function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const [data, setData] = useState<{ type: string; name: string; content: string; mimeType?: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    api.files.preview(filePath)
+      .then(d => setData(d))
+      .catch(err => setError(String(err)))
+      .finally(() => setLoading(false));
+  }, [filePath]);
+
+  const fileName = filePath.split('/').pop() ?? filePath;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]" onClick={onClose}>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[720px] max-w-[92vw] max-h-[85vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <svg className="w-4 h-4 text-gray-500 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h7l4 4v10H3V1zm7 1H4v12h10V5.5L10 2z"/><path d="M10 1v4h4" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+            <span className="text-sm font-medium text-gray-200 truncate">{fileName}</span>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg shrink-0 ml-3">×</button>
+        </div>
+        <div className="px-4 py-1 border-b border-gray-800/60">
+          <p className="text-[10px] text-gray-600 font-mono truncate">{filePath}</p>
+        </div>
+        <div className="flex-1 overflow-auto min-h-0 p-5">
+          {loading && <div className="text-sm text-gray-500 text-center py-8">Loading...</div>}
+          {error && <div className="text-sm text-red-400 text-center py-8">{error}</div>}
+          {data && data.type === 'image' && (
+            <div className="flex justify-center">
+              <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
+            </div>
+          )}
+          {data && data.type === 'markdown' && (
+            <MarkdownMessage content={data.content} className="text-sm text-gray-300 leading-relaxed" />
+          )}
+          {data && data.type === 'text' && (
+            <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words bg-gray-950/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailModal({
@@ -327,6 +378,9 @@ function TaskDetailModal({
   const [activeTab, setActiveTab] = useState<'details' | 'logs'>('details');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<string | null>(null);
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState(task.description);
 
   const loadSubtasks = useCallback(async () => {
     try { const d = await api.tasks.listSubtasks(task.id); setSubtasks(d.subtasks); } catch { /* ok */ }
@@ -438,9 +492,36 @@ function TaskDetailModal({
         {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Description */}
-          {task.description && (
+          {(task.description || task.status === 'pending_approval') && (
             <div className="px-6 pt-4 pb-3 border-b border-gray-800">
-              <MarkdownMessage content={task.description} className="text-sm text-gray-400 leading-relaxed" />
+              {task.status === 'pending_approval' && editingDesc ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={descDraft}
+                    onChange={e => setDescDraft(e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-y min-h-[80px]"
+                    rows={4}
+                  />
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+                    <button
+                      onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
+                      disabled={busy}
+                      className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50"
+                    >Save</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="group relative">
+                  <MarkdownMessage content={task.description} className="text-sm text-gray-400 leading-relaxed" />
+                  {task.status === 'pending_approval' && (
+                    <button
+                      onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
+                      className="absolute top-0 right-0 text-[10px] text-gray-600 hover:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >Edit</button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -676,6 +757,35 @@ function TaskDetailModal({
                     <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
                   </div>
                 )}
+                {task.deliverables && task.deliverables.filter(d => d.type !== 'branch').length > 0 && (
+                  <div className="mt-5">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Deliverables</p>
+                    <div className="space-y-1.5">
+                      {task.deliverables.filter(d => d.type !== 'branch').map((d, i) => {
+                        const typeColors: Record<string, string> = {
+                          file: 'bg-cyan-500/15 text-cyan-400',
+                          document: 'bg-blue-500/15 text-blue-400',
+                          report: 'bg-purple-500/15 text-purple-400',
+                        };
+                        return (
+                          <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs text-gray-300 mb-0.5">{d.summary}</p>
+                              <button
+                                onClick={() => setPreviewFile(d.reference)}
+                                className="text-[11px] text-indigo-400 hover:text-indigo-300 font-mono truncate block max-w-full text-left hover:underline"
+                                title={d.reference}
+                              >
+                                {d.reference}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {task.notes && task.notes.length > 0 && (
                   <div className="mt-5">
                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
@@ -734,6 +844,7 @@ function TaskDetailModal({
 
       {pendingDelete && <ConfirmModal title={`Delete subtask "${pendingDelete.title}"?`} message="This subtask will be permanently deleted." confirmLabel="Delete" onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
       {pendingDeleteParent && <ConfirmModal title={`Delete task "${task.title}"?`} message={subtasks.length > 0 ? `This will also delete all ${subtasks.length} subtask(s).` : 'This task will be permanently deleted.'} confirmLabel="Delete Task" onConfirm={() => void deleteParent()} onCancel={() => setPendingDeleteParent(false)} />}
+      {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} />}
     </div>
   );
 }

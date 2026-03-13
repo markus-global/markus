@@ -106,6 +106,10 @@ export class TaskRepo {
     await this.db.update(tasks).set({ result, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
+  async updateDeliverables(id: string, deliverables: unknown[]) {
+    await this.db.update(tasks).set({ deliverables, updatedAt: new Date() }).where(eq(tasks.id, id));
+  }
+
   async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
     const conditions = [eq(tasks.orgId, orgId)];
     if (filters?.status) conditions.push(eq(tasks.status, filters.status));

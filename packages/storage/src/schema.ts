@@ -106,6 +106,7 @@ export const tasks = pgTable('tasks', {
   requirementId: varchar('requirement_id', { length: 64 }),
   blockedBy: jsonb('blocked_by').default([]),
   result: jsonb('result'),
+  deliverables: jsonb('deliverables'),
   notes: jsonb('notes').default([]),
   projectId: varchar('project_id', { length: 64 }),
   iterationId: varchar('iteration_id', { length: 64 }),

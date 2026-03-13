@@ -50,13 +50,16 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string) => Promise<void>;
+  /** Update task fields (description, etc.) — works even for pending_approval tasks */
+  updateTaskFields?: (taskId: string, fields: { description?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Submit task deliverables for review */
   submitForReview?: (
     taskId: string,
     summary: string,
     branchName?: string,
     testResults?: string,
-    knownIssues?: string
+    knownIssues?: string,
+    deliverables?: Array<{ type?: string; path: string; summary: string }>
   ) => Promise<{ id: string; status: string }>;
   /** Propose a requirement for user review */
   proposeRequirement?: (params: {
@@ -260,8 +263,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update a task — add a progress note, change status, or both.',
+        'Update a task — add a progress note, change status, update description, or a combination.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
+        'You can update the description of any task including those awaiting approval (pending_approval).',
         'Worker lifecycle: assigned → in_progress → (submit via task_submit_review when done).',
         'Reviewer lifecycle: review → accepted (approve) or revision (request changes) → completed (after all revisions resolved).',
         'IMPORTANT: Workers MUST NOT set status to "completed" directly.',
@@ -282,6 +286,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             description:
               'Progress note — brief summary of what was done, what is blocked, or next steps. Highly recommended.',
           },
+          description: {
+            type: 'string',
+            description: 'Updated task description (optional). Can be used on any task including pending_approval tasks.',
+          },
         },
         required: ['task_id'],
       },
@@ -290,6 +298,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const taskId = args['task_id'] as string;
           const newStatus = args['status'] as string | undefined;
           const note = args['note'] as string | undefined;
+          const description = args['description'] as string | undefined;
+
+          // Handle description update first — works for any status including pending_approval
+          if (description !== undefined && ctx.updateTaskFields) {
+            await ctx.updateTaskFields(taskId, { description });
+          }
 
           if (newStatus) {
             // Prevent agents from completing/accepting their own tasks
@@ -326,22 +340,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}`,
             });
           } else {
-            // Note-only update — no status change
-            if (!note) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status or a note.' });
+            // No status change — note and/or description update
+            if (!note && description === undefined) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, or a description.' });
             }
-            if (ctx.addTaskNote) {
+            if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, `[${ctx.agentName}] ${note}`);
             }
             const task = ctx.getTask ? await ctx.getTask(taskId) : null;
-            log.info(`Task note added by agent ${ctx.agentId}`, { taskId });
+            log.info(`Task updated by agent ${ctx.agentId}`, { taskId, hasNote: !!note, hasDescription: description !== undefined });
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Note recorded for task "${task?.title ?? taskId}"`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}`,
             });
           }
         } catch (error) {
@@ -443,6 +457,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               'Submit your completed work for review.',
               'IMPORTANT: Before calling this tool, use task_update to add a detailed note with key conclusions, deliverable file paths, decisions made, and any limitations.',
               'Provide a summary of changes, the branch name with your commits, and any test results.',
+              'Use the deliverables parameter to list all file artifacts you created — these will be stored on the task and visible to reviewers.',
               'The task enters review status and a reviewer will evaluate your deliverables.',
               'After calling this tool, you MUST notify the team: use agent_send_message to inform the reviewer and the project manager,',
               'and use agent_broadcast_status to let all colleagues know you have submitted work and are now available.',
@@ -461,6 +476,19 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   type: 'string',
                   description: 'Any known issues or follow-up items (optional)',
                 },
+                deliverables: {
+                  type: 'array',
+                  description: 'List of file artifacts produced by this task. Include all files you created or modified as deliverables.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', enum: ['file', 'document', 'report'], description: 'Deliverable type (default: file)' },
+                      path: { type: 'string', description: 'Absolute file path of the deliverable' },
+                      summary: { type: 'string', description: 'Brief description of this deliverable' },
+                    },
+                    required: ['path', 'summary'],
+                  },
+                },
               },
               required: ['task_id', 'summary'],
             },
@@ -471,7 +499,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   args['summary'] as string,
                   args['branch_name'] as string | undefined,
                   args['test_results'] as string | undefined,
-                  args['known_issues'] as string | undefined
+                  args['known_issues'] as string | undefined,
+                  args['deliverables'] as Array<{ type?: string; path: string; summary: string }> | undefined
                 );
                 return JSON.stringify({
                   status: 'success',
