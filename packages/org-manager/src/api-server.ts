@@ -1979,6 +1979,13 @@ export class APIServer {
         const skillName = (body['skillName'] as string) ?? '';
         if (skillName && !agent.config.skills.includes(skillName)) {
           agent.config.skills.push(skillName);
+          // Inject skill tools into the running agent so it can use them immediately
+          if (this.skillRegistry) {
+            const skillTools = this.skillRegistry.getToolsForSkills([skillName]);
+            for (const tool of skillTools) {
+              agent.registerTool(tool);
+            }
+          }
         }
         if (this.storage) {
           try { await this.storage.agentRepo.updateConfig(agentId, { skills: agent.config.skills }); }
@@ -3083,6 +3090,24 @@ export class APIServer {
           writeFileSync(join(targetDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
         }
 
+        // Register into runtime SkillRegistry so the skill is immediately available
+        if (this.skillRegistry) {
+          try {
+            const discovered = discoverSkillsInDir(skillsDir).find(
+              d => d.manifest.name === skillName || d.path === targetDir
+            );
+            if (discovered && !this.skillRegistry.get(discovered.manifest.name)) {
+              discovered.manifest.sourcePath = discovered.path;
+              const stubTools = discovered.manifest.tools.length > 0
+                ? createStubToolsFromManifest(discovered.manifest)
+                : [];
+              this.skillRegistry.register({ manifest: discovered.manifest, tools: stubTools });
+            }
+          } catch (regErr) {
+            log.warn('Failed to register installed skill into runtime registry', { error: String(regErr) });
+          }
+        }
+
         this.json(res, 201, {
           installed: true,
           name: skillName,
@@ -3139,7 +3164,29 @@ export class APIServer {
         return;
       }
 
-      this.json(res, 200, { deleted: true, name: skillName, deletedFs, deletedDb });
+      // Unregister from runtime SkillRegistry
+      if (this.skillRegistry) {
+        this.skillRegistry.unregister(skillName);
+      }
+
+      // Remove from all agents that had this skill assigned
+      const agentMgr = this.orgService.getAgentManager();
+      const affectedAgents: string[] = [];
+      for (const agentInfo of agentMgr.listAgents()) {
+        try {
+          const agent = agentMgr.getAgent(agentInfo.id);
+          if (agent.config.skills.includes(skillName)) {
+            agent.config.skills = agent.config.skills.filter(s => s !== skillName);
+            affectedAgents.push(agentInfo.id);
+            if (this.storage) {
+              try { await this.storage.agentRepo.updateConfig(agentInfo.id, { skills: agent.config.skills }); }
+              catch (e) { log.warn('Failed to persist skill removal from agent after uninstall', { agentId: agentInfo.id, error: String(e) }); }
+            }
+          }
+        } catch { /* agent not accessible */ }
+      }
+
+      this.json(res, 200, { deleted: true, name: skillName, deletedFs, deletedDb, removedFromAgents: affectedAgents });
       return;
     }
 
@@ -3524,8 +3571,42 @@ Be conversational. Help the user think through tool design, edge cases, and perm
         const start = (page - 1) * limit;
         const pageSkills = skills.slice(start, start + limit);
 
+        // Enrich homepage URLs: CDN data often has `clawhub.ai/{slug}` instead of `clawhub.ai/{owner}/{slug}`
+        if (!this.registryCache) this.registryCache = new Map();
+        const ownerCacheKey = 'skillhub-owner-map';
+        const ownerMap: Map<string, string> = (this.registryCache.get(ownerCacheKey) as { data: Map<string, string> } | undefined)?.data ?? new Map();
+        const needsEnrich = pageSkills.filter(s => {
+          const hp = s.homepage ?? '';
+          const hpPath = hp.replace(/^https?:\/\/clawhub\.ai\/?/, '');
+          return hpPath && !hpPath.includes('/') && !ownerMap.has(s.slug);
+        });
+        if (needsEnrich.length > 0) {
+          await Promise.allSettled(
+            needsEnrich.map(async s => {
+              try {
+                const resp = await fetch(`https://wry-manatee-359.convex.site/api/v1/skills/${encodeURIComponent(s.slug)}`, { signal: AbortSignal.timeout(5000) });
+                if (resp.ok) {
+                  const detail = await resp.json() as { owner?: { handle?: string } };
+                  if (detail.owner?.handle) {
+                    ownerMap.set(s.slug, detail.owner.handle);
+                  }
+                }
+              } catch { /* skip — will use original homepage */ }
+            })
+          );
+          this.registryCache.set(ownerCacheKey, { data: ownerMap, ts: now });
+        }
+        const enrichedSkills = pageSkills.map(s => {
+          const hp = s.homepage ?? '';
+          const hpPath = hp.replace(/^https?:\/\/clawhub\.ai\/?/, '');
+          if (hpPath && !hpPath.includes('/') && ownerMap.has(s.slug)) {
+            return { ...s, homepage: `https://clawhub.ai/${ownerMap.get(s.slug)}/${s.slug}` };
+          }
+          return s;
+        });
+
         this.json(res, 200, {
-          skills: pageSkills,
+          skills: enrichedSkills,
           total,
           page,
           limit,
