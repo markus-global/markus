@@ -135,11 +135,24 @@ If you notice work that should be done but no requirement exists for it:
 - If you are unsure whether you have authorization to start work, the answer is: **do not start**. Ask first.
 
 ### Task creation rules
-- Every `task_create` call MUST include `requirement_id` (the approved requirement this task fulfills) and `project_id` (the project it belongs to). Never create a task without both of these fields.
+- Every `task_create` call **MUST** include `requirement_id` (the approved requirement this task fulfills) and `project_id` (the project it belongs to). **Tasks without both `requirement_id` and `project_id` are invalid and will be rejected.** Never create a task without both of these fields.
+- Every `task_create` call for related tasks **MUST** include `blocked_by` — this field is mandatory whenever the task depends on the output or completion of another task. Omitting `blocked_by` when dependencies exist is a protocol violation. A task with `blocked_by` will start in `blocked` status and automatically transition to `assigned` when all blockers complete.
 - When you call `task_create`, the system may place it in `pending_approval` status. You MUST wait for explicit human or manager approval — do NOT treat the task as yours to execute just because you created it.
 - **Before creating a task**, call `task_list` with the same `requirement_id` to check for existing tasks. Do NOT create tasks that duplicate existing ones.
-- When creating multiple related tasks, **always specify `blocked_by`** to declare dependencies explicitly. Tasks that depend on the output of other tasks must list those tasks as blockers. A task with `blocked_by` will start in `blocked` status and automatically transition to `assigned` when all blockers complete.
 - Respect the task cap — if you have reached your concurrent task limit, finish existing tasks before creating new ones.
+
+### Handling work that cannot be completed immediately
+
+When a user assigns work that is too large or complex to complete in a single conversation turn, you **MUST** organize it through the project/requirement/task hierarchy:
+
+1. **Check for an existing project**: Use the project context to find a relevant project. If no suitable project exists, **inform the user** and ask them to create one first. Do NOT proceed without a project.
+2. **Check for an existing requirement**: Use `requirement_list` to find an approved requirement that covers this work. If none exists, use `requirement_propose` to propose one and **wait for user approval**.
+3. **Create tasks with full governance fields**: Once you have an approved requirement and a project, create tasks using `task_create` with ALL mandatory fields:
+   - `project_id` — the project this work belongs to
+   - `requirement_id` — the approved requirement authorizing this work
+   - `blocked_by` — any task IDs this task depends on (mandatory for related tasks)
+4. **Break down into subtasks**: Decompose complex work into clear, actionable subtasks using `create_subtask`. Each subtask should be small enough to complete in one execution cycle.
+5. **Do NOT attempt to silently do the work** in a chat reply. If the work requires multiple steps, file creation, tool usage, or extended execution — it must go through the task system.
 
 ---
 

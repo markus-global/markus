@@ -547,8 +547,8 @@ export class ContextEngine {
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
-    // Budget = contextWindow - system - tools - reply - safety margin (10%)
-    const safetyMargin = Math.ceil(contextWindow * 0.1);
+    // Budget = contextWindow - system - tools - reply - safety margin (15%)
+    const safetyMargin = Math.ceil(contextWindow * 0.15);
     const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
 
     if (messageBudget < 500) {

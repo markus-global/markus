@@ -512,4 +512,5 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.27, output: 1.1, cacheRead: 0.07 }, reasoning: false, inputTypes: ['text'] },
   { id: 'deepseek-reasoner', name: 'DeepSeek R1', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
 ];

@@ -443,6 +443,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Session management (direct mode)
+  const NEW_CHAT_PLACEHOLDER_ID = '__new_chat__';
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
@@ -696,13 +697,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     }
     // Restore or reset session tabs for the new agent
     const savedTabs = sessionTabsBuffer.current.get(newKey);
-    setOpenSessionTabs(savedTabs ?? []);
+    if (savedTabs && savedTabs.length > 0) {
+      setOpenSessionTabs(savedTabs);
+    }
+    // If no saved tabs, we'll populate from DB below for direct mode
     setShowSessions(false);
 
     if (bufferedMsgs !== undefined) {
       // Already have content (possibly mid-stream) — show immediately, no DB load
       setMessages(bufferedMsgs);
       setHasMore(false); // pagination state will be restored when needed
+      // Keep existing tabs when we have buffered messages
+      if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
     } else {
       // First visit for this conversation — load from DB
       setMessages([]);
@@ -714,16 +720,20 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
         loadChannelMessages(channelName);
+        if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       } else if (chatMode === 'smart') {
         loadChannelMessages('smart:default');
+        if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
           if (s.length > 0) {
-            setActiveSessionId(s[0]!.id);
-            setOpenSessionTabs([s[0]!]);
-            loadSessionMessages(s[0]!.id, newKey);
+            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : s.slice(0, 5);
+            setActiveSessionId(initialTabs[0]!.id);
+            setOpenSessionTabs(initialTabs);
+            loadSessionMessages(initialTabs[0]!.id, newKey);
           } else {
             setActiveSessionId(null);
+            if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
         });
       }
@@ -1016,25 +1026,33 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             return u;
           });
         } else {
+          const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
           const streamResult = await api.agents.messageStream(
             selectedAgent, text,
             appendTextChunk,
             handleToolEvent,
             abortCtrl.signal,
             imagesToSend,
-            activeSessionId,
+            effectiveSessionId,
           );
           if (streamResult.sessionId) {
             setActiveSessionId(streamResult.sessionId);
-            // Auto-add new session to open tabs once sessions list refreshes
+            // Replace placeholder tab with real session
+            setOpenSessionTabs(prev =>
+              prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t)
+            );
           }
           loadSessions(selectedAgent).then(s => {
             setSessions(s);
-            // If a new session was created, add it to open tabs
             if (streamResult.sessionId) {
               const newSess = s.find(ss => ss.id === streamResult.sessionId);
               if (newSess) {
-                setOpenSessionTabs(prev => prev.some(t => t.id === newSess.id) ? prev : [...prev, newSess]);
+                // Update the tab with real session data (title, etc.)
+                setOpenSessionTabs(prev => {
+                  const exists = prev.some(t => t.id === newSess.id);
+                  if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
+                  return [...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID), newSess];
+                });
               }
             }
           });
@@ -1044,11 +1062,19 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
         if (errSessionId && chatMode === 'direct') {
           setActiveSessionId(errSessionId);
+          // Replace placeholder tab with real session from error
+          setOpenSessionTabs(prev =>
+            prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: errSessionId } : t)
+          );
           loadSessions(selectedAgent!).then(s => {
             setSessions(s);
             const newSess = s.find(ss => ss.id === errSessionId);
             if (newSess) {
-              setOpenSessionTabs(prev => prev.some(t => t.id === newSess.id) ? prev : [...prev, newSess]);
+              setOpenSessionTabs(prev => {
+                const exists = prev.some(t => t.id === newSess.id);
+                if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
+                return [...prev, newSess];
+              });
             }
           });
         }
@@ -1224,13 +1250,25 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   };
 
   const newConversation = () => {
-    setActiveSessionId(null);
+    setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
     const key = currentConvKeyRef.current;
     msgBuffers.current.delete(key);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
     setShowSessions(false);
+    // Add a placeholder "New Chat" tab
+    setOpenSessionTabs(prev => {
+      const without = prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID);
+      return [...without, {
+        id: NEW_CHAT_PLACEHOLDER_ID,
+        agentId: selectedAgent ?? '',
+        userId: null,
+        title: 'New Chat',
+        createdAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+      }];
+    });
   };
 
   const handleInputChange = (val: string) => {
@@ -1428,9 +1466,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       ? 'border-indigo-500 text-indigo-300 bg-indigo-500/5'
                       : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
                   }`}
-                  onClick={() => void switchSession(s)}
+                  onClick={() => {
+                    if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
+                      setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+                      const key = currentConvKeyRef.current;
+                      msgBuffers.current.delete(key);
+                      setMessages([]);
+                    } else {
+                      void switchSession(s);
+                    }
+                  }}
                 >
-                  <span className="truncate">{s.title || 'Conversation'}</span>
+                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.title || 'Conversation')}</span>
                   <button
                     onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
                     className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity shrink-0"

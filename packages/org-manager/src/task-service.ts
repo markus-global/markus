@@ -498,13 +498,18 @@ export class TaskService {
               });
             }
           } else if (entry.type === 'error') {
-            // Retry on transient failures (network / LLM timeout); give up after MAX_TASK_RETRIES
+            // Retry on transient failures. While the task is in_progress, retry indefinitely;
+            // otherwise fall back to MAX_TASK_RETRIES limit.
             const nextAttempt = _retryAttempt + 1;
-            if (!cancelToken.cancelled && nextAttempt <= TaskService.MAX_TASK_RETRIES) {
-              const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
-              const retryMsg = `Attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES} failed. Retrying in ${delayMs / 1000}s…`;
-              log.warn(retryMsg, { taskId, error: entry.content });
-              // Append a visible retry notice to the execution log
+            const currentTask = this.tasks.get(taskId);
+            const isInProgress = currentTask?.status === 'in_progress';
+            const shouldRetry = !cancelToken.cancelled && (isInProgress || nextAttempt <= TaskService.MAX_TASK_RETRIES);
+            if (shouldRetry) {
+              const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 60_000;
+              const retryMsg = isInProgress
+                ? `Attempt ${nextAttempt} failed (task still in_progress — will keep retrying). Retrying in ${delayMs / 1000}s…`
+                : `Attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES} failed. Retrying in ${delayMs / 1000}s…`;
+              log.warn(retryMsg, { taskId, attempt: nextAttempt, error: entry.content });
               const noticeEntry = {
                 taskId,
                 agentId,
@@ -554,10 +559,13 @@ export class TaskService {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
         if (!cancelToken.cancelled) {
           const nextAttempt = _retryAttempt + 1;
-          if (nextAttempt <= TaskService.MAX_TASK_RETRIES) {
-            const delayMs = TaskService.RETRY_DELAYS_MS[_retryAttempt] ?? 60_000;
+          const currentTask = this.tasks.get(taskId);
+          const isInProgress = currentTask?.status === 'in_progress';
+          const shouldRetry = isInProgress || nextAttempt <= TaskService.MAX_TASK_RETRIES;
+          if (shouldRetry) {
+            const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 60_000;
             log.warn(
-              `Retrying task in ${delayMs / 1000}s (attempt ${_retryAttempt + 1}/${TaskService.MAX_TASK_RETRIES})`,
+              `Retrying task in ${delayMs / 1000}s (attempt ${nextAttempt}${isInProgress ? ', task in_progress — unlimited retries' : `/${TaskService.MAX_TASK_RETRIES}`})`,
               { taskId }
             );
             setTimeout(() => {

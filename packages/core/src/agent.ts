@@ -2434,7 +2434,7 @@ export class Agent {
 
     const HEARTBEAT_ALLOWED_TOOLS = new Set([
       'task_list', 'task_update', 'requirement_propose', 'requirement_list',
-      'memory_save', 'memory_search', 'heartbeat_manage',
+      'memory_save', 'memory_search', 'heartbeat_manage', 'discover_tools',
     ]);
 
     try {
