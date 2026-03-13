@@ -31,10 +31,15 @@ Synchronize with the Markus platform by calling `POST /api/gateway/sync`.
 2. Respond if a response is expected
 3. Use message context to inform your current work
 
+### Skip-if-unchanged:
+- If the sync response contains no new tasks, no new messages, and no announcements, avoid unnecessary processing.
+- Compare the received `assignedTasks` and `inboxMessages` with what you received last time. Only act on genuinely new items.
+- If multiple consecutive syncs return identical data, consider using `heartbeat_manage` to increase the sync interval temporarily.
+
 ## markus-manual-refresh
 
 **Schedule:** Daily at midnight
 
 Check if the Markus integration handbook has been updated by calling `GET /api/gateway/manual`.
 
-If `config.manualVersion` from your last sync response has changed, download and re-read the handbook to stay current with any API or protocol changes.
+If `config.manualVersion` from your last sync response has changed, download and re-read the handbook to stay current with any API or protocol changes. If the version is unchanged, skip — do not re-download.

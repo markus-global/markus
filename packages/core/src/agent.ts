@@ -332,6 +332,16 @@ export class Agent {
     }
   }
 
+  /**
+   * Start a fresh conversation session, discarding the current in-memory session context.
+   * Called when the user explicitly starts a "New Chat".
+   */
+  startNewSession(): void {
+    const session = this.memory.createSession(this.id);
+    this.currentSessionId = session.id;
+    log.info(`New session started for agent ${this.config.name}: ${session.id}`);
+  }
+
   pause(reason?: string): void {
     if (this.state.status === 'offline') return;
     this.pauseReason = reason;
@@ -1992,7 +2002,7 @@ export class Agent {
     // Include tools the agent explicitly requested via discover_tools
     const recentPlusActivated = [...this.recentToolNames, ...this.activatedExtraTools];
 
-    return this.toolSelector.selectTools({
+    const tools = this.toolSelector.selectTools({
       allTools: this.tools,
       userMessage: context?.userMessage ?? '',
       recentToolNames: recentPlusActivated,
@@ -2000,6 +2010,37 @@ export class Agent {
       isTaskExecution: context?.isTaskExecution,
       skillCatalog: this.skillRegistry?.list(),
     });
+
+    // Always include heartbeat_manage meta-tool so agent can self-manage its schedule
+    tools.push({
+      name: 'heartbeat_manage',
+      description: 'Manage your own heartbeat schedule. List tasks, update intervals, enable/disable tasks. Use this during heartbeat to adjust your schedule based on workload — e.g. reduce frequency when idle, increase when busy, or disable tasks that have no new data.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['list', 'update_schedule', 'enable', 'disable'],
+            description: 'Action: "list" shows all heartbeat tasks with stats; "update_schedule" changes interval; "enable"/"disable" toggles a task',
+          },
+          task_name: {
+            type: 'string',
+            description: 'Name of the heartbeat task to modify (required for update_schedule/enable/disable)',
+          },
+          interval_ms: {
+            type: 'number',
+            description: 'New interval in milliseconds (for update_schedule). Min 60000 (1 min), max 86400000 (24 hours)',
+          },
+          cron_expression: {
+            type: 'string',
+            description: 'New cron expression (for update_schedule). Overrides interval_ms if provided',
+          },
+        },
+        required: ['action'],
+      },
+    });
+
+    return tools;
   }
 
   /**
@@ -2081,10 +2122,76 @@ export class Agent {
     return JSON.stringify(result);
   }
 
+  private handleHeartbeatManage(args: Record<string, unknown>): string {
+    const action = args.action as string;
+
+    if (action === 'list') {
+      const tasks = this.heartbeat.listTasks();
+      return JSON.stringify({
+        status: 'ok',
+        tasks: tasks.map(t => ({
+          name: t.name,
+          enabled: t.enabled,
+          intervalMs: t.intervalMs,
+          cronExpression: t.cronExpression,
+          description: t.description?.slice(0, 120),
+          stats: t.stats,
+        })),
+      });
+    }
+
+    const taskName = args.task_name as string | undefined;
+    if (!taskName) {
+      return JSON.stringify({ status: 'error', error: 'task_name is required for this action' });
+    }
+
+    if (action === 'update_schedule') {
+      const intervalMs = args.interval_ms as number | undefined;
+      const cronExpression = args.cron_expression as string | undefined;
+      if (!intervalMs && !cronExpression) {
+        return JSON.stringify({ status: 'error', error: 'Provide interval_ms or cron_expression' });
+      }
+      if (intervalMs !== undefined && (intervalMs < 60_000 || intervalMs > 86_400_000)) {
+        return JSON.stringify({ status: 'error', error: 'interval_ms must be between 60000 (1 min) and 86400000 (24 hours)' });
+      }
+      const ok = this.heartbeat.updateTaskSchedule(taskName, {
+        intervalMs,
+        cronExpression,
+      });
+      return JSON.stringify({
+        status: ok ? 'ok' : 'error',
+        message: ok ? `Schedule updated for "${taskName}"` : `Task "${taskName}" not found`,
+      });
+    }
+
+    if (action === 'enable') {
+      const ok = this.heartbeat.enableTask(taskName);
+      return JSON.stringify({
+        status: ok ? 'ok' : 'error',
+        message: ok ? `Task "${taskName}" enabled` : `Task "${taskName}" not found or already enabled`,
+      });
+    }
+
+    if (action === 'disable') {
+      const ok = this.heartbeat.disableTask(taskName);
+      return JSON.stringify({
+        status: ok ? 'ok' : 'error',
+        message: ok ? `Task "${taskName}" disabled` : `Task "${taskName}" not found or already disabled`,
+      });
+    }
+
+    return JSON.stringify({ status: 'error', error: `Unknown action: ${action}` });
+  }
+
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback): Promise<string> {
     // Handle the discover_tools meta-tool: activate requested tools and skills
     if (toolCall.name === 'discover_tools') {
       return this.handleDiscoverTools(toolCall.arguments);
+    }
+
+    // Handle the heartbeat_manage meta-tool: self-manage heartbeat schedule
+    if (toolCall.name === 'heartbeat_manage') {
+      return this.handleHeartbeatManage(toolCall.arguments);
     }
 
     // Enforce agent profile tool restrictions
@@ -2245,30 +2352,55 @@ export class Agent {
       heartbeatName: ctx.task.name,
     });
 
+    // Retrieve the last heartbeat summary from memory so the agent can skip unchanged work
+    let lastHeartbeatSummary = '';
+    try {
+      const results = this.memory.search(`heartbeat:${ctx.task.name}`);
+      if (results.length > 0) {
+        const latest = results[results.length - 1];
+        if (latest) {
+          lastHeartbeatSummary = `\n## Last Heartbeat Summary (${latest.timestamp ?? 'unknown'})\n${latest.content}\n`;
+        }
+      }
+    } catch { /* ignore search failures */ }
+
     const prompt = [
       `[HEARTBEAT TASK] ${ctx.task.name}`,
       '',
       ctx.task.description,
+      lastHeartbeatSummary,
+      '## Heartbeat Rules',
       '',
-      '## Heartbeat Retrospective',
-      'As part of this heartbeat, perform the following review (max 5 tool calls total):',
-      '1. **Task Review**: Call `task_list` to see all your assigned tasks and their current status.',
-      '2. **Status Correction ONLY**: If any `in_progress` task has been completed or blocked (based on work you already did in a previous session), call `task_update` to reflect the correct status.',
-      '3. **Propose Untracked Needs**: If you identify a gap that should be worked on but no requirement covers it, use `requirement_propose` to suggest it and wait for user approval. You may propose at most 3 requirements total that are still pending review — if you already have 3 unreviewed proposals, do NOT propose more.',
+      '### Skip-if-Unchanged Principle',
+      'Before performing any check, compare against your last heartbeat summary above.',
+      '- If the task board has NOT changed since last time (same tasks, same statuses), say "No changes" and skip.',
+      '- If you already proposed requirements that are still pending, do NOT propose again.',
+      '- Only call tools when there is NEW information to act on. Avoid repetitive, meaningless actions.',
       '',
-      '⛔ ABSOLUTE RESTRICTIONS — violating these is a critical protocol breach:',
-      '- NEVER call `task_update` to set a task to `in_progress`. Tasks may ONLY be started by a human user clicking "Run" in the UI or sending you an explicit start instruction.',
-      '- NEVER create tasks (`task_create`) in a heartbeat. Task creation requires an approved requirement and explicit human authorization.',
-      '- NEVER execute actual work (writing code, making changes, calling external services) during a heartbeat.',
-      '- NEVER assume that a task assigned to you is authorized to start — "assigned" just means queued, not approved to run.',
-      '- Your ONLY allowed actions in a heartbeat: `task_list`, `task_update` (to fix stale completed/blocked statuses only), `requirement_propose`, `memory_save`.',
+      '### Allowed Actions (max 5 tool calls total)',
+      '1. **Task Review**: Call `task_list` to see current status. Compare with last heartbeat — skip if unchanged.',
+      '2. **Status Correction ONLY**: If any `in_progress` task was actually completed/blocked in a previous session, call `task_update` to fix it.',
+      '3. **Propose Untracked Needs**: Only if you find a genuinely new gap. Max 3 pending proposals — do NOT add more.',
+      '4. **Self-Manage Schedule**: Use `heartbeat_manage` to adjust your heartbeat frequency based on workload:',
+      '   - If idle with no tasks and nothing changed: increase interval (reduce frequency)',
+      '   - If many active tasks or frequent changes: decrease interval (check more often)',
+      '   - If a heartbeat task is consistently finding nothing to do: consider disabling it',
       '',
-      'After completing your review, if you discovered anything noteworthy (status corrections made, requirements proposed), call `memory_save` with a brief summary.',
+      '### Save Summary',
+      'At the end, call `memory_save` with key `heartbeat:{task_name}` and a BRIEF summary of what you found.',
+      'This summary will be shown to you in the next heartbeat so you can skip unchanged items.',
+      'Format: one line per finding, e.g. "3 tasks assigned, 0 changes, board clean" or "corrected task X status to blocked".',
+      '',
+      '⛔ ABSOLUTE RESTRICTIONS:',
+      '- NEVER set a task to `in_progress`. Only humans can start tasks.',
+      '- NEVER create tasks (`task_create`) in a heartbeat.',
+      '- NEVER execute actual work (writing code, making changes, calling external services).',
+      '- NEVER repeat an action you already did in the last heartbeat if nothing has changed.',
     ].join('\n');
 
     const HEARTBEAT_ALLOWED_TOOLS = new Set([
       'task_list', 'task_update', 'requirement_propose', 'requirement_list',
-      'memory_save', 'memory_search',
+      'memory_save', 'memory_search', 'heartbeat_manage',
     ]);
 
     try {

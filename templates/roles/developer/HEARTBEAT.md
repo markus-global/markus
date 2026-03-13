@@ -1,10 +1,15 @@
 # Heartbeat Tasks
 
 ## Check assigned issues
-Check if there are new issues assigned to me. Review each one and start working on the highest priority item.
+
+Check if there are new issues or tasks assigned to you since the last heartbeat. Compare with your last heartbeat summary — if the same tasks are listed with the same statuses, report "no changes" and skip.
+
+Do NOT start working on any task during heartbeat. Only note what is new or changed.
 
 ## Monitor CI/CD
-Check if any CI pipelines have failed on my recent commits. If so, investigate and fix.
+
+Check if any CI pipelines have failed on your recent commits — but only if you have committed since the last heartbeat. If no new commits, skip this check entirely.
 
 ## Review PRs
-Check if there are pull requests waiting for my review. Provide thoughtful, constructive feedback.
+
+Check if there are NEW pull requests waiting for your review since the last heartbeat. If the same PRs were already noted, skip.

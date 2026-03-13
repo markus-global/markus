@@ -36,6 +36,7 @@ export class OpenClawHeartbeatScheduler {
   private pendingDelays = new Map<string, ReturnType<typeof setTimeout>>();
   private running = false;
   private taskStats = new Map<string, HeartbeatTaskStats>();
+  private taskDefinitions = new Map<string, HeartbeatTask>();
   private startTime = Date.now();
 
   private static readonly MAX_INITIAL_JITTER_MS = 30 * 60_000; // 30 minutes max jitter
@@ -101,14 +102,18 @@ export class OpenClawHeartbeatScheduler {
    */
   private scheduleTask(task: HeartbeatTask): void {
     const key = `${this.agentId}:${task.name}`;
-    
-    // Initialize task stats
-    this.taskStats.set(key, {
-      name: task.name,
-      totalRuns: 0,
-      successfulRuns: 0,
-      failedRuns: 0,
-    });
+
+    this.taskDefinitions.set(key, { ...task });
+
+    // Initialize task stats (preserve existing if re-scheduling)
+    if (!this.taskStats.has(key)) {
+      this.taskStats.set(key, {
+        name: task.name,
+        totalRuns: 0,
+        successfulRuns: 0,
+        failedRuns: 0,
+      });
+    }
 
     // Schedule based on cron expression if provided
     if (task.cronExpression) {
@@ -117,6 +122,18 @@ export class OpenClawHeartbeatScheduler {
       // Fall back to interval-based scheduling
       this.scheduleIntervalTask(task, key);
     }
+  }
+
+  /**
+   * Stop and remove an active schedule for a given key without clearing its stats/definition.
+   */
+  private unscheduleKey(key: string): void {
+    const cron = this.cronTasks.get(key);
+    if (cron) { cron.stop(); this.cronTasks.delete(key); }
+    const interval = this.intervalTimers.get(key);
+    if (interval) { clearInterval(interval); this.intervalTimers.delete(key); }
+    const delay = this.pendingDelays.get(key);
+    if (delay) { clearTimeout(delay); this.pendingDelays.delete(key); }
   }
 
   /**
@@ -314,22 +331,89 @@ export class OpenClawHeartbeatScheduler {
    * Manually trigger a heartbeat task
    */
   async triggerTask(taskName: string): Promise<boolean> {
-    // Find the task by name
-    const tasks = Array.from(this.taskStats.keys())
-      .filter(key => key.endsWith(`:${taskName}`))
-      .map(key => {
-        const [agentId, name] = key.split(':');
-        return { key, name };
-      });
-    
-    if (tasks.length === 0) {
+    const key = `${this.agentId}:${taskName}`;
+    const task = this.taskDefinitions.get(key);
+    if (!task) {
       log.warn(`Task not found: ${taskName}`, { agentId: this.agentId });
       return false;
     }
-    
-    // For now, we don't have access to the original task object
-    // We'll need to store tasks when scheduling them
-    log.info(`Manual trigger not fully implemented for task: ${taskName}`);
-    return false;
+    await this.executeTask(task, key);
+    return true;
+  }
+
+  /**
+   * List all registered heartbeat tasks with their current config and stats.
+   */
+  listTasks(): Array<HeartbeatTask & { stats: HeartbeatTaskStats }> {
+    const result: Array<HeartbeatTask & { stats: HeartbeatTaskStats }> = [];
+    for (const [key, task] of this.taskDefinitions) {
+      const stats = this.taskStats.get(key) ?? {
+        name: task.name, totalRuns: 0, successfulRuns: 0, failedRuns: 0,
+      };
+      result.push({ ...task, stats });
+    }
+    return result;
+  }
+
+  /**
+   * Update the schedule of an existing heartbeat task at runtime.
+   * The task is unscheduled and re-scheduled with the new config.
+   */
+  updateTaskSchedule(
+    taskName: string,
+    update: { intervalMs?: number; cronExpression?: string },
+  ): boolean {
+    const key = `${this.agentId}:${taskName}`;
+    const task = this.taskDefinitions.get(key);
+    if (!task) return false;
+
+    if (update.intervalMs !== undefined) {
+      task.intervalMs = update.intervalMs;
+      task.cronExpression = undefined;
+    }
+    if (update.cronExpression !== undefined) {
+      task.cronExpression = update.cronExpression;
+      task.intervalMs = undefined;
+    }
+    this.taskDefinitions.set(key, task);
+
+    if (this.running) {
+      this.unscheduleKey(key);
+      this.scheduleTask(task);
+    }
+    log.info(`Heartbeat task schedule updated: ${taskName}`, {
+      agentId: this.agentId, intervalMs: task.intervalMs, cron: task.cronExpression,
+    });
+    return true;
+  }
+
+  /**
+   * Enable a previously disabled heartbeat task.
+   */
+  enableTask(taskName: string): boolean {
+    const key = `${this.agentId}:${taskName}`;
+    const task = this.taskDefinitions.get(key);
+    if (!task || task.enabled) return false;
+
+    task.enabled = true;
+    this.taskDefinitions.set(key, task);
+    if (this.running) this.scheduleTask(task);
+    log.info(`Heartbeat task enabled: ${taskName}`, { agentId: this.agentId });
+    return true;
+  }
+
+  /**
+   * Disable a heartbeat task (stop scheduling but keep the definition).
+   */
+  disableTask(taskName: string): boolean {
+    const key = `${this.agentId}:${taskName}`;
+    const task = this.taskDefinitions.get(key);
+    if (!task || !task.enabled) return false;
+
+    task.enabled = false;
+    this.taskDefinitions.set(key, task);
+    this.unscheduleKey(key);
+    log.info(`Heartbeat task disabled: ${taskName}`, { agentId: this.agentId });
+    return true;
   }
 }

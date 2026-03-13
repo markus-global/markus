@@ -1083,17 +1083,14 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
-        // Inject dynamic context for builder agents
-        let contextPrefix = '';
-        if (agent.config.roleId === 'team-factory' && this.templateRegistry) {
-          const templates = this.templateRegistry.search({}).templates
-            .map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }));
-          contextPrefix = `[System context — available agent templates: ${JSON.stringify(templates)}]\n\n`;
+        // When no sessionId is provided (user clicked "New Chat"), start a fresh agent session
+        if (!sessionId) {
+          agent.startNewSession();
         }
 
-        if (stream) {
-          const userText = contextPrefix + (body['text'] as string);
+        const userText = body['text'] as string;
 
+        if (stream) {
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -1109,7 +1106,6 @@ export class APIServer {
 
           await sseHandler.handle(res);
         } else {
-          const userText = contextPrefix + (body['text'] as string);
           const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
           let reply: string;
           try {
@@ -3208,10 +3204,6 @@ export class APIServer {
         return;
       }
 
-      const templates = this.templateRegistry
-        ? this.templateRegistry.search({}).templates.map(t => ({ id: t.id, name: t.name, agentRole: t.agentRole, category: t.category }))
-        : [];
-
       // Build dynamic skills/roles context
       const skillEntries: Array<{ name: string; desc: string; type: string }> = [];
       const seenSkills = new Set<string>();
@@ -3275,14 +3267,15 @@ The \`roleName\` field must be one of the role templates listed above.
 
 Always be conversational first. Only output the JSON when you have enough context. If the user's first message is already very detailed, you may output the JSON right away along with your explanation.`,
 
-        team: `You are Team Factory — an expert AI team composition architect. You help users design optimal agent teams through natural conversation.
+        team: `You are Team Factory — an expert AI team composition architect. You design optimal agent teams by creating **specialized, purpose-built agents** through natural conversation.
 
-Available agent templates: ${JSON.stringify(templates)}
+## Core Philosophy
+Every agent in a team must be a specialist. Do NOT simply pick generic templates and give them names. Instead, design each agent with a unique identity, detailed system prompt, and tailored capabilities.
 
 Your job:
 1. Understand the team's purpose — ask about goals, domain, scale, and coordination needs
-2. Recommend team composition — suggest roles, responsibilities, and how agents should collaborate
-3. When ready, output the final team configuration as a JSON block
+2. Design specialized agents — for each member, craft a detailed systemPrompt that defines their unique expertise, workflow, and behavioral guidelines
+3. Compose the team — define collaboration patterns and output the final configuration
 
 When outputting the final configuration, wrap it in a JSON code block:
 \`\`\`json
@@ -3292,12 +3285,35 @@ When outputting the final configuration, wrap it in a JSON code block:
   "category": "development" | "devops" | "management" | "productivity" | "general",
   "tags": "comma-separated tags",
   "members": [
-    { "templateId": "template-id or role-name", "name": "Display Name", "count": 1, "role": "manager" | "worker" }
+    {
+      "name": "Agent Display Name",
+      "role": "manager" | "worker",
+      "count": 1,
+      "roleName": "base-role-template",
+      "description": "What this agent does in the team",
+      "skills": "git,browser",
+      "systemPrompt": "Comprehensive system prompt defining this agent's unique personality, expertise, domain knowledge, workflow, output standards, and collaboration guidelines...",
+      "temperature": 0.7
+    }
   ]
 }
 \`\`\`
 
-Use templateId from available templates when possible. Every team needs exactly one manager and at least one worker. Be conversational and proactive in suggesting optimal team structures.`,
+## Available Role Templates
+${roleList}
+
+The \`roleName\` field must be one of the role templates listed above.
+
+## Available Skills (from system)
+| Skill ID | Description | Type |
+|----------|-------------|------|
+${skillTable}
+
+CRITICAL: The \`skills\` field must ONLY contain skill IDs from the table above. Do NOT invent skill names.
+
+CRITICAL: Do NOT use \`templateId\`. Always use \`roleName\` + \`systemPrompt\`. Every member MUST have a detailed \`systemPrompt\` (at least 3-5 paragraphs). A team of generic agents with different names is useless — each agent must have deep, specialized expertise in its systemPrompt.
+
+Every team needs exactly one manager and at least one worker. Be conversational and proactive.`,
 
         skill: `You are Skill Architect — an expert AI skill designer. You help users create new agent skills through natural conversation.
 
@@ -3401,7 +3417,7 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           });
 
         } else if (mode === 'team') {
-          // Create a real team and deploy real agents for each member
+          // Create a real team and deploy specialized agents for each member
           const agentManager = this.orgService.getAgentManager();
           const teamName = (artifact.name as string) ?? 'New Team';
           const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
@@ -3411,30 +3427,48 @@ Be conversational. Help the user think through tool design, edge cases, and perm
           for (const member of members) {
             const count = (member.count as number) ?? 1;
             const memberRole = (member.role as 'manager' | 'worker') ?? 'worker';
-            const templateId = (member.templateId as string) ?? '';
-            const memberName = (member.name as string) ?? templateId;
+            const memberName = (member.name as string) ?? 'Agent';
 
-            for (let i = 0; i < count; i++) {
-              const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
-
-              // Resolve role name from templateId
-              const knownRoles = this.orgService.listAvailableRoles();
-              let roleName = 'developer';
+            // New format: roleName directly specified; fallback to templateId for backward compat
+            const knownRoles = this.orgService.listAvailableRoles();
+            let roleName = 'developer';
+            const directRoleName = member.roleName as string | undefined;
+            const templateId = member.templateId as string | undefined;
+            if (directRoleName && knownRoles.includes(directRoleName)) {
+              roleName = directRoleName;
+            } else if (templateId) {
               const registryHit = this.templateRegistry?.get(templateId);
               if (registryHit) {
                 roleName = registryHit.roleId;
               } else if (knownRoles.includes(templateId)) {
                 roleName = templateId;
               }
+            }
 
-              // Use hireAgent for uniform creation, DB persist, and team membership
+            const memberSkills = typeof member.skills === 'string'
+              ? (member.skills as string).split(',').map(s => s.trim()).filter(Boolean)
+              : [];
+            const customPrompt = (member.systemPrompt as string) ?? '';
+
+            for (let i = 0; i < count; i++) {
+              const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
+
               const agent = await this.orgService.hireAgent({
                 name: displayName,
                 roleName,
                 orgId: 'default',
                 teamId: team.id,
                 agentRole: memberRole,
+                skills: memberSkills.length > 0 ? memberSkills : undefined,
               });
+
+              // Write custom ROLE.md if systemPrompt is provided (specialized agent)
+              if (customPrompt) {
+                const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+                mkdirSync(agentRoleDir, { recursive: true });
+                writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${displayName}\n\n${customPrompt}`);
+                agent.reloadRole();
+              }
 
               if (memberRole === 'manager') {
                 await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });

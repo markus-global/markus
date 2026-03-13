@@ -62,4 +62,35 @@ export class HeartbeatScheduler {
   async triggerTask(taskName: string): Promise<boolean> {
     return this.scheduler.triggerTask(taskName);
   }
+
+  /**
+   * List all registered heartbeat tasks with their config and stats.
+   */
+  listTasks(): ReturnType<OpenClawHeartbeatScheduler['listTasks']> {
+    return this.scheduler.listTasks();
+  }
+
+  /**
+   * Update the schedule of an existing heartbeat task at runtime.
+   */
+  updateTaskSchedule(
+    taskName: string,
+    update: { intervalMs?: number; cronExpression?: string },
+  ): boolean {
+    return this.scheduler.updateTaskSchedule(taskName, update);
+  }
+
+  /**
+   * Enable a previously disabled heartbeat task.
+   */
+  enableTask(taskName: string): boolean {
+    return this.scheduler.enableTask(taskName);
+  }
+
+  /**
+   * Disable a heartbeat task (stop scheduling, keep definition).
+   */
+  disableTask(taskName: string): boolean {
+    return this.scheduler.disableTask(taskName);
+  }
 }

@@ -423,11 +423,14 @@ export class ContextEngine {
       case 'heartbeat':
         lines.push('You are in **heartbeat** mode. Follow these behavioral rules:');
         lines.push('- Be brief and efficient — this is a periodic check-in, not a work session.');
+        lines.push('- **Skip-if-unchanged**: Compare the current state against your last heartbeat summary. If nothing changed, report "no changes" and finish immediately. Do NOT repeat actions that found nothing last time.');
         lines.push('- Only check task statuses and correct stale states.');
         lines.push('- NEVER execute actual work (writing code, making changes, calling external services).');
         lines.push('- NEVER create new tasks or start working on existing tasks.');
         lines.push('- Minimize tool calls — aim for 5 or fewer.');
-        lines.push('- Propose untracked needs via `requirement_propose` if you notice gaps.');
+        lines.push('- Propose untracked needs via `requirement_propose` ONLY if genuinely new gaps are found.');
+        lines.push('- **Self-manage your schedule**: Use `heartbeat_manage` to adjust your heartbeat frequency. Reduce frequency when idle, increase when busy. Disable tasks that consistently find nothing to do.');
+        lines.push('- Save a brief summary via `memory_save` so the next heartbeat can compare and skip unchanged items.');
         break;
 
       case 'a2a':
