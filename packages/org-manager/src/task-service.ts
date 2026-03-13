@@ -705,9 +705,9 @@ export class TaskService {
       throw new Error(`Task creation blocked by governance: ${limitCheck.reason}`);
     }
 
-    // ── Governance: enforce requirement linkage for top-level tasks ──
+    // ── Governance: enforce requirement linkage for top-level tasks (agents only) ──
     if (!request.parentTaskId && this.governancePolicy?.requireRequirement) {
-      if (!request.requirementId) {
+      if (!request.requirementId && request.creatorRole !== 'human') {
         throw new Error(
           'Task creation blocked: top-level tasks must reference an approved requirement (requirementId). ' +
           'Use requirement_propose to suggest work, then create tasks after user approval.'

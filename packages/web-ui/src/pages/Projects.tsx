@@ -1062,16 +1062,18 @@ export function ProjectsPage() {
     if (!taskTitle) return;
     const projId = taskProjectId || undefined;
     const iterId = projId && selectedIterationId ? selectedIterationId : undefined;
-    await api.tasks.create(
-      taskTitle, taskDesc, taskPriority,
-      taskAutoAssign ? undefined : taskAssignTo || undefined,
-      taskAutoAssign,
-      projId,
-      iterId,
-      taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
-    );
-    setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setShowCreateTask(false);
-    refreshBoard();
+    try {
+      await api.tasks.create(
+        taskTitle, taskDesc, taskPriority,
+        taskAutoAssign ? undefined : taskAssignTo || undefined,
+        taskAutoAssign,
+        projId,
+        iterId,
+        taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
+      );
+      setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setShowCreateTask(false);
+      refreshBoard();
+    } catch (e) { msg(`Error creating task: ${e}`); }
   };
 
   const handleTaskRefresh = () => {

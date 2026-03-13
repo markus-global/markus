@@ -243,10 +243,16 @@ export class OrganizationService {
           const agent = this.agentManager.getAgent(agentId);
           if (agent.config.teamId === teamId) agent.config.teamId = undefined;
         } catch { /* agent may not exist */ }
+        if (this.storage) {
+          try { await this.storage.agentRepo.updateTeamId(agentId, null); } catch { /* best effort */ }
+        }
       }
       for (const userId of team.humanMemberIds ?? []) {
         const user = this.humans.get(userId);
         if (user && user.teamId === teamId) user.teamId = undefined;
+        if (this.storage) {
+          try { await this.storage.userRepo.updateTeamId(userId, null); } catch { /* best effort */ }
+        }
       }
     }
 
@@ -256,7 +262,7 @@ export class OrganizationService {
       try {
         await this.storage.teamRepo.delete(teamId);
       } catch (error) {
-        log.warn('Failed to delete team from DB', { error: String(error) });
+        log.error('Failed to delete team from DB — possible FK constraint violation', { teamId, error: String(error) });
       }
     }
 
