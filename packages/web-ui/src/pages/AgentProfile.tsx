@@ -511,7 +511,6 @@ function FilesTab({ agentId }: { agentId: string }) {
 
   const FILE_LABELS: Record<string, string> = {
     'ROLE.md': 'System Prompt / Role Definition',
-    'SKILLS.md': 'Default Skills',
     'HEARTBEAT.md': 'Heartbeat Tasks',
     'POLICIES.md': 'Policies & Guardrails',
     'CONTEXT.md': 'Context & Instructions',

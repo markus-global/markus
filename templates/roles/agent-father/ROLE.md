@@ -38,7 +38,7 @@ When outputting the final configuration, wrap it in a JSON code block with these
   "llmModel": "model name or empty for default",
   "temperature": 0.7,
   "toolWhitelist": ["shell_execute", "file_read", "file_write", "file_edit", "web_fetch", "web_search", "git_status", "git_diff", "git_commit", "git_log", "a2a_send", "a2a_list_colleagues", "task_create", "task_update", "task_list", "memory_save", "memory_search", "memory_list", "mcp_call"],
-  "requiredEnv": ["git", "node", "python3", "docker", "browser", "pnpm", "java", "go"]
+  "requiredEnv": ["git", "node", "python3", "docker", "pnpm", "java", "go"]
 }
 ```
 
@@ -50,14 +50,7 @@ Must be one of the role templates listed in the dynamic context. The `roleName` 
 
 ### `skills` — System Skills
 
-**CRITICAL**: The `skills` field must ONLY contain skill IDs from the dynamic context (the "Available Skills" table injected at runtime). Do NOT use any hardcoded or memorized skill names — they may be outdated.
-
-Use `""` for agents that don't need any specific tool skills.
-
-**Examples of INCORRECT skill values (DO NOT USE):**
-- ~~`"产品设计,技术架构,项目管理"`~~ — these are concepts, not real skills
-- ~~`"python,javascript,react"`~~ — these are programming languages, not skill IDs
-- ~~`"communication,leadership"`~~ — these are soft skills, not system capabilities
+The `skills` field must ONLY contain skill IDs that appear **verbatim** in the "Available Skills" table from the dynamic context. Copy-paste the exact skill name. Use `""` for agents that don't need skills.
 
 ### `agentRole` — Position in Team
 - `worker` — executes tasks assigned by manager or user

@@ -1909,7 +1909,7 @@ export class APIServer {
           this.json(res, 404, { error: `Role directory not found for agent: ${agent.role.name}` });
           return;
         }
-        const allowedNames = ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
+        const allowedNames = ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
         const files: Array<{ name: string; content: string }> = [];
         for (const name of allowedNames) {
           const filePath = join(roleDir, name);
@@ -1936,7 +1936,7 @@ export class APIServer {
           this.json(res, 404, { error: `Role directory not found for agent: ${agent.role.name}` });
           return;
         }
-        const allowedNames = ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
+        const allowedNames = ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
         if (!allowedNames.includes(filename)) {
           this.json(res, 400, { error: `Invalid filename. Allowed: ${allowedNames.join(', ')}` });
           return;
@@ -3258,7 +3258,7 @@ When outputting the final configuration, wrap it in a JSON code block with these
   "llmModel": "model name or empty",
   "temperature": 0.7,
   "toolWhitelist": ["shell_execute", "file_read", "file_write", "file_edit", "web_fetch", "web_search", "git_status", "git_diff", "git_commit", "git_log", "a2a_send", "a2a_list_colleagues", "task_create", "task_update", "task_list", "memory_save", "memory_search", "memory_list", "mcp_call"],
-  "requiredEnv": ["git", "node", "python3", "docker", "browser", "pnpm", "java", "go"]
+  "requiredEnv": ["git", "node", "python3", "docker", "pnpm", "java", "go"]
 }
 \`\`\`
 
@@ -3300,7 +3300,7 @@ When outputting the final configuration, wrap it in a JSON code block:
       "count": 1,
       "roleName": "base-role-template",
       "description": "What this agent does in the team",
-      "skills": "git,browser",
+      "skills": "skill-id-1,skill-id-2",
       "systemPrompt": "Comprehensive system prompt defining this agent's unique personality, expertise, domain knowledge, workflow, output standards, and collaboration guidelines...",
       "temperature": 0.7
     }

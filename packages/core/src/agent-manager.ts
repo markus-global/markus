@@ -443,7 +443,7 @@ export class AgentManager {
     mkdirSync(agentRoleDir, { recursive: true });
     const templateDir = this.roleLoader.resolveTemplateDir(request.roleName);
     if (templateDir) {
-      for (const file of ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+      for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
         const src = join(templateDir, file);
         if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
       }
@@ -898,7 +898,7 @@ export class AgentManager {
         ?? this.roleLoader.resolveTemplateDir(row.roleName);
       if (templateDir) {
         mkdirSync(agentRoleDir, { recursive: true });
-        for (const file of ['ROLE.md', 'SKILLS.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
+        for (const file of ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md']) {
           const src = join(templateDir, file);
           if (existsSync(src)) copyFileSync(src, join(agentRoleDir, file));
         }

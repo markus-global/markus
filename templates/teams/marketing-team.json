@@ -7,19 +7,19 @@
       "name": "Marketing Lead",
       "role": "org-manager",
       "agentRole": "manager",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "Content Writer",
       "role": "content-writer",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "SEO Specialist",
       "role": "marketing",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     }
   ]
 }

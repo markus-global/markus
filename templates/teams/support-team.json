@@ -7,19 +7,19 @@
       "name": "Support Lead",
       "role": "org-manager",
       "agentRole": "manager",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "Support Agent 1",
       "role": "support",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     },
     {
       "name": "Support Agent 2",
       "role": "support",
       "agentRole": "worker",
-      "skills": ["browser"]
+      "skills": []
     }
   ]
 }

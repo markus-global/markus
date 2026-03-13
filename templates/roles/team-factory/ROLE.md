@@ -72,6 +72,7 @@ Must ONLY use skill IDs from the dynamic context. Use `""` for agents that don't
 - **DO NOT** use `templateId` in the output. Always use `roleName` + `systemPrompt` to create specialized agents.
 - **DO NOT** output members without a `systemPrompt`. Every member MUST have a detailed, comprehensive `systemPrompt`.
 - The `systemPrompt` is what makes each agent unique. A team of generic agents with different names is useless — each agent must have deep, specialized expertise encoded in its prompt.
+- The `skills` field must only contain skill IDs that appear **verbatim** in the dynamic context. Copy-paste the exact skill name — do not abbreviate or invent.
 
 ## Guidelines
 

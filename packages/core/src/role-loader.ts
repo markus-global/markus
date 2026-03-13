@@ -5,7 +5,6 @@ import { generateId } from '@markus/shared';
 
 interface RoleFiles {
   role: string;
-  skills?: string;
   heartbeat?: string;
   policies?: string;
   context?: string;
@@ -69,7 +68,7 @@ export class RoleLoader {
       description: this.extractDescription(roleContent),
       category,
       systemPrompt,
-      defaultSkills: files.skills ? this.parseSkillsList(files.skills) : [],
+      defaultSkills: [],
       defaultHeartbeatTasks: files.heartbeat ? this.parseHeartbeatTasks(files.heartbeat) : [],
       defaultPolicies: files.policies ? this.parsePolicies(files.policies) : [],
       builtIn: true,
@@ -110,7 +109,6 @@ export class RoleLoader {
 
     return {
       role: readFileSync(join(roleDir, 'ROLE.md'), 'utf-8'),
-      skills: read('SKILLS.md'),
       heartbeat: read('HEARTBEAT.md'),
       policies: read('POLICIES.md'),
       context: read('CONTEXT.md'),
@@ -141,13 +139,6 @@ export class RoleLoader {
     if (lower.includes('financ') || lower.includes('account')) return 'finance';
     if (lower.includes('legal') || lower.includes('compliance')) return 'legal';
     return 'custom';
-  }
-
-  private parseSkillsList(content: string): string[] {
-    return content
-      .split('\n')
-      .map((l) => l.replace(/^[-*]\s*/, '').trim())
-      .filter((l) => l && !l.startsWith('#'));
   }
 
   private parseHeartbeatTasks(content: string): HeartbeatTask[] {
