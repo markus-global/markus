@@ -894,6 +894,7 @@ export function ProjectsPage() {
   const [taskAutoAssign, setTaskAutoAssign] = useState(true);
   const [taskAssignTo, setTaskAssignTo] = useState('');
   const [taskProjectId, setTaskProjectId] = useState<string>('');
+  const [taskRequirementId, setTaskRequirementId] = useState<string>('');
   const [taskBlockedBy, setTaskBlockedBy] = useState<string[]>([]);
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
@@ -1062,6 +1063,7 @@ export function ProjectsPage() {
     if (!taskTitle) return;
     const projId = taskProjectId || undefined;
     const iterId = projId && selectedIterationId ? selectedIterationId : undefined;
+    const reqId = taskRequirementId || undefined;
     try {
       await api.tasks.create(
         taskTitle, taskDesc, taskPriority,
@@ -1070,8 +1072,9 @@ export function ProjectsPage() {
         projId,
         iterId,
         taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
+        reqId,
       );
-      setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setShowCreateTask(false);
+      setTaskTitle(''); setTaskDesc(''); setTaskBlockedBy([]); setTaskRequirementId(''); setShowCreateTask(false);
       refreshBoard();
     } catch (e) { msg(`Error creating task: ${e}`); }
   };
@@ -1551,6 +1554,16 @@ export function ProjectsPage() {
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
                 <option value="">No Project</option>
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1.5">Requirement</label>
+              <select value={taskRequirementId} onChange={e => setTaskRequirementId(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                <option value="">Select a requirement…</option>
+                {allRequirements
+                  .filter(r => r.status === 'approved' && (!taskProjectId || r.projectId === taskProjectId))
+                  .map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
               </select>
             </div>
             <div>

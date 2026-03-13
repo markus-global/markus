@@ -1478,6 +1478,7 @@ export class APIServer {
         projectId: body['projectId'] as string | undefined,
         iterationId: body['iterationId'] as string | undefined,
         blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
+        requirementId: body['requirementId'] as string | undefined,
         createdBy: authUser?.userId ?? 'unknown',
         creatorRole: 'human',
       });
