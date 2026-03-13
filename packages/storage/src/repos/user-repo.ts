@@ -79,6 +79,10 @@ export class UserRepo {
     await this.db.update(users).set({ teamId }).where(eq(users.id, id));
   }
 
+  async clearTeamReferences(teamId: string): Promise<void> {
+    await this.db.update(users).set({ teamId: null }).where(eq(users.teamId, teamId));
+  }
+
   async delete(id: string): Promise<void> {
     await this.db.delete(users).where(eq(users.id, id));
   }

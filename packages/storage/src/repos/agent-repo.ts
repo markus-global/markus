@@ -100,6 +100,10 @@ export class AgentRepo {
     await this.db.update(agents).set({ teamId, updatedAt: new Date() }).where(eq(agents.id, id));
   }
 
+  async clearTeamReferences(teamId: string): Promise<void> {
+    await this.db.update(agents).set({ teamId: null, updatedAt: new Date() }).where(eq(agents.teamId, teamId));
+  }
+
   async delete(id: string): Promise<void> {
     await this.db.delete(agents).where(eq(agents.id, id));
   }

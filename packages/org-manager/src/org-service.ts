@@ -243,29 +243,25 @@ export class OrganizationService {
           const agent = this.agentManager.getAgent(agentId);
           if (agent.config.teamId === teamId) agent.config.teamId = undefined;
         } catch { /* agent may not exist */ }
-        if (this.storage) {
-          try { await this.storage.agentRepo.updateTeamId(agentId, null); } catch { /* best effort */ }
-        }
       }
       for (const userId of team.humanMemberIds ?? []) {
         const user = this.humans.get(userId);
         if (user && user.teamId === teamId) user.teamId = undefined;
-        if (this.storage) {
-          try { await this.storage.userRepo.updateTeamId(userId, null); } catch { /* best effort */ }
-        }
+      }
+    }
+
+    // Bulk-clear ALL DB references to this team before deleting (avoids FK constraint failures)
+    if (this.storage) {
+      try { await this.storage.agentRepo.clearTeamReferences(teamId); } catch { /* best effort */ }
+      try { await this.storage.userRepo.clearTeamReferences(teamId); } catch { /* best effort */ }
+      try {
+        await this.storage.teamRepo.delete(teamId);
+      } catch (error) {
+        log.error('Failed to delete team from DB', { teamId, error: String(error) });
       }
     }
 
     this.teams.delete(teamId);
-
-    if (this.storage) {
-      try {
-        await this.storage.teamRepo.delete(teamId);
-      } catch (error) {
-        log.error('Failed to delete team from DB — possible FK constraint violation', { teamId, error: String(error) });
-      }
-    }
-
     log.info(`Team deleted: ${teamId}`, { deleteMembers });
   }
 

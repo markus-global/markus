@@ -572,6 +572,10 @@ export class SqliteAgentRepo {
     this.db.prepare('UPDATE agents SET team_id = ?, updated_at = ? WHERE id = ?').run(teamId, now(), id);
   }
 
+  async clearTeamReferences(teamId: string) {
+    this.db.prepare('UPDATE agents SET team_id = NULL, updated_at = ? WHERE team_id = ?').run(now(), teamId);
+  }
+
   delete(id: string) {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
@@ -1576,6 +1580,10 @@ export class SqliteUserRepo {
 
   async updateTeamId(id: string, teamId: string | null) {
     this.db.prepare('UPDATE users SET team_id = ? WHERE id = ?').run(teamId, id);
+  }
+
+  async clearTeamReferences(teamId: string) {
+    this.db.prepare('UPDATE users SET team_id = NULL WHERE team_id = ?').run(teamId);
   }
 
   async delete(id: string) {
