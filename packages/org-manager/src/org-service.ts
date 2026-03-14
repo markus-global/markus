@@ -566,7 +566,7 @@ export class OrganizationService {
       try {
         await this.storage.agentRepo.delete(agentId);
       } catch (error) {
-        log.warn('Failed to remove agent from DB', { error: String(error) });
+        log.error('Failed to remove agent from DB', { agentId, error: String(error) });
       }
     }
 

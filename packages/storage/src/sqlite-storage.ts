@@ -579,6 +579,10 @@ export class SqliteAgentRepo {
   }
 
   delete(id: string) {
+    // Clear FK references from dependent tables before deleting the agent row
+    this.db.prepare('UPDATE tasks SET assigned_agent_id = NULL WHERE assigned_agent_id = ?').run(id);
+    this.db.prepare('UPDATE messages SET agent_id = NULL WHERE agent_id = ?').run(id);
+    this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(id);
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
 
