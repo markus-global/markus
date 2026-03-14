@@ -663,13 +663,15 @@ export class AgentManager {
           if (knownIssues) {
             deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
           }
-          if (fileDeliverables?.length) {
+          if (Array.isArray(fileDeliverables)) {
             for (const fd of fileDeliverables) {
-              deliverables.push({
-                type: (fd.type as TaskDeliverable['type']) ?? 'file',
-                reference: fd.path,
-                summary: fd.summary,
-              });
+              if (fd && typeof fd === 'object' && typeof fd.path === 'string' && fd.path) {
+                deliverables.push({
+                  type: (fd.type as TaskDeliverable['type']) ?? 'file',
+                  reference: fd.path,
+                  summary: typeof fd.summary === 'string' ? fd.summary : fd.path.split('/').pop() ?? '',
+                });
+              }
             }
           }
           return ts.submitForReview(taskId, deliverables);
@@ -1102,13 +1104,15 @@ export class AgentManager {
           if (knownIssues) {
             deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
           }
-          if (fileDeliverables?.length) {
+          if (Array.isArray(fileDeliverables)) {
             for (const fd of fileDeliverables) {
-              deliverables.push({
-                type: (fd.type as TaskDeliverable['type']) ?? 'file',
-                reference: fd.path,
-                summary: fd.summary,
-              });
+              if (fd && typeof fd === 'object' && typeof fd.path === 'string' && fd.path) {
+                deliverables.push({
+                  type: (fd.type as TaskDeliverable['type']) ?? 'file',
+                  reference: fd.path,
+                  summary: typeof fd.summary === 'string' ? fd.summary : fd.path.split('/').pop() ?? '',
+                });
+              }
             }
           }
           return ts.submitForReview(taskId, deliverables);

@@ -757,35 +757,43 @@ function TaskDetailModal({
                     <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
                   </div>
                 )}
-                {task.deliverables && task.deliverables.filter(d => d.type !== 'branch').length > 0 && (
-                  <div className="mt-5">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Deliverables</p>
-                    <div className="space-y-1.5">
-                      {task.deliverables.filter(d => d.type !== 'branch').map((d, i) => {
-                        const typeColors: Record<string, string> = {
-                          file: 'bg-cyan-500/15 text-cyan-400',
-                          document: 'bg-blue-500/15 text-blue-400',
-                          report: 'bg-purple-500/15 text-purple-400',
-                        };
-                        return (
-                          <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs text-gray-300 mb-0.5">{d.summary}</p>
-                              <button
-                                onClick={() => setPreviewFile(d.reference)}
-                                className="text-[11px] text-indigo-400 hover:text-indigo-300 font-mono truncate block max-w-full text-left hover:underline"
-                                title={d.reference}
-                              >
-                                {d.reference}
-                              </button>
+                {(() => {
+                  const validDeliverables = (task.deliverables ?? []).filter(
+                    d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                  );
+                  if (validDeliverables.length === 0) return null;
+                  const typeColors: Record<string, string> = {
+                    file: 'bg-cyan-500/15 text-cyan-400',
+                    document: 'bg-blue-500/15 text-blue-400',
+                    report: 'bg-purple-500/15 text-purple-400',
+                  };
+                  return (
+                    <div className="mt-5">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Deliverables</p>
+                      <div className="space-y-1.5">
+                        {validDeliverables.map((d, i) => {
+                          const fileName = d.reference.split('/').pop() ?? d.reference;
+                          return (
+                            <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group hover:bg-gray-800/80 transition-colors">
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
+                              <div className="flex-1 min-w-0">
+                                <button
+                                  onClick={() => setPreviewFile(d.reference)}
+                                  className="text-sm text-indigo-400 hover:text-indigo-300 font-medium truncate block max-w-full text-left hover:underline"
+                                  title={d.reference}
+                                >
+                                  {fileName}
+                                </button>
+                                {d.summary && <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{d.summary}</p>}
+                                <p className="text-[10px] text-gray-600 font-mono truncate mt-0.5">{d.reference}</p>
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
                 {task.notes && task.notes.length > 0 && (
                   <div className="mt-5">
                     <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>

@@ -494,19 +494,36 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                let parsedDeliverables: Array<{ type?: string; path: string; summary: string }> | undefined;
+                const rawDel = args['deliverables'];
+                if (Array.isArray(rawDel)) {
+                  parsedDeliverables = rawDel
+                    .filter((d): d is Record<string, unknown> =>
+                      d != null && typeof d === 'object' && !Array.isArray(d)
+                      && typeof (d as Record<string, unknown>).path === 'string'
+                      && ((d as Record<string, unknown>).path as string).length > 0
+                    )
+                    .map(d => ({
+                      type: typeof d.type === 'string' ? d.type : undefined,
+                      path: d.path as string,
+                      summary: typeof d.summary === 'string' && (d.summary as string).length > 0
+                        ? d.summary as string
+                        : (d.path as string).split('/').pop() ?? '',
+                    }));
+                }
                 const result = await ctx.submitForReview!(
                   args['task_id'] as string,
                   args['summary'] as string,
                   args['branch_name'] as string | undefined,
                   args['test_results'] as string | undefined,
                   args['known_issues'] as string | undefined,
-                  args['deliverables'] as Array<{ type?: string; path: string; summary: string }> | undefined
+                  parsedDeliverables,
                 );
                 return JSON.stringify({
                   status: 'success',
                   taskId: result.id,
                   taskStatus: result.status,
-                  message: 'Work submitted for review. A reviewer will evaluate your deliverables.',
+                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No file deliverables recorded.'}`,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
