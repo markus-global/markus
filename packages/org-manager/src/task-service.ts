@@ -162,6 +162,76 @@ export class TaskService {
   private static readonly RETRY_DELAYS_MS = [10_000, 30_000, 60_000];
 
   /**
+   * Analyze error messages from previous attempts and produce actionable guidance
+   * so the agent can avoid repeating the same mistakes.
+   */
+  private static analyzeErrorPatterns(errors: string[]): string[] {
+    const guidance: string[] = [];
+    const seen = new Set<string>();
+    const addOnce = (key: string, msg: string) => {
+      if (!seen.has(key)) { seen.add(key); guidance.push(msg); }
+    };
+
+    for (const err of errors) {
+      const lower = err.toLowerCase();
+
+      if (lower.includes('unterminated string in json') || lower.includes('unexpected end of json')) {
+        addOnce('json_truncation',
+          'Previous attempts failed due to JSON truncation (content too long for a single tool call). ' +
+          'Break large content into MULTIPLE smaller tool calls instead of one giant call. ' +
+          'For file_write, write in sections or use shorter content per call. ' +
+          'For code generation, generate one function/section at a time.');
+      }
+      if (lower.includes('syntaxerror') && lower.includes('json')) {
+        addOnce('json_syntax',
+          'JSON syntax errors occurred — ensure all strings are properly escaped (especially newlines, quotes, and backslashes within content). ' +
+          'Avoid embedding large multi-line code blocks directly in JSON string values.');
+      }
+      if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('etimedout')) {
+        addOnce('timeout',
+          'Previous attempts timed out. Reduce the scope of operations — process smaller batches, use pagination, or break the work into simpler steps.');
+      }
+      if (lower.includes('rate limit') || lower.includes('429') || lower.includes('too many requests')) {
+        addOnce('rate_limit',
+          'Rate limits were hit. Add delays between API calls and reduce the frequency of requests.');
+      }
+      if (lower.includes('enoent') || lower.includes('no such file') || lower.includes('not found')) {
+        addOnce('file_not_found',
+          'File or path not found errors occurred. Verify paths exist before operating on them (use list_directory or file_read to check).');
+      }
+      if (lower.includes('permission denied') || lower.includes('eacces')) {
+        addOnce('permission',
+          'Permission denied errors occurred. Check file permissions and ensure you are operating within the allowed workspace.');
+      }
+      if (lower.includes('out of memory') || lower.includes('heap')) {
+        addOnce('oom',
+          'Memory errors occurred. Process data in smaller chunks and avoid loading large files entirely into memory.');
+      }
+    }
+
+    // Generic guidance if no specific pattern matched
+    if (guidance.length === 0 && errors.length > 0) {
+      guidance.push(
+        'The same errors have occurred multiple times. Carefully analyze the error messages above and use a fundamentally different approach — ' +
+        'do not simply retry the same steps that already failed.'
+      );
+    }
+
+    // If multiple runs failed with the same error, emphasize the need for a different strategy
+    if (errors.length >= 2) {
+      const uniqueErrors = new Set(errors.map(e => e.slice(0, 100)));
+      if (uniqueErrors.size === 1) {
+        guidance.push(
+          'IMPORTANT: The EXACT same error occurred across multiple attempts. Simply retrying will NOT work. ' +
+          'You MUST change your approach — e.g., produce smaller outputs, split into multiple steps, or use a different tool/strategy.'
+        );
+      }
+    }
+
+    return guidance;
+  }
+
+  /**
    * Format previous execution logs AND human comments into a chronological
    * context block so the agent can resume from where it left off.
    * Comments and logs are interleaved by timestamp for a conversation-like view.
@@ -198,6 +268,7 @@ export class TaskService {
     let inRun = false;
     const filesRead = new Set<string>();
     const filesWritten = new Set<string>();
+    const collectedErrors: Array<{ run: number; content: string }> = [];
 
     for (const item of timeline) {
       if (item.kind === 'comment') {
@@ -260,6 +331,7 @@ export class TaskService {
       } else if (entry.type === 'error') {
         lines.push(`[ERROR] ${entry.content}`);
         lines.push('');
+        collectedErrors.push({ run: runIndex, content: entry.content });
       }
     }
 
@@ -278,6 +350,26 @@ export class TaskService {
       if (filesWritten.size > 0) {
         lines.push('**Files already written/created:**');
         for (const f of filesWritten) lines.push(`- ${f}`);
+        lines.push('');
+      }
+    }
+
+    // Build explicit error analysis so the agent avoids repeating the same mistakes
+    if (collectedErrors.length > 0) {
+      lines.push('### ⚠ Errors from Previous Attempts — MUST READ');
+      lines.push(`The previous ${collectedErrors.length} attempt(s) failed with the following errors. You MUST use a different approach to avoid these exact failures.`);
+      lines.push('');
+      for (const err of collectedErrors) {
+        lines.push(`- **Run ${err.run}**: ${err.content}`);
+      }
+      lines.push('');
+      // Provide specific guidance based on error patterns
+      const guidance = TaskService.analyzeErrorPatterns(collectedErrors.map(e => e.content));
+      if (guidance.length > 0) {
+        lines.push('**Specific guidance to avoid these errors:**');
+        for (const g of guidance) {
+          lines.push(`- ${g}`);
+        }
         lines.push('');
       }
     }

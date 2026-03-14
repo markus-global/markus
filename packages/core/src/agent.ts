@@ -1693,13 +1693,26 @@ export class Agent {
     const sessionId = session.id;
 
     const isResume = description.startsWith('## Previous Execution History');
+    const hasErrors = isResume && description.includes('⚠ Errors from Previous Attempts');
     const taskPrompt = [
       `[TASK EXECUTION — Task ID: ${taskId}]`,
       '',
       description,
       '',
       isResume
-        ? 'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).\nIf this task has dependency tasks listed, review their notes and deliverables — they contain context and artifacts essential for your work.'
+        ? [
+            'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).',
+            'If this task has dependency tasks listed, review their notes and deliverables — they contain context and artifacts essential for your work.',
+            ...(hasErrors ? [
+              '',
+              '⚠ CRITICAL — LEARN FROM PREVIOUS FAILURES:',
+              'This task has ALREADY FAILED in previous attempts. The "Errors from Previous Attempts" section above describes exactly what went wrong.',
+              'You MUST read and understand those errors BEFORE starting any work.',
+              'Do NOT repeat the same approach that caused those failures — use a DIFFERENT strategy.',
+              'If the errors were caused by generating content that was too large, split your work into multiple smaller steps.',
+              'If the errors were caused by malformed output, simplify your output format and validate before submitting.',
+            ] : []),
+          ].join('\n')
         : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.\nIf this task has dependency tasks listed above, review their notes and deliverables first — they contain context and artifacts essential for your work.',
       '',
       '## Completion Requirements',
