@@ -39,6 +39,9 @@ export class RequirementService {
    * Create a requirement from a user — auto-approved.
    */
   createRequirement(request: CreateRequirementRequest): Requirement {
+    if (!request.projectId) {
+      throw new Error('Requirement must be linked to a project (projectId is required).');
+    }
     const isUser = request.source === 'user';
     const now = new Date().toISOString();
 

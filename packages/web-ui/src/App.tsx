@@ -20,7 +20,7 @@ import { navBus } from './navBus.ts';
 const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'templates', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
 
 function getPageFromHash(): PageId {
-  const hash = window.location.hash.slice(1);
+  const hash = window.location.hash.slice(1).split('/')[0];
   if (hash === 'agents' || hash === 'team') return 'chat';
   if (hash === 'tasks') return 'projects';
   if (hash === 'usage') return 'reports';

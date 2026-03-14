@@ -1092,7 +1092,7 @@ export function ProjectsPage() {
     return () => { clearInterval(i); unsub(); };
   }, [refreshBoard, refreshAgents, refreshRequirements]);
 
-  // Open task or select project from navigation params
+  // Open task or select project from navigation params / URL hash
   useEffect(() => {
     const tryOpenTask = (taskId: string) => {
       const allTasks = Object.values(board).flat();
@@ -1102,11 +1102,27 @@ export function ProjectsPage() {
     const navTaskId = localStorage.getItem('markus_nav_openTask');
     if (navTaskId) tryOpenTask(navTaskId);
 
-    const navProjectId = localStorage.getItem('markus_nav_projectId');
-    if (navProjectId) {
-      localStorage.removeItem('markus_nav_projectId');
-      selectProject(navProjectId);
+    // Read project from URL hash (survives page refresh)
+    const hashParts = window.location.hash.slice(1).split('/');
+    if (hashParts[0] === 'projects' && hashParts[1]) {
+      selectProject(hashParts[1]);
+    } else {
+      const navProjectId = localStorage.getItem('markus_nav_projectId');
+      if (navProjectId) {
+        localStorage.removeItem('markus_nav_projectId');
+        selectProject(navProjectId);
+      }
     }
+
+    // Handle hash changes (e.g. sidebar project clicks)
+    const onHashChange = () => {
+      const parts = window.location.hash.slice(1).split('/');
+      if (parts[0] === 'projects' && parts[1]) {
+        selectProject(parts[1]);
+      } else if (parts[0] === 'projects') {
+        selectAllTasks();
+      }
+    };
 
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
@@ -1114,13 +1130,13 @@ export function ProjectsPage() {
         if (detail.params?.openTask) tryOpenTask(detail.params.openTask);
         if (detail.params?.projectId) selectProject(detail.params.projectId);
         if (!detail.params?.projectId && !detail.params?.openTask) {
-          setViewMode('all');
-          setSelectedProjectId(null);
+          selectAllTasks();
         }
       }
     };
     window.addEventListener('markus:navigate', handler);
-    return () => window.removeEventListener('markus:navigate', handler);
+    window.addEventListener('hashchange', onHashChange);
+    return () => { window.removeEventListener('markus:navigate', handler); window.removeEventListener('hashchange', onHashChange); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [board]);
 
@@ -1131,6 +1147,7 @@ export function ProjectsPage() {
     setSelectedIterationId(null);
     setViewMode('project');
     setShowProjectSettings(false);
+    history.replaceState(null, '', '#projects/' + projectId);
   };
 
   const selectAllTasks = () => {
@@ -1138,6 +1155,7 @@ export function ProjectsPage() {
     setSelectedIterationId(null);
     setViewMode('all');
     setShowProjectSettings(false);
+    history.replaceState(null, '', '#projects');
   };
 
   const handleCreateProject = async () => {
@@ -1224,8 +1242,9 @@ export function ProjectsPage() {
 
   const handleCreateReq = async () => {
     if (!reqTitle.trim()) return;
+    if (!reqProjectId) { msg('Please select a project for this requirement'); return; }
     try {
-      await api.requirements.create({ title: reqTitle, description: reqDesc, priority: reqPriority, projectId: reqProjectId || undefined });
+      await api.requirements.create({ title: reqTitle, description: reqDesc, priority: reqPriority, projectId: reqProjectId });
       msg('Requirement created');
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
@@ -1779,7 +1798,7 @@ export function ProjectsPage() {
               <label className="block text-sm text-gray-400 mb-1.5">Project</label>
               <select value={reqProjectId} onChange={e => setReqProjectId(e.target.value)}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
-                <option value="">No project</option>
+                <option value="">Select a project…</option>
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>

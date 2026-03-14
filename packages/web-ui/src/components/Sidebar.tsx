@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { PageId } from '../types.ts';
 import { api, type AuthUser, type ProjectInfo, type TeamInfo } from '../api.ts';
-import { navBus } from '../navBus.ts';
+
 
 interface Props {
   currentPage: string;
@@ -105,9 +105,12 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
     setCreatingProject(false);
   };
 
-  // Reset project selection when leaving the projects page
+  // Sync project selection from hash on mount and page changes
   useEffect(() => {
-    if (currentPage !== 'projects') setSelectedProjectId(null);
+    if (currentPage !== 'projects') { setSelectedProjectId(null); return; }
+    const raw = window.location.hash.slice(1);
+    const parts = raw.split('/');
+    if (parts[0] === 'projects' && parts[1]) setSelectedProjectId(parts[1]);
   }, [currentPage]);
 
   const handleLogout = async () => {
@@ -160,7 +163,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
             {si === 0 && (
               <div className="mb-3">
                 <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider flex items-center justify-between">
-                  <span>PROJECTS</span>
+                  <button onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; }} className="hover:text-gray-400 transition-colors cursor-pointer">PROJECTS</button>
                   <div className="flex items-center gap-1">
                     {hasMoreProjects && (
                       <button
@@ -199,8 +202,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
                       key={p.id}
                       onClick={() => {
                         setSelectedProjectId(p.id);
-                        navBus.navigate('projects', { projectId: p.id });
-                        onNavigate('projects' as PageId);
+                        window.location.hash = 'projects/' + p.id;
                       }}
                       className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm mb-0.5 transition-colors ${
                         isActive
