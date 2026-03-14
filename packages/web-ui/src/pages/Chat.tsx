@@ -1051,7 +1051,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 setOpenSessionTabs(prev => {
                   const exists = prev.some(t => t.id === newSess.id);
                   if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                  return [...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID), newSess];
+                  return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
                 });
               }
             }
@@ -1073,7 +1073,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               setOpenSessionTabs(prev => {
                 const exists = prev.some(t => t.id === newSess.id);
                 if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                return [...prev, newSess];
+                return [newSess, ...prev];
               });
             }
           });
@@ -1260,14 +1260,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     // Add a placeholder "New Chat" tab
     setOpenSessionTabs(prev => {
       const without = prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID);
-      return [...without, {
+      return [{
         id: NEW_CHAT_PLACEHOLDER_ID,
         agentId: selectedAgent ?? '',
         userId: null,
         title: 'New Chat',
         createdAt: new Date().toISOString(),
         lastMessageAt: new Date().toISOString(),
-      }];
+      }, ...without];
     });
   };
 
