@@ -94,7 +94,7 @@ export class TaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null; scheduleConfig?: Record<string, unknown> | null }
+    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
@@ -103,6 +103,7 @@ export class TaskRepo {
     if (data.notes !== undefined) updates['notes'] = data.notes;
     if (data.projectId !== undefined) updates['projectId'] = data.projectId;
     if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
+    if (data.requirementId !== undefined) updates['requirementId'] = data.requirementId;
     if (data.scheduleConfig !== undefined) updates['scheduleConfig'] = data.scheduleConfig;
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }

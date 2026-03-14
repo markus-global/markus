@@ -1911,15 +1911,15 @@ export class Agent {
       flushText();
       const finalReply = response.content;
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      // Always emit execution_finished — let task-service decide the final status.
+      // Standard tasks require explicit task_submit_review; scheduled tasks auto-complete.
+      emit('status', 'execution_finished', { submittedForReview });
+      this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
       if (submittedForReview) {
-        emit('status', 'execution_finished', { submittedForReview: true });
-        this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
         log.info('Task execution finished (submitted for review)', { taskId, agentId: this.id });
       } else {
-        emit('status', 'completed');
-        this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
         this.eventBus.emit('task:completed', { taskId, agentId: this.id });
-        log.info('Task execution completed', { taskId, agentId: this.id });
+        log.info('Task execution finished (no review submitted)', { taskId, agentId: this.id });
       }
     } catch (error) {
       // If abort was triggered by cancel, treat as cancellation not error

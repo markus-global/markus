@@ -34,6 +34,8 @@ export interface ScheduleConfig {
   lastRunAt?: string;
   /** ISO timestamp of next planned execution */
   nextRunAt?: string;
+  /** Whether the schedule is paused (task won't be auto-fired) */
+  paused?: boolean;
 }
 
 export interface Task {

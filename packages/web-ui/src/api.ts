@@ -371,6 +371,18 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  taskType?: string;
+  scheduleConfig?: {
+    cron?: string;
+    every?: string;
+    timezone?: string;
+    runAt?: string;
+    maxRuns?: number;
+    currentRuns?: number;
+    lastRunAt?: string;
+    nextRunAt?: string;
+    paused?: boolean;
+  };
 }
 
 export interface RequirementInfo {
@@ -677,9 +689,9 @@ export const api = {
       return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
-    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string, blockedBy?: string[], requirementId?: string) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId, blockedBy, requirementId }) }),
-    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null; blockedBy?: string[] }) =>
+    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId, blockedBy, requirementId, taskType, scheduleConfig }) }),
+    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[] }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -700,14 +712,17 @@ export const api = {
       request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
     getLogs: (id: string) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs`),
-    accept: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: 'human' }) }),
-    revision: (id: string, reason: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: 'human' }) }),
+    accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: reviewerId ?? 'human' }) }),
+    revision: (id: string, reason: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: reviewerId ?? 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
     pause: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/pause`, { method: 'POST' }),
     resume: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/resume`, { method: 'POST' }),
     getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
-    addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>) =>
-      request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorName: authorName ?? 'User', authorType: 'human', attachments }) }),
+    addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string) =>
+      request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments }) }),
+    pauseSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/pause`, { method: 'POST' }),
+    resumeSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/resume`, { method: 'POST' }),
+    runNow: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/schedule/run-now`, { method: 'POST' }),
   },
   files: {
     preview: (filePath: string) =>

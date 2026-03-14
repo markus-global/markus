@@ -135,15 +135,18 @@ export class MemoryStore implements IMemoryStore {
     }
 
     const sectionHeader = `## ${key}`;
-    if (existing.includes(sectionHeader)) {
-      const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
-      existing = existing.replace(regex, `${sectionHeader}\n${content}\n`);
-      writeFileSync(this.longTermFile, existing);
-    } else {
-      appendFileSync(this.longTermFile, `\n${sectionHeader}\n${content}\n`);
+    try {
+      if (existing.includes(sectionHeader)) {
+        const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
+        existing = existing.replace(regex, `${sectionHeader}\n${content}\n`);
+        writeFileSync(this.longTermFile, existing);
+      } else {
+        appendFileSync(this.longTermFile, `\n${sectionHeader}\n${content}\n`);
+      }
+      log.debug('Long-term memory updated', { key });
+    } catch (err) {
+      log.warn('Failed to write long-term memory', { key, error: String(err) });
     }
-
-    log.debug('Long-term memory updated', { key });
   }
 
   getLongTermMemory(): string {
@@ -274,13 +277,21 @@ export class MemoryStore implements IMemoryStore {
   }
 
   private saveToDisk(): void {
-    const memFile = join(this.dataDir, 'memories.json');
-    writeFileSync(memFile, JSON.stringify(this.entries, null, 2));
+    try {
+      const memFile = join(this.dataDir, 'memories.json');
+      writeFileSync(memFile, JSON.stringify(this.entries, null, 2));
+    } catch (err) {
+      log.warn('Failed to save memories to disk', { error: String(err) });
+    }
   }
 
   private saveSessionToDisk(session: ConversationSession): void {
-    const sessionFile = join(this.sessionsDir, `${session.id}.json`);
-    writeFileSync(sessionFile, JSON.stringify(session, null, 2));
+    try {
+      const sessionFile = join(this.sessionsDir, `${session.id}.json`);
+      writeFileSync(sessionFile, JSON.stringify(session, null, 2));
+    } catch (err) {
+      log.warn('Failed to save session to disk', { sessionId: session.id, error: String(err) });
+    }
   }
 
   private debouncedSaveSession(session: ConversationSession): void {

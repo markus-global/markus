@@ -721,7 +721,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; scheduleConfig?: Record<string, unknown> | null }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -753,6 +753,10 @@ export class SqliteTaskRepo {
       sets.push('iteration_id = ?');
       vals.push(data.iterationId);
     }
+    if (data.requirementId !== undefined) {
+      sets.push('requirement_id = ?');
+      vals.push(data.requirementId);
+    }
     if (data.scheduleConfig !== undefined) {
       sets.push('schedule_config = ?');
       vals.push(data.scheduleConfig ? toJson(data.scheduleConfig) : null);
@@ -764,13 +768,13 @@ export class SqliteTaskRepo {
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
-  setResult(id: string, result: unknown) {
+  async setResult(id: string, result: unknown) {
     this.db
       .prepare('UPDATE tasks SET result = ?, updated_at = ? WHERE id = ?')
       .run(toJson(result), now(), id);
   }
 
-  updateDeliverables(id: string, deliverables: unknown[]) {
+  async updateDeliverables(id: string, deliverables: unknown[]) {
     this.db
       .prepare('UPDATE tasks SET deliverables = ?, updated_at = ? WHERE id = ?')
       .run(toJson(deliverables), now(), id);

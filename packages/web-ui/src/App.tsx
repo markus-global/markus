@@ -80,7 +80,7 @@ export function App() {
     templates: <TemplateMarketplace authUser={currentUser} />,
     builder: <AgentBuilder />,
     governance: <GovernancePage />,
-    projects: <ProjectsPage />,
+    projects: <ProjectsPage authUser={currentUser} />,
     knowledge: <KnowledgePage />,
     reports: <ReportsPage />,
   // eslint-disable-next-line react-hooks/exhaustive-deps

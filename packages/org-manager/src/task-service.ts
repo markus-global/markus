@@ -567,8 +567,9 @@ export class TaskService {
           if (entry.type === 'status') {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
-              const inReviewPipeline = currentTask && ['review', 'revision', 'accepted'].includes(currentTask.status);
-              if (!inReviewPipeline) {
+              // Only auto-complete scheduled tasks when execution finishes.
+              // Standard tasks must go through task_submit_review explicitly.
+              if (currentTask?.taskType === 'scheduled' && !['review', 'revision', 'accepted', 'completed'].includes(currentTask.status)) {
                 this.updateTaskStatus(taskId, 'completed');
               }
               // Also broadcast agent status update
@@ -726,6 +727,8 @@ export class TaskService {
           startedAt: toIso((row as any).startedAt),
           completedAt: toIso((row as any).completedAt),
           dueAt: toIso(row.dueAt),
+          taskType: ((row as any).taskType ?? (row as any).task_type ?? 'standard') as Task['taskType'],
+          scheduleConfig: ((row as any).scheduleConfig ?? (row as any).schedule_config ?? undefined) as Task['scheduleConfig'],
         };
         this.tasks.set(task.id, task);
       }
@@ -1053,6 +1056,11 @@ export class TaskService {
     task.updatedAt = new Date().toISOString();
     task.completedAt = task.updatedAt;
 
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(task.id, 'cancelled')
+        .catch(err => log.warn('Failed to persist cancelled status to DB', { taskId: task.id, error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title });
     this.emitTaskEvent({
       type: 'status_changed',
@@ -1078,6 +1086,16 @@ export class TaskService {
     // pending_approval is a locked state — only approveTask() / rejectTask() can exit it
     if (task.status === 'pending_approval') {
       throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint to change its status.`);
+    }
+
+    // Standard tasks must go through the review pipeline: in_progress → review → accepted → completed.
+    // Only scheduled tasks or transitions from accepted/review states are allowed to reach completed directly.
+    if (status === 'completed' && task.taskType !== 'scheduled') {
+      const allowedPrevStatuses = ['accepted', 'completed', 'review'];
+      if (!allowedPrevStatuses.includes(task.status)) {
+        log.warn(`Blocked direct completion of standard task (must go through review)`, { taskId: id, currentStatus: task.status });
+        throw new Error(`Task ${id} cannot be completed directly from "${task.status}". Standard tasks must go through review → accepted → completed.`);
+      }
     }
 
     // Prevent starting a blocked task
@@ -1214,8 +1232,9 @@ export class TaskService {
   unassignTask(id: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+    const statusChanged = task.status === 'assigned';
     task.assignedAgentId = undefined;
-    if (task.status === 'assigned') task.status = 'pending';
+    if (statusChanged) task.status = 'pending';
     task.updatedAt = new Date().toISOString();
 
     if (this.taskRepo) {
@@ -1224,6 +1243,10 @@ export class TaskService {
         .catch(err =>
           log.warn('Failed to persist task unassignment to DB', { error: String(err) })
         );
+      if (statusChanged) {
+        this.taskRepo.updateStatus(id, 'pending')
+          .catch(err => log.warn('Failed to persist pending status to DB', { taskId: id, error: String(err) }));
+      }
     }
 
     this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title });
@@ -1411,7 +1434,7 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null; blockedBy?: string[] },
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[] },
     updatedBy?: string
   ): Task {
     const task = this.tasks.get(id);
@@ -1421,6 +1444,7 @@ export class TaskService {
     if (data.priority !== undefined) task.priority = data.priority;
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
     if (data.iterationId !== undefined) task.iterationId = data.iterationId ?? undefined;
+    if (data.requirementId !== undefined) task.requirementId = data.requirementId ?? undefined;
 
     if (data.blockedBy !== undefined) {
       task.blockedBy = data.blockedBy;
@@ -1745,11 +1769,40 @@ export class TaskService {
     }
 
     task.deliverables = deliverables;
-    task.status = 'review';
     task.updatedAt = new Date().toISOString();
 
-    // Persist deliverables to DB
+    // Scheduled tasks auto-complete instead of waiting for manual review,
+    // so the scheduler can reset them for the next run.
+    if (task.taskType === 'scheduled') {
+      task.status = 'completed';
+      task.completedAt = new Date().toISOString();
+      if (this.taskRepo) {
+        this.taskRepo.updateStatus(task.id, 'completed')
+          .catch(err => log.warn('Failed to persist completed status to DB', { taskId: task.id, error: String(err) }));
+        this.taskRepo.updateDeliverables(task.id, deliverables)
+          .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
+      }
+      this.ws?.broadcastTaskUpdate(task.id, 'completed', { deliverables });
+      this.emitTaskEvent({
+        type: 'completed',
+        taskId: task.id,
+        taskTitle: task.title,
+        orgId: task.orgId,
+        status: 'completed',
+        previousStatus: 'in_progress',
+        agentId: task.assignedAgentId,
+        timestamp: task.updatedAt,
+      });
+      log.info(`Scheduled task auto-completed (skipping review): ${task.title}`, { id: task.id });
+      return task;
+    }
+
+    task.status = 'review';
+
+    // Persist status + deliverables to DB
     if (this.taskRepo) {
+      this.taskRepo.updateStatus(task.id, 'review')
+        .catch(err => log.warn('Failed to persist review status to DB', { taskId: task.id, error: String(err) }));
       this.taskRepo.updateDeliverables(task.id, deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
     }
@@ -1885,6 +1938,12 @@ export class TaskService {
     task.status = 'accepted';
     task.reviewerAgentId = reviewerAgentId;
     task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(task.id, 'accepted')
+        .catch(err => log.warn('Failed to persist accepted status to DB', { taskId: task.id, error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(task.id, task.status, {});
 
     this.emitTaskEvent({
@@ -1960,6 +2019,12 @@ export class TaskService {
     task.notes = task.notes ?? [];
     task.notes.push(`[${new Date().toISOString()}] Revision requested: ${reason}`);
     task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(task.id, 'revision')
+        .catch(err => log.warn('Failed to persist revision status to DB', { taskId: task.id, error: String(err) }));
+    }
+
     this.ws?.broadcastTaskUpdate(task.id, task.status, { reason });
 
     this.auditService?.record({
@@ -1993,6 +2058,12 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     task.status = 'archived';
     task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.updateStatus(taskId, 'archived')
+        .catch(err => log.warn('Failed to persist archived status to DB', { taskId, error: String(err) }));
+    }
+
     log.info(`Task archived: ${task.title}`, { id: task.id });
     return task;
   }

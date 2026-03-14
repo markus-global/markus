@@ -538,7 +538,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 let parsedDeliverables: Array<{ type?: string; path: string; summary: string }> | undefined;
-                const rawDel = args['deliverables'];
+                let rawDel = args['deliverables'];
+                if (typeof rawDel === 'string') {
+                  try { rawDel = JSON.parse(rawDel); } catch { /* leave as-is */ }
+                }
                 if (Array.isArray(rawDel)) {
                   parsedDeliverables = rawDel
                     .filter((d): d is Record<string, unknown> =>

@@ -1655,13 +1655,14 @@ export class APIServer {
         return;
       }
 
-      // General field update (title/description/priority/projectId/iterationId/blockedBy)
+      // General field update (title/description/priority/projectId/iterationId/requirementId/blockedBy)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
         body['priority'] !== undefined ||
         body['projectId'] !== undefined ||
         body['iterationId'] !== undefined ||
+        body['requirementId'] !== undefined ||
         body['blockedBy'] !== undefined
       ) {
         const task = this.taskService.updateTask(taskId, {
@@ -1670,6 +1671,7 @@ export class APIServer {
           priority: body['priority'] as TaskPriority | undefined,
           projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
           iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
+          requirementId: body['requirementId'] !== undefined ? (body['requirementId'] as string | null) : undefined,
           blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
         }, authUser?.userId);
         this.json(res, 200, { task });
@@ -1792,10 +1794,11 @@ export class APIServer {
         return;
       }
       try {
+        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const comment = await this.storage.taskCommentRepo.add({
           taskId,
-          authorId: (body['authorId'] as string) ?? 'human',
+          authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
           authorName: (body['authorName'] as string) ?? 'User',
           authorType: (body['authorType'] as string) ?? 'human',
           content: body['content'] as string,
@@ -5910,8 +5913,9 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
     if (path.match(/^\/api\/tasks\/[^/]+\/accept$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       try {
+        const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
-        const reviewerAgentId = body['reviewerAgentId'] as string | undefined;
+        const reviewerAgentId = (body['reviewerAgentId'] as string | undefined) ?? authUser?.userId ?? 'human';
         const task = await this.taskService.acceptTask(taskId, reviewerAgentId);
         this.json(res, 200, { task });
       } catch (err) {
@@ -5922,6 +5926,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
 
     if (path.match(/^\/api\/tasks\/[^/]+\/revision$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
+      const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       try {
         const task = this.taskService.requestRevision(
@@ -5940,6 +5945,64 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       try {
         const task = this.taskService.archiveTask(taskId);
         this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // ── Governance: Schedule Control ──────────────────────────────────────
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/schedule\/pause$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
+          this.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+        }
+        await this.taskService.updateScheduleConfig(taskId, { ...task.scheduleConfig, paused: true });
+        this.json(res, 200, { task: { ...task, scheduleConfig: { ...task.scheduleConfig, paused: true } } });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/schedule\/resume$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
+          this.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+        }
+        const updated = { ...task.scheduleConfig, paused: false };
+        await this.taskService.updateScheduleConfig(taskId, updated);
+        this.json(res, 200, { task: { ...task, scheduleConfig: updated } });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
+          this.json(res, 400, { error: 'Task is not a scheduled task' }); return;
+        }
+        if (task.status === 'in_progress' || task.status === 'assigned') {
+          this.json(res, 400, { error: 'Task is already running or assigned' }); return;
+        }
+        const terminal = ['completed', 'cancelled', 'failed'];
+        if (terminal.includes(task.status)) {
+          await this.taskService.resetTaskForRerun(taskId);
+        }
+        await this.taskService.runTask(taskId);
+        this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }

@@ -23,7 +23,7 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
 
 const ICONS: Record<string, string> = {
   dashboard: 'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10',
-  projects:  'M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2 M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0H9z M9 14l2 2 4-4',
+  projects:  'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
   chat:      'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   reports:   'M18 20V10 M12 20V4 M6 20v-6',
   knowledge: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z',
@@ -60,7 +60,7 @@ const sections = [
   { key: 'system', label: 'SYSTEM' },
 ];
 
-const DEFAULT_VISIBLE_PROJECTS = 3;
+const DEFAULT_VISIBLE_PROJECTS = 5;
 
 export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed, onToggleCollapse }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -157,16 +157,13 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                 </div>
               )}
               {collapsed && si > 0 && <div className="border-t border-gray-800 my-2 mx-1" />}
-              {navItems.filter(i => i.section === section.key).map((item) => {
-                const isProjectsWithSelection = item.id === 'projects' && selectedProjectId !== null;
-                const isActive = currentPage === item.id && !isProjectsWithSelection;
+              {/* Render nav items, but defer Knowledge to after Projects */}
+              {navItems.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === 'knowledge')).map((item) => {
+                const isActive = currentPage === item.id;
                 return (
                   <button
                     key={item.id}
-                    onClick={() => {
-                      if (item.id === 'projects') setSelectedProjectId(null);
-                      onNavigate(item.id);
-                    }}
+                    onClick={() => onNavigate(item.id)}
                     title={collapsed ? item.label : undefined}
                     className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'} rounded-lg text-sm mb-0.5 transition-colors ${
                       isActive
@@ -179,89 +176,109 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   </button>
                 );
               })}
-            </div>
 
-            {/* Projects section — inserted after WORKSPACE */}
-            {si === 0 && collapsed && (
-              <div className="mb-1">
-                <button
-                  onClick={() => { setSelectedProjectId(null); onNavigate('projects'); }}
-                  title="Projects"
-                  className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                    currentPage === 'projects'
-                      ? 'bg-indigo-600 text-white'
-                      : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-                  }`}
-                >
-                  <Icon d={ICONS.projects ?? ''} />
-                </button>
-              </div>
-            )}
-            {si === 0 && !collapsed && (
-              <div className="mb-3">
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider flex items-center justify-between">
-                  <button onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; }} className="hover:text-gray-400 transition-colors cursor-pointer">PROJECTS</button>
-                  <div className="flex items-center gap-1">
-                    {hasMoreProjects && (
-                      <button
-                        onClick={() => setProjectsExpanded(v => !v)}
-                        className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
-                      >
-                        {projectsExpanded ? (
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15" /></svg>
-                        ) : (
-                          <span>+{projects.length - DEFAULT_VISIBLE_PROJECTS}</span>
-                        )}
-                      </button>
-                    )}
-                    <button
-                      onClick={openNewProject}
-                      className="text-gray-600 hover:text-gray-300 transition-colors p-0.5 rounded hover:bg-gray-800"
-                      title="New Project"
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                    </button>
-                  </div>
-                </div>
-                {projects.length === 0 && (
+              {/* Projects + sub-list — inside WORKSPACE, after Chat, before Knowledge */}
+              {section.key === 'workspace' && collapsed && (
+                <>
                   <button
-                    onClick={openNewProject}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-600 hover:text-gray-400 hover:bg-gray-800/50 rounded-lg transition-colors"
+                    onClick={() => { setSelectedProjectId(null); onNavigate('projects'); }}
+                    title="Projects"
+                    className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                      currentPage === 'projects' && !selectedProjectId
+                        ? 'bg-indigo-600 text-white'
+                        : currentPage === 'projects'
+                          ? 'text-indigo-300 bg-indigo-600/15'
+                          : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                    }`}
                   >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                    Create your first project
+                    <Icon d={ICONS.projects ?? ''} />
                   </button>
-                )}
-                {visibleProjects.map(p => {
-                  const isActive = currentPage === 'projects' && selectedProjectId === p.id;
-                  return (
+                  <button
+                    onClick={() => onNavigate('knowledge')}
+                    title="Knowledge"
+                    className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                      currentPage === 'knowledge' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                    }`}
+                  >
+                    <Icon d={ICONS.knowledge ?? ''} />
+                  </button>
+                </>
+              )}
+              {section.key === 'workspace' && !collapsed && (
+                <>
+                  {/* Projects nav item */}
+                  <div className="flex items-center mb-0.5">
                     <button
-                      key={p.id}
-                      onClick={() => {
-                        setSelectedProjectId(p.id);
-                        window.location.hash = 'projects/' + p.id;
-                      }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm mb-0.5 transition-colors ${
-                        isActive
-                          ? 'bg-indigo-600/20 text-indigo-300'
+                      onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; onNavigate('projects'); }}
+                      className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        currentPage === 'projects' && !selectedProjectId
+                          ? 'bg-indigo-600 text-white'
                           : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                       }`}
                     >
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[p.status] ?? 'bg-gray-600'}`} />
-                      <span className="truncate text-xs">{p.name}</span>
+                      <Icon d={ICONS.projects ?? ''} />
+                      Projects
                     </button>
-                  );
-                })}
-                {hasMoreProjects && !projectsExpanded && (
+                    <button
+                      onClick={openNewProject}
+                      className="text-gray-600 hover:text-gray-300 transition-colors p-1.5 rounded hover:bg-gray-800 shrink-0"
+                      title="New Project"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                    </button>
+                  </div>
+                  {/* Project sub-list */}
+                  {projects.length === 0 && (
+                    <button
+                      onClick={openNewProject}
+                      className="w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-xs text-gray-600 hover:text-gray-400 hover:bg-gray-800/50 rounded-lg transition-colors"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                      Create your first project
+                    </button>
+                  )}
+                  {visibleProjects.map(p => {
+                    const isActive = currentPage === 'projects' && selectedProjectId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          setSelectedProjectId(p.id);
+                          if (currentPage !== 'projects') onNavigate('projects');
+                          window.location.hash = 'projects/' + p.id;
+                        }}
+                        className={`w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 rounded-lg text-sm mb-0.5 transition-colors ${
+                          isActive
+                            ? 'bg-indigo-600/20 text-indigo-300'
+                            : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[p.status] ?? 'bg-gray-600'}`} />
+                        <span className="truncate text-xs">{p.name}</span>
+                      </button>
+                    );
+                  })}
+                  {hasMoreProjects && !projectsExpanded && (
+                    <button
+                      onClick={() => setProjectsExpanded(true)}
+                      className="w-full pl-9 pr-3 py-1 text-[10px] text-gray-600 hover:text-gray-400 transition-colors text-left"
+                    >
+                      Show all {projects.length} projects...
+                    </button>
+                  )}
+                  {/* Knowledge — after Projects */}
                   <button
-                    onClick={() => setProjectsExpanded(true)}
-                    className="w-full px-3 py-1 text-[10px] text-gray-600 hover:text-gray-400 transition-colors text-left"
+                    onClick={() => onNavigate('knowledge')}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                      currentPage === 'knowledge' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                    }`}
                   >
-                    Show all {projects.length} projects...
+                    <Icon d={ICONS.knowledge ?? ''} />
+                    Knowledge
                   </button>
-                )}
-              </div>
-            )}
+                </>
+              )}
+            </div>
           </div>
         ))}
       </nav>
