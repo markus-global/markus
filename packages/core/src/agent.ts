@@ -113,6 +113,10 @@ export class Agent {
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
+  private skillMcpActivator?: (
+    skillName: string,
+    mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
+  ) => Promise<AgentToolHandler[]>;
   private currentSessionId?: string;
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -628,6 +632,15 @@ export class Agent {
 
   injectSkillInstructions(skillName: string, instructions: string): void {
     this.activatedSkillInstructions.set(skillName, instructions);
+  }
+
+  setSkillMcpActivator(
+    cb: (
+      skillName: string,
+      mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
+    ) => Promise<AgentToolHandler[]>,
+  ): void {
+    this.skillMcpActivator = cb;
   }
 
   private getDynamicContext(): string | undefined {
@@ -1996,6 +2009,16 @@ export class Agent {
   }
 
   /**
+   * Mark tool names as permanently activated so they appear in every LLM call.
+   * Used by skill MCP integration to ensure skill-provided tools are always visible.
+   */
+  activateTools(names: string[]): void {
+    for (const name of names) {
+      this.activatedExtraTools.add(name);
+    }
+  }
+
+  /**
    * Dynamically add a read-only path to this agent's access policy and rebuild tools.
    * Used when assigning review tasks so the reviewer can read the worker's worktree.
    */
@@ -2103,11 +2126,11 @@ export class Agent {
 
   /**
    * Handle the discover_tools meta-tool. Supports:
-   * - mode="list_skills": list all available skills (prompt-based instruction packages)
-   * - tool_names with skill names: activate skill by injecting its instructions into context
+   * - mode="list_skills": list all available skills (prompt-based instruction packages, optionally with MCP tools)
+   * - tool_names with skill names: activate skill by injecting its instructions and connecting its MCP servers
    * - tool_names with tool names: activate individual tools already registered on the agent
    */
-  private handleDiscoverTools(args: Record<string, unknown>): string {
+  private async handleDiscoverTools(args: Record<string, unknown>): Promise<string> {
     const mode = (args.mode as string) ?? 'activate';
 
     if (mode === 'list_skills') {
@@ -2124,11 +2147,12 @@ export class Agent {
         description: s.description,
         category: s.category,
         hasInstructions: !!s.instructions,
+        hasMcpTools: !!s.mcpServers && Object.keys(s.mcpServers).length > 0,
       }));
       return JSON.stringify({
         status: 'ok',
         skills: catalog,
-        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill (loads its instructions into your context).`,
+        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill (loads its instructions and MCP tools into your context).`,
       });
     }
 
@@ -2145,19 +2169,42 @@ export class Agent {
         continue;
       }
 
-      // 2. Check if it's a skill name in the registry -- inject instructions
+      // 2. Check if it's a skill name in the registry -- inject instructions and/or MCP tools
       if (this.skillRegistry) {
         const skill = this.skillRegistry.get(name);
         if (skill) {
           if (skill.manifest.instructions) {
             this.activatedSkillInstructions.set(name, skill.manifest.instructions);
-            activated.push(`${name} (skill instructions loaded)`);
-            log.info('Skill instructions activated via discover_tools', {
-              agentId: this.id, skill: name,
-            });
-          } else {
-            activated.push(`${name} (skill found but has no instructions)`);
           }
+
+          let mcpToolCount = 0;
+          if (skill.manifest.mcpServers && this.skillMcpActivator) {
+            try {
+              const mcpTools = await this.skillMcpActivator(name, skill.manifest.mcpServers);
+              const toolNames: string[] = [];
+              for (const tool of mcpTools) {
+                this.registerTool(tool);
+                toolNames.push(tool.name);
+              }
+              this.activateTools(toolNames);
+              mcpToolCount = mcpTools.length;
+            } catch (err) {
+              log.warn('Failed to activate skill MCP servers via discover_tools', {
+                agentId: this.id, skill: name, error: String(err),
+              });
+            }
+          }
+
+          const parts = [name];
+          if (skill.manifest.instructions) parts.push('instructions loaded');
+          if (mcpToolCount > 0) parts.push(`${mcpToolCount} MCP tools loaded`);
+          if (!skill.manifest.instructions && mcpToolCount === 0) parts.push('skill found but has no instructions or MCP tools');
+          activated.push(parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : parts[0]);
+
+          log.info('Skill activated via discover_tools', {
+            agentId: this.id, skill: name, mcpToolCount,
+            hasInstructions: !!skill.manifest.instructions,
+          });
           continue;
         }
       }
@@ -2182,9 +2229,9 @@ export class Agent {
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback): Promise<string> {
-    // Handle the discover_tools meta-tool: activate requested tools and skills
+    // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
-      return this.handleDiscoverTools(toolCall.arguments);
+      return await this.handleDiscoverTools(toolCall.arguments);
     }
 
     // Enforce agent profile tool restrictions

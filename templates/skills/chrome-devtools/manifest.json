@@ -1,0 +1,16 @@
+{
+  "name": "chrome-devtools",
+  "version": "1.0.1",
+  "description": "Chrome DevTools browser automation - control a live Chrome browser (navigate, click, type, screenshot, evaluate JS, inspect network, performance profiling)",
+  "author": "markus",
+  "category": "browser",
+  "tags": ["browser", "chrome", "devtools", "automation", "testing", "mcp"],
+  "requiredPermissions": ["browser", "network"],
+  "requiredEnv": [],
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
+    }
+  }
+}

@@ -16,7 +16,7 @@ import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 export interface ToolCallInfo {
   tool: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'stopped';
   args?: unknown;
   result?: string;
   error?: string;
@@ -398,6 +398,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const rowRef = useRef<HTMLDivElement>(null);
   const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
   const isDone = info.status !== 'running';
+  const isStopped = info.status === 'stopped';
 
   const handleHover = useCallback((v: boolean) => {
     clearTimeout(hoverTimeout.current);
@@ -435,15 +436,17 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
             info.status === 'running' ? 'border-indigo-500 bg-indigo-950 animate-pulse'
             : info.status === 'error' ? 'border-red-600 bg-red-950 text-red-400'
+            : isStopped ? 'border-gray-500 bg-gray-900 text-gray-500'
             : 'border-gray-600 bg-gray-800 text-gray-400'
           }`}>
-            {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : ''}
+            {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : isStopped ? '■' : ''}
           </div>
         </div>
         <div className="flex-1 min-w-0">
           <div className={`flex items-center gap-1 text-xs leading-snug ${
             info.status === 'running' ? 'text-indigo-300'
             : info.status === 'error' ? 'text-red-400 line-through opacity-50'
+            : isStopped ? 'text-gray-500 opacity-60'
             : 'text-gray-500'
           }`}>
             <span className="opacity-60">{meta.icon}</span>

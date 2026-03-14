@@ -32,6 +32,32 @@ interface SkillHubSkill {
   score: number;
 }
 
+interface BuiltinSkill {
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  category?: string;
+  tags: string[];
+  hasMcpServers: boolean;
+  hasInstructions: boolean;
+  requiredPermissions: string[];
+  installed: boolean;
+  installedVersion?: string | null;
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const a = latest.split('.').map(Number);
+  const b = current.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av > bv) return true;
+    if (av < bv) return false;
+  }
+  return false;
+}
+
 interface SkillsShSkill {
   name: string;
   author: string;
@@ -41,7 +67,7 @@ interface SkillsShSkill {
   description?: string;
 }
 
-type TabId = 'installed' | 'skillhub' | 'skillssh';
+type TabId = 'installed' | 'builtin' | 'skillhub' | 'skillssh';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +90,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'installed', label: 'Installed' },
+  { id: 'builtin', label: 'Built-in' },
   { id: 'skillhub', label: 'SkillHub' },
   { id: 'skillssh', label: 'skills.sh' },
 ];
@@ -161,6 +188,10 @@ export function SkillStore() {
   const [skillhubSearch, setSkillhubSearch] = useState('');
   const [loadingSkillhub, setLoadingSkillhub] = useState(false);
 
+  // Built-in tab
+  const [builtinSkills, setBuiltinSkills] = useState<BuiltinSkill[]>([]);
+  const [loadingBuiltin, setLoadingBuiltin] = useState(false);
+
   // skills.sh tab
   const [skillsshList, setSkillsshList] = useState<SkillsShSkill[]>([]);
   const [skillsshSearch, setSkillsshSearch] = useState('');
@@ -195,6 +226,15 @@ export function SkillStore() {
     } catch { /* */ }
   }, []);
 
+  const loadBuiltin = useCallback(async () => {
+    setLoadingBuiltin(true);
+    try {
+      const d = await api.skills.builtin();
+      setBuiltinSkills(d.skills);
+    } catch { /* */ }
+    setLoadingBuiltin(false);
+  }, []);
+
   const loadSkillhub = useCallback(async (opts?: { q?: string; category?: string; page?: number; sort?: string }) => {
     setLoadingSkillhub(true);
     try {
@@ -221,7 +261,7 @@ export function SkillStore() {
     setLoadingSkillssh(false);
   }, []);
 
-  useEffect(() => { loadInstalled(); loadAgents(); loadSkillhub(); loadSkillssh(); }, []);
+  useEffect(() => { loadInstalled(); loadAgents(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
 
   // ── Install helpers ───────────────────────────────────────────────────────────
 
@@ -263,6 +303,21 @@ export function SkillStore() {
       setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
       msg(`Download failed for "${skill.name}". You can try manually from: ${skill.url}`, 'error');
+    }
+    setInstalling(prev => { const next = new Set(prev); next.delete(skill.name); return next; });
+  };
+
+  const installBuiltin = async (skill: BuiltinSkill) => {
+    setInstalling(prev => new Set(prev).add(skill.name));
+    try {
+      const result = await api.skills.install({ name: skill.name, source: 'builtin' });
+      await loadInstalled();
+      await loadBuiltin();
+      msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
+      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
+    } catch (err) {
+      msg(`Install failed for "${skill.name}": ${err}`, 'error');
     }
     setInstalling(prev => { const next = new Set(prev); next.delete(skill.name); return next; });
   };
@@ -420,6 +475,93 @@ export function SkillStore() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Built-in Tab ─────────────────────────────────────────────────────── */}
+      {tab === 'builtin' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex items-center gap-3 mb-5">
+            <span className="text-xs text-gray-500">{builtinSkills.length} built-in skill{builtinSkills.length !== 1 ? 's' : ''} available</span>
+            <button
+              onClick={() => void loadBuiltin()}
+              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {loadingBuiltin ? (
+            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Loading built-in skills...</div></div>
+          ) : builtinSkills.length === 0 ? (
+            <div className="text-center text-gray-500 py-20">
+              <div className="text-4xl mb-3 opacity-30">◇</div>
+              <div>No built-in skills found.</div>
+              <div className="text-xs mt-1">Built-in skills are provided in templates/skills/.</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {builtinSkills.map(skill => (
+                <div key={skill.name} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="font-semibold text-sm truncate">{skill.name}</div>
+                        {skill.hasMcpServers && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] bg-cyan-500/15 text-cyan-400 shrink-0">MCP</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {skill.author ? `by ${skill.author} · ` : ''}v{skill.version}
+                      </div>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-gray-400'} capitalize shrink-0 ml-2`}>
+                      {skill.category ?? 'custom'}
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
+
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {skill.tags.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
+                  </div>
+
+                  {skill.requiredPermissions.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {skill.requiredPermissions.map(p => (
+                        <span key={p} className="px-1.5 py-0.5 text-[9px] bg-amber-500/10 text-amber-500 rounded">{p}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-3 pt-2 border-t border-gray-800 flex items-center justify-between">
+                    {skill.installed && skill.installedVersion ? (
+                      <span className="text-[10px] text-gray-500">v{skill.installedVersion}</span>
+                    ) : <span />}
+                    {skill.installed && skill.installedVersion && isNewerVersion(skill.version, skill.installedVersion) ? (
+                      <button
+                        onClick={() => void installBuiltin(skill)}
+                        disabled={installing.has(skill.name)}
+                        className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                      >
+                        {installing.has(skill.name) ? 'Upgrading...' : `Upgrade → v${skill.version}`}
+                      </button>
+                    ) : skill.installed ? (
+                      <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                    ) : (
+                      <button
+                        onClick={() => void installBuiltin(skill)}
+                        disabled={installing.has(skill.name)}
+                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                      >
+                        {installing.has(skill.name) ? 'Installing...' : 'Install'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

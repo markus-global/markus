@@ -30,7 +30,7 @@ export interface ChatSessionInfo {
 
 export type StoredSegment =
   | { type: 'text'; content: string }
-  | { type: 'tool'; tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; error?: string; durationMs?: number };
+  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number };
 
 export interface ChatMessageInfo {
   id: string;
@@ -38,7 +38,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -858,6 +858,7 @@ export const api = {
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
+    builtin: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags: string[]; hasMcpServers: boolean; hasInstructions: boolean; requiredPermissions: string[]; installed: boolean; installedVersion?: string | null }> }>('/skills/builtin'),
     registry: (source?: string) => request<{ skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }>; source: string; cached: boolean }>(`/skills/registry${source ? `?source=${source}` : ''}`),
     registrySkillhub: (opts?: { q?: string; category?: string; page?: number; limit?: number; sort?: string }) => {
       const params = new URLSearchParams();

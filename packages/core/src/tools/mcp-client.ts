@@ -16,15 +16,33 @@ interface MCPToolDescriptor {
   inputSchema: Record<string, unknown>;
 }
 
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+  method: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 /**
  * Manages connections to external MCP servers via stdio transport.
  * Each MCP server exposes tools that can be used by Agents.
+ *
+ * Uses a per-process line buffer to correctly reassemble JSON-RPC
+ * messages that may be split across multiple stdout `data` events.
  */
 export class MCPClientManager {
   private servers = new Map<string, { process: ChildProcess; tools: MCPToolDescriptor[] }>();
   private requestId = 0;
+  private pendingRequests = new Map<number, PendingRequest>();
+  private stdoutBuffers = new Map<ChildProcess, string>();
 
   async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
+    const existing = this.servers.get(name);
+    if (existing) {
+      log.info(`MCP server ${name} already connected, reusing (${existing.tools.length} tools)`);
+      return existing.tools;
+    }
+
     log.info(`Connecting to MCP server: ${name}`, { command: config.command });
 
     const proc = spawn(config.command, config.args ?? [], {
@@ -39,9 +57,17 @@ export class MCPClientManager {
     proc.on('exit', (code) => {
       log.info(`MCP server ${name} exited`, { code });
       this.servers.delete(name);
+      this.stdoutBuffers.delete(proc);
+      for (const [id, req] of this.pendingRequests) {
+        req.reject(new Error(`MCP server ${name} exited (code ${code}) while awaiting ${req.method}`));
+        clearTimeout(req.timer);
+        this.pendingRequests.delete(id);
+      }
     });
 
-    // Initialize MCP protocol
+    this.stdoutBuffers.set(proc, '');
+    proc.stdout?.on('data', (data: Buffer) => this.handleStdoutData(proc, data));
+
     const initResult = await this.sendRequest(proc, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
@@ -50,7 +76,6 @@ export class MCPClientManager {
 
     await this.sendNotification(proc, 'notifications/initialized', {});
 
-    // List available tools
     const toolsResult = await this.sendRequest(proc, 'tools/list', {});
     const tools = (toolsResult as { tools?: MCPToolDescriptor[] })?.tools ?? [];
 
@@ -100,6 +125,7 @@ export class MCPClientManager {
     if (server) {
       server.process.kill();
       this.servers.delete(name);
+      this.stdoutBuffers.delete(server.process);
       log.info(`MCP server disconnected: ${name}`);
     }
   }
@@ -110,38 +136,49 @@ export class MCPClientManager {
     }
   }
 
+  /**
+   * Accumulates stdout data into a line buffer and dispatches
+   * complete JSON-RPC lines to pending requests.
+   */
+  private handleStdoutData(proc: ChildProcess, data: Buffer): void {
+    const buf = (this.stdoutBuffers.get(proc) ?? '') + data.toString();
+    const lines = buf.split('\n');
+    // Last element is either '' (if buf ended with \n) or an incomplete chunk
+    this.stdoutBuffers.set(proc, lines.pop()!);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const msg = JSON.parse(trimmed) as { id?: number; result?: unknown; error?: { code: number; message: string } };
+        if (msg.id == null) continue; // notification — ignore
+        const pending = this.pendingRequests.get(msg.id);
+        if (!pending) continue;
+        clearTimeout(pending.timer);
+        this.pendingRequests.delete(msg.id);
+        if (msg.error) {
+          pending.reject(new Error(msg.error.message));
+        } else {
+          pending.resolve(msg.result);
+        }
+      } catch {
+        // non-JSON output (e.g. server debug logs on stdout) — skip
+      }
+    }
+  }
+
   private sendRequest(proc: ChildProcess, method: string, params: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = ++this.requestId;
       const message = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
 
-      const onData = (data: Buffer) => {
-        try {
-          const lines = data.toString().split('\n').filter(Boolean);
-          for (const line of lines) {
-            const response = JSON.parse(line) as { id?: number; result?: unknown; error?: { message: string } };
-            if (response.id === id) {
-              proc.stdout?.off('data', onData);
-              if (response.error) {
-                reject(new Error(response.error.message));
-              } else {
-                resolve(response.result);
-              }
-              return;
-            }
-          }
-        } catch {
-          // incomplete JSON, wait for more data
-        }
-      };
+      const timeoutMs = method === 'tools/call' ? 120_000 : 30_000;
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`MCP request timeout for ${method} (id=${id}, ${timeoutMs}ms)`));
+      }, timeoutMs);
 
-      proc.stdout?.on('data', onData);
-
-      setTimeout(() => {
-        proc.stdout?.off('data', onData);
-        reject(new Error(`MCP request timeout for ${method}`));
-      }, 30_000);
-
+      this.pendingRequests.set(id, { resolve, reject, method, timer });
       proc.stdin?.write(message);
     });
   }

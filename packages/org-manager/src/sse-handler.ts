@@ -33,8 +33,9 @@ export interface SSEMessageHandlerOptions {
 export class SSEHandler {
   private options: SSEMessageHandlerOptions;
   private sseBuffer: SSEBuffer | null = null;
-  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; error?: string; durationMs?: number}> = [];
+  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number}> = [];
   private textBuf = '';
+  private runningTools: Array<{tool: string; arguments?: unknown; startedAt: number}> = [];
   private totalTokens = 0;
   private processedTokens = 0;
   private isProcessing = false;
@@ -101,6 +102,9 @@ export class SSEHandler {
         this.textBuf = '';
       }
 
+      const wasCancelled = this.cancelToken.cancelled;
+      this.finalizeRunningTools();
+
       // Build the best available reply content for persistence.
       // If the agent returned empty/cancelled, reconstruct from accumulated segments.
       let persistReply = reply;
@@ -138,14 +142,16 @@ export class SSEHandler {
       }
 
       if (this.options.persistAssistantMessage && this.sessionId) {
-        const msgMeta = this.msgSegments.length > 0 ? { segments: this.msgSegments } : undefined;
+        const msgMeta: Record<string, unknown> = {};
+        if (this.msgSegments.length > 0) msgMeta.segments = this.msgSegments;
+        if (wasCancelled) msgMeta.isStopped = true;
         try {
           await this.options.persistAssistantMessage(
             this.sessionId,
             this.options.agentId,
             persistReply,
             this.options.agent.getState().tokensUsedToday,
-            msgMeta
+            Object.keys(msgMeta).length > 0 ? msgMeta : undefined,
           );
         } catch (e) {
           log.error('Failed to persist assistant message', { agentId: this.options.agentId, error: String(e) });
@@ -210,6 +216,22 @@ export class SSEHandler {
   }
 
   /**
+   * Convert any still-running tools into 'stopped' segments so they are persisted.
+   */
+  private finalizeRunningTools(): void {
+    for (const rt of this.runningTools) {
+      this.msgSegments.push({
+        type: 'tool',
+        tool: rt.tool,
+        status: 'stopped',
+        arguments: rt.arguments,
+        durationMs: Date.now() - rt.startedAt,
+      });
+    }
+    this.runningTools = [];
+  }
+
+  /**
    * 处理流式事件
    */
   private handleStreamEvent(event: AgentStreamEvent): void {
@@ -241,8 +263,12 @@ export class SSEHandler {
           this.msgSegments.push({ type: 'text', content: this.textBuf }); 
           this.textBuf = ''; 
         }
+        if (event.tool) {
+          this.runningTools.push({ tool: event.tool, arguments: event.arguments, startedAt: Date.now() });
+        }
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `正在执行工具: ${event.tool}`);
       } else if (event.phase === 'end' && event.tool) {
+        this.runningTools = this.runningTools.filter(t => t.tool !== event.tool);
         this.msgSegments.push({ 
           type: 'tool', 
           tool: event.tool, 
@@ -325,7 +351,7 @@ export class SSEHandler {
     };
   }
 
-  getSegments(): Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error'}> {
+  getSegments(): Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'}> {
     return [...this.msgSegments];
   }
 

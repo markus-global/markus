@@ -445,7 +445,7 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
 
-    // Inject skill instructions based on agent's configured skills
+    // Inject skill instructions and connect skill MCP servers
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -461,7 +461,43 @@ export class AgentManager {
       if (skillInstructions.size > 0) {
         log.info(`Skill instructions injected for agent ${id}`, { skills: [...skillInstructions.keys()] });
       }
+
+      // Connect MCP servers declared by skills and activate the tools
+      for (const skillName of config.skills) {
+        const skill = this.skillRegistry.get(skillName);
+        if (skill?.manifest.mcpServers) {
+          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+            try {
+              await this.mcpManager.connectServer(serverName, serverConfig);
+              const mcpTools = this.mcpManager.getToolHandlers(serverName);
+              const toolNames: string[] = [];
+              for (const tool of mcpTools) {
+                agent.registerTool(tool);
+                toolNames.push(tool.name);
+              }
+              agent.activateTools(toolNames);
+              log.info(`Skill ${skillName} MCP server ${serverName} connected for agent ${id}`, {
+                toolCount: mcpTools.length,
+              });
+            } catch (error) {
+              log.warn(`Failed to connect skill ${skillName} MCP server ${serverName} for agent ${id}`, {
+                error: String(error),
+              });
+            }
+          }
+        }
+      }
     }
+
+    // Set skill MCP activator callback for runtime activation via discover_tools
+    agent.setSkillMcpActivator(async (_skillName, mcpServers) => {
+      const tools: AgentToolHandler[] = [];
+      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+        await this.mcpManager.connectServer(serverName, srvConfig);
+        tools.push(...this.mcpManager.getToolHandlers(serverName));
+      }
+      return tools;
+    });
 
     // A2A tools — every agent can message colleagues
     const a2aContext: A2AContext = {
@@ -937,7 +973,43 @@ export class AgentManager {
       for (const [skillName, instructions] of skillInstructions) {
         agent.injectSkillInstructions(skillName, instructions);
       }
+
+      // Connect MCP servers declared by skills and activate the tools
+      for (const skillName of config.skills) {
+        const skill = this.skillRegistry.get(skillName);
+        if (skill?.manifest.mcpServers) {
+          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+            try {
+              await this.mcpManager.connectServer(serverName, serverConfig);
+              const mcpTools = this.mcpManager.getToolHandlers(serverName);
+              const toolNames: string[] = [];
+              for (const tool of mcpTools) {
+                agent.registerTool(tool);
+                toolNames.push(tool.name);
+              }
+              agent.activateTools(toolNames);
+              log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
+                toolCount: mcpTools.length,
+              });
+            } catch (error) {
+              log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
+                error: String(error),
+              });
+            }
+          }
+        }
+      }
     }
+
+    // Set skill MCP activator callback for runtime activation via discover_tools
+    agent.setSkillMcpActivator(async (_skillName, mcpServers) => {
+      const tools: AgentToolHandler[] = [];
+      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+        await this.mcpManager.connectServer(serverName, srvConfig);
+        tools.push(...this.mcpManager.getToolHandlers(serverName));
+      }
+      return tools;
+    });
 
     const a2aCtx = {
       selfId: id,

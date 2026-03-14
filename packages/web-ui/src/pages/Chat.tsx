@@ -24,7 +24,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
   | { type: 'text'; content: string; thinking?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string };
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string };
 
 interface ChatMsg {
   id: string;
@@ -66,6 +66,9 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
+  }
+  if (m.metadata?.isStopped) {
+    base.isStopped = true;
   }
   if (m.metadata?.images?.length) {
     base.images = m.metadata.images;
@@ -894,7 +897,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
             const msg = u[i]!;
             const segs = (msg.segments ?? []).map(s =>
-              s.type === 'tool' && s.status === 'running' ? { ...s, status: 'error' as const } : s
+              s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
             );
             u[i] = { ...msg, isStopped: true, segments: segs };
             break;
@@ -1193,13 +1196,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         }
       }
 
-      // Mark any still-running tool segments as error (stream ended unexpectedly)
+      // Mark any still-running tool segments as stopped (stream ended due to cancellation or disconnect)
       updateConvMsgs(sendKey, prev => {
         const u = [...prev];
         const idx = u.findIndex(m => m.id === agentMsgId);
         if (idx >= 0) {
           const segs = (u[idx]!.segments ?? []).map(s =>
-            s.type === 'tool' && s.status === 'running' ? { ...s, status: 'error' as const } : s
+            s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
           );
           u[idx] = { ...u[idx]!, segments: segs };
         }

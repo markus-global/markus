@@ -1,4 +1,4 @@
-export type { SkillManifest, SkillInstance, SkillRegistry, SkillCategory, SkillToolDef } from './types.js';
+export type { SkillManifest, SkillMcpServerConfig, SkillInstance, SkillRegistry, SkillCategory, SkillToolDef } from './types.js';
 export { InMemorySkillRegistry } from './registry.js';
 
 import { homedir } from 'node:os';

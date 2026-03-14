@@ -1,3 +1,9 @@
+export interface SkillMcpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
 export interface SkillManifest {
   name: string;
   version: string;
@@ -11,6 +17,8 @@ export interface SkillManifest {
   tools?: SkillToolDef[];
   requiredEnv?: string[];
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
+  /** MCP servers this skill provides. Connected when the skill is activated on an agent. */
+  mcpServers?: Record<string, SkillMcpServerConfig>;
   /** Filesystem path where this skill was loaded from */
   sourcePath?: string;
   /** Origin of this skill: skillhub, skillssh, local, builder */

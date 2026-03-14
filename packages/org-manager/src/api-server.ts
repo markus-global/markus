@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, type TaskStatus, type TaskPriority } from '@markus/shared';
@@ -3036,6 +3036,34 @@ export class APIServer {
       return;
     }
 
+    // Built-in skills — list templates/skills/
+    if (path === '/api/skills/builtin' && req.method === 'GET') {
+      const builtinDir = resolve(process.cwd(), 'templates', 'skills');
+      const found = discoverSkillsInDir(builtinDir);
+      const installedSkills = new Map(
+        (this.skillRegistry?.list() ?? []).map(s => [s.name, s])
+      );
+      const skills = found.map(({ manifest, path: p }) => {
+        const inst = installedSkills.get(manifest.name);
+        return {
+          name: manifest.name,
+          version: manifest.version,
+          description: manifest.description,
+          author: manifest.author,
+          category: manifest.category,
+          tags: manifest.tags ?? [],
+          hasMcpServers: !!manifest.mcpServers && Object.keys(manifest.mcpServers).length > 0,
+          hasInstructions: !!manifest.instructions,
+          requiredPermissions: manifest.requiredPermissions ?? [],
+          sourcePath: p,
+          installed: !!inst,
+          installedVersion: inst?.version ?? null,
+        };
+      });
+      this.json(res, 200, { skills });
+      return;
+    }
+
     if (path.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
       const skillName = decodeURIComponent(path.split('/')[3]!);
       if (!this.skillRegistry) {
@@ -3115,7 +3143,7 @@ export class APIServer {
     if (path === '/api/skills/install' && req.method === 'POST') {
       const body = await this.readBody(req);
       const skillName = body['name'] as string;
-      const source = body['source'] as string | undefined; // 'skillhub' | 'skillssh' | 'openclaw'
+      const source = body['source'] as string | undefined; // 'builtin' | 'skillhub' | 'skillssh' | 'openclaw'
       const slug = body['slug'] as string | undefined;
       const sourceUrl = body['sourceUrl'] as string | undefined;
       const description = body['description'] as string | undefined;
@@ -3138,6 +3166,19 @@ export class APIServer {
 
         let installed = false;
         let installMethod = 'metadata-only';
+
+        // Strategy 0: Built-in skill — copy from templates/skills/
+        if (source === 'builtin') {
+          const builtinDir = resolve(process.cwd(), 'templates', 'skills', safeName);
+          if (existsSync(builtinDir)) {
+            mkdirSync(targetDir, { recursive: true });
+            for (const file of readdirSync(builtinDir)) {
+              copyFileSync(join(builtinDir, file), join(targetDir, file));
+            }
+            installed = true;
+            installMethod = 'builtin-copy';
+          }
+        }
 
         // Strategy 1: SkillHub/ClawHub — download ZIP via Convex API
         if (source === 'skillhub' && slug) {
