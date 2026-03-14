@@ -372,84 +372,91 @@ export function ChatTeamSidebar({
 
   // ── Team section renderer ────────────────────────────────────────────────
 
-  const renderGroupChatItem = (gc: typeof groupChats[number]) => (
-    <button
-      key={gc.id}
-      onClick={() => onSelectChannel(gc.channelKey)}
-      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
-        chatMode === 'channel' && activeChannel === gc.channelKey
-          ? 'bg-indigo-600/20 text-indigo-300'
-          : 'text-gray-400 hover:bg-gray-800'
-      }`}
-    >
-      <span className="text-gray-500 shrink-0">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-      </span>
-      <span className="truncate flex-1">{gc.name}</span>
-      {gc.memberCount !== undefined && gc.memberCount > 0 && (
-        <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
-      )}
-    </button>
-  );
-
   const renderTeamSection = (tid: string, team: TeamInfo | null, agentList: AgentInfo[], label: string) => {
     const isCollapsed = collapsedTeams.has(tid);
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
-    const teamGroupChats = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? []) : [];
+    const teamGc = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? [])[0] : undefined;
+    const isGcActive = teamGc && chatMode === 'channel' && activeChannel === teamGc.channelKey;
 
     return (
       <div
         key={tid}
-        className={`mb-0.5 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-indigo-500/50 bg-indigo-500/5' : ''}`}
+        className={`mb-1 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-indigo-500/50 bg-indigo-500/5' : ''}`}
         onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
         onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
       >
-        <div className="flex items-center group/teamhdr">
+        {/* Team header: click name to enter group chat, separate expand/collapse + menu buttons */}
+        <div className="group/teamhdr flex items-center gap-0.5">
           <button
-            onClick={() => toggleTeam(tid)}
+            onClick={() => {
+              if (teamGc) onSelectChannel(teamGc.channelKey);
+              else toggleTeam(tid);
+            }}
             onContextMenu={e => {
               if (!isAdmin || !team) return;
               e.preventDefault();
               setTeamMenu({ teamId: tid, x: e.clientX, y: e.clientY });
             }}
-            className="flex-1 flex items-center gap-1.5 px-1.5 py-1.5 rounded-md text-[10px] font-semibold text-gray-500 tracking-wider hover:bg-gray-800/50 hover:text-gray-400 transition-colors"
+            className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors min-w-0 ${
+              isGcActive
+                ? 'bg-indigo-600/20 text-indigo-300'
+                : 'text-gray-400 hover:bg-gray-800'
+            }`}
+          >
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+              isGcActive ? 'bg-indigo-600' : 'bg-gray-700'
+            }`}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              {editingTeam === tid ? (
+                <input
+                  className="bg-transparent border-b border-indigo-500 text-gray-300 text-[11px] font-medium outline-none w-full"
+                  value={editTeamName}
+                  onChange={e => setEditTeamName(e.target.value)}
+                  onBlur={() => handleRenameTeam(tid)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleRenameTeam(tid); if (e.key === 'Escape') setEditingTeam(null); }}
+                  onClick={e => e.stopPropagation()}
+                  autoFocus
+                />
+              ) : (
+                <span className="truncate font-medium text-[11px] leading-tight block">{label}</span>
+              )}
+              <div className="text-[10px] text-gray-600 leading-tight mt-0.5">{agentList.length} members</div>
+            </div>
+          </button>
+
+          {/* Expand / collapse toggle */}
+          <button
+            onClick={() => toggleTeam(tid)}
+            className="w-5 h-5 flex items-center justify-center text-gray-600 hover:text-gray-300 rounded transition-colors shrink-0 opacity-60 hover:opacity-100"
+            title={isCollapsed ? 'Expand' : 'Collapse'}
           >
             <svg
-              className={`w-2.5 h-2.5 text-gray-600 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
+              className={`w-3 h-3 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
               fill="currentColor" viewBox="0 0 20 20"
             >
               <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
             </svg>
-            {editingTeam === tid ? (
-              <input
-                className="bg-transparent border-b border-indigo-500 text-gray-300 text-[10px] font-semibold outline-none uppercase w-full"
-                value={editTeamName}
-                onChange={e => setEditTeamName(e.target.value)}
-                onBlur={() => handleRenameTeam(tid)}
-                onKeyDown={e => { if (e.key === 'Enter') handleRenameTeam(tid); if (e.key === 'Escape') setEditingTeam(null); }}
-                onClick={e => e.stopPropagation()}
-                autoFocus
-              />
-            ) : (
-              <span className="truncate uppercase">{label}</span>
-            )}
-            <span className="ml-auto text-[9px] text-gray-700 tabular-nums font-normal">{agentList.length}</span>
           </button>
+
+          {/* More options menu */}
           {isAdmin && team && (
             <button
               onClick={e => { e.stopPropagation(); setTeamMenu({ teamId: tid, x: e.clientX, y: e.clientY }); }}
-              className="opacity-0 group-hover/teamhdr:opacity-100 w-5 h-5 flex items-center justify-center text-gray-600 hover:text-gray-300 rounded transition-all"
+              className="w-5 h-5 flex items-center justify-center text-gray-600 hover:text-gray-300 rounded transition-colors shrink-0 opacity-0 group-hover/teamhdr:opacity-100"
+              title="More options"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
             </button>
           )}
         </div>
+
         {isDropTarget && isDragging && (
           <div className="text-[9px] text-indigo-400 px-4 py-0.5 animate-pulse">Drop here</div>
         )}
         {!isCollapsed && (
           <div className="ml-1">
-            {teamGroupChats.map(gc => renderGroupChatItem(gc))}
             {agentList.map(a => renderAgentItem(a, tid === '_ungrouped' ? undefined : tid))}
           </div>
         )}
@@ -544,13 +551,31 @@ export function ChatTeamSidebar({
             <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
           )}
 
-          {/* Unmatched group chats */}
-          {groupChatsByTeam.unmatched.length > 0 && (
-            <div className="mb-2">
-              <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1 px-1.5">Group Chats</p>
-              {groupChatsByTeam.unmatched.map(gc => renderGroupChatItem(gc))}
-            </div>
-          )}
+          {/* Unmatched group chats (no matching team) */}
+          {groupChatsByTeam.unmatched.map(gc => (
+            <button
+              key={gc.id}
+              onClick={() => onSelectChannel(gc.channelKey)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
+                chatMode === 'channel' && activeChannel === gc.channelKey
+                  ? 'bg-indigo-600/20 text-indigo-300'
+                  : 'text-gray-400 hover:bg-gray-800'
+              }`}
+            >
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-indigo-600' : 'bg-gray-700'
+              }`}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <span className="truncate font-medium text-[11px] leading-tight block">{gc.name}</span>
+                <div className="text-[10px] text-gray-600 leading-tight mt-0.5">Group Chat</div>
+              </div>
+              {gc.memberCount !== undefined && gc.memberCount > 0 && (
+                <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
+              )}
+            </button>
+          ))}
 
           {/* Teams with agents */}
           {teams.map(t => {
