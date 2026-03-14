@@ -35,6 +35,8 @@ export class TaskRepo {
     createdBy?: string;
     blockedBy?: string[];
     dueAt?: Date;
+    taskType?: string;
+    scheduleConfig?: Record<string, unknown>;
   }) {
     const [row] = await this.db
       .insert(tasks)
@@ -53,6 +55,8 @@ export class TaskRepo {
         createdBy: data.createdBy ?? null,
         blockedBy: data.blockedBy ?? [],
         dueAt: data.dueAt ?? null,
+        taskType: data.taskType ?? 'standard',
+        scheduleConfig: data.scheduleConfig ?? null,
       })
       .returning();
     return row!;
@@ -90,7 +94,7 @@ export class TaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null; scheduleConfig?: Record<string, unknown> | null }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
@@ -99,6 +103,7 @@ export class TaskRepo {
     if (data.notes !== undefined) updates['notes'] = data.notes;
     if (data.projectId !== undefined) updates['projectId'] = data.projectId;
     if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
+    if (data.scheduleConfig !== undefined) updates['scheduleConfig'] = data.scheduleConfig;
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
@@ -110,13 +115,14 @@ export class TaskRepo {
     await this.db.update(tasks).set({ deliverables, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
-  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
+  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string; taskType?: string }) {
     const conditions = [eq(tasks.orgId, orgId)];
     if (filters?.status) conditions.push(eq(tasks.status, filters.status));
     if (filters?.assignedAgentId)
       conditions.push(eq(tasks.assignedAgentId, filters.assignedAgentId));
     if (filters?.projectId) conditions.push(eq(tasks.projectId, filters.projectId));
     if (filters?.iterationId) conditions.push(eq(tasks.iterationId, filters.iterationId));
+    if (filters?.taskType) conditions.push(eq(tasks.taskType, filters.taskType));
     return this.db
       .select()
       .from(tasks)

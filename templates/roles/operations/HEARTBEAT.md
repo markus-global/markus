@@ -1,13 +1,7 @@
-# Heartbeat Tasks
+# Heartbeat Checklist
 
-## Process inbox
-
-Check for NEW messages, requests, and action items since the last heartbeat. If inbox is empty or already processed, skip. Triage and respond or delegate only new items.
-
-## System health check
-
-Verify that key operational tools and services are functioning correctly. Compare with last heartbeat — only report NEW issues or status changes. If everything was healthy last time and nothing changed, skip.
-
-## Generate daily summary
-
-Compile a summary of completed tasks, pending items, and blockers — but ONLY once per day (not every heartbeat). Check `memory_search` for today's date to see if a summary was already generated. If yes, skip.
+- Check my assigned tasks via `task_list`. Note any new assignments or status changes.
+- Check for new messages or action items.
+- Verify operational tool and service health (only report changes).
+- Once per day, compile a daily summary (check memory to avoid duplicates).
+- If nothing changed since last summary, respond HEARTBEAT_OK.

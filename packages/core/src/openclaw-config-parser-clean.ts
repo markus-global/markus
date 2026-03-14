@@ -1,4 +1,4 @@
-import type { RoleTemplate, HeartbeatTask, Policy, RoleCategory } from '@markus/shared';
+import type { RoleTemplate, Policy, RoleCategory } from '@markus/shared';
 import { generateId } from '@markus/shared';
 
 export interface OpenClawRoleConfig {
@@ -45,7 +45,7 @@ export class OpenClawConfigParser {
     // Parse OpenClaw-specific sections
     const capabilities = this.parseCapabilities(markdown);
     const memoryConfig = this.parseMemoryConfig(markdown);
-    const heartbeatTasks = this.parseHeartbeatTasks(markdown);
+    const heartbeatChecklist = this.parseHeartbeatChecklist(markdown);
     const policies = this.parsePolicies(markdown);
     const knowledgeBase = this.parseKnowledgeBase(markdown);
     
@@ -54,7 +54,7 @@ export class OpenClawConfigParser {
       markdown,
       capabilities,
       memoryConfig,
-      heartbeatTasks,
+      [],
       knowledgeBase
     );
     
@@ -68,9 +68,9 @@ export class OpenClawConfigParser {
       category,
       systemPrompt,
       defaultSkills: skills,
-      defaultHeartbeatTasks: heartbeatTasks,
+      heartbeatChecklist,
       defaultPolicies: policies,
-      builtIn: false, // Mark as external/OpenClaw configuration
+      builtIn: false,
     };
   }
   
@@ -173,72 +173,11 @@ export class OpenClawConfigParser {
   }
   
   /**
-   * Parse heartbeat tasks section
-   * Format: ## Heartbeat / ## Periodic Tasks / ## Scheduled Tasks
+   * Parse heartbeat section as raw checklist text.
    */
-  private parseHeartbeatTasks(md: string): HeartbeatTask[] {
-    const sections = this.extractSection(md, ['## Heartbeat', '## Periodic Tasks', '## Scheduled Tasks']);
-    if (!sections) return [];
-    
-    const tasks: HeartbeatTask[] = [];
-    const lines = sections.split('\n');
-    let currentTask: Partial<HeartbeatTask> = {};
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      
-      // Task name (starts with ### or -)
-      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s*[^:]+:/)) {
-        // Save previous task if exists
-        if (currentTask.name && currentTask.description) {
-          tasks.push({
-            name: currentTask.name,
-            description: currentTask.description,
-            enabled: true,
-          });
-        }
-        
-        // Start new task
-        currentTask = {};
-        
-        // Extract task name
-        let taskName = trimmed;
-        if (trimmed.startsWith('###')) {
-          taskName = trimmed.replace(/^###\s*/, '');
-        } else {
-          // Remove bullet point and capture name before colon
-          taskName = trimmed.replace(/^[-*]\s*/, '');
-        }
-        
-        // Remove colon and everything after for task name
-        currentTask.name = taskName.replace(/:.*$/, '').trim();
-        
-        // Check for inline description
-        const inlineDesc = trimmed.match(/:?\s*(.+)$/);
-        if (inlineDesc && inlineDesc[1]) {
-          currentTask.description = inlineDesc[1].trim();
-        }
-      }
-      // Task description continuation
-      else if (trimmed && currentTask.name && !trimmed.startsWith('#')) {
-        if (currentTask.description) {
-          currentTask.description += ' ' + trimmed;
-        } else {
-          currentTask.description = trimmed;
-        }
-      }
-    }
-    
-    // Add last task
-    if (currentTask.name && currentTask.description) {
-      tasks.push({
-        name: currentTask.name,
-        description: currentTask.description,
-        enabled: true,
-      });
-    }
-    
-    return tasks;
+  private parseHeartbeatChecklist(md: string): string {
+    const section = this.extractSection(md, ['## Heartbeat', '## Periodic Tasks', '## Scheduled Tasks']);
+    return section?.trim() ?? '';
   }
   
   /**
@@ -380,7 +319,7 @@ export class OpenClawConfigParser {
     originalMd: string,
     capabilities: string[],
     memoryConfig: Record<string, unknown>,
-    heartbeatTasks: HeartbeatTask[],
+    heartbeatTasks: { name: string; description: string }[],
     knowledgeBase: string[]
   ): string {
     let cleanedMd = originalMd;

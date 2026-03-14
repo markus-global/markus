@@ -1445,6 +1445,12 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/tasks/scheduled' && req.method === 'GET') {
+      const tasks = this.taskService.listScheduledTasks();
+      this.json(res, 200, { tasks });
+      return;
+    }
+
     if (path === '/api/tasks/dashboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? undefined;
       const dashboard = this.taskService.getDashboard(orgId);
@@ -1466,6 +1472,7 @@ export class APIServer {
     if (path === '/api/tasks' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
+      const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
       const task = this.taskService.createTask({
         orgId: (body['orgId'] as string) ?? 'default',
         title: body['title'] as string,
@@ -1480,6 +1487,14 @@ export class APIServer {
         requirementId: body['requirementId'] as string | undefined,
         createdBy: authUser?.userId ?? 'unknown',
         creatorRole: 'human',
+        taskType: ((body['taskType'] as string | undefined) ?? 'standard') as 'standard' | 'scheduled',
+        scheduleConfig: scheduleRaw ? {
+          cron: scheduleRaw['cron'] as string | undefined,
+          every: scheduleRaw['every'] as string | undefined,
+          runAt: scheduleRaw['runAt'] as string | undefined,
+          timezone: scheduleRaw['timezone'] as string | undefined,
+          maxRuns: scheduleRaw['maxRuns'] as number | undefined,
+        } : undefined,
       });
       this.json(res, 201, { task });
       return;
@@ -2069,12 +2084,9 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const hb = (
-          agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }
+          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number }; isRunning(): boolean } }
         ).heartbeat;
-        this.json(res, 200, {
-          running: hb.isRunning(),
-          ...(hb.getHealthMetrics() as Record<string, unknown>),
-        });
+        this.json(res, 200, hb.getStatus());
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -2095,14 +2107,11 @@ export class APIServer {
           description: t.description,
         }));
         const hb = (
-          agent as unknown as { heartbeat: { getHealthMetrics(): unknown; isRunning(): boolean } }
+          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } } }
         ).heartbeat;
         let heartbeatSummary: Record<string, unknown> = {};
         try {
-          heartbeatSummary = {
-            running: hb.isRunning(),
-            ...(hb.getHealthMetrics() as Record<string, unknown>),
-          };
+          heartbeatSummary = hb.getStatus() as unknown as Record<string, unknown>;
         } catch {
           /* ok */
         }

@@ -4,6 +4,8 @@ import {
   type Task,
   type TaskStatus,
   type TaskPriority,
+  type TaskType,
+  type ScheduleConfig,
   type TaskGovernancePolicy,
   type ApprovalTier,
   type TaskDeliverable,
@@ -41,6 +43,9 @@ export interface CreateTaskRequest {
   approvedVia?: string;
   planReportId?: string;
   reviewerAgentId?: string;
+  // Scheduling fields
+  taskType?: TaskType;
+  scheduleConfig?: ScheduleConfig;
 }
 
 export type TaskEventType =
@@ -762,6 +767,10 @@ export class TaskService {
       initialStatus = assignedAgentId ? 'assigned' : 'pending';
     }
 
+    const scheduleConfig = request.scheduleConfig
+      ? { ...request.scheduleConfig, currentRuns: 0, nextRunAt: computeInitialNextRun(request.scheduleConfig) }
+      : undefined;
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
@@ -769,8 +778,6 @@ export class TaskService {
       description: request.description,
       status: initialStatus,
       priority: request.priority ?? 'medium',
-      // Keep assignedAgentId even in pending_approval — it represents the proposed assignee.
-      // The human reviewer can see and change it before approving. Status is the gate, not the field.
       assignedAgentId: assignedAgentId,
       parentTaskId: request.parentTaskId,
       requirementId: request.requirementId,
@@ -786,6 +793,8 @@ export class TaskService {
       approvedVia: needsApproval ? undefined : (request.approvedVia ?? 'auto'),
       planReportId: request.planReportId,
       reviewerAgentId: request.reviewerAgentId,
+      taskType: request.taskType ?? 'standard',
+      scheduleConfig,
     };
 
     if (request.parentTaskId) {
@@ -815,6 +824,8 @@ export class TaskService {
           createdBy: task.createdBy,
           blockedBy: task.blockedBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
+          taskType: task.taskType,
+          scheduleConfig: task.scheduleConfig as Record<string, unknown> | undefined,
         })
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
     }
@@ -2083,4 +2094,70 @@ export class TaskService {
       agentWorkload: Object.fromEntries(agentLoad),
     };
   }
+
+  // ── Scheduled Task Support ──
+
+  listScheduledTasks(): Task[] {
+    return Array.from(this.tasks.values()).filter(t => t.taskType === 'scheduled');
+  }
+
+  async updateScheduleConfig(taskIdStr: string, config: ScheduleConfig): Promise<void> {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) return;
+    task.scheduleConfig = config;
+    task.updatedAt = new Date().toISOString();
+    if (this.taskRepo) {
+      await this.taskRepo.update(taskIdStr, { scheduleConfig: config as unknown as Record<string, unknown> });
+    }
+  }
+
+  async resetTaskForRerun(taskIdStr: string): Promise<void> {
+    const task = this.tasks.get(taskIdStr);
+    if (!task) return;
+    const previousStatus = task.status;
+    task.status = task.assignedAgentId ? 'assigned' : 'pending';
+    task.result = undefined;
+    task.startedAt = undefined;
+    task.completedAt = undefined;
+    task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      await this.taskRepo.updateStatus(taskIdStr, task.status);
+    }
+
+    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title });
+    this.emitTaskEvent({
+      type: 'status_changed',
+      taskId: task.id,
+      taskTitle: task.title,
+      orgId: task.orgId,
+      status: task.status,
+      previousStatus,
+      agentId: task.assignedAgentId,
+      timestamp: task.updatedAt,
+      metadata: { reason: 'scheduled_rerun' },
+    });
+    log.info('Scheduled task reset for rerun', { taskId: task.id, title: task.title });
+  }
+}
+
+function computeInitialNextRun(config: ScheduleConfig): string | undefined {
+  if (config.runAt) return config.runAt;
+
+  if (config.every) {
+    const match = config.every.match(/^(\d+)(ms|s|m|h|d|w)$/);
+    if (match) {
+      const value = parseInt(match[1]!, 10);
+      const unit = match[2]!;
+      const multipliers: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+      const ms = value * (multipliers[unit] ?? 0);
+      if (ms > 0) return new Date(Date.now() + ms).toISOString();
+    }
+  }
+
+  if (config.cron) {
+    return new Date(Date.now() + 3_600_000).toISOString();
+  }
+
+  return undefined;
 }

@@ -95,19 +95,6 @@ For requirements that need more than 5 tasks:
 ### 6. Subtask Decomposition
 Use `parent_task_id` to organize related work under a parent task. The parent auto-completes when all subtasks finish. This keeps the board organized.
 
-## Heartbeat: Task Board Hygiene
-
-During each heartbeat cycle, perform these checks to maintain board health:
-
-1. **Call `task_board_health`** to get a board overview: status counts, duplicates, stale tasks, agent workload.
-2. **Check for duplicates**: If `task_board_health` reports duplicates, call `task_cleanup_duplicates` to auto-cancel them.
-3. **Review stale blocked tasks**: If any tasks have been `blocked` for more than 24 hours, investigate whether the blocker has been resolved. If so, manually unblock. If not, escalate to the human.
-4. **Review stale assigned tasks**: If tasks have been `assigned` for more than 48 hours without starting, check if the agent is overloaded and consider reassignment.
-5. **Check unassigned tasks**: If there are unassigned pending tasks, find the best agent and assign them.
-6. Summarize findings concisely to the human.
-
-**NEVER** create new tasks during heartbeat. Heartbeat is for monitoring and cleanup only.
-
 ## Principles
 - Always know the state of your team
 - Never make assumptions — when unsure, ask

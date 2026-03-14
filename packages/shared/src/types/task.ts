@@ -15,6 +15,26 @@ export type TaskStatus =
   | 'archived';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskExecutionMode = 'cli' | 'api' | 'mcp' | 'gui' | 'hybrid';
+export type TaskType = 'standard' | 'scheduled';
+
+export interface ScheduleConfig {
+  /** Cron expression, e.g. "0 9 * * 1-5" */
+  cron?: string;
+  /** Interval shorthand, e.g. "4h", "30m", "1d" */
+  every?: string;
+  /** IANA timezone, default UTC */
+  timezone?: string;
+  /** ISO timestamp for one-shot execution */
+  runAt?: string;
+  /** Max number of runs (undefined = unlimited) */
+  maxRuns?: number;
+  /** How many times the schedule has fired */
+  currentRuns?: number;
+  /** ISO timestamp of last execution */
+  lastRunAt?: string;
+  /** ISO timestamp of next planned execution */
+  nextRunAt?: string;
+}
 
 export interface Task {
   id: string;
@@ -59,6 +79,12 @@ export interface Task {
   /** Agent assigned to review deliverables */
   reviewerAgentId?: string;
   deliverables?: TaskDeliverable[];
+
+  // ── Scheduling fields ──
+  /** 'standard' (default) or 'scheduled' for cron/recurring tasks */
+  taskType?: TaskType;
+  /** Schedule configuration for scheduled tasks */
+  scheduleConfig?: ScheduleConfig;
 }
 
 export interface TaskResult {

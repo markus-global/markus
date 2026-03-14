@@ -98,7 +98,8 @@ export interface RoleTemplate {
   category: RoleCategory;
   systemPrompt: string;
   defaultSkills: string[];
-  defaultHeartbeatTasks: HeartbeatTask[];
+  /** Raw HEARTBEAT.md content — passed to the LLM as a single checklist */
+  heartbeatChecklist: string;
   defaultPolicies: Policy[];
   builtIn: boolean;
 }
@@ -112,14 +113,6 @@ export type RoleCategory =
   | 'finance'
   | 'legal'
   | 'custom';
-
-export interface HeartbeatTask {
-  name: string;
-  description: string;
-  cronExpression?: string;
-  intervalMs?: number;
-  enabled: boolean;
-}
 
 export interface Policy {
   name: string;

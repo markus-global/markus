@@ -22,7 +22,7 @@ const MOCK_ROLE: RoleTemplate = {
   category: 'engineering',
   systemPrompt: 'You are a test agent.',
   defaultSkills: [],
-  defaultHeartbeatTasks: [],
+  heartbeatChecklist: '',
   defaultPolicies: [],
   builtIn: false,
 };

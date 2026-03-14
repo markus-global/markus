@@ -1,6 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { RoleTemplate, HeartbeatTask, Policy, RoleCategory } from '@markus/shared';
+import type { RoleTemplate, Policy, RoleCategory } from '@markus/shared';
 import { generateId } from '@markus/shared';
 import { OpenClawConfigParser } from './openclaw-config-parser.js';
 
@@ -152,7 +152,7 @@ export class EnhancedRoleLoader {
       ...baseRole,
       ...overrideRole,
       defaultSkills: [...baseRole.defaultSkills, ...(overrideRole.defaultSkills || [])],
-      defaultHeartbeatTasks: [...baseRole.defaultHeartbeatTasks, ...(overrideRole.defaultHeartbeatTasks || [])],
+      heartbeatChecklist: overrideRole.heartbeatChecklist || baseRole.heartbeatChecklist,
       defaultPolicies: [...baseRole.defaultPolicies, ...(overrideRole.defaultPolicies || [])],
       sourceFormat: overrideRole.sourceFormat || baseRole.sourceFormat,
     };
@@ -261,7 +261,7 @@ export class EnhancedRoleLoader {
       category,
       systemPrompt,
       defaultSkills: [],
-      defaultHeartbeatTasks: files.heartbeat ? this.parseHeartbeatTasks(files.heartbeat) : [],
+      heartbeatChecklist: files.heartbeat ?? '',
       defaultPolicies: files.policies ? this.parsePolicies(files.policies) : [],
       builtIn: true,
       sourceFormat: 'markus',
@@ -283,7 +283,7 @@ export class EnhancedRoleLoader {
       category,
       systemPrompt,
       defaultSkills: [],
-      defaultHeartbeatTasks: [],
+      heartbeatChecklist: '',
       defaultPolicies: [],
       builtIn: false,
       sourceFormat: 'markus',
@@ -369,25 +369,6 @@ export class EnhancedRoleLoader {
     if (lower.includes('financ') || lower.includes('account')) return 'finance';
     if (lower.includes('legal') || lower.includes('compliance')) return 'legal';
     return 'custom';
-  }
-
-  private parseHeartbeatTasks(content: string): HeartbeatTask[] {
-    const tasks: HeartbeatTask[] = [];
-    const sections = content.split(/^##\s+/m).filter(Boolean);
-
-    for (const section of sections) {
-      const lines = section.split('\n');
-      const name = lines[0]?.trim();
-      if (!name || name.startsWith('#')) continue;
-      const description = lines
-        .slice(1)
-        .map((l) => l.trim())
-        .filter(Boolean)
-        .join(' ');
-      tasks.push({ name, description, enabled: true });
-    }
-
-    return tasks;
   }
 
   private parsePolicies(content: string): Policy[] {

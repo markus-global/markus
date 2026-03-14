@@ -159,6 +159,10 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id varchar(64)`,
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_id varchar(64)`,
 
+    // tasks: scheduled task support
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type varchar(16) NOT NULL DEFAULT 'standard'`,
+    `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_config jsonb`,
+
     // marketplace_templates: community features (visibility, fork, versioning)
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS visibility varchar(16) NOT NULL DEFAULT 'public'`,
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS forked_from varchar(64)`,

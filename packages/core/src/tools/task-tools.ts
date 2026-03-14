@@ -17,6 +17,14 @@ export interface AgentTaskContext {
     projectId?: string;
     iterationId?: string;
     blockedBy?: string[];
+    taskType?: string;
+    scheduleConfig?: {
+      cron?: string;
+      every?: string;
+      runAt?: string;
+      timezone?: string;
+      maxRuns?: number;
+    };
   }) => Promise<{ id: string; title: string; status: string }>;
   /** List tasks — defaults to tasks assigned to this agent */
   listTasks: (filter?: { assignedToMe?: boolean; status?: string; requirementId?: string; projectId?: string }) => Promise<
@@ -146,6 +154,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             items: { type: 'string' },
             description: 'Array of task IDs that must complete before this task can start. Use this to express dependencies between tasks.',
           },
+          task_type: {
+            type: 'string',
+            enum: ['standard', 'scheduled'],
+            description: 'Task type. "standard" (default) for one-shot tasks, "scheduled" for recurring/cron tasks.',
+          },
+          schedule: {
+            type: 'object',
+            description: 'Schedule configuration (required when task_type is "scheduled"). Provide exactly one of: cron, every, or run_at.',
+            properties: {
+              cron: { type: 'string', description: 'Cron expression, e.g. "0 9 * * 1-5" for weekdays at 9am' },
+              every: { type: 'string', description: 'Interval shorthand, e.g. "4h", "30m", "1d"' },
+              run_at: { type: 'string', description: 'ISO timestamp for one-shot scheduled execution' },
+              timezone: { type: 'string', description: 'IANA timezone (default: UTC)' },
+              max_runs: { type: 'number', description: 'Maximum number of runs (omit for unlimited)' },
+            },
+          },
         },
         required: ['title', 'description'],
       },
@@ -162,6 +186,23 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             });
           }
 
+          const taskType = (args['task_type'] as string | undefined) ?? 'standard';
+          const scheduleRaw = args['schedule'] as Record<string, unknown> | undefined;
+          const scheduleConfig = scheduleRaw ? {
+            cron: scheduleRaw['cron'] as string | undefined,
+            every: scheduleRaw['every'] as string | undefined,
+            runAt: scheduleRaw['run_at'] as string | undefined,
+            timezone: scheduleRaw['timezone'] as string | undefined,
+            maxRuns: scheduleRaw['max_runs'] as number | undefined,
+          } : undefined;
+
+          if (taskType === 'scheduled' && !scheduleConfig) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'schedule configuration is required when task_type is "scheduled". Provide cron, every, or run_at.',
+            });
+          }
+
           const task = await ctx.createTask({
             title: args['title'] as string,
             description: args['description'] as string,
@@ -172,6 +213,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             projectId: args['project_id'] as string | undefined,
             iterationId: args['iteration_id'] as string | undefined,
             blockedBy: args['blocked_by'] as string[] | undefined,
+            taskType,
+            scheduleConfig,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId, reasonUnassigned });
           if (task.status === 'pending_approval') {

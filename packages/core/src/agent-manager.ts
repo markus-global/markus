@@ -32,7 +32,7 @@ import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import type { HeartbeatTask, RoleTemplate } from '@markus/shared';
+import type { RoleTemplate } from '@markus/shared';
 
 const log = createLogger('agent-manager');
 
@@ -88,6 +88,14 @@ export interface TaskServiceBridge {
     blockedBy?: string[];
     createdBy?: string;
     creatorRole?: string;
+    taskType?: string;
+    scheduleConfig?: {
+      cron?: string;
+      every?: string;
+      runAt?: string;
+      timezone?: string;
+      maxRuns?: number;
+    };
   }): { id: string; title: string; status: string };
   listTasks(filters?: { orgId?: string; status?: string; assignedAgentId?: string; requirementId?: string; projectId?: string }): Array<{
     id: string;
@@ -201,8 +209,6 @@ export class AgentManager {
     >;
   };
 
-  private managerHeartbeatCache?: HeartbeatTask[];
-
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
     import('./tools/project-tools.js').ProjectToolsContext,
     'knowledgeContribute' | 'knowledgeSearch' | 'knowledgeBrowse' | 'knowledgeFlagOutdated'
@@ -243,69 +249,6 @@ export class AgentManager {
       knowledgeFlagOutdated: async (id, reason) => {
         ks.flagOutdated(id, reason);
       },
-    };
-  }
-
-  /**
-   * Load and parse the base MANAGER_HEARTBEAT.md template.
-   * Cached after first load.
-   */
-  private getManagerHeartbeatTasks(): HeartbeatTask[] {
-    if (this.managerHeartbeatCache) return this.managerHeartbeatCache;
-
-    const candidates = this.roleLoader.getTemplateDirs();
-    const searchDirs = [
-      ...candidates,
-      join(process.cwd(), 'templates', 'roles'),
-    ];
-
-    for (const dir of searchDirs) {
-      const filePath = join(dir, 'MANAGER_HEARTBEAT.md');
-      if (existsSync(filePath)) {
-        const content = readFileSync(filePath, 'utf-8');
-        const tasks = this.parseHeartbeatTasks(content);
-        this.managerHeartbeatCache = tasks;
-        log.info('Loaded manager heartbeat template', { taskCount: tasks.length, path: filePath });
-        return tasks;
-      }
-    }
-
-    log.warn('MANAGER_HEARTBEAT.md not found in any template directory');
-    this.managerHeartbeatCache = [];
-    return [];
-  }
-
-  private parseHeartbeatTasks(content: string): HeartbeatTask[] {
-    const tasks: HeartbeatTask[] = [];
-    const sections = content.split(/^##\s+/m).filter(Boolean);
-    for (const section of sections) {
-      const lines = section.split('\n');
-      const name = lines[0]?.trim();
-      if (!name || name.startsWith('#')) continue;
-      const description = lines.slice(1).map(l => l.trim()).filter(Boolean).join(' ');
-      tasks.push({ name, description, enabled: true });
-    }
-    return tasks;
-  }
-
-  /**
-   * For manager agents: ensure the role has heartbeat tasks.
-   * If the role already has heartbeat tasks, merge manager tasks (dedup by name).
-   * If the role has no heartbeat tasks, use manager heartbeat as-is.
-   * Returns a new role object (does not mutate the original).
-   */
-  private ensureManagerHeartbeat(role: RoleTemplate): RoleTemplate {
-    const managerTasks = this.getManagerHeartbeatTasks();
-    if (managerTasks.length === 0) return role;
-
-    const existingNames = new Set(role.defaultHeartbeatTasks.map(t => t.name));
-    const toAdd = managerTasks.filter(t => !existingNames.has(t.name));
-
-    if (toAdd.length === 0) return role;
-
-    return {
-      ...role,
-      defaultHeartbeatTasks: [...role.defaultHeartbeatTasks, ...toAdd],
     };
   }
 
@@ -432,10 +375,7 @@ export class AgentManager {
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
     const id = genAgentId();
-    let role = this.roleLoader.loadRole(request.roleName);
-    if (request.agentRole === 'manager') {
-      role = this.ensureManagerHeartbeat(role);
-    }
+    const role = this.roleLoader.loadRole(request.roleName);
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
 
@@ -624,6 +564,8 @@ export class AgentManager {
             projectId: params.projectId,
             iterationId: params.iterationId,
             blockedBy: params.blockedBy,
+            taskType: params.taskType,
+            scheduleConfig: params.scheduleConfig,
             createdBy: id,
             creatorRole: 'worker',
           });
@@ -922,9 +864,6 @@ export class AgentManager {
     }
 
     const agentRole = (row.agentRole as 'manager' | 'worker') ?? 'worker';
-    if (agentRole === 'manager') {
-      role = this.ensureManagerHeartbeat(role);
-    }
 
     const config: AgentConfig = {
       id,

@@ -1,4 +1,4 @@
-import { generateId, type RoleTemplate, type HeartbeatTask, type Policy, type RoleCategory } from '@markus/shared';
+import { generateId, type RoleTemplate, type Policy, type RoleCategory } from '@markus/shared';
 
 export interface OpenClawRoleConfig {
   memoryConfig?: {
@@ -60,7 +60,7 @@ export class OpenClawConfigParser {
       // Parse OpenClaw-specific sections
       const capabilities = this.parseCapabilities(markdown);
       const memoryConfig = this.parseMemoryConfig(markdown);
-      const heartbeatTasks = this.parseHeartbeatTasks(markdown);
+      const heartbeatChecklist = this.parseHeartbeatChecklist(markdown);
       const policies = this.parsePolicies(markdown);
       const knowledgeBase = this.parseKnowledgeBase(markdown);
       
@@ -69,7 +69,7 @@ export class OpenClawConfigParser {
         markdown,
         capabilities,
         memoryConfig,
-        heartbeatTasks,
+        [],
         knowledgeBase
       );
       
@@ -92,20 +92,16 @@ export class OpenClawConfigParser {
         category,
         systemPrompt,
         defaultSkills: skills,
-        defaultHeartbeatTasks: heartbeatTasks,
+        heartbeatChecklist: heartbeatChecklist,
         defaultPolicies: policies,
-        builtIn: false, // Mark as external/OpenClaw configuration
+        builtIn: false,
       };
 
       const openClawConfig: OpenClawRoleConfig = {
         memoryConfig: memoryConfig as OpenClawRoleConfig['memoryConfig'],
-        heartbeatTasks: heartbeatTasks.map(task => ({
-          name: task.name,
-          description: task.description,
-          schedule: task.cronExpression || '*/5 * * * *' // Default schedule if not specified
-        })),
+        heartbeatTasks: [],
         knowledgeBase,
-        externalAgentId: undefined // To be set when integrating external agents
+        externalAgentId: undefined,
       };
       
       return {
@@ -267,116 +263,12 @@ export class OpenClawConfigParser {
   }
   
   /**
-   * Parse heartbeat tasks section
-   * Format: ## Heartbeat / ## Periodic Tasks / ## Scheduled Tasks
+   * Parse heartbeat section as raw checklist text.
+   * Returns the raw markdown content for the heartbeat checklist.
    */
-  private parseHeartbeatTasks(md: string): HeartbeatTask[] {
-    const sections = this.extractSection(md, ['## Heartbeat', '## Heartbeat Tasks', '## Periodic Tasks', '## Scheduled Tasks']);
-    if (!sections) return [];
-    
-    const tasks: HeartbeatTask[] = [];
-    const lines = sections.split('\n');
-    let currentTask: Partial<HeartbeatTask> = {};
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      
-      // Task name (starts with ### or bullet point)
-      if (trimmed.startsWith('###') || trimmed.match(/^[-*]\s+\S/)) {
-        // Save previous task if exists
-        if (currentTask.name && currentTask.description) {
-          tasks.push({
-            name: currentTask.name,
-            description: currentTask.description,
-            enabled: true,
-            ...(currentTask.cronExpression && { cronExpression: currentTask.cronExpression }),
-            ...(currentTask.intervalMs && { intervalMs: currentTask.intervalMs }),
-          });
-        }
-        
-        // Start new task
-        currentTask = {};
-        
-        // Extract task name
-        let taskName = trimmed;
-        if (trimmed.startsWith('###')) {
-          taskName = trimmed.replace(/^###\s*/, '');
-          currentTask.name = taskName.trim();
-        } else {
-          // Remove bullet point
-          taskName = trimmed.replace(/^[-*]\s*/, '');
-          
-          // Check if there's a colon separating name and description
-          const colonMatch = taskName.match(/^([^:]+):\s*(.+)$/);
-          if (colonMatch) {
-            currentTask.name = colonMatch[1].trim();
-            currentTask.description = colonMatch[2].trim();
-          } else {
-            // No colon, use entire line as name and description
-            currentTask.name = taskName.trim();
-            currentTask.description = taskName.trim();
-          }
-        }
-      }
-      // Task description continuation
-      else if (trimmed && currentTask.name && !trimmed.startsWith('#')) {
-        // Check for schedule information
-        const scheduleMatch = trimmed.match(/\*\*Schedule:\*\*\s*(.+)/i);
-        if (scheduleMatch) {
-          const scheduleText = scheduleMatch[1].trim();
-          
-          // Parse cron expression
-          const cronMatch = scheduleText.match(/cron expression:\s*([^\s]+)/i);
-          if (cronMatch) {
-            currentTask.cronExpression = cronMatch[1];
-          }
-          
-          // Parse interval in seconds
-          const intervalMatch = scheduleText.match(/every\s+(\d+)\s+seconds?/i);
-          if (intervalMatch) {
-            currentTask.intervalMs = parseInt(intervalMatch[1]) * 1000;
-          }
-          
-          // Parse interval in minutes
-          const minutesMatch = scheduleText.match(/every\s+(\d+)\s+minutes?/i);
-          if (minutesMatch) {
-            currentTask.intervalMs = parseInt(minutesMatch[1]) * 60 * 1000;
-          }
-          
-          // Parse interval in hours
-          const hoursMatch = scheduleText.match(/every\s+(\d+)\s+hours?/i);
-          if (hoursMatch) {
-            currentTask.intervalMs = parseInt(hoursMatch[1]) * 60 * 60 * 1000;
-          }
-          
-          // Parse interval in days
-          const daysMatch = scheduleText.match(/every\s+(\d+)\s+days?/i);
-          if (daysMatch) {
-            currentTask.intervalMs = parseInt(daysMatch[1]) * 24 * 60 * 60 * 1000;
-          }
-        } else {
-          // Regular description text
-          if (currentTask.description) {
-            currentTask.description += ' ' + trimmed;
-          } else {
-            currentTask.description = trimmed;
-          }
-        }
-      }
-    }
-    
-    // Add last task
-    if (currentTask.name && currentTask.description) {
-      tasks.push({
-        name: currentTask.name,
-        description: currentTask.description,
-        enabled: true,
-        ...(currentTask.cronExpression && { cronExpression: currentTask.cronExpression }),
-        ...(currentTask.intervalMs && { intervalMs: currentTask.intervalMs }),
-      });
-    }
-    
-    return tasks;
+  private parseHeartbeatChecklist(md: string): string {
+    const section = this.extractSection(md, ['## Heartbeat', '## Heartbeat Tasks', '## Periodic Tasks', '## Scheduled Tasks']);
+    return section?.trim() ?? '';
   }
   
   /**
@@ -528,7 +420,7 @@ export class OpenClawConfigParser {
     originalMd: string,
     capabilities: string[],
     memoryConfig: Record<string, unknown>,
-    heartbeatTasks: HeartbeatTask[],
+    heartbeatTasks: { name: string; description: string }[],
     knowledgeBase: string[]
   ): string {
     let cleanedMd = originalMd;
@@ -716,26 +608,15 @@ export class OpenClawConfigParser {
     sections.push('| Context Window | 8,192 tokens |');
     sections.push('');
 
-    // Heartbeat Tasks section
-    sections.push('# Heartbeat Tasks');
+    // Heartbeat Checklist section
+    sections.push('# Heartbeat Checklist');
     sections.push('');
-    if (role.defaultHeartbeatTasks && role.defaultHeartbeatTasks.length > 0) {
-      role.defaultHeartbeatTasks.forEach(task => {
-        sections.push(`## ${task.name}`);
-        sections.push(task.description);
-        if (task.cronExpression) {
-          sections.push(`**Schedule:** Cron expression: ${task.cronExpression}`);
-        } else if (task.intervalMs) {
-          sections.push(`**Schedule:** Every ${task.intervalMs / 1000} seconds`);
-        } else {
-          sections.push(`**Schedule:** Not specified`);
-        }
-        sections.push('');
-      });
+    if (role.heartbeatChecklist) {
+      sections.push(role.heartbeatChecklist);
     } else {
-      sections.push('No heartbeat tasks configured.');
-      sections.push('');
+      sections.push('No heartbeat checklist configured.');
     }
+    sections.push('');
 
     // Communication Preferences section
     sections.push('# Communication Preferences');

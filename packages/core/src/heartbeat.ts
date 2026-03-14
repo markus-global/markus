@@ -1,96 +1,95 @@
 import { createLogger } from '@markus/shared';
-import type { HeartbeatTask } from '@markus/shared';
 import { EventBus } from './events.js';
-import { OpenClawHeartbeatScheduler } from './openclaw-heartbeat-scheduler.js';
 
 const log = createLogger('heartbeat');
 
-export interface HeartbeatContext {
-  agentId: string;
-  task: HeartbeatTask;
-  triggeredAt: string;
+export interface HeartbeatConfig {
+  intervalMs: number;
+  enabled: boolean;
+  activeHours?: {
+    start: string;   // "08:00"
+    end: string;     // "22:00"
+    timezone?: string;
+  };
 }
 
-export { type HeartbeatTaskStats, type HealthMetrics } from './openclaw-heartbeat-scheduler.js';
-
 export class HeartbeatScheduler {
-  private scheduler: OpenClawHeartbeatScheduler;
+  private timer?: ReturnType<typeof setInterval>;
+  private running = false;
+  private startTime = Date.now();
 
   constructor(
     private agentId: string,
     private eventBus: EventBus,
-    private defaultIntervalMs: number = 30 * 60 * 1000,
-  ) {
-    this.scheduler = new OpenClawHeartbeatScheduler(agentId, eventBus, defaultIntervalMs);
-  }
+    private config: HeartbeatConfig = { intervalMs: 30 * 60 * 1000, enabled: true },
+  ) {}
 
-  start(tasks: HeartbeatTask[]): void {
+  start(): void {
+    if (this.running || !this.config.enabled) return;
+    this.running = true;
+    this.startTime = Date.now();
+
     log.info('Starting heartbeat scheduler', {
       agentId: this.agentId,
-      taskCount: tasks.length,
+      intervalMs: this.config.intervalMs,
+      activeHours: this.config.activeHours,
     });
-    
-    this.scheduler.start(tasks);
+
+    this.timer = setInterval(() => this.tick(), this.config.intervalMs);
   }
 
   stop(): void {
-    log.info('Stopping heartbeat scheduler', { agentId: this.agentId });
-    this.scheduler.stop();
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    this.running = false;
+    log.info('Heartbeat scheduler stopped', { agentId: this.agentId });
   }
 
   isRunning(): boolean {
-    return this.scheduler.isRunning();
+    return this.running;
   }
 
-  /**
-   * Get health metrics for monitoring
-   */
-  getHealthMetrics(): ReturnType<OpenClawHeartbeatScheduler['getHealthMetrics']> {
-    return this.scheduler.getHealthMetrics();
+  getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } {
+    return {
+      running: this.running,
+      uptimeMs: this.running ? Date.now() - this.startTime : 0,
+      intervalMs: this.config.intervalMs,
+    };
   }
 
-  /**
-   * Get stats for a specific task
-   */
-  getTaskStats(taskName: string): ReturnType<OpenClawHeartbeatScheduler['getTaskStats']> {
-    return this.scheduler.getTaskStats(taskName);
+  /** Manually trigger a heartbeat (e.g. from API) */
+  trigger(): void {
+    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
   }
 
-  /**
-   * Manually trigger a heartbeat task
-   */
-  async triggerTask(taskName: string): Promise<boolean> {
-    return this.scheduler.triggerTask(taskName);
+  private tick(): void {
+    if (!this.running) return;
+
+    if (this.config.activeHours && !this.isWithinActiveHours()) {
+      log.debug('Skipping heartbeat — outside active hours', { agentId: this.agentId });
+      return;
+    }
+
+    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
   }
 
-  /**
-   * List all registered heartbeat tasks with their config and stats.
-   */
-  listTasks(): ReturnType<OpenClawHeartbeatScheduler['listTasks']> {
-    return this.scheduler.listTasks();
-  }
+  private isWithinActiveHours(): boolean {
+    const { start, end } = this.config.activeHours!;
+    const [startH, startM] = start.split(':').map(Number);
+    const [endH, endM] = end.split(':').map(Number);
+    const now = new Date();
+    const h = now.getHours();
+    const m = now.getMinutes();
+    const current = h * 60 + m;
+    const startMin = startH * 60 + startM;
+    const endMin = endH * 60 + endM;
 
-  /**
-   * Update the schedule of an existing heartbeat task at runtime.
-   */
-  updateTaskSchedule(
-    taskName: string,
-    update: { intervalMs?: number; cronExpression?: string },
-  ): boolean {
-    return this.scheduler.updateTaskSchedule(taskName, update);
-  }
-
-  /**
-   * Enable a previously disabled heartbeat task.
-   */
-  enableTask(taskName: string): boolean {
-    return this.scheduler.enableTask(taskName);
-  }
-
-  /**
-   * Disable a heartbeat task (stop scheduling, keep definition).
-   */
-  disableTask(taskName: string): boolean {
-    return this.scheduler.disableTask(taskName);
+    if (startMin <= endMin) {
+      return current >= startMin && current < endMin;
+    }
+    // Wraps midnight (e.g. 22:00 - 06:00)
+    return current >= startMin || current < endMin;
   }
 }

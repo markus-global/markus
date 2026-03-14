@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_by TEXT,
   started_at TEXT,
   completed_at TEXT,
+  task_type TEXT NOT NULL DEFAULT 'standard',
+  schedule_config TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -643,12 +645,14 @@ export class SqliteTaskRepo {
     iterationId?: string;
     createdBy?: string;
     dueAt?: Date;
+    taskType?: string;
+    scheduleConfig?: Record<string, unknown>;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -666,6 +670,8 @@ export class SqliteTaskRepo {
         data.iterationId ?? null,
         data.createdBy ?? null,
         data.dueAt?.toISOString() ?? null,
+        data.taskType ?? 'standard',
+        data.scheduleConfig ? toJson(data.scheduleConfig) : null,
         ts,
         ts
       );
@@ -706,7 +712,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; scheduleConfig?: Record<string, unknown> | null }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -738,6 +744,10 @@ export class SqliteTaskRepo {
       sets.push('iteration_id = ?');
       vals.push(data.iterationId);
     }
+    if (data.scheduleConfig !== undefined) {
+      sets.push('schedule_config = ?');
+      vals.push(data.scheduleConfig ? toJson(data.scheduleConfig) : null);
+    }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     vals.push(now());
@@ -757,7 +767,7 @@ export class SqliteTaskRepo {
       .run(toJson(deliverables), now(), id);
   }
 
-  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; iterationId?: string }) {
+  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; iterationId?: string; taskType?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
     const vals: unknown[] = [orgId];
     if (filters?.status) {
@@ -775,6 +785,10 @@ export class SqliteTaskRepo {
     if (filters?.iterationId) {
       q += ' AND iteration_id = ?';
       vals.push(filters.iterationId);
+    }
+    if (filters?.taskType) {
+      q += ' AND task_type = ?';
+      vals.push(filters.taskType);
     }
     q += ' ORDER BY created_at DESC';
     return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
@@ -820,6 +834,8 @@ export class SqliteTaskRepo {
       updatedBy: r['updated_by'] as string | null,
       startedAt: toDate(r['started_at'] as string),
       completedAt: toDate(r['completed_at'] as string),
+      taskType: (r['task_type'] as string) ?? 'standard',
+      scheduleConfig: fromJson(r['schedule_config'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
       dueAt: toDate(r['due_at'] as string),

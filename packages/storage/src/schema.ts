@@ -114,6 +114,8 @@ export const tasks = pgTable('tasks', {
   updatedBy: varchar('updated_by', { length: 128 }),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),
+  taskType: varchar('task_type', { length: 16 }).notNull().default('standard'),
+  scheduleConfig: jsonb('schedule_config'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
   dueAt: timestamp('due_at'),

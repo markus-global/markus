@@ -408,24 +408,10 @@ export interface AgentToolInfo {
   description: string;
 }
 
-export interface HeartbeatTaskStat {
-  name: string;
-  lastRun?: string;
-  nextRun?: string;
-  totalRuns: number;
-  successfulRuns: number;
-  failedRuns: number;
-  avgDurationMs?: number;
-}
-
 export interface AgentHeartbeatInfo {
   running: boolean;
-  uptime: number;
-  taskCount: number;
-  activeTasks: number;
-  failedTasks: number;
-  lastHeartbeat?: string;
-  taskStats: HeartbeatTaskStat[];
+  uptimeMs: number;
+  intervalMs: number;
 }
 
 export interface AgentConfigInfo {

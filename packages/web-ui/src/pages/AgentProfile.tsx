@@ -1037,37 +1037,12 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
 
   return (
     <div className="space-y-4">
-      <Card title="Scheduler">
-        <div className="grid grid-cols-4 gap-4">
+      <Card title="Heartbeat Scheduler">
+        <div className="grid grid-cols-3 gap-4">
           <StatBox label="Status" value={data.running ? 'Running' : 'Stopped'} color={data.running ? 'green' : 'gray'} />
-          <StatBox label="Tasks" value={String(data.taskCount)} />
-          <StatBox label="Active" value={String(data.activeTasks)} />
-          <StatBox label="Failed" value={String(data.failedTasks)} color={data.failedTasks > 0 ? 'red' : 'gray'} />
+          <StatBox label="Uptime" value={formatDuration(data.uptimeMs) ?? '—'} />
+          <StatBox label="Interval" value={formatDuration(data.intervalMs) ?? '—'} />
         </div>
-        {data.lastHeartbeat && <div className="mt-3 pt-3 border-t border-gray-800/50 text-xs text-gray-500">Last heartbeat: {new Date(data.lastHeartbeat).toLocaleString()}</div>}
-      </Card>
-      <Card title={`Heartbeat Tasks (${data.taskStats.length})`}>
-        {data.taskStats.length === 0 ? <Empty text="No heartbeat tasks configured" /> : (
-          <div className="space-y-2">
-            {data.taskStats.map(t => (
-              <div key={t.name} className="px-4 py-3 rounded-lg bg-gray-800/30 border border-gray-700/30">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium">{t.name}</span>
-                  <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                    <span>{t.totalRuns} runs</span>
-                    {t.successfulRuns > 0 && <span className="text-green-400">{t.successfulRuns} ok</span>}
-                    {t.failedRuns > 0 && <span className="text-red-400">{t.failedRuns} failed</span>}
-                    {t.avgDurationMs != null && <span>{formatDuration(t.avgDurationMs)} avg</span>}
-                  </div>
-                </div>
-                <div className="flex gap-4 text-[10px] text-gray-600">
-                  {t.lastRun && <span>Last: {new Date(t.lastRun).toLocaleString()}</span>}
-                  {t.nextRun && <span>Next: {new Date(t.nextRun).toLocaleString()}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </Card>
       {recentRuns.length > 0 && (
         <Card title="Recent Heartbeat Runs" action={<span className="text-[10px] text-gray-600">{recentRuns.length} runs</span>}>

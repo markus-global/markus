@@ -16,5 +16,6 @@ export { ReportService } from './report-service.js';
 export { TrustService } from './trust-service.js';
 export { ArchiveService } from './archive-service.js';
 export { StaleDetector } from './stale-detector.js';
+export { ScheduledTaskRunner } from './scheduled-task-runner.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';
 export { runMigrations } from '@markus/storage';

@@ -42,13 +42,12 @@ describe('OpenClawConfigParser', () => {
       expect(result.defaultSkills).toContain('shell_execute');
       expect(result.defaultSkills).toContain('file_read_write');
       expect(result.defaultSkills).toContain('git_operations');
-      expect(result.defaultHeartbeatTasks).toHaveLength(2);
+      expect(result.heartbeatChecklist).toContain('Check tasks');
       expect(result.defaultPolicies).toHaveLength(2);
       expect(result.systemPrompt).toContain('# Test Agent');
       expect(result.systemPrompt).toContain('## Identity');
       expect(result.systemPrompt).toContain('## Core Competencies');
       expect(result.systemPrompt).toContain('## Memory Configuration');
-      expect(result.systemPrompt).toContain('## Heartbeat Tasks');
       expect(result.systemPrompt).toContain('## Knowledge Base References');
       expect(result.builtIn).toBe(false);
     });
@@ -64,7 +63,7 @@ describe('OpenClawConfigParser', () => {
 
       expect(result.name).toBe('Minimal Agent');
       expect(result.defaultSkills).toEqual([]);
-      expect(result.defaultHeartbeatTasks).toEqual([]);
+      expect(result.heartbeatChecklist).toBe('');
       expect(result.defaultPolicies).toEqual([]);
       expect(result.systemPrompt).toContain('# Minimal Agent');
       expect(result.systemPrompt).toContain('## Identity');
@@ -198,8 +197,8 @@ Some content`;
     });
   });
 
-  describe('parseHeartbeatTasks', () => {
-    it('should parse heartbeat tasks with colon format', () => {
+  describe('parseHeartbeatChecklist', () => {
+    it('should return raw checklist text from heartbeat section', () => {
       const markdown = `# Test Agent
 
 ## Heartbeat Tasks
@@ -207,30 +206,22 @@ Some content`;
 - Task 2: Description of task 2`;
 
       // @ts-expect-error - accessing private method for testing
-      const tasks = parser.parseHeartbeatTasks(markdown);
-      
-      expect(tasks).toHaveLength(2);
-      expect(tasks[0].name).toBe('Task 1');
-      expect(tasks[0].description).toBe('Description of task 1');
-      expect(tasks[1].name).toBe('Task 2');
-      expect(tasks[1].description).toBe('Description of task 2');
+      const checklist = parser.parseHeartbeatChecklist(markdown);
+
+      expect(checklist).toContain('Task 1');
+      expect(checklist).toContain('Task 2');
     });
 
-    it('should handle tasks without descriptions', () => {
+    it('should return empty string when no heartbeat section', () => {
       const markdown = `# Test Agent
 
-## Heartbeat Tasks
-- Task 1
-- Task 2: With description`;
+## Identity
+- Name: TestAgent`;
 
       // @ts-expect-error - accessing private method for testing
-      const tasks = parser.parseHeartbeatTasks(markdown);
-      
-      expect(tasks).toHaveLength(2);
-      expect(tasks[0].name).toBe('Task 1');
-      expect(tasks[0].description).toBe('Task 1'); // Falls back to name
-      expect(tasks[1].name).toBe('Task 2');
-      expect(tasks[1].description).toBe('With description');
+      const checklist = parser.parseHeartbeatChecklist(markdown);
+
+      expect(checklist).toBe('');
     });
   });
 
