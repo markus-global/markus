@@ -26,6 +26,10 @@ export class HeartbeatScheduler {
 
   start(): void {
     if (this.running || !this.config.enabled) return;
+    if (this.config.intervalMs <= 0) {
+      log.info('Heartbeat disabled (intervalMs <= 0)', { agentId: this.agentId });
+      return;
+    }
     this.running = true;
     this.startTime = Date.now();
 
