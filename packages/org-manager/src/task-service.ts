@@ -567,10 +567,14 @@ export class TaskService {
           if (entry.type === 'status') {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
-              // Only auto-complete scheduled tasks when execution finishes.
-              // Standard tasks must go through task_submit_review explicitly.
-              if (currentTask?.taskType === 'scheduled' && !['review', 'revision', 'accepted', 'completed'].includes(currentTask.status)) {
-                this.updateTaskStatus(taskId, 'completed');
+              const alreadyTerminal = currentTask && ['review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
+              if (!alreadyTerminal && currentTask) {
+                if (currentTask.taskType === 'scheduled') {
+                  this.updateTaskStatus(taskId, 'completed');
+                } else {
+                  this.updateTaskStatus(taskId, 'review');
+                  log.info('Task auto-transitioned to review after execution finished', { taskId, title: currentTask.title });
+                }
               }
               // Also broadcast agent status update
               const agentState = agent.getState();
