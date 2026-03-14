@@ -83,11 +83,11 @@ export function TemplateMarketplace({ authUser }: { authUser?: AuthUser } = {}) 
     <div className="flex-1 overflow-hidden flex flex-col">
       {/* Header with Tabs */}
       <div className="flex items-center gap-4 px-7 h-15 border-b border-gray-800 bg-gray-900 shrink-0">
-        <h2 className="text-lg font-semibold">Template Marketplace</h2>
+        <h2 className="text-lg font-semibold">Agent Store</h2>
         <div className="flex gap-1 ml-4 bg-gray-800 rounded-lg p-0.5">
           {([
-            { id: 'agent' as const, label: 'Agent Templates', icon: '⊕' },
-            { id: 'team' as const, label: 'Team Templates', icon: '◎' },
+            { id: 'agent' as const, label: 'Agents', icon: '⊕' },
+            { id: 'team' as const, label: 'Teams', icon: '◎' },
           ]).map(tab => (
             <button
               key={tab.id}
@@ -228,7 +228,7 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
         <div className="ml-auto">
           <input
             type="text"
-            placeholder="Search templates..."
+            placeholder="Search agents..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-52 focus:border-indigo-500 focus:outline-none"
@@ -239,7 +239,7 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
       {/* Grid */}
       <div className="flex-1 overflow-y-auto p-7">
         {loading ? (
-          <div className="text-center text-gray-500 py-20 animate-pulse">Loading templates...</div>
+          <div className="text-center text-gray-500 py-20 animate-pulse">Loading agents...</div>
         ) : filtered.length === 0 ? (
           <EmptyState filter={filter} search={search} />
         ) : (
@@ -443,12 +443,12 @@ function TeamTemplatesTab() {
       {/* Filter Bar */}
       <div className="flex items-center gap-3 px-7 py-2.5 border-b border-gray-800/50 bg-gray-900/50 shrink-0">
         <div className="text-xs text-gray-500">
-          {templates.length} team template{templates.length !== 1 ? 's' : ''} available
+          {templates.length} team{templates.length !== 1 ? 's' : ''} available
         </div>
         <div className="ml-auto">
           <input
             type="text"
-            placeholder="Search team templates..."
+            placeholder="Search teams..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-52 focus:border-indigo-500 focus:outline-none"
@@ -458,15 +458,15 @@ function TeamTemplatesTab() {
 
       <div className="flex-1 overflow-y-auto p-7">
         {loading ? (
-          <div className="text-center text-gray-500 py-20 animate-pulse">Loading team templates...</div>
+          <div className="text-center text-gray-500 py-20 animate-pulse">Loading teams...</div>
         ) : templates.length === 0 ? (
           <div className="text-center py-20">
             <div className="text-4xl mb-4 opacity-30">&#9673;</div>
             <div className="text-gray-400 font-medium mb-1">
-              {search ? `No team templates match "${search}"` : 'No team templates available'}
+              {search ? `No teams match "${search}"` : 'No teams available'}
             </div>
             <div className="text-gray-600 text-sm">
-              {search ? 'Try different search terms.' : 'Go to the Builder page to create a team template.'}
+              {search ? 'Try different search terms.' : 'Go to the Builder page to create a team.'}
             </div>
           </div>
         ) : (
@@ -703,7 +703,7 @@ function EmptyState({ filter, search }: { filter: string; search: string }) {
     return (
       <div className="text-center py-20">
         <div className="text-4xl mb-4 opacity-30">&#128269;</div>
-        <div className="text-gray-400 font-medium mb-1">No templates match "{search}"</div>
+        <div className="text-gray-400 font-medium mb-1">No agents match "{search}"</div>
         <div className="text-gray-600 text-sm">Try adjusting your search terms or filters.</div>
       </div>
     );
@@ -712,9 +712,9 @@ function EmptyState({ filter, search }: { filter: string; search: string }) {
     return (
       <div className="text-center py-20">
         <div className="text-4xl mb-4 opacity-30">&#127760;</div>
-        <div className="text-gray-400 font-medium mb-1">No community templates yet</div>
+        <div className="text-gray-400 font-medium mb-1">No community agents yet</div>
         <div className="text-gray-600 text-sm max-w-md mx-auto">
-          Community templates are created by users. Go to the Builder page to create and publish your own templates.
+          Community agents are created by users. Go to the Builder page to create and publish your own agents.
         </div>
       </div>
     );
@@ -722,8 +722,8 @@ function EmptyState({ filter, search }: { filter: string; search: string }) {
   return (
     <div className="text-center py-20">
       <div className="text-4xl mb-4 opacity-30">&#x29C9;</div>
-      <div className="text-gray-400 font-medium mb-1">No templates found</div>
-      <div className="text-gray-600 text-sm">Templates come from the built-in registry and the marketplace.</div>
+      <div className="text-gray-400 font-medium mb-1">No agents found</div>
+      <div className="text-gray-600 text-sm">Agents come from the built-in registry and the store.</div>
     </div>
   );
 }
@@ -767,7 +767,7 @@ function HireFromTemplateModal({
             {CATEGORY_ICONS[template.category] ?? '?'}
           </div>
           <div>
-            <h3 className="text-base font-semibold">Hire from Template</h3>
+            <h3 className="text-base font-semibold">Hire Agent</h3>
             <p className="text-xs text-gray-500">Creating agent from "{template.name}"</p>
           </div>
         </div>
@@ -797,7 +797,7 @@ function HireFromTemplateModal({
           )}
 
           <div className="bg-gray-800/50 rounded-lg p-3">
-            <div className="text-xs text-gray-500 mb-2 font-medium">Template Configuration</div>
+            <div className="text-xs text-gray-500 mb-2 font-medium">Agent Configuration</div>
             <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
               <div className="text-gray-500">Role:</div>
               <div className="text-gray-300 font-mono">{template.roleId}</div>

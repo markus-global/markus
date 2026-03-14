@@ -22,7 +22,7 @@ interface ChatTeamSidebarProps {
   humans: HumanUserInfo[];
   tasks: TaskInfo[];
   externalAgents: ExternalAgentInfo[];
-  groupChats: Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number }>;
+  groupChats: Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string }>;
   chatMode: ChatMode;
   selectedAgent: string;
   activeChannel: string;
@@ -33,6 +33,8 @@ interface ChatTeamSidebarProps {
   onRefreshTeams: () => void;
   onRefreshAgents: () => void;
   onViewProfile: (agentId: string) => void;
+  width?: number;
+  onResizeStart?: (e: React.MouseEvent) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,6 +50,7 @@ export function ChatTeamSidebar({
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm,
   onRefreshTeams, onRefreshAgents, onViewProfile,
+  width, onResizeStart,
 }: ChatTeamSidebarProps) {
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
@@ -314,6 +317,15 @@ export function ChatTeamSidebar({
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
+    const roleNorm = a.role?.toLowerCase().replace(/[-_]/g, ' ').trim();
+    const nameNorm = a.name.toLowerCase().trim();
+    const showRole = roleNorm && roleNorm !== nameNorm;
+
+    const statusText = isError
+      ? (a.lastError?.slice(0, 50) ?? 'Error')
+      : a.currentActivity?.description
+        ? a.currentActivity.description.slice(0, 60)
+        : a.status === 'working' ? 'Working...' : a.status === 'idle' ? 'Online' : a.status === 'paused' ? 'Paused' : a.status === 'offline' ? 'Offline' : '';
 
     return (
       <div
@@ -342,14 +354,14 @@ export function ChatTeamSidebar({
             {agentInitials(a.name)}
           </div>
           <div className="flex-1 min-w-0 text-left">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1">
               <span className="truncate font-medium text-[11px] leading-tight">{a.name}</span>
+              {showRole && <span className="text-[9px] text-gray-600 shrink-0 truncate max-w-[60px]">({a.role})</span>}
               {isManager && <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" className="text-amber-400 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
               {isExt && <span className="text-[8px] px-1 py-0 rounded bg-purple-500/20 text-purple-400 font-medium shrink-0 leading-relaxed">EXT</span>}
-              {isError && <span className="text-[9px] px-1.5 py-0 rounded bg-red-500/20 text-red-400 font-medium shrink-0">error</span>}
             </div>
             <div className={`truncate text-[10px] leading-tight mt-0.5 ${isError ? 'text-red-400/60' : 'text-gray-600'}`}>
-              {isError ? (a.lastError?.slice(0, 40) ?? 'Error') : a.role}
+              {statusText}
             </div>
           </div>
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
@@ -360,9 +372,30 @@ export function ChatTeamSidebar({
 
   // ── Team section renderer ────────────────────────────────────────────────
 
+  const renderGroupChatItem = (gc: typeof groupChats[number]) => (
+    <button
+      key={gc.id}
+      onClick={() => onSelectChannel(gc.channelKey)}
+      className={`w-full text-left px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
+        chatMode === 'channel' && activeChannel === gc.channelKey
+          ? 'bg-indigo-600/20 text-indigo-300'
+          : 'text-gray-400 hover:bg-gray-800'
+      }`}
+    >
+      <span className="text-gray-500 shrink-0">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+      </span>
+      <span className="truncate flex-1">{gc.name}</span>
+      {gc.memberCount !== undefined && gc.memberCount > 0 && (
+        <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
+      )}
+    </button>
+  );
+
   const renderTeamSection = (tid: string, team: TeamInfo | null, agentList: AgentInfo[], label: string) => {
     const isCollapsed = collapsedTeams.has(tid);
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
+    const teamGroupChats = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? []) : [];
 
     return (
       <div
@@ -416,6 +449,7 @@ export function ChatTeamSidebar({
         )}
         {!isCollapsed && (
           <div className="ml-1">
+            {teamGroupChats.map(gc => renderGroupChatItem(gc))}
             {agentList.map(a => renderAgentItem(a, tid === '_ungrouped' ? undefined : tid))}
           </div>
         )}
@@ -425,9 +459,32 @@ export function ChatTeamSidebar({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // Group chats by team
+  const groupChatsByTeam = useMemo(() => {
+    const map = new Map<string, typeof groupChats>();
+    const unmatched: typeof groupChats = [];
+    for (const gc of groupChats) {
+      if (gc.teamId) {
+        const list = map.get(gc.teamId) ?? [];
+        list.push(gc);
+        map.set(gc.teamId, list);
+      } else {
+        const team = teams.find(t => gc.name.toLowerCase().includes(t.name.toLowerCase()) || t.name.toLowerCase().includes(gc.name.toLowerCase()));
+        if (team) {
+          const list = map.get(team.id) ?? [];
+          list.push(gc);
+          map.set(team.id, list);
+        } else {
+          unmatched.push(gc);
+        }
+      }
+    }
+    return { byTeam: map, unmatched };
+  }, [groupChats, teams]);
+
   return (
     <>
-      <div className="w-56 bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0">
+      <div className="bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0" style={{ width: width ?? 224 }}>
         {/* Action bar */}
         {isAdmin && (
           <div className="px-3 py-2 border-b border-gray-800 flex items-center gap-1.5" ref={actionMenuRef}>
@@ -481,38 +538,18 @@ export function ChatTeamSidebar({
           </div>
         )}
 
-        {/* Group Chats */}
-        {groupChats.length > 0 && (
-          <div className="px-3 py-2 border-b border-gray-800">
-            <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1.5">Group Chats</p>
-            {groupChats.map(gc => (
-              <button
-                key={gc.id}
-                onClick={() => onSelectChannel(gc.channelKey)}
-                className={`w-full text-left px-3 py-1.5 rounded-lg text-xs mb-0.5 transition-colors flex items-center gap-2 ${
-                  chatMode === 'channel' && activeChannel === gc.channelKey
-                    ? 'bg-indigo-600/20 text-indigo-300'
-                    : 'text-gray-400 hover:bg-gray-800'
-                }`}
-              >
-                <span className="text-gray-500 shrink-0">{gc.type === 'team' ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-                )}</span>
-                <span className="truncate flex-1">{gc.name}</span>
-                {gc.memberCount !== undefined && gc.memberCount > 0 && (
-                  <span className="text-[9px] text-gray-600 shrink-0">{gc.memberCount}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* Teams + Agents */}
         <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col">
           {agents.length === 0 && teams.length === 0 && (
             <p className="text-xs text-gray-600 px-1 mb-2">No agents yet</p>
+          )}
+
+          {/* Unmatched group chats */}
+          {groupChatsByTeam.unmatched.length > 0 && (
+            <div className="mb-2">
+              <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-1 px-1.5">Group Chats</p>
+              {groupChatsByTeam.unmatched.map(gc => renderGroupChatItem(gc))}
+            </div>
           )}
 
           {/* Teams with agents */}
@@ -585,6 +622,16 @@ export function ChatTeamSidebar({
           </div>
         </div>
       </div>
+
+      {/* Resize handle */}
+      {onResizeStart && (
+        <div
+          className="w-1 cursor-col-resize shrink-0 group relative"
+          onMouseDown={onResizeStart}
+        >
+          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-indigo-500/30 group-active:bg-indigo-500/50 transition-colors" />
+        </div>
+      )}
 
       {/* ── Context Menu: Team ── */}
       {teamMenu && (() => {

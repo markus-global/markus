@@ -9,6 +9,8 @@ interface Props {
   onNavigate: (page: PageId) => void;
   authUser?: AuthUser;
   onLogout?: () => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 function Icon({ d, size = 18 }: { d: string; size?: number }) {
@@ -43,25 +45,24 @@ const STATUS_COLORS: Record<string, string> = {
 const navItems: Array<{ id: PageId; label: string; section: string }> = [
   { id: 'dashboard', label: 'Overview', section: 'workspace' },
   { id: 'chat', label: 'Chat', section: 'workspace' },
-  { id: 'reports', label: 'Reports', section: 'insights' },
-  { id: 'knowledge', label: 'Knowledge', section: 'insights' },
+  { id: 'knowledge', label: 'Knowledge', section: 'workspace' },
   { id: 'builder', label: 'Builder', section: 'build' },
-  { id: 'templates', label: 'Templates', section: 'build' },
+  { id: 'templates', label: 'Agents', section: 'build' },
   { id: 'skills', label: 'Skills', section: 'build' },
   { id: 'governance', label: 'Governance', section: 'system' },
+  { id: 'reports', label: 'Reports', section: 'system' },
   { id: 'settings', label: 'Settings', section: 'system' },
 ];
 
 const sections = [
   { key: 'workspace', label: 'WORKSPACE' },
-  { key: 'insights', label: 'INSIGHTS' },
   { key: 'build', label: 'BUILD' },
   { key: 'system', label: 'SYSTEM' },
 ];
 
 const DEFAULT_VISIBLE_PROJECTS = 3;
 
-export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) {
+export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed, onToggleCollapse }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -122,20 +123,40 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
   const hasMoreProjects = projects.length > DEFAULT_VISIBLE_PROJECTS;
 
   return (
-    <aside className="w-60 h-screen bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
-      <div className="p-5 border-b border-gray-800">
-        <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-          Markus
-        </h1>
-        <p className="text-xs text-gray-500 mt-0.5">AI Digital Employee Platform</p>
+    <aside className="h-screen bg-gray-900 flex flex-col shrink-0 overflow-hidden">
+      <div className={`border-b border-gray-800 flex items-center ${collapsed ? 'px-2 py-4 justify-center' : 'px-5 py-4 justify-between'}`}>
+        {collapsed ? (
+          <button onClick={onToggleCollapse} className="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent" title="Expand sidebar">
+            M
+          </button>
+        ) : (
+          <>
+            <div>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+                Markus
+              </h1>
+              <p className="text-xs text-gray-500 mt-0.5">AI Digital Employee Platform</p>
+            </div>
+            <button
+              onClick={onToggleCollapse}
+              className="text-gray-600 hover:text-gray-300 transition-colors p-1 rounded hover:bg-gray-800"
+              title="Collapse sidebar"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></svg>
+            </button>
+          </>
+        )}
       </div>
-      <nav className="p-3 flex-1 overflow-y-auto">
+      <nav className={`${collapsed ? 'p-1.5' : 'p-3'} flex-1 overflow-y-auto`}>
         {sections.map((section, si) => (
           <div key={section.key}>
             <div className="mb-3">
-              <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider">
-                {section.label}
-              </div>
+              {!collapsed && (
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider">
+                  {section.label}
+                </div>
+              )}
+              {collapsed && si > 0 && <div className="border-t border-gray-800 my-2 mx-1" />}
               {navItems.filter(i => i.section === section.key).map((item) => {
                 const isProjectsWithSelection = item.id === 'projects' && selectedProjectId !== null;
                 const isActive = currentPage === item.id && !isProjectsWithSelection;
@@ -146,21 +167,37 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
                       if (item.id === 'projects') setSelectedProjectId(null);
                       onNavigate(item.id);
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                    title={collapsed ? item.label : undefined}
+                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'} rounded-lg text-sm mb-0.5 transition-colors ${
                       isActive
                         ? 'bg-indigo-600 text-white'
                         : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                     }`}
                   >
                     <Icon d={ICONS[item.id] ?? ''} />
-                    {item.label}
+                    {!collapsed && item.label}
                   </button>
                 );
               })}
             </div>
 
-            {/* Projects section — inserted between WORKSPACE and INSIGHTS */}
-            {si === 0 && (
+            {/* Projects section — inserted after WORKSPACE */}
+            {si === 0 && collapsed && (
+              <div className="mb-1">
+                <button
+                  onClick={() => { setSelectedProjectId(null); onNavigate('projects'); }}
+                  title="Projects"
+                  className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                    currentPage === 'projects'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                  }`}
+                >
+                  <Icon d={ICONS.projects ?? ''} />
+                </button>
+              </div>
+            )}
+            {si === 0 && !collapsed && (
               <div className="mb-3">
                 <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider flex items-center justify-between">
                   <button onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; }} className="hover:text-gray-400 transition-colors cursor-pointer">PROJECTS</button>
@@ -228,26 +265,36 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout }: Props) 
           </div>
         ))}
       </nav>
-      <div className="p-4 border-t border-gray-800 space-y-2">
+      <div className={`border-t border-gray-800 ${collapsed ? 'p-2 flex flex-col items-center gap-2' : 'p-4 space-y-2'}`}>
         {authUser && (
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-              {authUser.name?.[0]?.toUpperCase() ?? 'A'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-gray-300 truncate">{authUser.name ?? authUser.email}</div>
-              <div className="text-[10px] text-gray-600 truncate">{authUser.email ?? (authUser.role?.[0]?.toUpperCase() + authUser.role?.slice(1))}</div>
-            </div>
+          collapsed ? (
             <button
               onClick={handleLogout}
-              title="Sign out"
-              className="text-gray-600 hover:text-gray-300 transition-colors text-sm"
+              title={`${authUser.name ?? authUser.email} — Sign out`}
+              className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0 hover:ring-2 hover:ring-indigo-500/50 transition-all"
             >
-              ⇥
+              {authUser.name?.[0]?.toUpperCase() ?? 'A'}
             </button>
-          </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                {authUser.name?.[0]?.toUpperCase() ?? 'A'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-gray-300 truncate">{authUser.name ?? authUser.email}</div>
+                <div className="text-[10px] text-gray-600 truncate">{authUser.email ?? (authUser.role?.[0]?.toUpperCase() + authUser.role?.slice(1))}</div>
+              </div>
+              <button
+                onClick={handleLogout}
+                title="Sign out"
+                className="text-gray-600 hover:text-gray-300 transition-colors text-sm"
+              >
+                ⇥
+              </button>
+            </div>
+          )
         )}
-        <div className="text-[10px] text-gray-700">v0.7.0</div>
+        {!collapsed && <div className="text-[10px] text-gray-700">v0.7.0</div>}
       </div>
 
       {/* New Project Modal — portaled to body for full-page centering */}

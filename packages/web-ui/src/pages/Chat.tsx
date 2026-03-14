@@ -17,6 +17,7 @@ import { navBus } from '../navBus.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
 import { BuilderArtifactPanel, getBuilderMode } from '../components/BuilderArtifact.tsx';
+import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -397,6 +398,25 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Tab system: Chat vs Agent Profile
   const [mainTab, setMainTab] = useState<MainTab>('chat');
+
+  // Resizable chat left sidebar
+  const chatSidebar = useResizablePanel({
+    side: 'left',
+    defaultWidth: 224,
+    minWidth: 160,
+    maxWidth: 360,
+    storageKey: 'markus_chat_sidebar',
+  });
+
+  // Resizable right sidebar (builder artifact panel)
+  const rightPanel = useResizablePanel({
+    side: 'right',
+    defaultWidth: 320,
+    minWidth: 240,
+    maxWidth: 520,
+    collapsedWidth: 40,
+    storageKey: 'markus_right_panel',
+  });
 
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
@@ -1385,6 +1405,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         onRefreshTeams={refreshTeams}
         onRefreshAgents={refreshAgents}
         onViewProfile={handleViewProfile}
+        width={chatSidebar.width}
+        onResizeStart={chatSidebar.onResizeStart}
       />
 
       {/* ── Main area ── */}
@@ -1807,6 +1829,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           mode={getBuilderMode(currentAgent.role)!}
           messages={messages.map(m => ({ sender: m.sender, text: m.text }))}
           authorName={authUser?.name ?? 'Anonymous'}
+          collapsed={rightPanel.collapsed}
+          onToggleCollapse={rightPanel.toggle}
+          width={rightPanel.collapsed ? undefined : rightPanel.width}
+          onResizeStart={rightPanel.collapsed ? undefined : rightPanel.onResizeStart}
         />
       )}
     </div>

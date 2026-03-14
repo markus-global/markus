@@ -16,6 +16,7 @@ import { Login } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
+import { useResizablePanel } from './hooks/useResizablePanel.ts';
 
 const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'templates', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
 
@@ -32,6 +33,14 @@ export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const sidebar = useResizablePanel({
+    side: 'left',
+    defaultWidth: 240,
+    minWidth: 180,
+    maxWidth: 400,
+    collapsedWidth: 48,
+    storageKey: 'markus_sidebar',
+  });
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [mustChangePassword, setMustChangePassword] = useState(false);
@@ -116,14 +125,29 @@ export function App() {
         <div className="md:hidden fixed inset-0 bg-black/50 z-30" onClick={() => setSidebarOpen(false)} />
       )}
 
-      <div className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-40 transition-transform duration-200`}>
+      <div
+        className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-40 transition-transform duration-200 shrink-0`}
+        style={{ width: sidebar.width }}
+      >
         <Sidebar
           currentPage={page}
           onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
           authUser={authUser !== 'loading' && authUser !== null ? authUser : undefined}
           onLogout={() => setAuthUser(null)}
+          collapsed={sidebar.collapsed}
+          onToggleCollapse={sidebar.toggle}
         />
       </div>
+
+      {/* Resize handle for main sidebar */}
+      {!sidebar.collapsed && (
+        <div
+          className="hidden md:block w-1 cursor-col-resize shrink-0 group relative z-10"
+          onMouseDown={sidebar.onResizeStart}
+        >
+          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-indigo-500/30 group-active:bg-indigo-500/50 transition-colors" />
+        </div>
+      )}
 
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         <main className="flex-1 overflow-hidden flex flex-col">
