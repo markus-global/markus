@@ -3,6 +3,17 @@ import type { Database } from '../db.js';
 import { channelMessages } from '../schema.js';
 import { generateId } from '@markus/shared';
 
+export interface ChannelMsgMetadata {
+  thinking?: string[];
+  toolCalls?: Array<{
+    tool: string;
+    status: 'done' | 'error';
+    arguments?: unknown;
+    result?: string;
+    durationMs?: number;
+  }>;
+}
+
 export interface ChannelMsg {
   id: string;
   orgId: string;
@@ -12,6 +23,7 @@ export interface ChannelMsg {
   senderName: string;
   text: string;
   mentions: string[];
+  metadata?: ChannelMsgMetadata | null;
   createdAt: Date;
 }
 
@@ -26,6 +38,7 @@ export class ChannelMessageRepo {
     senderName: string;
     text: string;
     mentions?: string[];
+    metadata?: ChannelMsgMetadata;
   }): Promise<ChannelMsg> {
     const [row] = await this.db.insert(channelMessages).values({
       id: generateId('cm'),
@@ -36,9 +49,14 @@ export class ChannelMessageRepo {
       senderName: data.senderName,
       text: data.text,
       mentions: data.mentions ?? [],
+      metadata: data.metadata ?? {},
     }).returning();
     const r = row!;
-    return { ...r, mentions: (r.mentions ?? []) as string[] };
+    return {
+      ...r,
+      mentions: (r.mentions ?? []) as string[],
+      metadata: (r.metadata ?? null) as ChannelMsgMetadata | null,
+    };
   }
 
   async getMessages(
@@ -58,7 +76,11 @@ export class ChannelMessageRepo {
     const hasMore = rows.length > limit;
     const messages = rows.slice(0, limit)
       .reverse()
-      .map(r => ({ ...r, mentions: (r.mentions ?? []) as string[] }));
+      .map(r => ({
+        ...r,
+        mentions: (r.mentions ?? []) as string[],
+        metadata: (r.metadata ?? null) as ChannelMsgMetadata | null,
+      }));
     return { messages, hasMore };
   }
 }

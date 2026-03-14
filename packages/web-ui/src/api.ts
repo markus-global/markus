@@ -43,6 +43,17 @@ export interface ChatMessageInfo {
   createdAt: string;
 }
 
+export interface ChannelMsgMetadata {
+  thinking?: string[];
+  toolCalls?: Array<{
+    tool: string;
+    status: 'done' | 'error';
+    arguments?: unknown;
+    result?: string;
+    durationMs?: number;
+  }>;
+}
+
 export interface ChannelMessageInfo {
   id: string;
   channel: string;
@@ -51,6 +62,7 @@ export interface ChannelMessageInfo {
   senderName: string;
   text: string;
   mentions: string[];
+  metadata?: ChannelMsgMetadata | null;
   createdAt: string;
 }
 

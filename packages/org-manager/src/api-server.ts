@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, type TaskStatus, type TaskPriority } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -28,6 +28,7 @@ import {
   type HandbookProject,
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
+  type AgentManager,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -220,6 +221,7 @@ export class APIServer {
         senderId: string,
         senderName: string
       ) => {
+        const cleanText = stripInternalBlocks(message);
         if (this.storage) {
           await this.storage.channelMessageRepo.append({
             orgId: 'default',
@@ -227,7 +229,7 @@ export class APIServer {
             senderId,
             senderType: 'agent',
             senderName,
-            text: message,
+            text: cleanText,
           });
         }
         this.ws.broadcast({
@@ -237,7 +239,7 @@ export class APIServer {
             senderId,
             senderType: 'agent',
             senderName,
-            text: message,
+            text: cleanText,
           },
           timestamp: new Date().toISOString(),
         });
@@ -553,6 +555,109 @@ export class APIServer {
     }
   }
 
+  /**
+   * Process a single agent's reply in a group chat broadcast.
+   * Each agent decides independently whether to respond.
+   * Replies are persisted and broadcast via WebSocket.
+   */
+  private async processGroupChatReply(
+    agentId: string,
+    userMessage: string,
+    senderId: string,
+    senderInfo: { name: string; role: string } | undefined,
+    channel: string,
+    orgId: string,
+    channelContext: Array<{ role: string; content: string }>,
+    agentManager: AgentManager,
+    teamSize: number,
+  ): Promise<void> {
+    try {
+      const agent = agentManager.getAgent(agentId);
+      const agentName = agent.config.name;
+
+      const groupChatPrefix = [
+        `[GROUP CHAT — ${teamSize} team members]`,
+        'You are in a group chat with your team. Every member receives this message independently.',
+        'Only respond if the message is relevant to your role or expertise.',
+        'If you have nothing meaningful to contribute, respond with exactly: [NO_RESPONSE]',
+        '---',
+        '',
+      ].join('\n');
+
+      const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
+      const reply = await agent.handleMessage(
+        groupChatPrefix + userMessage,
+        senderId,
+        senderInfo,
+        {
+          ephemeral: true,
+          maxHistory: 20,
+          channelContext,
+          toolEventCollector: toolEvents,
+        }
+      );
+
+      // Skip if the agent chose not to respond
+      if (!reply || reply.trim() === '[NO_RESPONSE]' || !reply.trim()) {
+        return;
+      }
+
+      // Separate clean text from internal process data
+      const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
+      if (!cleanReply.trim() || cleanReply.trim() === '[NO_RESPONSE]') return;
+
+      const metadata: Record<string, unknown> = {};
+      if (thinking.length > 0) metadata['thinking'] = thinking;
+      if (toolEvents.length > 0) metadata['toolCalls'] = toolEvents;
+
+      // Persist agent reply
+      if (this.storage) {
+        await this.storage.channelMessageRepo.append({
+          orgId,
+          channel,
+          senderId: agentId,
+          senderType: 'agent',
+          senderName: agentName,
+          text: cleanReply,
+          mentions: [],
+          metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
+        });
+      }
+
+      // Broadcast via WebSocket so the frontend picks it up
+      this.ws.broadcast({
+        type: 'chat:message',
+        payload: {
+          channel,
+          senderId: agentId,
+          senderType: 'agent',
+          senderName: agentName,
+          text: cleanReply,
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn('Group chat agent reply failed', { agentId, error: String(err) });
+
+      // Persist error for visibility
+      if (this.storage) {
+        try {
+          const errDetail = String(err).slice(0, 500);
+          await this.storage.channelMessageRepo.append({
+            orgId,
+            channel,
+            senderId: agentId,
+            senderType: 'system',
+            senderName: 'System',
+            text: `⚠ AI service error: ${errDetail}`,
+            mentions: [],
+          });
+        } catch { /* best-effort */ }
+      }
+    }
+  }
+
   /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence.
    *  When sessionId is provided, appends to that session; when null/undefined, creates a new session. */
   private async persistUserMessage(
@@ -854,25 +959,57 @@ export class APIServer {
       const humanOnly = (body['humanOnly'] as boolean) === true;
       const isHumanChannel = humanOnly || channel.startsWith('notes:') || channel.startsWith('dm:');
 
-      // Route to agent — for group chats, pick a team member (manager first)
+      // Build lightweight channel context (last 20 messages, strip internal blocks for agents)
+      const buildChannelContext = async (): Promise<Array<{ role: string; content: string }>> => {
+        if (!this.storage) return [];
+        try {
+          const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
+          return (recent.messages ?? []).map((m: ChannelMsg) => ({
+            role: m.senderType === 'agent' ? 'assistant' : 'user',
+            content: m.senderType === 'agent'
+              ? stripInternalBlocks(m.text)
+              : `[${m.senderName}]: ${m.text}`,
+          }));
+        } catch {
+          return [];
+        }
+      };
+
+      // ── Group chat broadcast: all team members respond independently ──
+      if (!isHumanChannel && channel.startsWith('group:') && !targetAgentId) {
+        const teamId = channel.replace(/^group:/, '');
+        const team = this.orgService.getTeam(teamId);
+        const allAgentIds = team?.memberAgentIds ?? [];
+
+        if (allAgentIds.length === 0) {
+          this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+          return;
+        }
+
+        const channelContext = await buildChannelContext();
+        const senderInfo = this.orgService.resolveHumanIdentity(senderId);
+        const agentManager = this.orgService.getAgentManager();
+
+        // Fire-and-forget: each agent processes the message independently
+        for (const agentId of allAgentIds) {
+          void this.processGroupChatReply(
+            agentId, text, senderId, senderInfo, channel, orgId, channelContext, agentManager, allAgentIds.length,
+          );
+        }
+
+        // Return immediately with only the user message
+        this.json(res, 200, { userMessage: userMsg ?? null, agentMessage: null });
+        return;
+      }
+
+      // ── Single-agent routing (@mention, non-group, or fallback) ──
       let routedAgentId: string | null | undefined = null;
       if (!isHumanChannel) {
         if (targetAgentId) {
           routedAgentId = targetAgentId;
         } else if (channel.startsWith('group:')) {
-          // Extract teamId from channel key (e.g. "group:team_xxx" or "group:custom:xxx")
-          const teamId = channel.replace(/^group:/, '');
-          const team = this.orgService.getTeam(teamId);
-          if (team) {
-            // Prefer team lead/manager, then first available agent member
-            const candidateId =
-              team.leadAgentId ??
-              (team.managerType === 'agent' ? team.managerId : undefined) ??
-              team.memberAgentIds[0];
-            if (candidateId) routedAgentId = candidateId;
-          }
-          // Fallback to org-wide routing if no team member found
-          if (!routedAgentId) routedAgentId = this.orgService.routeMessage(orgId, { text });
+          // @mention already handled above; this is a fallback for custom group chats
+          routedAgentId = this.orgService.routeMessage(orgId, { text });
         } else {
           routedAgentId = this.orgService.routeMessage(orgId, { text });
         }
@@ -884,26 +1021,16 @@ export class APIServer {
       const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
 
-      // Build lightweight channel context (last 20 messages, not the agent's full session)
-      let channelContext: Array<{ role: string; content: string }> = [];
-      if (this.storage) {
-        try {
-          const recent = await this.storage.channelMessageRepo.getMessages(channel, 20);
-          channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
-            role: m.senderType === 'agent' ? 'assistant' : 'user',
-            content: m.senderType === 'agent' ? m.text : `[${m.senderName}]: ${m.text}`,
-          }));
-        } catch {
-          /* ok */
-        }
-      }
+      const channelContext = await buildChannelContext();
 
       let reply: string;
+      const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       try {
         reply = await agent.handleMessage(text, senderId, senderInfo, {
           ephemeral: true,
           maxHistory: 20,
           channelContext,
+          toolEventCollector: toolEvents,
         });
       } catch (err) {
         const raw = String(err);
@@ -954,6 +1081,12 @@ export class APIServer {
         return;
       }
 
+      // Separate clean text from internal process data
+      const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
+      const metadata: Record<string, unknown> = {};
+      if (thinking.length > 0) metadata['thinking'] = thinking;
+      if (toolEvents.length > 0) metadata['toolCalls'] = toolEvents;
+
       // Persist agent reply
       let agentMsg: ChannelMsg | undefined;
       if (this.storage) {
@@ -963,13 +1096,15 @@ export class APIServer {
           senderId: routedAgentId,
           senderType: 'agent',
           senderName: agent.config.name,
-          text: reply,
+          text: cleanReply,
           mentions: [],
+          metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
         void this.persistChatTurn(routedAgentId, text, reply, senderId);
       }
 
-      this.ws.broadcastChat(routedAgentId, reply, 'agent');
+      // No WS broadcast here — the HTTP response delivers the agentMessage directly
+      // to the requesting client. WS broadcast is only needed for group chat async replies.
       this.json(res, 200, {
         userMessage: userMsg ?? null,
         agentMessage: agentMsg ?? {
@@ -978,8 +1113,9 @@ export class APIServer {
           senderId: routedAgentId,
           senderType: 'agent',
           senderName: agent.config.name,
-          text: reply,
+          text: cleanReply,
           mentions: [],
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
           createdAt: new Date(),
         },
       });
@@ -1117,7 +1253,6 @@ export class APIServer {
             );
             throw err;
           }
-          this.ws.broadcastChat(agentId!, reply, 'agent');
           this.json(res, 200, { reply, sessionId: userMsgPersisted });
           void this.persistAssistantMessage(
             userMsgPersisted,

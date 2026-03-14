@@ -892,6 +892,13 @@ export class Agent {
       images?: string[];
       allowedTools?: Set<string>;
       scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+      toolEventCollector?: Array<{
+        tool: string;
+        status: 'done' | 'error';
+        arguments?: unknown;
+        result?: string;
+        durationMs?: number;
+      }>;
     }
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -1079,6 +1086,15 @@ export class Agent {
                     result,
                   });
                 }
+                if (options?.toolEventCollector) {
+                  options.toolEventCollector.push({
+                    tool: tc.name,
+                    status: isToolError ? 'error' : 'done',
+                    arguments: tc.arguments,
+                    result: result.slice(0, 500),
+                    durationMs: Date.now() - toolStart,
+                  });
+                }
                 return { toolCallId: tc.id, content: result, error: false };
               } catch (toolErr) {
                 // Manus principle: keep errors in context for model self-correction
@@ -1091,6 +1107,15 @@ export class Agent {
                 });
                 if (currentActId) {
                   this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
+                }
+                if (options?.toolEventCollector) {
+                  options.toolEventCollector.push({
+                    tool: tc.name,
+                    status: 'error',
+                    arguments: tc.arguments,
+                    result: String(toolErr).slice(0, 500),
+                    durationMs: Date.now() - toolStart,
+                  });
                 }
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}`, error: true };
               }

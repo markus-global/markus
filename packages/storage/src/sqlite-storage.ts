@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS channel_messages (
   sender_name TEXT NOT NULL,
   text TEXT NOT NULL,
   mentions TEXT NOT NULL DEFAULT '[]',
+  metadata TEXT DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_channel_messages_channel ON channel_messages(channel, created_at);
@@ -413,6 +414,14 @@ export function openSqlite(dbPath: string): Database.Database {
   const migrations: Array<{ table: string; column: string; sql: string }> = [
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
     { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
+    { table: 'tasks', column: 'project_id', sql: "ALTER TABLE tasks ADD COLUMN project_id TEXT" },
+    { table: 'tasks', column: 'iteration_id', sql: "ALTER TABLE tasks ADD COLUMN iteration_id TEXT" },
+    { table: 'tasks', column: 'created_by', sql: "ALTER TABLE tasks ADD COLUMN created_by TEXT" },
+    { table: 'tasks', column: 'updated_by', sql: "ALTER TABLE tasks ADD COLUMN updated_by TEXT" },
+    { table: 'tasks', column: 'task_type', sql: "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'standard'" },
+    { table: 'tasks', column: 'schedule_config', sql: "ALTER TABLE tasks ADD COLUMN schedule_config TEXT" },
+    { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
+    { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -1495,12 +1504,13 @@ export class SqliteChannelMessageRepo {
     senderName: string;
     text: string;
     mentions?: string[];
+    metadata?: Record<string, unknown>;
   }) {
     const id = generateId('chm');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+        'INSERT INTO channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, metadata, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
       )
       .run(
         id,
@@ -1511,6 +1521,7 @@ export class SqliteChannelMessageRepo {
         data.senderName,
         data.text,
         toJson(data.mentions ?? []),
+        toJson(data.metadata ?? {}),
         ts
       );
     return {
@@ -1522,6 +1533,7 @@ export class SqliteChannelMessageRepo {
       senderName: data.senderName,
       text: data.text,
       mentions: data.mentions ?? [],
+      metadata: data.metadata ?? null,
       createdAt: new Date(ts),
     };
   }
@@ -1544,6 +1556,7 @@ export class SqliteChannelMessageRepo {
       senderName: r['sender_name'],
       text: r['text'],
       mentions: fromJson<string[]>(r['mentions'] as string),
+      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       createdAt: toDate(r['created_at'] as string)!,
     }));
     const hasMore = rows.length > limit;

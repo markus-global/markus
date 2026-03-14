@@ -9,3 +9,4 @@ export * from './types/requirement.js';
 export * from './utils/logger.js';
 export * from './utils/config.js';
 export * from './utils/id.js';
+export * from './utils/text.js';

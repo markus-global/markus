@@ -219,11 +219,7 @@ export class SSEHandler {
     
     if (event.type === 'text_delta' && event.text) {
       this.textBuf += event.text;
-      
-      if (this.options.wsBroadcaster) {
-        this.options.wsBroadcaster.broadcastChat(this.options.agentId, event.text, 'agent');
-      }
-      
+
       if (this.options.onTextDelta) {
         this.options.onTextDelta(event.text);
       }

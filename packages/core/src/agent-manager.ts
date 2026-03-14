@@ -1,6 +1,7 @@
 import {
   createLogger,
   agentId as genAgentId,
+  stripInternalBlocks,
   type AgentConfig,
   type AgentProfile,
   type AgentActivity,
@@ -493,7 +494,7 @@ export class AgentManager {
         } catch { /* not JSON — fall through to full LLM handling */ }
 
         const target = this.getAgent(targetId);
-        return target.handleMessage(
+        const reply = await target.handleMessage(
           message,
           fromId,
           { name: fromName, role: config.agentRole ?? 'worker' },
@@ -502,6 +503,7 @@ export class AgentManager {
             maxHistory: 15,
           }
         );
+        return stripInternalBlocks(reply);
       },
       delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
@@ -705,7 +707,8 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          return target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          return stripInternalBlocks(reply);
         },
         createTask: (params) => {
           if (this.taskService) {
@@ -1135,7 +1138,8 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          return target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          return stripInternalBlocks(reply);
         },
         createTask: (params) => {
           if (this.taskService) {

@@ -206,6 +206,7 @@ export const channelMessages = pgTable(
     senderName: varchar('sender_name', { length: 255 }).notNull(),
     text: text('text').notNull(),
     mentions: jsonb('mentions').notNull().default([]),
+    metadata: jsonb('metadata').default({}),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   t => [index('idx_channel_messages_channel').on(t.channel, t.createdAt)]

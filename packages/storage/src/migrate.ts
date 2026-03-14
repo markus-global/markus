@@ -36,6 +36,8 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
   const statements = [
     // chat_messages: segment metadata for persistent tool-call display
     `ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata jsonb`,
+    // channel_messages: metadata for thinking/tool-call display (separated from clean text)
+    `ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'`,
     // tasks: notes array for persistent task notes
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notes jsonb DEFAULT '[]'`,
     // agents: daily token tracking, active task persistence, and structured profile

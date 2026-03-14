@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback, type RefObje
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
-  type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo,
+  type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
   type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
 } from '../api.ts';
@@ -75,7 +75,7 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
 
 function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
   const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
-  return {
+  const base: ChatMsg = {
     id: m.id,
     sender: m.senderType === 'human' ? 'user' : 'agent',
     text: m.text,
@@ -84,6 +84,33 @@ function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
     agentId: m.senderType !== 'human' ? m.senderId : undefined,
     isError,
   };
+  // Build segments from metadata (thinking + tool calls)
+  if (m.metadata && m.senderType === 'agent') {
+    const segments: MsgSegment[] = [];
+    const meta = m.metadata as ChannelMsgMetadata;
+    if (meta.thinking?.length) {
+      segments.push({ type: 'text', content: '', thinking: meta.thinking.join('\n\n') });
+    }
+    if (meta.toolCalls?.length) {
+      for (let i = 0; i < meta.toolCalls.length; i++) {
+        const tc = meta.toolCalls[i]!;
+        segments.push({
+          type: 'tool',
+          key: `${tc.tool}_${i}`,
+          tool: tc.tool,
+          status: tc.status === 'error' ? 'error' : 'done',
+          args: tc.arguments,
+          result: tc.result,
+          durationMs: tc.durationMs,
+        });
+      }
+    }
+    if (segments.length > 0) {
+      segments.push({ type: 'text', content: m.text });
+      base.segments = segments;
+    }
+  }
+  return base;
 }
 
 function agentInitials(name: string) {
@@ -746,6 +773,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
+          if (currentConvKeyRef.current !== newKey) return;
           if (s.length > 0) {
             const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : s.slice(0, 5);
             setActiveSessionId(initialTabs[0]!.id);
@@ -767,15 +795,46 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const unsub = wsClient.on('chat:message', (event) => {
       const p = event.payload;
       const msgChannel = (p['channel'] as string) ?? '';
-      if (msgChannel && msgChannel !== activeChannel) return;
+      // Only process messages with an explicit channel that matches the current one.
+      // Messages without a channel field come from direct-chat broadcastChat() and must be ignored.
+      if (!msgChannel || msgChannel !== activeChannel) return;
       const senderType = (p['senderType'] as string) ?? 'agent';
+      const wsText = (p['text'] as string) ?? (p['message'] as string) ?? '';
+      const wsSenderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
+      const wsSenderName = (p['senderName'] as string) ?? (p['agentId'] as string) ?? 'Agent';
+      const wsMeta = p['metadata'] as ChannelMsgMetadata | undefined;
+
       const newMsg: ChatMsg = {
-        id: `ws_${Date.now()}`,
+        id: `ws_${Date.now()}_${wsSenderId}`,
         sender: senderType === 'human' ? 'user' : 'agent',
-        text: (p['text'] as string) ?? (p['message'] as string) ?? '',
+        text: wsText,
         time: new Date().toLocaleTimeString(),
-        agentName: senderType === 'agent' ? ((p['senderName'] as string) ?? (p['agentId'] as string) ?? 'Agent') : undefined,
+        agentName: senderType === 'agent' ? wsSenderName : undefined,
+        agentId: senderType === 'agent' ? wsSenderId : undefined,
       };
+
+      // Build segments from metadata (thinking + tool calls) if present
+      if (wsMeta && senderType === 'agent') {
+        const segs: MsgSegment[] = [];
+        if (wsMeta.thinking?.length) {
+          segs.push({ type: 'text', content: '', thinking: wsMeta.thinking.join('\n\n') });
+        }
+        if (wsMeta.toolCalls?.length) {
+          for (let i = 0; i < wsMeta.toolCalls.length; i++) {
+            const tc = wsMeta.toolCalls[i]!;
+            segs.push({
+              type: 'tool', key: `${tc.tool}_${i}`, tool: tc.tool,
+              status: tc.status === 'error' ? 'error' : 'done',
+              args: tc.arguments, result: tc.result, durationMs: tc.durationMs,
+            });
+          }
+        }
+        if (segs.length > 0) {
+          segs.push({ type: 'text', content: wsText });
+          newMsg.segments = segs;
+        }
+      }
+
       const key = makeConvKey('channel', selectedAgent, activeChannel, activeDmUserId);
       updateConvMsgs(key, prev => [...prev, newMsg]);
     });
@@ -1055,38 +1114,40 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             imagesToSend,
             effectiveSessionId,
           );
-          if (streamResult.sessionId) {
-            setActiveSessionId(streamResult.sessionId);
-            // Replace placeholder tab with real session
-            setOpenSessionTabs(prev =>
-              prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t)
-            );
-          }
-          loadSessions(selectedAgent).then(s => {
-            setSessions(s);
+          // Only update session state if user is still viewing this conversation
+          if (currentConvKeyRef.current === sendKey) {
             if (streamResult.sessionId) {
-              const newSess = s.find(ss => ss.id === streamResult.sessionId);
-              if (newSess) {
-                // Update the tab with real session data (title, etc.)
-                setOpenSessionTabs(prev => {
-                  const exists = prev.some(t => t.id === newSess.id);
-                  if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                  return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
-                });
-              }
+              setActiveSessionId(streamResult.sessionId);
+              setOpenSessionTabs(prev =>
+                prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t)
+              );
             }
-          });
+            loadSessions(selectedAgent).then(s => {
+              if (currentConvKeyRef.current !== sendKey) return;
+              setSessions(s);
+              if (streamResult.sessionId) {
+                const newSess = s.find(ss => ss.id === streamResult.sessionId);
+                if (newSess) {
+                  setOpenSessionTabs(prev => {
+                    const exists = prev.some(t => t.id === newSess.id);
+                    if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
+                    return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
+                  });
+                }
+              }
+            });
+          }
         }
       } catch (e) {
         // Preserve sessionId from error so subsequent messages stay in the same session
         const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
-        if (errSessionId && chatMode === 'direct') {
+        if (errSessionId && chatMode === 'direct' && currentConvKeyRef.current === sendKey) {
           setActiveSessionId(errSessionId);
-          // Replace placeholder tab with real session from error
           setOpenSessionTabs(prev =>
             prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: errSessionId } : t)
           );
           loadSessions(selectedAgent!).then(s => {
+            if (currentConvKeyRef.current !== sendKey) return;
             setSessions(s);
             const newSess = s.find(ss => ss.id === errSessionId);
             if (newSess) {
