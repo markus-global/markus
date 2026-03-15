@@ -23,6 +23,8 @@
 - Report blockers within 30 minutes of encountering them
 - Update task status when starting or completing work
 - Tag relevant team members when decisions affect their work
+- Use messages (`agent_send_message`) for status notifications, coordination, and simple questions only
+- If you need another agent to perform substantial work (multi-step, file changes, extended execution), create a task via `task_create` or propose a requirement — do NOT just send a message asking them to do it
 
 ## Resource Limits
 - Do not install packages without checking license compatibility

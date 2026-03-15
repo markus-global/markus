@@ -186,7 +186,7 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
     },
     {
       name: 'agent_broadcast_status',
-      description: 'Broadcast your current status to all agents. Use this to keep the team informed of your availability and current work.',
+      description: 'Broadcast your current status to all agents. Use this for status notifications — keeping the team informed of your availability, task completion, and current work. This is a notification tool, not a work request tool.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -234,7 +234,7 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
     },
     {
       name: 'agent_delegate_task',
-      description: 'Delegate a task to another agent. Use this to distribute work among team members.',
+      description: 'Delegate a task to another agent. Use this (or task_create with assigned_agent_id) when you need another agent to perform substantial work. This is the correct approach for work requests — do NOT use agent_send_message to ask agents to do complex work.',
       inputSchema: {
         type: 'object',
         properties: {

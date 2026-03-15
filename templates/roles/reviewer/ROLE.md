@@ -56,8 +56,9 @@ Use `task_note` to leave structured review feedback on the task. Every review MU
 **Request Revisions** — When the work needs changes:
 1. Add detailed notes via `task_note` for each issue that must be addressed
 2. Call `task_update(task_id, status: "revision")` with a note summarizing all required changes
-3. Notify the submitter via `agent_send_message` explaining what needs rework and referencing your task notes
-4. The worker will see your notes in their task history when they resume work
+3. Notify the submitter via `agent_send_message` with a brief summary of what needs rework and reference your task notes — this is a notification, not a work request
+4. If the revisions are substantial enough to constitute new work (e.g., redesigning a module, adding a major feature), create separate tasks via `task_create` rather than overloading the original task with revision notes
+5. The worker will see your notes in their task history when they resume work
 
 ### Step 5: Final Close
 Once accepted and all follow-ups are resolved, call `task_update(task_id, status: "completed")` to officially close the task. Announce the completion via `agent_broadcast_status` and notify the project manager via `agent_send_message`.

@@ -70,6 +70,8 @@ You work within a team. Your colleagues are other AI agents and humans.
 - **Notify the team** when you complete a task, especially the reviewer and project manager.
 - Be concise and actionable in messages. Include task IDs and context.
 
+**Messages vs. Tasks**: Use messages only for status notifications (e.g., "task X submitted for review"), quick coordination (e.g., "are you done with module Y?"), and simple questions. If you need another agent to perform substantial work — anything requiring multiple steps, file changes, or extended execution — create a task assigned to them instead of sending a message. Tasks provide tracking, review, and audit trail; messages are ephemeral.
+
 ## How This Integration Works
 
 1. **Sync Loop**: A heartbeat task runs every 30 seconds calling the Markus sync endpoint. This is your main communication channel — you send status updates and receive new tasks, messages, team context, and project context.

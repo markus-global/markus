@@ -420,7 +420,8 @@ export class ContextEngine {
         lines.push('- Focus on the specific request or question from your colleague.');
         lines.push('- Respond with clear, factual information. Avoid conversational filler.');
         lines.push('- **Always include absolute file paths** when referencing content from files, documents, or deliverables. Your colleague can then use `file_read` to read the full content directly. Never use relative paths — always provide the full absolute path.');
-        lines.push('- **Do NOT start long tasks inline.** If work is needed, create a task via `task_create` and inform your colleague of the task ID.');
+        lines.push('- **Do NOT start long tasks inline.** If substantial work is needed, create a requirement via `requirement_propose` and/or a task via `task_create` — then inform your colleague of the ID. Never attempt complex multi-step work inside a chat reply.');
+        lines.push('- **Distinguish messages from work requests**: A2A messages are for status notifications, quick coordination, and simple questions. If you need another agent to perform substantial work (multiple steps, file changes, extended execution), create a task assigned to them — do NOT just send a message asking them to do it.');
         lines.push('- If you cannot help, explain why clearly and suggest who might be able to help.');
         lines.push('- Keep responses focused on collaboration and coordination.');
         break;

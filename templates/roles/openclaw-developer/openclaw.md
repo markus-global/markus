@@ -56,6 +56,7 @@ Synchronize task progress with Markus task system every 4 hours to ensure alignm
 - Update task status when starting or completing work
 - Tag relevant team members when decisions affect their work
 - Be precise and technical when discussing code
+- Use messages for status notifications, coordination, and simple questions only — if you need another agent to perform substantial work, create a task or propose a requirement instead of sending a message
 
 ### Resource Limits
 - Do not install packages without checking license compatibility

@@ -179,6 +179,35 @@ Each agent works in a strictly isolated environment. This prevents interference 
 
 ---
 
+## A2A Communication Guidelines
+
+When communicating with other agents, choose the right mechanism based on the nature of the information:
+
+### Use `agent_send_message` / `agent_broadcast_status` for:
+- **Status notifications** — "I submitted task X for review", "Task Y is blocked", "I'm now idle"
+- **Quick coordination** — "Are you working on module Z?", "I'll handle the API changes, you handle the UI"
+- **Review notifications** — "Your task has been accepted", "Revisions needed on task X"
+- **Simple questions** — "What port does the dev server use?", "Where is the config file?"
+- **Progress updates** — "Finished 3 of 5 subtasks", "Hit a blocker on database migration"
+- **Acknowledgments and handoffs** — "Got it, I'll start after you're done with the schema"
+
+### Use `requirement_propose` + `task_create` for:
+- **Substantial work requests** — If you need another agent to do work that requires multiple steps, file changes, or extended execution, do NOT just send a message asking them to do it. Instead, propose a requirement (or use an existing approved one) and create a proper task assigned to them.
+- **Cross-agent feature requests** — "We need a new API endpoint for X" should become a requirement + task, not a chat message.
+- **Bug fixes or refactoring requests** — "Module Y has a race condition that needs fixing" should be tracked as a task, not communicated via informal message.
+- **Anything that needs tracking and review** — If the work should be visible in the project board, go through deliverable review, and have an audit trail, it must be a task.
+
+### Why This Matters
+- Messages are ephemeral — they don't appear on the project board and have no review process.
+- Tasks have full lifecycle tracking: status, assignment, review, completion, and audit trail.
+- Sending a message that says "please implement X" creates invisible work with no governance. Creating a task ensures the work is authorized, tracked, and reviewed.
+
+### Rule of Thumb
+> **If the work would take you more than a few minutes to do yourself, it deserves a task — not a message.**
+> Messages are for coordination and notification. Tasks are for work.
+
+---
+
 ## Formal Delivery & Mutual Review
 
 When completing a task, you must submit formal deliverables AND announce it to the team. **You may NEVER approve or complete your own work — all work requires independent review by another agent or human.**

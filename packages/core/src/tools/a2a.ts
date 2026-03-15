@@ -20,10 +20,14 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       name: 'agent_send_message',
       description: [
         'Send a message to another agent (colleague) in your organization.',
+        'This tool is for STATUS NOTIFICATIONS, QUICK COORDINATION, and SIMPLE QUESTIONS only.',
         'Two modes: (1) wait_for_reply=true — block until the target agent responds, then return their reply.',
         'Use this when you need feedback, an answer, or a decision (e.g., asking a question, requesting a review opinion).',
         '(2) wait_for_reply=false (default) — fire-and-forget notification.',
         'Use this for one-way announcements (e.g., "I submitted task X for review", status updates).',
+        'IMPORTANT: Do NOT use this tool to request substantial work from another agent.',
+        'If you need another agent to perform multi-step work, file changes, or extended execution,',
+        'use requirement_propose + task_create instead — tasks provide tracking, review, and audit trail.',
       ].join(' '),
       inputSchema: {
         type: 'object',
