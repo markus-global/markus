@@ -1791,11 +1791,12 @@ export class TaskService {
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
     }
 
-    // Persist each task deliverable as a standalone Deliverable entity
+    // Persist each task deliverable as a standalone Deliverable entity (skip branch — it's task metadata)
     if (this.deliverableService && deliverables.length > 0) {
       for (const d of deliverables) {
+        if (d.type === 'branch') continue;
         this.deliverableService.create({
-          type: d.type === 'branch' ? 'branch' : d.type === 'file' ? 'file' : d.type === 'report' ? 'report' : 'document',
+          type: d.type === 'file' ? 'file' : d.type === 'report' ? 'report' : 'document',
           title: d.summary.slice(0, 200) || d.reference,
           summary: d.summary,
           reference: d.reference,

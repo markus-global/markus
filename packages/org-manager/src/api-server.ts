@@ -5776,6 +5776,50 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       return;
     }
 
+    if (path === '/api/files/reveal' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const filePath = body?.path as string | undefined;
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" in request body' });
+        return;
+      }
+
+      try {
+        const { resolve, dirname } = await import('node:path');
+        const { existsSync, statSync } = await import('node:fs');
+        const { exec } = await import('node:child_process');
+        const resolved = resolve(filePath);
+
+        if (!existsSync(resolved)) {
+          this.json(res, 404, { error: 'Path not found' });
+          return;
+        }
+
+        const isDir = statSync(resolved).isDirectory();
+        const platform = process.platform;
+
+        let cmd: string;
+        if (platform === 'darwin') {
+          cmd = isDir ? `open "${resolved}"` : `open -R "${resolved}"`;
+        } else if (platform === 'win32') {
+          cmd = isDir ? `explorer "${resolved}"` : `explorer /select,"${resolved}"`;
+        } else {
+          cmd = `xdg-open "${isDir ? resolved : dirname(resolved)}"`;
+        }
+
+        exec(cmd, (err) => {
+          if (err) {
+            log.warn('Failed to reveal file in system browser', { path: resolved, error: String(err) });
+          }
+        });
+
+        this.json(res, 200, { ok: true, path: resolved });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to reveal file: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── Requirements ─────────────────────────────────────────────────────
 
     if (path === '/api/requirements' && req.method === 'GET') {

@@ -6,7 +6,6 @@ import { navBus } from '../navBus.ts';
 const TYPE_META: Record<string, { icon: string; color: string }> = {
   file:      { icon: '\u{1F4C4}', color: 'bg-emerald-900/40 text-emerald-400' },
   document:  { icon: '\u{1F4DD}', color: 'bg-blue-900/40 text-blue-400' },
-  branch:    { icon: '\u{1F33F}', color: 'bg-purple-900/40 text-purple-400' },
   report:    { icon: '\u{1F4CA}', color: 'bg-amber-900/40 text-amber-400' },
   directory: { icon: '\u{1F4C1}', color: 'bg-cyan-900/40 text-cyan-400' },
   url:       { icon: '\u{1F517}', color: 'bg-pink-900/40 text-pink-400' },
@@ -19,7 +18,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   outdated: { label: 'Outdated', color: 'text-red-400 bg-red-900/30' },
 };
 
-const ALL_TYPES = ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'] as const;
+const ALL_TYPES = ['file', 'document', 'report', 'directory', 'url', 'text'] as const;
 
 export function KnowledgePage() {
   const [items, setItems] = useState<DeliverableInfo[]>([]);
@@ -332,8 +331,36 @@ export function KnowledgePage() {
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
                 <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{selected.status}</span>
-                {selected.reference && <span className="text-xs text-gray-500 font-mono truncate max-w-[300px]">{selected.reference}</span>}
               </div>
+              {selected.reference && (selected.type === 'file' || selected.type === 'directory') && (
+                <div className="flex items-center gap-2 mt-2 bg-gray-900/60 border border-gray-800 rounded-lg px-3 py-2">
+                  <button
+                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
+                    className="text-xs font-mono text-indigo-400 hover:text-indigo-300 hover:underline truncate flex-1 text-left cursor-pointer"
+                    title="Open in file browser"
+                  >{selected.reference}</button>
+                  <button
+                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
+                    className="px-2 py-1 text-[10px] rounded bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0"
+                    title="Reveal in Finder"
+                  >Open</button>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
+                    className="px-2 py-1 text-[10px] rounded bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0"
+                    title="Copy path to clipboard"
+                  >Copy</button>
+                </div>
+              )}
+              {selected.reference && selected.type === 'url' && (
+                <div className="mt-2">
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-400 hover:underline break-all">{selected.reference}</a>
+                </div>
+              )}
+              {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && selected.type !== 'url' && (
+                <div className="mt-2">
+                  <span className="text-xs text-gray-500 font-mono break-all">{selected.reference}</span>
+                </div>
+              )}
             </div>
 
             {/* Preview area */}
@@ -348,9 +375,15 @@ export function KnowledgePage() {
                 <div className="space-y-3">
                   <p className="text-sm text-gray-400">This {selected.type} cannot be previewed in the browser.</p>
                   <div className="flex items-center gap-2">
-                    <code className="text-xs bg-gray-800 px-3 py-2 rounded text-gray-300 flex-1 truncate">{selected.reference}</code>
-                    <button onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
-                      className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Copy Path</button>
+                    <button
+                      onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
+                      className="text-xs bg-gray-800 px-3 py-2 rounded text-indigo-400 hover:text-indigo-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                      title="Open in file browser"
+                    >{selected.reference}</button>
+                    <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
+                      className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Open</button>
+                    <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
+                      className="px-3 py-2 text-xs rounded-lg bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0">Copy</button>
                   </div>
                 </div>
               ) : selected.summary ? (

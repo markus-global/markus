@@ -188,7 +188,7 @@ export interface KnowledgeEntryInfo {
 
 export interface DeliverableInfo {
   id: string;
-  type: 'file' | 'document' | 'branch' | 'report' | 'directory' | 'url' | 'text';
+  type: 'file' | 'document' | 'report' | 'directory' | 'url' | 'text';
   title: string;
   summary: string;
   reference: string;
@@ -761,6 +761,8 @@ export const api = {
   files: {
     preview: (filePath: string) =>
       request<{ type: string; name: string; content: string; mimeType?: string }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
+    reveal: (filePath: string) =>
+      request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
   },
   requirements: {
     list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; iterationId?: string }) => {

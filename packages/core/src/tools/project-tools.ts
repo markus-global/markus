@@ -314,7 +314,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               properties: {
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
                   description: 'Type of deliverable',
                 },
                 title: { type: 'string', description: 'Clear, searchable title' },
@@ -324,7 +324,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 },
                 reference: {
                   type: 'string',
-                  description: 'File path, URL, branch name, or directory path',
+                  description: 'File path, URL, or directory path',
                 },
                 tags: { type: 'string', description: 'Comma-separated tags for discoverability' },
               },
@@ -367,7 +367,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 agentId: { type: 'string', description: 'Filter by agent ID (optional)' },
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
                   description: 'Filter by deliverable type (optional)',
                 },
                 limit: { type: 'number', description: 'Max results (default: 20)' },
@@ -405,7 +405,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 agentId: { type: 'string', description: 'Filter by agent ID' },
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
                   description: 'Filter by type',
                 },
                 status: {

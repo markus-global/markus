@@ -128,6 +128,13 @@ export class DeliverableRepo {
     return rows as unknown as DeliverableRow[];
   }
 
+  async listTaskIdsWithDeliverables(): Promise<Set<string>> {
+    const rows = await this.db.selectDistinct({ taskId: deliverables.taskId })
+      .from(deliverables)
+      .where(sql`${deliverables.taskId} IS NOT NULL`);
+    return new Set((rows as Array<{ taskId: string | null }>).filter(r => r.taskId != null).map(r => r.taskId!));
+  }
+
   async deleteByTask(taskId: string): Promise<void> {
     await this.db.delete(deliverables).where(eq(deliverables.taskId, taskId));
   }

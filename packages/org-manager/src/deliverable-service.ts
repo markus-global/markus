@@ -197,11 +197,28 @@ export class DeliverableService {
   /**
    * One-time migration: scan existing tasks and create Deliverable entries
    * for any task.deliverables that don't yet have a corresponding row.
+   * Also cleans up any legacy "branch"-type deliverables by marking them outdated.
    */
   async migrateFromTasks(tasks: Task[]): Promise<number> {
-    const existingTaskIds = new Set(
-      [...this.cache.values()].map(d => d.taskId).filter(Boolean)
-    );
+    // Clean up legacy branch-type deliverables (branch is task metadata, not a standalone deliverable)
+    let branchCleaned = 0;
+    for (const [id, d] of this.cache) {
+      if ((d.type as string) === 'branch' && d.status !== 'outdated') {
+        d.status = 'outdated';
+        d.updatedAt = new Date().toISOString();
+        await this.repo?.update(id, { status: 'outdated' });
+        branchCleaned++;
+      }
+    }
+    if (branchCleaned > 0) {
+      log.info('Cleaned up legacy branch-type deliverables', { count: branchCleaned });
+    }
+
+    // Query ALL task IDs that have ever had deliverables (including outdated/deleted)
+    // so we don't re-import items the user already removed.
+    const existingTaskIds = this.repo
+      ? await this.repo.listTaskIdsWithDeliverables()
+      : new Set([...this.cache.values()].map(d => d.taskId).filter(Boolean) as string[]);
 
     let migrated = 0;
     for (const task of tasks) {
@@ -209,6 +226,7 @@ export class DeliverableService {
       if (existingTaskIds.has(task.id)) continue;
 
       for (const d of task.deliverables) {
+        if (d.type === 'branch') continue;
         try {
           await this.create({
             type: this.mapTaskDeliverableType(d.type),
@@ -237,7 +255,6 @@ export class DeliverableService {
 
   private mapTaskDeliverableType(type: TaskDeliverable['type']): Deliverable['type'] {
     switch (type) {
-      case 'branch': return 'branch';
       case 'file': return 'file';
       case 'report': return 'report';
       case 'document': return 'document';

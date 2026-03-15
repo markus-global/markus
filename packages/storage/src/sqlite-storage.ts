@@ -2628,6 +2628,11 @@ export class SqliteDeliverableRepo {
     return rows.map(r => this.mapRow(r));
   }
 
+  async listTaskIdsWithDeliverables(): Promise<Set<string>> {
+    const rows = this.db.prepare('SELECT DISTINCT task_id FROM deliverables WHERE task_id IS NOT NULL').all() as Array<{ task_id: string }>;
+    return new Set(rows.map(r => r.task_id));
+  }
+
   async deleteByTask(taskId: string) {
     this.db.prepare('DELETE FROM deliverables WHERE task_id = ?').run(taskId);
   }
