@@ -1,21 +1,39 @@
 # Markus
 
-**AI Native Digital Employee Platform** — Build and manage autonomous digital employees that truly work, not just chat.
+**AI Native Digital Employee Platform** -- Build and manage autonomous AI teams that truly work, not just chat.
 
-Markus enables organizations to hire, onboard, and manage AI-powered digital employees. Each agent has its own compute environment, role definition, proactive behaviors, and integrates natively with communication platforms like Feishu, WhatsApp, and Slack.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](https://www.typescriptlang.org/)
 
-## Why Markus?
+[English](README.md) | [中文](README.zh-CN.md)
 
-Existing AI assistants are **personal tools** — one person, one chatbot. Markus is an **organizational platform** — one organization, N digital employees working together.
+---
 
-| | Personal AI Assistants | Markus |
+## What is Markus?
+
+Existing AI assistants are **personal tools** -- one person, one chatbot. Markus is an **organizational platform** -- one organization, N digital employees working together.
+
+|  | Personal AI Assistants | Markus |
 |---|---|---|
 | **Scope** | Individual productivity | Organization-wide |
-| **Behavior** | Reactive (you ask, it answers) | Proactive (heartbeat-driven) |
-| **Environment** | Shared host machine | Isolated Docker/VM per agent |
-| **Management** | Edit config files | Hire/onboard/review lifecycle |
-| **Tasks** | CLI/API only | CLI + API + GUI automation |
-| **Collaboration** | Single agent | Multi-agent teams |
+| **Behavior** | Reactive (you ask, it answers) | Proactive (heartbeat-driven autonomous work) |
+| **Environment** | Shared host machine | Isolated workspace per agent |
+| **Management** | Edit config files | Hire / onboard / review lifecycle |
+| **Tasks** | CLI/API only | CLI + API + Web UI + kanban boards |
+| **Collaboration** | Single agent | Multi-agent teams with governance |
+
+## Key Features
+
+- **Autonomous AI Agents** -- Digital employees with roles, skills, memory, and proactive heartbeat behaviors
+- **Multi-Agent Teams** -- Organize agents into teams with managers, workers, and human members
+- **Task Governance** -- Approval workflows, progressive trust levels, workspace isolation, formal delivery review
+- **Project Management** -- Projects with iterations, kanban boards, and automated reporting
+- **Knowledge System** -- Three-tier memory (session / daily log / long-term) plus shared knowledge base
+- **Communication Hub** -- Web UI chat, Smart Route, channels, plus Feishu/Slack/WhatsApp adapters
+- **Agent-to-Agent Protocol** -- Agents collaborate via structured A2A messaging
+- **Tool Ecosystem** -- Shell, files, git, web search, code search, MCP integration, GUI automation
+- **Skill Marketplace** -- Install and share agent skills and templates
 
 ## Quick Start
 
@@ -23,240 +41,110 @@ Existing AI assistants are **personal tools** — one person, one chatbot. Marku
 
 - Node.js >= 20
 - pnpm >= 9
-- Docker (for agent sandboxes)
-- An LLM API key (Anthropic or OpenAI)
+- An LLM API key (OpenAI, Anthropic, or DeepSeek)
 
 ### Install & Run
 
 ```bash
-git clone https://github.com/your-org/markus.git
+git clone https://github.com/anthropic/markus.git
 cd markus
 pnpm install
 pnpm build
 
-# Set your API key
-export OPENAI_API_KEY=sk-...   # or DEEPSEEK_API_KEY / ANTHROPIC_API_KEY
-```
+# Configure your API key
+cp .env.example .env
+# Edit .env and set at least one LLM API key
 
-**One command to start everything (API + Web UI):**
-
-```bash
+# Start everything (API + Web UI)
 pnpm dev
 ```
 
-Open **`http://localhost:3000`** in your browser. The API runs on `http://localhost:3001`.
+Open **http://localhost:3000** in your browser. Login with `admin@markus.local` / `markus123` (you'll be prompted to change the password on first login).
+
+The API server runs on `http://localhost:3001`.
 
 <details>
-<summary>Or start backend and frontend separately</summary>
-
-```bash
-# Terminal 1 — backend
-pnpm dev:api
-
-# Terminal 2 — frontend
-pnpm dev:ui
-```
-
-</details>
-
-### Create Your First Agent
-
-```bash
-# List available roles
-node packages/cli/dist/index.js role:list
-
-# Create a developer agent
-node packages/cli/dist/index.js agent:create --name Alice --role developer
-
-# Chat with the agent
-node packages/cli/dist/index.js agent:chat
-```
-
-### Docker Compose Deployment
+<summary>Docker Compose</summary>
 
 ```bash
 cd deploy
 cp ../.env.example .env
 # Edit .env with your API keys
-
 docker compose up -d
 ```
 
+</details>
+
 ## Architecture
 
-```
-markus/
-├── packages/
-│   ├── shared/          # Shared types, utilities, config
-│   ├── core/            # Agent runtime, LLM routing, memory, MCP tools
-│   ├── compute/         # Docker/VM sandbox management
-│   ├── comms/           # Communication adapters (Feishu, WebUI, etc.)
-│   ├── org-manager/     # Organization management + REST API
-│   ├── web-ui/          # Web management dashboard
-│   └── cli/             # Command-line interface
-├── templates/
-│   └── roles/           # Built-in role templates
-│       ├── developer/
-│       ├── product-manager/
-│       └── operations/
-└── deploy/              # Docker Compose + Kubernetes configs
-```
-
-### Core Concepts
-
-**Agents** are digital employees, each with:
-- `ROLE.md` — Role definition and system prompt
-- `SKILLS.md` — Capabilities and tool access
-- `HEARTBEAT.md` — Proactive tasks (checked periodically)
-- `POLICIES.md` — Behavioral rules and boundaries
-
-**Organizations** manage agents like a company manages employees — creating teams, assigning roles, and tracking task progress.
-
-**Compute Environments** give each agent an isolated Docker container or VM where they can execute commands, read/write files, and perform work without affecting other agents or the host.
-
-**Communication Hub** connects agents to messaging platforms. Agents can receive messages, respond, and proactively reach out to push work forward.
-
-### System Flow
+Markus is a TypeScript monorepo with the following packages:
 
 ```
-User Message (Feishu/WebUI/API)
-        ↓
-  Message Router  →  Route to Agent
-        ↓
-  Agent Runtime   →  Build context (ROLE + Memory + Policies)
-        ↓
-    LLM Router    →  Send to Claude/GPT/Gemini
-        ↓
-  Tool Execution  →  Shell, Files, Web, MCP tools
-        ↓
-    Response       →  Send back via same channel
+packages/
+  shared/        Shared types, constants, utilities
+  core/          Agent runtime engine
+  storage/       Database schema + repository layer (SQLite / PostgreSQL)
+  org-manager/   Organization management + REST API + governance
+  comms/         Communication adapters (Feishu, Slack, WhatsApp)
+  a2a/           Agent-to-Agent protocol
+  gui/           GUI automation (VNC + OmniParser)
+  web-ui/        Web management interface (React + Vite + Tailwind)
+  cli/           CLI entry point + service assembly
 ```
 
-## Configuration
-
-Create a `markus.json` in your project root:
-
-```json
-{
-  "org": {
-    "name": "My Company"
-  },
-  "llm": {
-    "defaultProvider": "anthropic",
-    "defaultModel": "claude-sonnet-4-20250514",
-    "providers": {
-      "anthropic": { "apiKey": "sk-ant-..." },
-      "openai": { "apiKey": "sk-..." }
-    }
-  },
-  "compute": {
-    "defaultType": "docker",
-    "docker": {
-      "defaultImage": "node:20-slim"
-    }
-  },
-  "server": {
-    "apiPort": 3001,
-    "webPort": 3000
-  }
-}
+```mermaid
+graph TB
+  WebUI["Web UI (React)"] --> API["API Server (Node.js)"]
+  CLI["CLI"] --> API
+  Comms["Feishu / Slack / WhatsApp"] --> API
+  API --> OrgSvc["Organization Service"]
+  API --> TaskSvc["Task Service"]
+  API --> AgentMgr["Agent Manager"]
+  API --> Governance["Governance Layer"]
+  OrgSvc --> Core["Agent Runtime (@markus/core)"]
+  TaskSvc --> Core
+  AgentMgr --> Core
+  Governance --> Core
+  Core --> Storage["Storage (SQLite / PostgreSQL)"]
 ```
 
-## API Reference
-
-### Agents
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/agents` | List all agents |
-| POST | `/api/agents` | Create (hire) a new agent |
-| POST | `/api/agents/:id/start` | Start an agent |
-| POST | `/api/agents/:id/stop` | Stop an agent |
-| POST | `/api/agents/:id/message` | Send a message to an agent |
-| DELETE | `/api/agents/:id` | Remove (fire) an agent |
-
-### Tasks
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/tasks` | List tasks (filter by status, orgId) |
-| POST | `/api/tasks` | Create a new task |
-| GET | `/api/taskboard` | Get kanban board view |
-
-### Roles
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/roles` | List available role templates |
-| GET | `/api/roles/:name` | Get role template details |
-
-## Creating Custom Roles
-
-Create a directory under `templates/roles/` with the following files:
-
-```
-templates/roles/my-role/
-├── ROLE.md         # Required: Role definition and system prompt
-├── SKILLS.md       # Optional: List of skills/tools
-├── HEARTBEAT.md    # Optional: Proactive task definitions
-└── POLICIES.md     # Optional: Behavioral rules
-```
-
-## Deployment Options
-
-### Self-hosted (VPS / Local)
-
-Single-machine deployment with Docker Compose. Minimum 4 CPU / 8GB RAM.
-
-```bash
-cd deploy && docker compose up -d
-```
-
-### Enterprise (Kubernetes)
-
-Production deployment with Kubernetes manifests in `deploy/k8s/`.
-
-```bash
-kubectl apply -f deploy/k8s/
-```
-
-### Managed (Coming Soon)
-
-Markus Cloud — fully managed service with bundled AI tool subscriptions.
-
-## MCP Integration
-
-Markus agents support the Model Context Protocol (MCP) for connecting to external tools. Configure MCP servers in your agent's setup or via the API.
-
-Built-in tools:
-- `shell_execute` — Run shell commands
-- `file_read` / `file_write` — File operations
-- `web_fetch` — HTTP requests
+For the full architecture documentation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Documentation
 
-| Doc | Description |
-|-----|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture, packages, schemas, data flow |
-| [PRODUCT.md](docs/PRODUCT.md) | Product vision, design principles, roadmap |
-| [GUIDE.md](docs/GUIDE.md) | Setup guide, API reference, role templates |
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | System design, package structure, core concepts |
+| [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI usage, FAQ |
+| [API Reference](docs/API.md) | REST API endpoints and WebSocket events |
+| [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process |
 
-## Roadmap
+All docs are available in [English](docs/ARCHITECTURE.md) and [Chinese](docs/ARCHITECTURE.zh-CN.md).
 
-**Done ✅**
-- PostgreSQL persistent storage + JWT authentication
-- Streaming LLM responses (SSE) with multi-provider fallback
-- Task board (Kanban) with agent auto-assignment
-- Agent heartbeat with task retrospective
-- Multi-agent team management + A2A messaging
-- Human DM + personal notes channels
+## Contributing
 
-**Next 🔄**
-- GUI automation via VNC + OmniParser
-- WhatsApp / Slack / Telegram adapters
-- Agent performance metrics and skill scoring
-- Managed cloud offering (Markus Cloud)
+We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code conventions, and PR guidelines.
+
+```bash
+# Development workflow
+pnpm install
+pnpm build
+pnpm dev        # Start dev server
+pnpm test       # Run tests
+pnpm typecheck  # Type check
+pnpm lint       # Lint
+```
 
 ## License
 
-Apache 2.0
+Markus is dual-licensed:
+
+- **Open Source**: [AGPL-3.0](LICENSE) -- free for self-hosting, personal use, and community contributions
+- **Commercial**: [Available](LICENSE-COMMERCIAL.md) for SaaS deployments and proprietary modifications
+
+Agent templates and skills shared through the marketplace may use their own licenses (typically MIT).
+
+## Community
+
+- [GitHub Issues](https://github.com/anthropic/markus/issues) -- Bug reports and feature requests
+- [GitHub Discussions](https://github.com/anthropic/markus/discussions) -- Questions and ideas

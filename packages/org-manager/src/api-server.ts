@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, type TaskStatus, type TaskPriority } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -5527,7 +5527,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
     if (path === '/api/health') {
       this.json(res, 200, {
         status: 'ok',
-        version: '0.1.0',
+        version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
       });
       return;

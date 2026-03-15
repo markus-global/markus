@@ -5,6 +5,7 @@ dist/
 .env.*
 !.env.example
 *.log
+*.backup
 .DS_Store
 coverage/
 .turbo/

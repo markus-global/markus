@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AI Native Digital Employee Platform",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm build && concurrently -n api,ui -c blue,green \"node packages/cli/dist/index.js start\" \"pnpm --filter @markus/web-ui dev\"",

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createLogger } from '@markus/shared';
+import { createLogger, APP_VERSION } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 
 const log = createLogger('mcp-client');
@@ -71,7 +71,7 @@ export class MCPClientManager {
     const initResult = await this.sendRequest(proc, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'markus', version: '0.1.0' },
+      clientInfo: { name: 'markus', version: APP_VERSION },
     });
 
     await this.sendNotification(proc, 'notifications/initialized', {});

@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { api } from '../api.ts';
 
 interface Props {
   onComplete: () => void;
@@ -7,9 +6,6 @@ interface Props {
 
 export function Onboarding({ onComplete }: Props) {
   const [step, setStep] = useState(0);
-  const [agentName, setAgentName] = useState('Alice');
-  const [agentRole, setAgentRole] = useState('developer');
-  const [creating, setCreating] = useState(false);
 
   const steps = [
     {
@@ -35,73 +31,33 @@ export function Onboarding({ onComplete }: Props) {
       ),
     },
     {
-      title: 'Hire Your First Agent',
-      subtitle: 'Give them a name and role',
+      title: 'Quick Tour',
+      subtitle: 'Here\'s what you can do',
       content: (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Agent Name</label>
-            <input
-              value={agentName}
-              onChange={e => setAgentName(e.target.value)}
-              className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none"
-              placeholder="e.g. Alice, Bob, DevBot"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Role</label>
-            <select
-              value={agentRole}
-              onChange={e => setAgentRole(e.target.value)}
-              className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none"
-            >
-              <option value="developer">Software Developer</option>
-              <option value="devops">DevOps Engineer</option>
-              <option value="product-manager">Product Manager</option>
-              <option value="marketing">Marketing Specialist</option>
-              <option value="support">Customer Support</option>
-              <option value="content-writer">Content Writer</option>
-            </select>
-          </div>
-          <p className="text-xs text-gray-500">You can hire more agents later from the Team page or by telling the Manager.</p>
-        </div>
-      ),
-    },
-    {
-      title: 'You\'re All Set!',
-      subtitle: 'Start working with your AI team',
-      content: (
-        <div className="space-y-4 text-gray-300 text-sm">
-          <p>Here's how to interact with your agents:</p>
-          <div className="space-y-2">
-            {[
-              ['Workspace (Chat)', 'Talk to agents directly or let Smart Route pick the best one'],
-              ['Command Bar', 'Use the bottom bar for quick commands like "hire a QA engineer"'],
-              ['Tasks', 'Create and track tasks on the kanban board'],
-              ['Agent Profile', 'View each agent\'s skills, proficiency, and work history'],
-            ].map(([title, desc]) => (
-              <div key={title} className="flex gap-3 bg-gray-800/50 rounded-lg p-3">
-                <div className="text-indigo-400 mt-0.5">→</div>
-                <div>
-                  <div className="font-medium text-white text-xs">{title}</div>
-                  <div className="text-gray-400 text-xs">{desc}</div>
-                </div>
+        <div className="space-y-2 text-gray-300 text-sm">
+          {[
+            ['Overview', 'Monitor your AI team\'s status, task progress, and system health'],
+            ['Chat', 'Talk to agents directly or use Smart Route to auto-pick the best one'],
+            ['Projects', 'Create and track tasks on kanban boards with full governance'],
+            ['Builder', 'Create and customize agents, team workflows, and prompts'],
+            ['Knowledge', 'Manage your team\'s shared knowledge base'],
+            ['Agents & Skills', 'Browse and install agent templates and skill packages'],
+          ].map(([title, desc]) => (
+            <div key={title} className="flex gap-3 bg-gray-800/50 rounded-lg p-3">
+              <div className="text-indigo-400 mt-0.5 shrink-0">&#x2192;</div>
+              <div>
+                <div className="font-medium text-white text-xs">{title}</div>
+                <div className="text-gray-400 text-xs">{desc}</div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
+          <p className="text-xs text-gray-500 mt-3">Your team already includes a Secretary agent and several builder agents ready to help.</p>
         </div>
       ),
     },
   ];
 
-  const handleNext = async () => {
-    if (step === 1) {
-      setCreating(true);
-      try {
-        await api.agents.create(agentName, agentRole);
-      } catch { /* ignore if creation fails */ }
-      setCreating(false);
-    }
+  const handleNext = () => {
     if (step < steps.length - 1) {
       setStep(step + 1);
     } else {
@@ -138,10 +94,9 @@ export function Onboarding({ onComplete }: Props) {
             )}
             <button
               onClick={handleNext}
-              disabled={creating || (step === 1 && !agentName.trim())}
-              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-xl transition-colors"
+              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl transition-colors"
             >
-              {creating ? 'Creating...' : step === steps.length - 1 ? 'Get Started' : 'Next'}
+              {step === steps.length - 1 ? 'Get Started' : 'Next'}
             </button>
           </div>
         </div>

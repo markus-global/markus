@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { loadConfig, getDefaultConfigPath, createLogger, type LLMProviderConfig } from '@markus/shared';
+import { loadConfig, getDefaultConfigPath, createLogger, APP_VERSION, type LLMProviderConfig } from '@markus/shared';
 import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
 import {
   OrganizationService,
@@ -106,7 +106,7 @@ async function main() {
   }
 
   if (command === 'version' || command === '--version') {
-    console.log('markus v0.1.0');
+    console.log(`markus v${APP_VERSION}`);
     return;
   }
 
@@ -276,24 +276,6 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
       defaultProvider = 'siliconflow';
     }
   }
-
-  // const openrouterKey =
-  //   config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
-  // if (openrouterKey) {
-  //   providerConfigs['openrouter'] = {
-  //     provider: 'openrouter',
-  //     model: process.env['OPENROUTER_MODEL'] ?? 'minimax/minimax-m2.1',
-  //     apiKey: openrouterKey,
-  //     baseUrl:
-  //       process.env['OPENROUTER_BASE_URL'] ??
-  //       config.llm.providers['openrouter']?.baseUrl ??
-  //       'https://openrouter.ai/api/v1',
-  //     timeoutMs: llmTimeoutMs,
-  //   };
-  //   if (config.llm.defaultProvider === 'openrouter') {
-  //     defaultProvider = 'openrouter';
-  //   }
-  // }
 
   const minimaxKey =
     config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];

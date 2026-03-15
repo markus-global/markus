@@ -83,6 +83,26 @@ export function Dashboard() {
           <MetricTile label="Completed" value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate('tasks')} />
         </div>
 
+        {/* Getting Started — shown when no tasks exist yet */}
+        {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
+          <div className="bg-gray-900 border border-indigo-500/20 rounded-xl p-6">
+            <h3 className="text-sm font-semibold text-white mb-1">Getting Started</h3>
+            <p className="text-xs text-gray-400 mb-4">Your AI team is ready. Here are a few things to try first:</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { label: 'Chat with Secretary', desc: 'Your default team manager can help coordinate work', page: 'team' as const },
+                { label: 'Browse Agent Templates', desc: 'Hire specialized agents from the template library', page: 'templates' as const },
+                { label: 'Create a Project', desc: 'Set up a project with tasks and iterations', page: 'projects' as const },
+              ].map(item => (
+                <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-gray-800/50 hover:bg-gray-800 border border-gray-700/50 hover:border-indigo-500/30 rounded-lg p-4 transition-colors">
+                  <div className="text-xs font-medium text-white">{item.label}</div>
+                  <div className="text-[11px] text-gray-500 mt-1">{item.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Two-column layout */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left: Charts */}

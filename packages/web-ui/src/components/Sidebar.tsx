@@ -311,7 +311,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
             </div>
           )
         )}
-        {!collapsed && <div className="text-[10px] text-gray-700">v0.1.0</div>}
+        {!collapsed && <div className="text-[10px] text-gray-700">v{__APP_VERSION__}</div>}
       </div>
 
       {/* New Project Modal — portaled to body for full-page centering */}
