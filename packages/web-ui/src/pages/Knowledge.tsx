@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { api, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
+import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
@@ -20,6 +21,12 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 
 const ALL_TYPES = ['file', 'document', 'report', 'directory', 'url', 'text'] as const;
 
+const ARTIFACT_META: Record<string, { icon: string; label: string; color: string }> = {
+  agent: { icon: '\u2726', label: 'Agent', color: 'bg-purple-900/40 text-purple-400' },
+  team:  { icon: '\u25C8', label: 'Team',  color: 'bg-cyan-900/40 text-cyan-400' },
+  skill: { icon: '\u2B21', label: 'Skill', color: 'bg-amber-900/40 text-amber-400' },
+};
+
 export function KnowledgePage() {
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -31,6 +38,7 @@ export function KnowledgePage() {
   const [filterProject, setFilterProject] = useState('');
   const [filterAgent, setFilterAgent] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterArtifact, setFilterArtifact] = useState('');
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('project');
   const [selected, setSelected] = useState<DeliverableInfo | null>(null);
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -50,6 +58,9 @@ export function KnowledgePage() {
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
+  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const copyMenuRef = useRef<HTMLDivElement>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -80,13 +91,19 @@ export function KnowledgePage() {
         agentId: filterAgent || undefined,
         type: filterType || undefined,
         status: filterStatus || undefined,
+        artifactType: filterArtifact || undefined,
       });
       setItems(results);
     } catch { setItems([]); }
     setLoading(false);
-  }, [debouncedQuery, filterProject, filterAgent, filterType, filterStatus]);
+  }, [debouncedQuery, filterProject, filterAgent, filterType, filterStatus, filterArtifact]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    const unsub = wsClient.on('deliverable:created', () => refresh());
+    return unsub;
+  }, [refresh]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, { label: string; items: DeliverableInfo[] }>();
@@ -168,6 +185,28 @@ export function KnowledgePage() {
     setActionLoading('');
   };
 
+  const handleImportArtifact = async (d: DeliverableInfo) => {
+    if (!d.artifactType || !d.artifactData) return;
+    setActionLoading('import');
+    try {
+      await api.builder.create(d.artifactType as BuilderMode, d.artifactData);
+      const label = { agent: 'Agent', team: 'Team', skill: 'Skill' }[d.artifactType] ?? 'Artifact';
+      flashMsg('success', `${label} "${(d.artifactData.name as string) ?? ''}" imported successfully`);
+    } catch (e) { flashMsg('error', `Import failed: ${e}`); }
+    setActionLoading('');
+  };
+
+  const handleExportArtifact = (d: DeliverableInfo) => {
+    if (!d.artifactData) return;
+    const blob = new Blob([JSON.stringify(d.artifactData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(d.artifactData.name as string) ?? d.artifactType ?? 'artifact'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const loadPreview = async (d: DeliverableInfo) => {
     if (!d.reference) return;
     const ext = d.reference.split('.').pop()?.toLowerCase() ?? '';
@@ -189,9 +228,80 @@ export function KnowledgePage() {
   useEffect(() => {
     setPreviewContent(null);
     setShowCopyPath(false);
+    setCopyMenuOpen(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (!copyMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (copyMenuRef.current && !copyMenuRef.current.contains(e.target as Node)) setCopyMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [copyMenuOpen]);
+
+  const copyAsHtml = (theme: 'light' | 'dark', sourceText: string) => {
+    const sourceEl = previewRef.current?.firstElementChild as HTMLElement | null;
+    if (!sourceEl) return;
+    const html = buildStyledHtml(sourceEl, theme);
+    navigator.clipboard.write([
+      new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([sourceText], { type: 'text/plain' }),
+      }),
+    ]);
+    flashMsg('success', theme === 'light' ? 'HTML（亮色）已复制' : 'HTML（暗色）已复制');
+    setCopyMenuOpen(false);
+  };
+
+  const renderMarkdownPreview = (content: string) => (
+    <div className="relative group/preview">
+      <div
+        className={`absolute -top-1 -right-1 z-10 transition-opacity ${copyMenuOpen ? 'opacity-100' : 'opacity-0 group-hover/preview:opacity-100'}`}
+        ref={copyMenuRef}
+      >
+        <button
+          onClick={() => setCopyMenuOpen(o => !o)}
+          className="p-1.5 rounded-lg bg-gray-800/80 hover:bg-gray-700 text-gray-400 hover:text-gray-200 backdrop-blur-sm border border-gray-700/50 transition-all"
+          title="复制内容"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </button>
+        {copyMenuOpen && (
+          <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[180px]">
+            <button
+              onClick={() => { navigator.clipboard.writeText(content); flashMsg('success', 'Markdown 原文已复制'); setCopyMenuOpen(false); }}
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+            >
+              <span className="w-4 text-center text-gray-500 shrink-0 font-mono text-[10px]">Md</span>
+              复制 Markdown 原文
+            </button>
+            <button
+              onClick={() => copyAsHtml('light', content)}
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+            >
+              <span className="w-4 text-center shrink-0">☀️</span>
+              复制 HTML（亮色）
+            </button>
+            <button
+              onClick={() => copyAsHtml('dark', content)}
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+            >
+              <span className="w-4 text-center shrink-0">🌙</span>
+              复制 HTML（暗色）
+            </button>
+          </div>
+        )}
+      </div>
+      <div ref={previewRef}>
+        <MarkdownMessage content={content} className="text-gray-300 text-sm" />
+      </div>
+    </div>
+  );
 
   const openContributeForm = () => {
     setNewTitle(''); setNewSummary(''); setNewReference(''); setNewTags('');
@@ -234,6 +344,13 @@ export function KnowledgePage() {
             <FilterPill label="Active" value="" current={filterStatus} onClick={setFilterStatus} />
             <FilterPill label="Verified" value="verified" current={filterStatus} onClick={setFilterStatus} />
             <FilterPill label="Outdated" value="outdated" current={filterStatus} onClick={setFilterStatus} />
+          </div>
+          {/* Builder artifact filter */}
+          <div className="flex gap-1 flex-wrap">
+            <FilterPill label="All" value="" current={filterArtifact} onClick={setFilterArtifact} />
+            {(['agent', 'team', 'skill'] as const).map(a => (
+              <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${ARTIFACT_META[a].label}`} value={a} current={filterArtifact} onClick={setFilterArtifact} />
+            ))}
           </div>
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
@@ -278,7 +395,13 @@ export function KnowledgePage() {
                   className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'}`}>
                   <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
                   <div className="flex items-center gap-2 mt-1">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
+                    {item.artifactType && ARTIFACT_META[item.artifactType] ? (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
+                        {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
+                      </span>
+                    ) : (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
+                    )}
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{item.status}</span>
                     {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
                   </div>
@@ -331,6 +454,11 @@ export function KnowledgePage() {
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
                 <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{selected.status}</span>
+                {selected.artifactType && ARTIFACT_META[selected.artifactType] && (
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${ARTIFACT_META[selected.artifactType].color}`}>
+                    {ARTIFACT_META[selected.artifactType].icon} Builder {ARTIFACT_META[selected.artifactType].label}
+                  </span>
+                )}
               </div>
               {selected.reference && (selected.type === 'file' || selected.type === 'directory') && (
                 <div className="flex items-center gap-2 mt-2 bg-gray-900/60 border border-gray-800 rounded-lg px-3 py-2">
@@ -364,34 +492,62 @@ export function KnowledgePage() {
             </div>
 
             {/* Preview area */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              {selected.type === 'url' && selected.reference ? (
-                <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline text-sm break-all">{selected.reference}</a>
-              ) : previewLoading ? (
-                <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
-              ) : previewContent ? (
-                <MarkdownMessage content={previewContent} className="text-gray-300 text-sm" />
-              ) : showCopyPath ? (
-                <div className="space-y-3">
-                  <p className="text-sm text-gray-400">This {selected.type} cannot be previewed in the browser.</p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                      className="text-xs bg-gray-800 px-3 py-2 rounded text-indigo-400 hover:text-indigo-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
-                      title="Open in file browser"
-                    >{selected.reference}</button>
-                    <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                      className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Open</button>
-                    <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
-                      className="px-3 py-2 text-xs rounded-lg bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0">Copy</button>
-                  </div>
+            {selected.artifactType && selected.artifactData ? (
+              <div className="space-y-4">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <ArtifactPreview artifact={selected.artifactData} mode={selected.artifactType as BuilderMode} />
                 </div>
-              ) : selected.summary ? (
-                <MarkdownMessage content={selected.summary} className="text-gray-300 text-sm" />
-              ) : (
-                <p className="text-sm text-gray-600 italic">No content</p>
-              )}
-            </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleImportArtifact(selected)}
+                    disabled={!!actionLoading}
+                    className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
+                  >
+                    {actionLoading === 'import' ? 'Importing...' : `Import ${ARTIFACT_META[selected.artifactType]?.label ?? 'Artifact'}`}
+                  </button>
+                  <button
+                    onClick={() => handleExportArtifact(selected)}
+                    className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg border border-gray-700 transition-colors"
+                  >
+                    Export JSON
+                  </button>
+                </div>
+                {selected.summary && (
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                    <MarkdownMessage content={selected.summary} className="text-gray-300 text-sm" />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                {selected.type === 'url' && selected.reference ? (
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline text-sm break-all">{selected.reference}</a>
+                ) : previewLoading ? (
+                  <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
+                ) : previewContent ? (
+                  renderMarkdownPreview(previewContent)
+                ) : showCopyPath ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-400">This {selected.type} cannot be previewed in the browser.</p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
+                        className="text-xs bg-gray-800 px-3 py-2 rounded text-indigo-400 hover:text-indigo-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                        title="Open in file browser"
+                      >{selected.reference}</button>
+                      <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
+                        className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Open</button>
+                      <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
+                        className="px-3 py-2 text-xs rounded-lg bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0">Copy</button>
+                    </div>
+                  </div>
+                ) : selected.summary ? (
+                  renderMarkdownPreview(selected.summary)
+                ) : (
+                  <p className="text-sm text-gray-600 italic">No content</p>
+                )}
+              </div>
+            )}
 
             {/* Diff stats / test results */}
             {(selected.diffStats || selected.testResults) && (
@@ -530,6 +686,76 @@ export function KnowledgePage() {
       )}
     </div>
   );
+}
+
+function buildStyledHtml(sourceEl: HTMLElement, theme: 'light' | 'dark'): string {
+  const clone = sourceEl.cloneNode(true) as HTMLElement;
+  const t = theme === 'light'
+    ? {
+        bg: '#ffffff', text: '#24292f', heading: '#1f2328', strong: '#1f2328',
+        link: '#0969da', codeBg: '#eff1f3', codeText: '#24292f',
+        preBg: '#f6f8fa', preText: '#24292f', preBorder: '#d0d7de',
+        border: '#d0d7de', blockquoteBorder: '#d0d7de', blockquoteText: '#656d76',
+        tableBorder: '#d0d7de', tableHeaderBg: '#f6f8fa', tableHeaderText: '#24292f',
+        hrColor: '#d8dee4',
+      }
+    : {
+        bg: '#0d1117', text: '#e6edf3', heading: '#f0f6fc', strong: '#f0f6fc',
+        link: '#58a6ff', codeBg: '#161b22', codeText: '#e6edf3',
+        preBg: '#161b22', preText: '#e6edf3', preBorder: '#30363d',
+        border: '#30363d', blockquoteBorder: '#3b82f6', blockquoteText: '#8b949e',
+        tableBorder: '#30363d', tableHeaderBg: '#161b22', tableHeaderText: '#e6edf3',
+        hrColor: '#21262d',
+      };
+
+  const styleMap: Record<string, string> = {
+    'p': `margin:0 0 10px;color:${t.text};line-height:1.7;`,
+    'h1': `font-size:1.6em;font-weight:700;color:${t.heading};margin:20px 0 10px;line-height:1.3;border-bottom:1px solid ${t.border};padding-bottom:6px;`,
+    'h2': `font-size:1.35em;font-weight:700;color:${t.heading};margin:18px 0 8px;line-height:1.3;`,
+    'h3': `font-size:1.15em;font-weight:600;color:${t.heading};margin:14px 0 6px;line-height:1.3;`,
+    'h4': `font-size:1em;font-weight:600;color:${t.heading};margin:12px 0 4px;`,
+    'strong': `font-weight:600;color:${t.strong};`,
+    'em': `font-style:italic;`,
+    'a': `color:${t.link};text-decoration:underline;`,
+    'ul': `padding-left:1.5em;margin:0 0 10px;`,
+    'ol': `padding-left:1.5em;margin:0 0 10px;`,
+    'li': `margin:3px 0;line-height:1.7;color:${t.text};`,
+    'blockquote': `border-left:3px solid ${t.blockquoteBorder};padding:2px 0 2px 14px;margin:10px 0;color:${t.blockquoteText};`,
+    'hr': `border:none;border-top:1px solid ${t.hrColor};margin:20px 0;`,
+    'table': `border-collapse:collapse;width:100%;margin:10px 0;`,
+    'thead': `background:${t.tableHeaderBg};`,
+    'th': `border:1px solid ${t.tableBorder};padding:8px 12px;text-align:left;font-weight:600;color:${t.tableHeaderText};`,
+    'td': `border:1px solid ${t.tableBorder};padding:8px 12px;color:${t.text};`,
+    'img': 'max-width:100%;height:auto;',
+  };
+
+  function processNode(el: Element) {
+    el.removeAttribute('class');
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === 'pre') {
+      el.setAttribute('style', `background:${t.preBg};color:${t.preText};padding:14px;border-radius:6px;overflow-x:auto;margin:10px 0;font-size:0.88em;line-height:1.5;border:1px solid ${t.preBorder};`);
+      const codeChild = el.querySelector('code');
+      if (codeChild) {
+        codeChild.removeAttribute('class');
+        codeChild.setAttribute('style', `background:transparent;padding:0;border-radius:0;color:inherit;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:inherit;`);
+      }
+      return;
+    }
+
+    if (tag === 'code') {
+      el.setAttribute('style', `background:${t.codeBg};color:${t.codeText};padding:2px 6px;border-radius:4px;font-size:0.9em;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;`);
+    } else if (styleMap[tag]) {
+      el.setAttribute('style', styleMap[tag]!);
+    }
+
+    Array.from(el.children).forEach(processNode);
+  }
+
+  clone.removeAttribute('class');
+  Array.from(clone.children).forEach(child => processNode(child as Element));
+
+  return `<div style="background:${t.bg};color:${t.text};padding:20px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7;max-width:800px;">${clone.innerHTML}</div>`;
 }
 
 function FilterPill({ label, value, current, onClick }: { label: string; value: string; current: string; onClick: (v: string) => void }) {

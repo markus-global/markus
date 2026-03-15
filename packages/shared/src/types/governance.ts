@@ -57,6 +57,7 @@ export interface TaskDeliverable {
 
 export type DeliverableType = 'file' | 'document' | 'report' | 'directory' | 'url' | 'text';
 export type DeliverableStatus = 'active' | 'verified' | 'outdated';
+export type BuilderArtifactType = 'agent' | 'team' | 'skill';
 
 export interface Deliverable {
   id: string;
@@ -70,6 +71,8 @@ export interface Deliverable {
   agentId?: string;
   projectId?: string;
   requirementId?: string;
+  artifactType?: BuilderArtifactType;
+  artifactData?: Record<string, unknown>;
   diffStats?: { filesChanged: number; additions: number; deletions: number };
   testResults?: { passed: number; failed: number; skipped: number };
   accessCount: number;

@@ -75,6 +75,14 @@ export class WSBroadcaster {
     });
   }
 
+  broadcastDeliverableUpdate(deliverableId: string, action: 'created' | 'updated' | 'removed', extra?: Record<string, unknown>): void {
+    this.broadcast({
+      type: `deliverable:${action}`,
+      payload: { deliverableId, ...extra },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   broadcastChat(agentId: string, message: string, sender: 'user' | 'agent'): void {
     this.broadcast({
       type: 'chat:message',

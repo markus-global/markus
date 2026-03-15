@@ -292,6 +292,8 @@ export const deliverables = pgTable(
     agentId: varchar('agent_id', { length: 64 }),
     projectId: varchar('project_id', { length: 64 }),
     requirementId: varchar('requirement_id', { length: 64 }),
+    artifactType: varchar('artifact_type', { length: 16 }),
+    artifactData: jsonb('artifact_data'),
     diffStats: jsonb('diff_stats'),
     testResults: jsonb('test_results'),
     accessCount: integer('access_count').notNull().default(0),

@@ -1616,8 +1616,9 @@ export class APIServer {
       const taskId = url.searchParams.get('taskId') ?? undefined;
       const type = url.searchParams.get('type') as any ?? undefined;
       const status = url.searchParams.get('status') as any ?? undefined;
+      const artifactType = url.searchParams.get('artifactType') as any ?? undefined;
       const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-      const results = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, limit });
+      const results = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, limit });
       this.json(res, 200, { results });
       return;
     }
@@ -3725,6 +3726,25 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           }
 
           await agentManager.startAgent(agent.id);
+
+          // Record as a deliverable so it appears in the Deliverables/Knowledge page
+          if (this.deliverableService) {
+            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'agents');
+            mkdirSync(artifactPath, { recursive: true });
+            const safeName = agentName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+            const filePath = join(artifactPath, `${safeName}.json`);
+            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
+            this.deliverableService.create({
+              type: 'document',
+              title: `Agent: ${agentName}`,
+              summary: (artifact.description as string) ?? `Agent "${agentName}" created via Builder`,
+              reference: filePath,
+              artifactType: 'agent',
+              artifactData: artifact,
+              tags: ['builder', 'agent'],
+            }).catch(err => log.warn('Failed to create deliverable for builder agent', { error: String(err) }));
+          }
+
           this.json(res, 201, {
             agent: { id: agent.id, name: agent.config.name, role: agent.role.name, status: agent.getState().status },
           });
@@ -3792,6 +3812,24 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             }
           }
 
+          // Record as a deliverable so it appears in the Deliverables/Knowledge page
+          if (this.deliverableService) {
+            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'teams');
+            mkdirSync(artifactPath, { recursive: true });
+            const safeName = teamName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+            const filePath = join(artifactPath, `${safeName}.json`);
+            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
+            this.deliverableService.create({
+              type: 'document',
+              title: `Team: ${teamName}`,
+              summary: (artifact.description as string) ?? `Team "${teamName}" created via Builder`,
+              reference: filePath,
+              artifactType: 'team',
+              artifactData: artifact,
+              tags: ['builder', 'team'],
+            }).catch(err => log.warn('Failed to create deliverable for builder team', { error: String(err) }));
+          }
+
           this.json(res, 201, { team: { id: team.id, name: teamName }, agents: createdAgents });
 
         } else if (mode === 'skill') {
@@ -3850,6 +3888,23 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             } catch (dbErr) {
               log.warn('Failed to persist skill to marketplace DB', { error: String(dbErr) });
             }
+          }
+
+          // Record as a deliverable so it appears in the Deliverables/Knowledge page
+          if (this.deliverableService) {
+            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'skills');
+            mkdirSync(artifactPath, { recursive: true });
+            const filePath = join(artifactPath, `${safeName}.json`);
+            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
+            this.deliverableService.create({
+              type: 'document',
+              title: `Skill: ${skillName}`,
+              summary: (artifact.description as string) ?? `Skill "${skillName}" created via Builder`,
+              reference: filePath,
+              artifactType: 'skill',
+              artifactData: artifact,
+              tags: ['builder', 'skill'],
+            }).catch(err => log.warn('Failed to create deliverable for builder skill', { error: String(err) }));
           }
 
           this.json(res, 201, { skill: { name: skillName, path: skillDir, status: 'registered' } });

@@ -198,6 +198,8 @@ export interface DeliverableInfo {
   agentId?: string;
   projectId?: string;
   requirementId?: string;
+  artifactType?: 'agent' | 'team' | 'skill';
+  artifactData?: Record<string, unknown>;
   diffStats?: { filesChanged: number; additions: number; deletions: number };
   testResults?: { passed: number; failed: number; skipped: number };
   accessCount: number;
@@ -1088,7 +1090,7 @@ export const api = {
 
   // ─── Deliverables (unified) ──────────────────────────────────────────
   deliverables: {
-    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; limit?: number }) => {
+    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; limit?: number }) => {
       const params = new URLSearchParams();
       if (opts?.q) params.set('q', opts.q);
       if (opts?.projectId) params.set('projectId', opts.projectId);
@@ -1096,6 +1098,7 @@ export const api = {
       if (opts?.taskId) params.set('taskId', opts.taskId);
       if (opts?.type) params.set('type', opts.type);
       if (opts?.status) params.set('status', opts.status);
+      if (opts?.artifactType) params.set('artifactType', opts.artifactType);
       if (opts?.limit) params.set('limit', String(opts.limit));
       return request<{ results: DeliverableInfo[] }>(`/deliverables?${params}`);
     },

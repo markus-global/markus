@@ -9,6 +9,7 @@ import {
   type TaskGovernancePolicy,
   type ApprovalTier,
   type TaskDeliverable,
+  type BuilderArtifactType,
 } from '@markus/shared';
 import type { AgentManager, WorkspaceManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -18,8 +19,9 @@ import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
-import { mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 
 const log = createLogger('task-service');
 
@@ -1802,17 +1804,35 @@ export class TaskService {
 
     // Persist each task deliverable as a standalone Deliverable entity (skip branch — it's task metadata)
     if (this.deliverableService && deliverables.length > 0) {
+      const builderMode = this.detectBuilderMode(task.assignedAgentId);
+
       for (const d of deliverables) {
         if (d.type === 'branch') continue;
+
+        let artifactType: BuilderArtifactType | undefined;
+        let artifactData: Record<string, unknown> | undefined;
+        let reference = d.reference;
+
+        if (builderMode) {
+          const parsed = this.tryParseBuilderArtifact(d, builderMode);
+          if (parsed) {
+            artifactType = builderMode;
+            artifactData = parsed;
+            reference = this.saveBuilderArtifact(builderMode, parsed, task.id);
+          }
+        }
+
         this.deliverableService.create({
           type: d.type === 'file' ? 'file' : d.type === 'report' ? 'report' : 'document',
           title: d.summary.slice(0, 200) || d.reference,
           summary: d.summary,
-          reference: d.reference,
+          reference,
           taskId: task.id,
           agentId: task.assignedAgentId,
           projectId: task.projectId,
           requirementId: task.requirementId,
+          artifactType,
+          artifactData,
           diffStats: d.diffStats,
           testResults: d.testResults,
         }).catch(err => log.warn('Failed to create deliverable entity', { taskId: task.id, error: String(err) }));
@@ -1884,6 +1904,66 @@ export class TaskService {
     const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
     if (!repo?.localPath) return undefined;
     return join(repo.localPath, '.worktrees', `task-${task.id}`);
+  }
+
+  private detectBuilderMode(agentId?: string): BuilderArtifactType | undefined {
+    if (!agentId || !this.agentManager) return undefined;
+    try {
+      const agents = this.agentManager.listAgents();
+      const info = agents.find(a => a.id === agentId);
+      if (!info) return undefined;
+      const r = info.role.toLowerCase();
+      if (r === 'agent father' || r === 'agent-father') return 'agent';
+      if (r === 'team factory' || r === 'team-factory') return 'team';
+      if (r === 'skill architect' || r === 'skill-architect') return 'skill';
+    } catch { /* ignore */ }
+    return undefined;
+  }
+
+  private tryParseBuilderArtifact(
+    d: TaskDeliverable,
+    _mode: BuilderArtifactType,
+  ): Record<string, unknown> | undefined {
+    // Try parsing from the file reference (JSON file on disk)
+    if (d.reference && d.reference.endsWith('.json')) {
+      try {
+        if (existsSync(d.reference)) {
+          const raw = readFileSync(d.reference, 'utf-8');
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
+        }
+      } catch { /* ignore */ }
+    }
+    // Try extracting JSON from the summary (agent may embed JSON in markdown)
+    const jsonMatch = d.summary?.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (jsonMatch?.[1]) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
+      } catch { /* ignore */ }
+    }
+    // Try parsing the entire summary as JSON
+    try {
+      const parsed = JSON.parse(d.summary);
+      if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
+    } catch { /* ignore */ }
+    return undefined;
+  }
+
+  private saveBuilderArtifact(
+    mode: BuilderArtifactType,
+    artifact: Record<string, unknown>,
+    taskId: string,
+  ): string {
+    const dirMap = { agent: 'agents', team: 'teams', skill: 'skills' } as const;
+    const baseDir = join(homedir(), '.markus', 'builder-artifacts', dirMap[mode]);
+    mkdirSync(baseDir, { recursive: true });
+    const name = (artifact.name as string ?? `${mode}-${taskId}`)
+      .toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const filePath = join(baseDir, `${name}.json`);
+    writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
+    log.info('Builder artifact saved', { mode, name, path: filePath });
+    return filePath;
   }
 
   /**

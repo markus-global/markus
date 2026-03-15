@@ -550,6 +550,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
+  deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();

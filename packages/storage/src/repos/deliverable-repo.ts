@@ -14,6 +14,8 @@ export interface DeliverableRow {
   agentId: string | null;
   projectId: string | null;
   requirementId: string | null;
+  artifactType: string | null;
+  artifactData: Record<string, unknown> | null;
   diffStats: Record<string, number> | null;
   testResults: Record<string, number> | null;
   accessCount: number;
@@ -36,6 +38,8 @@ export class DeliverableRepo {
     agentId?: string;
     projectId?: string;
     requirementId?: string;
+    artifactType?: string;
+    artifactData?: Record<string, unknown>;
     diffStats?: Record<string, number>;
     testResults?: Record<string, number>;
   }): Promise<DeliverableRow> {
@@ -51,6 +55,8 @@ export class DeliverableRepo {
       agentId: data.agentId ?? null,
       projectId: data.projectId ?? null,
       requirementId: data.requirementId ?? null,
+      artifactType: data.artifactType ?? null,
+      artifactData: data.artifactData ?? null,
       diffStats: data.diffStats ?? null,
       testResults: data.testResults ?? null,
     }).returning();
@@ -101,6 +107,8 @@ export class DeliverableRepo {
     status: string;
     projectId: string;
     requirementId: string;
+    artifactType: string;
+    artifactData: Record<string, unknown>;
   }>): Promise<void> {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     for (const [key, val] of Object.entries(data)) {

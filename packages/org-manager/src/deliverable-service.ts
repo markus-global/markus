@@ -1,12 +1,18 @@
 import { createLogger, generateId, type Deliverable, type TaskDeliverable, type Task } from '@markus/shared';
 import type { DeliverableRepo } from '@markus/storage';
+import type { WSBroadcaster } from './ws-server.ts';
 
 const log = createLogger('deliverable-service');
 
 export class DeliverableService {
   private cache = new Map<string, Deliverable>();
+  private ws?: WSBroadcaster;
 
   constructor(private repo?: DeliverableRepo) {}
+
+  setWSBroadcaster(ws: WSBroadcaster): void {
+    this.ws = ws;
+  }
 
   async load(): Promise<void> {
     if (!this.repo) return;
@@ -27,6 +33,8 @@ export class DeliverableService {
     agentId?: string;
     projectId?: string;
     requirementId?: string;
+    artifactType?: Deliverable['artifactType'];
+    artifactData?: Deliverable['artifactData'];
     diffStats?: Deliverable['diffStats'];
     testResults?: Deliverable['testResults'];
   }): Promise<Deliverable> {
@@ -44,6 +52,8 @@ export class DeliverableService {
       agentId: opts.agentId,
       projectId: opts.projectId,
       requirementId: opts.requirementId,
+      artifactType: opts.artifactType,
+      artifactData: opts.artifactData,
       diffStats: opts.diffStats,
       testResults: opts.testResults,
       accessCount: 0,
@@ -63,11 +73,20 @@ export class DeliverableService {
       agentId: opts.agentId,
       projectId: opts.projectId,
       requirementId: opts.requirementId,
+      artifactType: opts.artifactType,
+      artifactData: opts.artifactData,
       diffStats: opts.diffStats as Record<string, number> | undefined,
       testResults: opts.testResults as Record<string, number> | undefined,
     });
     this.cache.set(id, deliverable);
     log.info('Deliverable created', { id, type: opts.type, title: opts.title });
+    this.ws?.broadcastDeliverableUpdate(id, 'created', {
+      type: opts.type,
+      title: opts.title,
+      agentId: opts.agentId,
+      projectId: opts.projectId,
+      taskId: opts.taskId,
+    });
     return deliverable;
   }
 
@@ -87,6 +106,7 @@ export class DeliverableService {
     taskId?: string;
     type?: Deliverable['type'];
     status?: Deliverable['status'];
+    artifactType?: Deliverable['artifactType'];
     limit?: number;
   }): Deliverable[] {
     const limit = opts.limit ?? 100;
@@ -101,6 +121,7 @@ export class DeliverableService {
     if (opts.type) results = results.filter(d => d.type === opts.type);
     if (opts.status) results = results.filter(d => d.status === opts.status);
     else results = results.filter(d => d.status !== 'outdated');
+    if (opts.artifactType) results = results.filter(d => d.artifactType === opts.artifactType);
 
     if (keywords.length === 0) {
       return results
@@ -274,6 +295,8 @@ export class DeliverableService {
     agentId: string | null;
     projectId: string | null;
     requirementId: string | null;
+    artifactType?: string | null;
+    artifactData?: unknown;
     diffStats: unknown;
     testResults: unknown;
     accessCount: number;
@@ -292,6 +315,8 @@ export class DeliverableService {
       agentId: r.agentId ?? undefined,
       projectId: r.projectId ?? undefined,
       requirementId: r.requirementId ?? undefined,
+      artifactType: (r.artifactType as Deliverable['artifactType']) ?? undefined,
+      artifactData: (r.artifactData as Deliverable['artifactData']) ?? undefined,
       diffStats: r.diffStats as Deliverable['diffStats'],
       testResults: r.testResults as Deliverable['testResults'],
       accessCount: r.accessCount,
