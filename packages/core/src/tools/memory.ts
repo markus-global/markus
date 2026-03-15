@@ -178,7 +178,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_update_longterm',
       description:
-        'Update a section of your long-term knowledge base (MEMORY.md). ' +
+        'Update a section of your long-term memory file (MEMORY.md). ' +
         'Use this to persist important accumulated knowledge that should always be available, ' +
         'such as project conventions, team preferences, or recurring patterns.',
       inputSchema: {

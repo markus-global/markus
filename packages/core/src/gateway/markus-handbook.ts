@@ -63,7 +63,7 @@ Organization (Org)
  │    ├── Iterations (Sprints) — time-boxed work containers
  │    │    └── Requirements — user-authorized work items (the "why")
  │    │         └── Tasks → Subtasks — how to fulfill a requirement
- │    └── Knowledge Base — shared insights, decisions, conventions
+ │    └── Deliverables — shared insights, decisions, conventions
  └── Reports — periodic summaries with human feedback
 \`\`\`
 
@@ -75,7 +75,7 @@ Organization (Org)
 - **Iteration**: A time-boxed (Sprint) or continuous (Kanban) work container within a project.
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement.
 - **Task**: A discrete unit of work assigned to you. Always has a status, priority, and references its parent requirement.
-- **Knowledge Base**: Shared memory across the project. Search before starting work and contribute findings after tasks via the gateway knowledge API.
+- **Deliverables**: Shared memory across the project. Search before starting work and contribute findings after tasks via the gateway deliverables API.
 
 ### Requirement-Driven Workflow
 
@@ -185,22 +185,22 @@ Returns all projects with iterations and governance info.
 \`GET ${base}/api/gateway/requirements?project_id=xxx&status=approved\`
 Returns requirements filtered by project and/or status.
 
-### Knowledge Base Endpoints
+### Deliverables Endpoints
 
-Search and contribute to the shared project knowledge base:
+Search and contribute to the shared project deliverables:
 
-**Search knowledge:**
-\`GET ${base}/api/gateway/knowledge/search?query=xxx&scope=project&category=convention\`
-Returns matching knowledge entries. Query params: \`query\` (search text), \`scope\` (\`project\` | \`org\`), \`category\` (\`architecture\` | \`convention\` | \`api\` | \`decision\` | \`gotcha\` | \`troubleshooting\` | \`dependency\` | \`process\` | \`reference\`).
+**Search/list deliverables:**
+\`GET ${base}/api/gateway/deliverables?q=...&projectId=...&type=...\`
+Returns matching deliverables. Query params: \`q\` (search text), \`projectId\` (filter by project), \`type\` (filter by type).
 
-**Contribute knowledge:**
-\`POST ${base}/api/gateway/knowledge\`
-Body: \`{ "scope": "project", "category": "convention", "title": "...", "content": "...", "importance": 60, "tags": ["tag1"] }\`
-Share discoveries, conventions, gotchas, and decisions with the team. Importance: 80+ critical, 50-79 useful, <50 nice-to-know.
+**Create deliverable:**
+\`POST ${base}/api/gateway/deliverables\`
+Body: \`{ "type": "...", "title": "...", "summary": "...", "reference": "...", "tags": ["tag1"], "projectId": "..." }\`
+Share discoveries, conventions, gotchas, and decisions with the team.
 
-**Flag outdated knowledge:**
-\`POST ${base}/api/gateway/knowledge/:id/flag-outdated\`
-Body: \`{ "reason": "This is no longer accurate because..." }\`
+**Update deliverable:**
+\`PUT ${base}/api/gateway/deliverables/:id\`
+Body: \`{ "title"?: "...", "summary"?: "...", "status"?: "...", "tags"?: ["tag1"] }\`
 
 ### Task Lifecycle Endpoints
 
@@ -266,7 +266,7 @@ If you use sub-agents to parallelize work on a Markus task:
 5. **Use sub-tasks** for complex work — gives the team visibility into your work breakdown
 6. **Read teamContext** — know your colleagues and communicate with them when coordinating
 7. **Check requirements** — understand *why* a task exists before starting work
-8. **Search knowledge before work** — check the knowledge base for relevant conventions and decisions
-9. **Contribute knowledge after tasks** — share gotchas, patterns, and decisions with the team
+8. **Search deliverables before work** — check the deliverables for relevant conventions and decisions
+9. **Contribute deliverables after tasks** — share gotchas, patterns, and decisions with the team
 `;
 }

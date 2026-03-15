@@ -1,183 +1,255 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { api, type KnowledgeEntryInfo, type ProjectInfo } from '../api.ts';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { api, type DeliverableInfo, type ProjectInfo, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { navBus } from '../navBus.ts';
 
-const CATEGORIES = ['architecture', 'convention', 'api', 'decision', 'gotcha', 'troubleshooting', 'dependency', 'process', 'reference'] as const;
-
-const CATEGORY_META: Record<string, { icon: string; hint: string }> = {
-  architecture:    { icon: '\u{1F3D7}', hint: 'System structure, module boundaries, data flow patterns' },
-  convention:      { icon: '\u{1F4CF}', hint: 'Coding style, naming rules, file organization standards' },
-  api:             { icon: '\u{1F50C}', hint: 'Endpoint contracts, request/response formats, auth' },
-  decision:        { icon: '\u{2696}',  hint: 'Why a choice was made, trade-offs considered' },
-  gotcha:          { icon: '\u{26A0}',  hint: 'Non-obvious pitfalls, things that break silently' },
-  troubleshooting: { icon: '\u{1F527}', hint: 'How to diagnose and fix recurring issues' },
-  dependency:      { icon: '\u{1F4E6}', hint: 'Library quirks, version constraints, upgrade notes' },
-  process:         { icon: '\u{1F504}', hint: 'Workflow, deployment steps, review procedures' },
-  reference:       { icon: '\u{1F4DA}', hint: 'General reference material, useful links' },
+const TYPE_META: Record<string, { icon: string; color: string }> = {
+  file:      { icon: '\u{1F4C4}', color: 'bg-emerald-900/40 text-emerald-400' },
+  document:  { icon: '\u{1F4DD}', color: 'bg-blue-900/40 text-blue-400' },
+  branch:    { icon: '\u{1F33F}', color: 'bg-purple-900/40 text-purple-400' },
+  report:    { icon: '\u{1F4CA}', color: 'bg-amber-900/40 text-amber-400' },
+  directory: { icon: '\u{1F4C1}', color: 'bg-cyan-900/40 text-cyan-400' },
+  url:       { icon: '\u{1F517}', color: 'bg-pink-900/40 text-pink-400' },
+  text:      { icon: '\u{1F4AC}', color: 'bg-gray-700 text-gray-400' },
 };
 
-const SCOPE_META: Record<string, { label: string; description: string }> = {
-  org:     { label: 'Organization', description: 'Applies across all projects' },
-  project: { label: 'Project',      description: 'Specific to one project' },
+const STATUS_META: Record<string, { label: string; color: string }> = {
+  active:   { label: 'Active',   color: 'text-emerald-400 bg-emerald-900/30' },
+  verified: { label: 'Verified', color: 'text-blue-400 bg-blue-900/30' },
+  outdated: { label: 'Outdated', color: 'text-red-400 bg-red-900/30' },
 };
+
+const ALL_TYPES = ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'] as const;
 
 export function KnowledgePage() {
-  const [entries, setEntries] = useState<KnowledgeEntryInfo[]>([]);
+  const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [filterScope, setFilterScope] = useState<string>('');
-  const [filterCategory, setFilterCategory] = useState<string>('');
-  const [loading, setLoading] = useState(true);
+  const [filterType, setFilterType] = useState('');
+  const [filterProject, setFilterProject] = useState('');
+  const [filterAgent, setFilterAgent] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('project');
+  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [selected, setSelected] = useState<KnowledgeEntryInfo | null>(null);
   const [actionLoading, setActionLoading] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
 
-  // Contribute form
-  const [showContribute, setShowContribute] = useState(false);
-  const [contributing, setContributing] = useState(false);
+  // Create form
+  const [newType, setNewType] = useState<string>('document');
   const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const [newScope, setNewScope] = useState<string>('org');
-  const [newProjectId, setNewProjectId] = useState<string>('');
-  const [newCategory, setNewCategory] = useState<string>('convention');
-  const [newImportance, setNewImportance] = useState(5);
+  const [newSummary, setNewSummary] = useState('');
+  const [newReference, setNewReference] = useState('');
+  const [newProjectId, setNewProjectId] = useState('');
   const [newTags, setNewTags] = useState('');
+
+  // File preview
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [showCopyPath, setShowCopyPath] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const flash_msg = (type: 'success' | 'error', text: string) => {
+  const flashMsg = (type: 'success' | 'error', text: string) => {
     setFlash({ type, text });
     setTimeout(() => setFlash(null), 3000);
   };
 
-  // Load projects once
+  const agentMap = useMemo(() => new Map(agents.map(a => [a.id, a])), [agents]);
+  const projectMap = useMemo(() => new Map(projects.map(p => [p.id, p])), [projects]);
+
   useEffect(() => {
-    api.projects.list().then(r => {
-      setProjects(r.projects);
-      if (r.projects.length > 0) setNewProjectId(r.projects[0]!.id);
-    }).catch(() => {});
+    api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
+    api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
   }, []);
 
-  // Debounce search input
   useEffect(() => {
     debounceRef.current = setTimeout(() => setDebouncedQuery(searchQuery), 300);
     return () => clearTimeout(debounceRef.current);
   }, [searchQuery]);
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      const { results } = await api.knowledge.search(
-        debouncedQuery,
-        filterScope || undefined,
-        filterCategory || undefined,
-      );
-      setEntries(results);
-    } catch { setEntries([]); }
+      const { results } = await api.deliverables.search({
+        q: debouncedQuery || undefined,
+        projectId: filterProject || undefined,
+        agentId: filterAgent || undefined,
+        type: filterType || undefined,
+        status: filterStatus || undefined,
+      });
+      setItems(results);
+    } catch { setItems([]); }
     setLoading(false);
-  }, [debouncedQuery, filterScope, filterCategory]);
+  }, [debouncedQuery, filterProject, filterAgent, filterType, filterStatus]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const openContributeForm = () => {
-    setNewTitle(''); setNewContent(''); setNewTags('');
-    setNewScope('org'); setNewCategory('convention'); setNewImportance(5);
-    if (projects.length > 0) setNewProjectId(projects[0]!.id);
-    setShowContribute(true);
-  };
+  const grouped = useMemo(() => {
+    const groups = new Map<string, { label: string; items: DeliverableInfo[] }>();
+    for (const item of items) {
+      let key: string;
+      let label: string;
+      if (groupBy === 'project') {
+        key = item.projectId ?? '_none';
+        label = item.projectId ? (projectMap.get(item.projectId)?.name ?? item.projectId) : 'No Project';
+      } else if (groupBy === 'agent') {
+        key = item.agentId ?? '_none';
+        label = item.agentId ? (agentMap.get(item.agentId)?.name ?? item.agentId) : 'Unknown';
+      } else if (groupBy === 'type') {
+        key = item.type;
+        label = item.type.charAt(0).toUpperCase() + item.type.slice(1);
+      } else {
+        const d = new Date(item.updatedAt);
+        key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        label = key;
+      }
+      if (!groups.has(key)) groups.set(key, { label, items: [] });
+      groups.get(key)!.items.push(item);
+    }
+    const sorted = [...groups.entries()];
+    if (groupBy === 'date') sorted.sort((a, b) => b[0].localeCompare(a[0]));
+    else sorted.sort((a, b) => a[1].label.localeCompare(b[1].label));
+    return sorted;
+  }, [items, groupBy, projectMap, agentMap]);
 
-  const handleContribute = async () => {
-    if (!newTitle.trim() || !newContent.trim()) return;
-    if (newScope === 'project' && !newProjectId) return;
-    setContributing(true);
+  const handleCreate = async () => {
+    if (!newTitle.trim() || !newSummary.trim()) return;
+    setCreating(true);
     try {
-      const scopeId = newScope === 'project' ? newProjectId : 'default';
-      await api.knowledge.contribute({
+      await api.deliverables.create({
+        type: newType as DeliverableInfo['type'],
         title: newTitle,
-        content: newContent,
-        scope: newScope,
-        scopeId,
-        category: newCategory,
-        importance: newImportance,
+        summary: newSummary,
+        reference: newReference,
+        projectId: newProjectId || undefined,
         tags: newTags.split(',').map(t => t.trim()).filter(Boolean),
       });
-      setShowContribute(false);
-      flash_msg('success', 'Knowledge entry added');
+      setShowCreate(false);
+      flashMsg('success', 'Deliverable created');
       refresh();
-    } catch (e) { flash_msg('error', `Error: ${e}`); }
-    setContributing(false);
+    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    setCreating(false);
   };
 
-  const handleFlagOutdated = async (entry: KnowledgeEntryInfo) => {
-    setActionLoading('flag');
-    try {
-      await api.knowledge.flagOutdated(entry.id, 'Marked outdated by user');
-      flash_msg('success', 'Marked as outdated');
-      setSelected({ ...entry, status: 'outdated' });
-      refresh();
-    } catch (e) { flash_msg('error', `Error: ${e}`); }
-    setActionLoading('');
-  };
-
-  const handleVerify = async (entry: KnowledgeEntryInfo) => {
+  const handleVerify = async (d: DeliverableInfo) => {
     setActionLoading('verify');
     try {
-      await api.knowledge.verify(entry.id);
-      flash_msg('success', 'Verified successfully');
-      setSelected({ ...entry, status: 'verified' });
+      await api.deliverables.verify(d.id);
+      flashMsg('success', 'Verified');
+      setSelected({ ...d, status: 'verified' });
       refresh();
-    } catch (e) { flash_msg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', `Error: ${e}`); }
     setActionLoading('');
   };
 
-  const handleDelete = async (entry: KnowledgeEntryInfo) => {
-    setActionLoading('delete');
+  const handleFlagOutdated = async (d: DeliverableInfo) => {
+    setActionLoading('flag');
     try {
-      await api.knowledge.remove(entry.id);
-      flash_msg('success', 'Entry removed');
+      await api.deliverables.update(d.id, { status: 'outdated' });
+      flashMsg('success', 'Flagged as outdated');
+      setSelected({ ...d, status: 'outdated' });
+      refresh();
+    } catch (e) { flashMsg('error', `Error: ${e}`); }
+    setActionLoading('');
+  };
+
+  const handleRemove = async (d: DeliverableInfo) => {
+    setActionLoading('remove');
+    try {
+      await api.deliverables.remove(d.id);
+      flashMsg('success', 'Removed');
       setSelected(null);
       refresh();
-    } catch (e) { flash_msg('error', `Error: ${e}`); }
+    } catch (e) { flashMsg('error', `Error: ${e}`); }
     setActionLoading('');
   };
 
-  const projectName = (scopeId: string) => projects.find(p => p.id === scopeId)?.name ?? scopeId;
+  const loadPreview = async (d: DeliverableInfo) => {
+    if (!d.reference) return;
+    const ext = d.reference.split('.').pop()?.toLowerCase() ?? '';
+    const previewable = ['md', 'txt', 'json', 'yaml', 'yml', 'toml', 'xml', 'csv', 'log', 'html', 'css', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'java', 'sh', 'bash', 'zsh'].includes(ext);
+    if ((d.type === 'file' && previewable) || d.type === 'document' || d.type === 'text') {
+      if (d.type === 'file') {
+        setPreviewLoading(true);
+        try {
+          const { content } = await api.files.preview(d.reference);
+          setPreviewContent(content);
+        } catch { setPreviewContent(null); }
+        setPreviewLoading(false);
+      }
+    } else if (d.type === 'file' || d.type === 'directory') {
+      setShowCopyPath(true);
+    }
+  };
 
-  const scopeLabel = (entry: KnowledgeEntryInfo) =>
-    entry.scope === 'project' ? `project: ${projectName(entry.scopeId)}` : entry.scope;
+  useEffect(() => {
+    setPreviewContent(null);
+    setShowCopyPath(false);
+    if (selected) loadPreview(selected);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.id]);
+
+  const openContributeForm = () => {
+    setNewTitle(''); setNewSummary(''); setNewReference(''); setNewTags('');
+    setNewType('document');
+    if (projects.length > 0) setNewProjectId(projects[0]!.id);
+    setShowCreate(true);
+  };
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* Left: list */}
+      {/* Left sidebar */}
       <div className="w-96 border-r border-gray-800 flex flex-col bg-gray-950 shrink-0">
         <div className="p-4 border-b border-gray-800 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-300">Knowledge Base</h2>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Contribute</button>
+            <h2 className="text-sm font-semibold text-gray-300">Deliverables</h2>
+            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Create</button>
           </div>
           <input
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search knowledge..."
+            placeholder="Search deliverables..."
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors"
           />
-          <div className="flex gap-1.5 flex-wrap">
-            <FilterPill label="All scopes" value="" current={filterScope} onClick={setFilterScope} />
-            <FilterPill label="org" value="org" current={filterScope} onClick={setFilterScope} />
-            <FilterPill label="project" value="project" current={filterScope} onClick={setFilterScope} />
+          {/* Type filter */}
+          <div className="flex gap-1 flex-wrap">
+            <FilterPill label="All types" value="" current={filterType} onClick={setFilterType} />
+            {ALL_TYPES.map(t => (
+              <FilterPill key={t} label={`${TYPE_META[t]?.icon ?? ''} ${t}`} value={t} current={filterType} onClick={setFilterType} />
+            ))}
           </div>
-          <div className="flex gap-1.5 flex-wrap">
-            <FilterPill label="All categories" value="" current={filterCategory} onClick={setFilterCategory} />
-            {CATEGORIES.map(c => (
-              <FilterPill key={c} label={`${CATEGORY_META[c]?.icon ?? ''} ${c}`} value={c} current={filterCategory} onClick={setFilterCategory} />
+          {/* Project filter */}
+          {projects.length > 0 && (
+            <div className="flex gap-1 flex-wrap">
+              <FilterPill label="All projects" value="" current={filterProject} onClick={setFilterProject} />
+              {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
+            </div>
+          )}
+          {/* Status filter */}
+          <div className="flex gap-1 flex-wrap">
+            <FilterPill label="Active" value="" current={filterStatus} onClick={setFilterStatus} />
+            <FilterPill label="Verified" value="verified" current={filterStatus} onClick={setFilterStatus} />
+            <FilterPill label="Outdated" value="outdated" current={filterStatus} onClick={setFilterStatus} />
+          </div>
+          {/* Group by */}
+          <div className="flex gap-1.5 items-center">
+            <span className="text-[10px] text-gray-500">Group:</span>
+            {(['project', 'agent', 'date', 'type'] as const).map(g => (
+              <button key={g} onClick={() => setGroupBy(g)}
+                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                {g.charAt(0).toUpperCase() + g.slice(1)}
+              </button>
             ))}
           </div>
         </div>
 
         {flash && (
-          <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${
-            flash.type === 'success' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-red-900/50 text-red-300'
-          }`}>{flash.text}</div>
+          <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-red-900/50 text-red-300'}`}>{flash.text}</div>
         )}
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -190,82 +262,131 @@ export function KnowledgePage() {
                 </div>
               ))}
             </div>
-          ) : entries.length === 0 ? (
-            <EmptyState hasFilters={!!(debouncedQuery || filterScope || filterCategory)} onContribute={openContributeForm} />
-          ) : entries.map(entry => (
-            <button
-              key={entry.id}
-              onClick={() => setSelected(entry)}
-              className={`w-full text-left p-3 rounded-lg transition-colors ${
-                selected?.id === entry.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'
-              }`}
-            >
-              <div className="text-sm font-medium text-gray-200 truncate">{entry.title}</div>
-              <div className="flex items-center gap-2 mt-1.5">
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${scopeColor(entry.scope)}`}>{scopeLabel(entry)}</span>
-                <span className="text-[10px] text-gray-500">{CATEGORY_META[entry.category]?.icon ?? ''} {entry.category}</span>
-                <StatusBadge status={entry.status} />
-                {entry.importance >= 8 && <span className="text-[10px] text-amber-400" title={`Importance: ${entry.importance}`}>&#9733;</span>}
-              </div>
-            </button>
+          ) : items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+              <svg className="w-12 h-12 text-gray-700 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+              </svg>
+              <p className="text-sm text-gray-400">No deliverables yet</p>
+              <p className="text-xs text-gray-600 mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
+              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Create first</button>
+            </div>
+          ) : grouped.map(([key, group]) => (
+            <div key={key}>
+              <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wider px-2 py-1.5">{group.label} <span className="text-gray-600">({group.items.length})</span></div>
+              {group.items.map(item => (
+                <button key={item.id} onClick={() => setSelected(item)}
+                  className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'}`}>
+                  <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{item.status}</span>
+                    {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
           ))}
-          {!loading && entries.length > 0 && (
-            <div className="text-center text-[10px] text-gray-600 py-2">{entries.length} entries</div>
+          {!loading && items.length > 0 && (
+            <div className="text-center text-[10px] text-gray-600 py-2">{items.length} deliverables</div>
           )}
         </div>
       </div>
 
-      {/* Right: detail */}
+      {/* Right detail panel */}
       <div className="flex-1 overflow-y-auto">
         {!selected ? (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center text-gray-600 space-y-2">
               <svg className="w-12 h-12 mx-auto text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
-              <p className="text-sm">Select an entry to view details</p>
+              <p className="text-sm">Select a deliverable to view details</p>
             </div>
           </div>
         ) : (
           <div className="p-6 max-w-3xl space-y-5">
+            {/* Header */}
             <div>
               <div className="flex items-start justify-between gap-4">
                 <h2 className="text-xl font-semibold text-white">{selected.title}</h2>
                 <div className="flex items-center gap-2 shrink-0">
                   {selected.status !== 'verified' && (
-                    <button
-                      onClick={() => handleVerify(selected)}
-                      disabled={!!actionLoading}
-                      className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-50 transition-colors"
-                    >{actionLoading === 'verify' ? 'Verifying...' : 'Verify'}</button>
+                    <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-50 transition-colors">
+                      {actionLoading === 'verify' ? 'Verifying...' : 'Verify'}
+                    </button>
                   )}
                   {selected.status !== 'outdated' && (
-                    <button
-                      onClick={() => handleFlagOutdated(selected)}
-                      disabled={!!actionLoading}
-                      className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 disabled:opacity-50 transition-colors"
-                    >{actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}</button>
+                    <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
+                      {actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}
+                    </button>
                   )}
-                  <button
-                    onClick={() => handleDelete(selected)}
-                    disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 transition-colors"
-                  >{actionLoading === 'delete' ? 'Removing...' : 'Remove'}</button>
+                  <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
+                    {actionLoading === 'remove' ? 'Removing...' : 'Remove'}
+                  </button>
                 </div>
               </div>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${scopeColor(selected.scope)}`}>{scopeLabel(selected)}</span>
-                <span className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">{CATEGORY_META[selected.category]?.icon ?? ''} {selected.category}</span>
-                <StatusBadge status={selected.status} />
-                <span className="text-xs text-gray-600">importance: {selected.importance}/10</span>
-                <span className="text-xs text-gray-600">accessed {selected.accessCount}x</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
+                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{selected.status}</span>
+                {selected.reference && <span className="text-xs text-gray-500 font-mono truncate max-w-[300px]">{selected.reference}</span>}
               </div>
             </div>
 
+            {/* Preview area */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <MarkdownMessage content={selected.content} className="text-gray-300 text-sm" />
+              {selected.type === 'url' && selected.reference ? (
+                <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline text-sm break-all">{selected.reference}</a>
+              ) : previewLoading ? (
+                <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
+              ) : previewContent ? (
+                <MarkdownMessage content={previewContent} className="text-gray-300 text-sm" />
+              ) : showCopyPath ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-400">This {selected.type} cannot be previewed in the browser.</p>
+                  <div className="flex items-center gap-2">
+                    <code className="text-xs bg-gray-800 px-3 py-2 rounded text-gray-300 flex-1 truncate">{selected.reference}</code>
+                    <button onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
+                      className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Copy Path</button>
+                  </div>
+                </div>
+              ) : selected.summary ? (
+                <MarkdownMessage content={selected.summary} className="text-gray-300 text-sm" />
+              ) : (
+                <p className="text-sm text-gray-600 italic">No content</p>
+              )}
             </div>
 
+            {/* Diff stats / test results */}
+            {(selected.diffStats || selected.testResults) && (
+              <div className="flex gap-4 flex-wrap">
+                {selected.diffStats && (
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-xs space-y-1">
+                    <div className="text-gray-500 font-medium">Diff Stats</div>
+                    <div className="flex gap-3">
+                      <span className="text-gray-400">{selected.diffStats.filesChanged} files</span>
+                      <span className="text-emerald-400">+{selected.diffStats.additions}</span>
+                      <span className="text-red-400">-{selected.diffStats.deletions}</span>
+                    </div>
+                  </div>
+                )}
+                {selected.testResults && (
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-xs space-y-1">
+                    <div className="text-gray-500 font-medium">Tests</div>
+                    <div className="flex gap-3">
+                      <span className="text-emerald-400">{selected.testResults.passed} passed</span>
+                      <span className="text-red-400">{selected.testResults.failed} failed</span>
+                      <span className="text-gray-400">{selected.testResults.skipped} skipped</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tags */}
             {selected.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {selected.tags.map(tag => (
@@ -274,11 +395,37 @@ export function KnowledgePage() {
               </div>
             )}
 
+            {/* Association links */}
+            <div className="border-t border-gray-800 pt-4 space-y-2">
+              <div className="text-xs text-gray-500 font-medium">Links</div>
+              <div className="flex gap-3 flex-wrap">
+                {selected.taskId && (
+                  <button onClick={() => navBus.navigate('projects', { openTask: selected.taskId! })}
+                    className="text-xs text-indigo-400 hover:underline bg-indigo-900/20 px-2.5 py-1 rounded">
+                    Task: {selected.taskId.slice(0, 12)}...
+                  </button>
+                )}
+                {selected.agentId && (
+                  <button onClick={() => navBus.navigate('team', { selectAgent: selected.agentId! })}
+                    className="text-xs text-cyan-400 hover:underline bg-cyan-900/20 px-2.5 py-1 rounded">
+                    Agent: {agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12)}
+                  </button>
+                )}
+                {selected.projectId && (
+                  <button onClick={() => navBus.navigate('projects', { projectId: selected.projectId! })}
+                    className="text-xs text-blue-400 hover:underline bg-blue-900/20 px-2.5 py-1 rounded">
+                    Project: {projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12)}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Metadata */}
             <div className="text-xs text-gray-600 space-y-1 border-t border-gray-800 pt-4">
               <div className="flex gap-6 flex-wrap">
-                <span>Source: <span className="text-gray-400">{selected.source}</span></span>
                 <span>Created: <span className="text-gray-400">{new Date(selected.createdAt).toLocaleString()}</span></span>
                 <span>Updated: <span className="text-gray-400">{new Date(selected.updatedAt).toLocaleString()}</span></span>
+                <span>Accessed: <span className="text-gray-400">{selected.accessCount}x</span></span>
               </div>
               <div className="text-gray-700 select-all">ID: {selected.id}</div>
             </div>
@@ -286,101 +433,63 @@ export function KnowledgePage() {
         )}
       </div>
 
-      {/* Contribute Modal */}
-      {showContribute && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !contributing && setShowContribute(false)}>
+      {/* Create Modal */}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !creating && setShowCreate(false)}>
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-white">Contribute Knowledge</h3>
+            <h3 className="text-base font-semibold text-white">Create Deliverable</h3>
 
-            {/* Scope — radio buttons with descriptions */}
-            <fieldset>
-              <legend className="text-xs text-gray-500 mb-2">Visibility</legend>
-              <div className="flex gap-3">
-                {(['org', 'project'] as const).map(s => (
-                  <label key={s}
-                    className={`flex-1 flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
-                      newScope === s
-                        ? 'border-indigo-500 bg-indigo-600/10'
-                        : 'border-gray-700 bg-gray-800/50 hover:border-gray-600'
-                    }`}
-                  >
-                    <input type="radio" name="scope" value={s} checked={newScope === s}
-                      onChange={() => setNewScope(s)}
-                      className="mt-0.5 accent-indigo-500" />
-                    <div>
-                      <div className="text-sm text-gray-200">{SCOPE_META[s]!.label}</div>
-                      <div className="text-[11px] text-gray-500 mt-0.5">{SCOPE_META[s]!.description}</div>
-                    </div>
-                  </label>
-                ))}
-              </div>
-
-              {/* Project picker — only when scope = project */}
-              {newScope === 'project' && (
-                <div className="mt-3">
-                  {projects.length === 0 ? (
-                    <p className="text-xs text-amber-400">No projects found. Create a project first.</p>
-                  ) : (
-                    <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200">
-                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  )}
-                </div>
-              )}
-            </fieldset>
-
-            {/* Category */}
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Category</label>
-              <select value={newCategory} onChange={e => setNewCategory(e.target.value)}
+              <label className="text-xs text-gray-500 block mb-1">Type</label>
+              <select value={newType} onChange={e => setNewType(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200">
-                {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_META[c]!.icon} {c}</option>)}
+                {ALL_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t]?.icon ?? ''} {t}</option>)}
               </select>
-              <p className="text-[11px] text-gray-600 mt-1">{CATEGORY_META[newCategory]?.hint}</p>
             </div>
 
-            {/* Title */}
             <div>
               <label className="text-xs text-gray-500 block mb-1">Title <span className="text-red-400">*</span></label>
-              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="e.g. Use pnpm workspace protocol for local packages"
+              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Clear, searchable title"
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors" />
             </div>
 
-            {/* Content */}
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Content <span className="text-red-400">*</span> <span className="text-gray-600">(Markdown)</span></label>
-              <textarea value={newContent} onChange={e => setNewContent(e.target.value)}
-                placeholder={"Describe the knowledge in detail.\n\nYou can use **markdown** formatting, `code`, lists, etc."}
+              <label className="text-xs text-gray-500 block mb-1">Reference <span className="text-gray-600">(file path, URL, branch name)</span></label>
+              <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder="/path/to/file or https://..."
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors font-mono" />
+            </div>
+
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Summary <span className="text-red-400">*</span> <span className="text-gray-600">(Markdown)</span></label>
+              <textarea value={newSummary} onChange={e => setNewSummary(e.target.value)}
+                placeholder="Describe the deliverable..."
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 h-36 resize-none focus:border-indigo-500 focus:outline-none transition-colors font-mono" />
             </div>
 
-            {/* Importance + Tags row */}
             <div className="flex gap-4">
               <div className="flex-1">
                 <label className="text-xs text-gray-500 block mb-1">Tags <span className="text-gray-600">(comma separated)</span></label>
-                <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder="react, performance, caching"
+                <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder="react, api, docs"
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors" />
               </div>
-              <div className="w-40 shrink-0">
-                <label className="text-xs text-gray-500 block mb-1">Importance</label>
-                <div className="flex items-center gap-2">
-                  <input type="range" min={1} max={10} value={newImportance} onChange={e => setNewImportance(Number(e.target.value))}
-                    className="flex-1 accent-indigo-500" />
-                  <span className="text-sm font-medium text-indigo-400 bg-indigo-600/20 rounded px-2 py-0.5 min-w-[2rem] text-center">{newImportance}</span>
-                </div>
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 block mb-1">Project</label>
+                <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200">
+                  <option value="">None</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
               </div>
             </div>
 
-            {/* Actions */}
             <div className="flex justify-end gap-3 pt-1 border-t border-gray-800">
-              <button onClick={() => setShowContribute(false)} disabled={contributing}
+              <button onClick={() => setShowCreate(false)} disabled={creating}
                 className="text-sm text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors py-2">Cancel</button>
-              <button onClick={handleContribute}
-                disabled={contributing || !newTitle.trim() || !newContent.trim() || (newScope === 'project' && !newProjectId)}
-                className="btn-primary text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
-                {contributing && <Spinner />}
-                {contributing ? 'Saving...' : 'Contribute'}
+              <button onClick={handleCreate}
+                disabled={creating || !newTitle.trim() || !newSummary.trim()}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
+                {creating && <Spinner />}
+                {creating ? 'Creating...' : 'Create'}
               </button>
             </div>
           </div>
@@ -403,43 +512,6 @@ function FilterPill({ label, value, current, onClick }: { label: string; value: 
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const cls = status === 'verified'
-    ? 'text-emerald-400 bg-emerald-900/30'
-    : status === 'outdated'
-    ? 'text-red-400 bg-red-900/30'
-    : status === 'disputed'
-    ? 'text-amber-400 bg-amber-900/30'
-    : 'text-gray-500 bg-gray-800';
-  return <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls}`}>{status}</span>;
-}
-
-function EmptyState({ hasFilters, onContribute }: { hasFilters: boolean; onContribute: () => void }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-      <svg className="w-16 h-16 text-gray-700 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={0.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-      </svg>
-      {hasFilters ? (
-        <>
-          <p className="text-sm text-gray-400 mb-1">No matching entries</p>
-          <p className="text-xs text-gray-600">Try adjusting your search or filters</p>
-        </>
-      ) : (
-        <>
-          <p className="text-sm text-gray-400 mb-1">Knowledge Base is empty</p>
-          <p className="text-xs text-gray-600 max-w-[240px] mb-4">
-            Knowledge entries capture shared insights, conventions, and decisions that help agents and humans work more effectively.
-          </p>
-          <button onClick={onContribute} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
-            + Add first entry
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
 function Spinner() {
   return (
     <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
@@ -447,8 +519,4 @@ function Spinner() {
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
   );
-}
-
-function scopeColor(scope: string): string {
-  return scope === 'org' ? 'bg-purple-900/40 text-purple-300' : scope === 'project' ? 'bg-blue-900/40 text-blue-300' : 'bg-gray-700 text-gray-400';
 }

@@ -70,6 +70,27 @@ export class LLMRouter {
   /** Non-retryable failures (auth, billing, region) get a longer cooldown */
   private readonly CIRCUIT_RESET_FATAL_MS = 30 * 60 * 1000;
 
+  private logCallback?: (entry: {
+    timestamp: string;
+    agentId?: string;
+    taskId?: string;
+    sessionId?: string;
+    provider: string;
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    tools?: Array<{ name: string }>;
+    responseContent: string;
+    responseToolCalls?: Array<{ name: string; args: string }>;
+    inputTokens: number;
+    outputTokens: number;
+    durationMs: number;
+    finishReason: string;
+  }) => void;
+
+  setLogCallback(cb: typeof this.logCallback): void {
+    this.logCallback = cb;
+  }
+
   constructor(defaultProvider?: string) {
     this.defaultProvider = defaultProvider ?? 'anthropic';
   }
@@ -268,12 +289,14 @@ export class LLMRouter {
     log.debug(`Sending request to ${primary}`, { model: provider.model, messageCount: request.messages.length });
 
     const span = startSpan('llm.chat', { provider: primary, model: provider.model });
+    const startTime = Date.now();
     let lastError: unknown = null;
     try {
       const response = await provider.chat(request);
       this.recordSuccess(primary);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       log.debug(`Response from ${primary}`, { tokens: response.usage, finishReason: response.finishReason });
+      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
       return response;
     } catch (error) {
       lastError = error;
@@ -289,6 +312,7 @@ export class LLMRouter {
           this.recordSuccess(fallbackName);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           log.info(`Fallback to ${fallbackName} succeeded`);
+          this.emitLog(fallbackName, fb.model, request, response, Date.now() - startTime);
           return response;
         } catch (fbError) {
           lastError = fbError;
@@ -311,6 +335,7 @@ export class LLMRouter {
     }
 
     const span = startSpan('llm.chatStream', { provider: primary, model: provider.model });
+    const startTime = Date.now();
 
     if (!provider.chatStream) {
       log.debug(`Provider ${primary} does not support streaming, falling back to non-stream`);
@@ -318,6 +343,7 @@ export class LLMRouter {
       if (response.content) onEvent({ type: 'text_delta', text: response.content });
       onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
+      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
       return response;
     }
 
@@ -326,6 +352,7 @@ export class LLMRouter {
       const response = await provider.chatStream(request, onEvent, signal);
       this.recordSuccess(primary);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
+      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
       return response;
     } catch (error) {
       lastError = error;
@@ -352,6 +379,7 @@ export class LLMRouter {
           }
           this.recordSuccess(fallbackName);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
+          this.emitLog(fallbackName, fb.model, request, response, Date.now() - startTime);
           log.info(`Stream fallback to ${fallbackName} succeeded`);
           return response;
         } catch (fbError) {
@@ -486,6 +514,28 @@ export class LLMRouter {
 
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
+  }
+
+  private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
+    if (!this.logCallback) return;
+    try {
+      this.logCallback({
+        timestamp: new Date().toISOString(),
+        agentId: request.metadata?.agentId,
+        taskId: request.metadata?.taskId,
+        sessionId: request.metadata?.sessionId,
+        provider: providerName,
+        model,
+        messages: request.messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })),
+        tools: request.tools?.map(t => ({ name: t.name })),
+        responseContent: response.content,
+        responseToolCalls: response.toolCalls?.map(tc => ({ name: tc.name, args: JSON.stringify(tc.arguments) })),
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        durationMs,
+        finishReason: response.finishReason,
+      });
+    } catch { /* logging should never crash the app */ }
   }
 }
 

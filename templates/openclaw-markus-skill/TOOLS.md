@@ -75,13 +75,13 @@ Returns array of `{ id, title, status, priority, projectId, description }`.
 
 Use this to understand *why* a task exists — every task traces back to a requirement.
 
-## Knowledge Base Endpoints
+## Deliverables Endpoints
 
-### markus_knowledge_search
+### markus_deliverable_search
 
-**`GET /api/gateway/knowledge/search?query=xxx`**
+**`GET /api/gateway/deliverables/search?query=xxx`**
 
-Search the shared project knowledge base. Returns matching entries sorted by relevance.
+Search the shared project deliverables. Returns matching entries sorted by relevance.
 
 Query parameters:
 - `query` — search keywords
@@ -90,17 +90,17 @@ Query parameters:
 
 Search before starting work to check existing conventions and architectural decisions.
 
-### markus_knowledge_contribute
+### markus_deliverable_create
 
-**`POST /api/gateway/knowledge`**
+**`POST /api/gateway/deliverables`**
 
-Contribute knowledge to the shared knowledge base. Body:
+Contribute to the shared deliverables. Body:
 ```json
 {
   "scope": "project",
   "category": "convention",
   "title": "Clear, searchable title",
-  "content": "Detailed knowledge with context and rationale",
+  "content": "Detailed content with context and rationale",
   "importance": 60,
   "tags": ["tag1", "tag2"],
   "supersedes": "kb-xxx (optional, ID of entry this replaces)"
@@ -110,11 +110,11 @@ Contribute knowledge to the shared knowledge base. Body:
 Categories: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`.
 Importance: 80+ critical, 50-79 useful, <50 nice-to-know.
 
-### markus_knowledge_flag_outdated
+### markus_deliverable_flag_outdated
 
-**`POST /api/gateway/knowledge/:id/flag-outdated`**
+**`POST /api/gateway/deliverables/:id/flag-outdated`**
 
-Flag a knowledge entry as outdated. Body: `{ "reason": "Why this is no longer accurate" }`
+Flag a deliverable as outdated. Body: `{ "reason": "Why this is no longer accurate" }`
 
 ## Task Lifecycle Endpoints
 

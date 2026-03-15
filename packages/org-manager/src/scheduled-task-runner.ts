@@ -56,7 +56,7 @@ export class ScheduledTaskRunner {
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
-      if (['in_progress', 'assigned', 'review', 'revision', 'blocked'].includes(task.status)) {
+      if (['in_progress', 'assigned', 'review', 'revision', 'blocked', 'pending_approval'].includes(task.status)) {
         continue;
       }
 
@@ -87,8 +87,18 @@ export class ScheduledTaskRunner {
 
     await this.taskService.updateScheduleConfig(task.id, updatedConfig);
 
-    if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+    if (['completed', 'cancelled', 'failed', 'accepted'].includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
+    }
+
+    const current = this.taskService.getTask(task.id);
+    if (current && current.assignedAgentId && ['assigned', 'pending'].includes(current.status)) {
+      try {
+        await this.taskService.runTask(task.id);
+        log.info('Scheduled task auto-started', { taskId: task.id });
+      } catch (err) {
+        log.warn('Failed to auto-start scheduled task (agent may be busy)', { taskId: task.id, error: String(err) });
+      }
     }
   }
 

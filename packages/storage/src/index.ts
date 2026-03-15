@@ -13,6 +13,7 @@ export { TeamRepo, type TeamRow } from './repos/team-repo.js';
 export { TaskLogRepo, type TaskLogRow, type TaskLogType } from './repos/task-log-repo.js';
 export { TaskCommentRepo, type TaskCommentRow } from './repos/task-comment-repo.js';
 export { AgentKnowledgeRepo, type KnowledgeRow } from './repos/agent-knowledge-repo.js';
+export { DeliverableRepo, type DeliverableRow } from './repos/deliverable-repo.js';
 export { RequirementRepo } from './repos/requirement-repo.js';
 export { ExternalAgentRepo, type ExternalAgentRow, type GatewayMessageRow } from './repos/external-agent-repo.js';
 export {
@@ -48,5 +49,6 @@ export {
   SqliteAgentKnowledgeRepo,
   SqliteTaskCommentRepo,
   SqliteExternalAgentRepo,
+  SqliteDeliverableRepo,
   type SqliteExternalAgentRegistration,
 } from './sqlite-storage.js';

@@ -17,7 +17,7 @@ Organization (Org)
  │    ├── Iterations (Sprints) — time-boxed work containers
  │    │    └── Requirements — user-authorized work items (the "why")
  │    │         └── Tasks → Subtasks — how to fulfill a requirement
- │    └── Knowledge Base — shared insights, decisions, conventions
+ │    └── Deliverables — shared insights, decisions, conventions
  └── Reports — periodic summaries with human feedback
 ```
 
@@ -29,7 +29,7 @@ Organization (Org)
 - **Iteration**: A time-boxed (Sprint) or continuous (Kanban) work container within a project.
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement.
 - **Task**: A discrete unit of work assigned to you. Always has a status, priority, and references its parent requirement.
-- **Knowledge Base**: Shared memory across the project. Search it before starting work (`GET /api/gateway/knowledge/search`) and contribute findings after tasks (`POST /api/gateway/knowledge`).
+- **Deliverables**: Shared memory across the project. Search it before starting work (`GET /api/gateway/deliverables/search`) and contribute findings after tasks (`POST /api/gateway/deliverables`).
 
 ### Requirement-Driven Workflow
 
@@ -122,13 +122,13 @@ All work requires independent review. **You may NEVER approve or complete your o
 - **Cross-check isolation**: As a reviewer, verify that the submission does not include changes to another agent's workspace or shared resources without proper coordination.
 - **Escalate conflicts**: If a submission conflicts with your work or another agent's work, flag it immediately to the project manager.
 
-## Knowledge Contribution
+## Deliverable Contribution
 
-Share what you learn with the team through the Knowledge Base:
+Share what you learn with the team through the Deliverables:
 
-- **Before starting a task**: Search the knowledge base for relevant conventions, patterns, and decisions (`GET /api/gateway/knowledge/search?query=...`).
-- **After completing a task**: Contribute valuable findings — architectural decisions, gotchas, troubleshooting steps, coding conventions — via `POST /api/gateway/knowledge`.
-- **When you find outdated info**: Flag it with `POST /api/gateway/knowledge/:id/flag-outdated` and contribute an updated entry with `supersedes`.
+- **Before starting a task**: Search the deliverables for relevant conventions, patterns, and decisions (`GET /api/gateway/deliverables/search?query=...`).
+- **After completing a task**: Contribute valuable findings — architectural decisions, gotchas, troubleshooting steps, coding conventions — via `POST /api/gateway/deliverables`.
+- **When you find outdated info**: Flag it with `POST /api/gateway/deliverables/:id/flag-outdated` and contribute an updated entry with `supersedes`.
 - **What to contribute**: Architectural decisions, coding conventions, gotchas/pitfalls, API details, troubleshooting solutions, dependency notes.
 - **What NOT to contribute**: Temporary debugging notes, information already in docs, trivial facts, speculation.
 
@@ -142,7 +142,7 @@ Share what you learn with the team through the Knowledge Base:
 - **Respect the requirement chain** — tasks trace to requirements; requirements are authorized by humans.
 - **Know your team** — read `teamContext` from sync responses to understand who your colleagues are and how to collaborate.
 - **Check requirements** — understand *why* a task exists before starting work. Use the requirements endpoint if needed.
-- **Contribute knowledge** — share gotchas, conventions, and decisions with the team after completing tasks.
+- **Contribute to deliverables** — share gotchas, conventions, and decisions with the team after completing tasks.
 
 ## On First Run
 

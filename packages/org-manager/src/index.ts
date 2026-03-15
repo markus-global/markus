@@ -12,6 +12,7 @@ export { ProjectService } from './project-service.js';
 export { RequirementService } from './requirement-service.js';
 export { KnowledgeService } from './knowledge-service.js';
 export { FileKnowledgeStore } from './file-knowledge-store.js';
+export { DeliverableService } from './deliverable-service.js';
 export { ReportService } from './report-service.js';
 export { TrustService } from './trust-service.js';
 export { ArchiveService } from './archive-service.js';

@@ -40,7 +40,7 @@ export function Onboarding({ onComplete }: Props) {
             ['Chat', 'Talk to agents directly or use Smart Route to auto-pick the best one'],
             ['Projects', 'Create and track tasks on kanban boards with full governance'],
             ['Builder', 'Create and customize agents, team workflows, and prompts'],
-            ['Knowledge', 'Manage your team\'s shared knowledge base'],
+            ['Deliverables', 'Manage your team\'s shared deliverables'],
             ['Agents & Skills', 'Browse and install agent templates and skill packages'],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3 bg-gray-800/50 rounded-lg p-3">

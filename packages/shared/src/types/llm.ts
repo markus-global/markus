@@ -53,6 +53,11 @@ export interface LLMRequest {
   maxTokens?: number;
   temperature?: number;
   stopSequences?: string[];
+  metadata?: {
+    agentId?: string;
+    taskId?: string;
+    sessionId?: string;
+  };
 }
 
 export type LLMContentPart =

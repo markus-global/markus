@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { loadConfig, getDefaultConfigPath, createLogger, APP_VERSION, type LLMProviderConfig } from '@markus/shared';
-import { AgentManager, LLMRouter, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
+import { AgentManager, LLMRouter, LLMLogger, type LLMLogEntry, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
 import {
   OrganizationService,
   TaskService,
@@ -17,6 +17,7 @@ import {
   RequirementService,
   KnowledgeService,
   FileKnowledgeStore,
+  DeliverableService,
   ReportService,
   TrustService,
   initStorage,
@@ -305,6 +306,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
+  // Wire LLM audit logging
+  const llmLogger = new LLMLogger();
+  llmRouter.setLogCallback((entry: LLMLogEntry) => llmLogger.log(entry));
+
   const skillRegistry = await createDefaultSkillRegistry();
 
   // Run DB migrations for PostgreSQL only (SQLite creates tables on open).
@@ -410,6 +415,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await projectService.loadFromDB('default');
   const knowledgeStore = new FileKnowledgeStore(join(homedir(), '.markus', 'knowledge'));
   const knowledgeService = new KnowledgeService(knowledgeStore);
+  const deliverableService = new DeliverableService(storage?.deliverableRepo);
+  await deliverableService.load();
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
   const requirementService = new RequirementService();
@@ -421,10 +428,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setRequirementService(requirementService);
   agentManager.setProjectService(projectService);
   agentManager.setKnowledgeService(knowledgeService);
+  agentManager.setDeliverableService(deliverableService);
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
+  apiServer.setDeliverableService(deliverableService);
   apiServer.setRequirementService(requirementService);
+  taskService.setDeliverableService(deliverableService);
 
   // Wire WorkspaceManager and ProjectService into TaskService for worktree-based task execution
   const workspaceManager = new WorkspaceManager();

@@ -14,7 +14,7 @@ Organization (Org)
  │    ├── Iterations (Sprints) — time-boxed containers
  │    │    └── Requirements — user-authorized work items (the "why")
  │    │         └── Tasks → Subtasks — how to fulfill a requirement
- │    ├── Knowledge Base — shared insights, decisions, conventions
+ │    ├── Deliverables — shared insights, decisions, conventions
  │    └── Governance Policy — approval rules, task limits
  └── Reports — periodic summaries with plan approval and feedback
 ```
@@ -24,10 +24,10 @@ Organization (Org)
 2. **A Project is assigned** to your team (or you are onboarded to one)
 3. **Requirements are created** — users create requirements, or agents propose drafts that users approve
 4. **Tasks are created from requirements** — a manager agent breaks approved requirements into tasks
-5. **You receive a task** — check project knowledge base first, then work in your isolated workspace
+5. **You receive a task** — check project deliverables first, then work in your isolated workspace
 6. **You deliver** — submit via `task_submit_review` with deliverables
 7. **Review** — a reviewer accepts or requests revisions
-8. **Knowledge capture** — contribute what you learned to the knowledge base
+8. **Deliverable capture** — contribute what you learned to the deliverables
 9. **Reporting** — your work feeds into daily/weekly/monthly reports
 
 ### Key Concepts You Must Know
@@ -36,7 +36,7 @@ Organization (Org)
 - **Iteration**: A Sprint or Kanban cycle within a project. Tasks belong to iterations.
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement. Users create requirements; agents can only propose drafts.
 - **Task**: A discrete unit of work assigned to you that fulfills a requirement. Always has a status, priority, and references its parent requirement.
-- **Knowledge Base**: Shared memory across the project. Search it before starting work; contribute when you learn something useful.
+- **Deliverables**: Shared outputs across the project. Search them before starting work; contribute when you learn something useful.
 - **Governance**: Rules that control what you can do — task approval tiers, concurrent task limits, workspace isolation.
 - **Reports**: Auto-generated summaries. Humans review them and leave feedback that may affect your priorities.
 - **Announcements**: System-wide messages from human operators. Always read and follow them.
@@ -213,43 +213,32 @@ When evaluating a colleague's submitted task:
 
 ---
 
-## Knowledge Management
+## Deliverable Management
 
-You have access to knowledge at three levels:
+Your team maintains two tiers of persistent information:
 
-- **Personal memory** (`memory_save`/`memory_search`): Your own notes, preferences, work log
-- **Project knowledge base** (`knowledge_contribute`/`knowledge_search`): Shared with all agents on the project
-- **Organization knowledge** (`knowledge_search` with scope=org): Shared across all projects
+### Personal Memory (MEMORY.md)
+- Use `memory_save` for personal notes, preferences, and lessons learned
+- Use `memory_search` to recall past decisions and context
+- This is YOUR private workspace — other agents cannot see it
 
-### When to contribute to the project knowledge base
+### Shared Deliverables
+- Use `deliverable_create` to publish outputs that benefit the team: files, documents, reports, architectural decisions, conventions, gotchas, troubleshooting tips
+- Use `deliverable_search` to find existing team outputs before starting work
+- Use `deliverable_list` to browse what's available by project, type, or agent
+- Use `deliverable_update` to flag outdated entries or update metadata
 
-Contribute when you discover something that **other agents working on this project would benefit from knowing**:
+### When to Publish Deliverables
+- After completing a task, publish what you learned if it would save others time
+- Document architectural decisions, coding patterns, API details, dependency quirks
+- Share troubleshooting steps, gotchas, and best practices
+- Create reports summarizing research or analysis findings
 
-- Architectural decisions and their rationale ("We chose X over Y because...")
-- Coding conventions not in docs ("API handlers follow the pattern: validate → transform → persist → respond")
-- Gotchas and pitfalls ("The auth middleware silently swallows 403 errors — always check response status")
-- API details ("External payment API requires OAuth2 with client_credentials flow, token expires in 1h")
-- Troubleshooting solutions ("If tests fail with ECONNREFUSED, the test DB container may have stopped")
-- Dependency notes ("Library X v3.0 has a breaking change in the config format")
-
-### When NOT to contribute
-
-- Temporary debugging notes (use personal memory)
-- Information already in the project's README or docs (don't duplicate)
-- Trivial or obvious facts
-- Speculation or unverified guesses
-
-### Before starting work on a task
-
-1. Search the project knowledge base for relevant context: `knowledge_search` with your task keywords
-2. Check if there are `architecture` or `convention` entries for the area you'll work in
-3. If you find `outdated` entries, flag them with `knowledge_flag_outdated`
-
-### Knowledge quality
-
-- When you find existing knowledge that conflicts with your findings, use `knowledge_flag_outdated` and explain the discrepancy
-- When you find a better way to do something already documented, create a new entry with `supersedes` pointing to the old one
-- Rate importance honestly: 80+ = critical for the project, 50-79 = generally useful, <50 = nice to know
+### Quality Guidelines
+- Write clear, searchable titles
+- Include context and rationale, not just facts
+- Tag deliverables for discoverability
+- Flag outdated entries when you find stale information
 
 ---
 
@@ -270,7 +259,7 @@ Contribute when you discover something that **other agents working on this proje
 - Pay close attention to the **Human Feedback** section in your context. These are direct comments from your human manager on your work.
 - Feedback marked `[CRITICAL]` or `[IMPORTANT]` should influence your current task priorities.
 - Directives from human feedback override your current plans — acknowledge and act on them.
-- If feedback conflicts with existing project knowledge, the human feedback takes precedence. Update the knowledge base accordingly using `knowledge_contribute` with `supersedes` pointing to the outdated entry.
+- If feedback conflicts with existing project deliverables, the human feedback takes precedence. Update the deliverables accordingly using `deliverable_update` to flag outdated entries.
 - When you see feedback addressed to the whole team (broadcast), internalize it as a team-wide standard.
 
 ---

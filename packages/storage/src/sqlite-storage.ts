@@ -266,6 +266,29 @@ CREATE TABLE IF NOT EXISTS agent_knowledge (
 CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent ON agent_knowledge(agent_id, category);
 CREATE INDEX IF NOT EXISTS idx_agent_knowledge_org ON agent_knowledge(org_id);
 
+CREATE TABLE IF NOT EXISTS deliverables (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'text',
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  reference TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'active',
+  task_id TEXT,
+  agent_id TEXT,
+  project_id TEXT,
+  requirement_id TEXT,
+  diff_stats TEXT,
+  test_results TEXT,
+  access_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deliverables_project ON deliverables(project_id);
+CREATE INDEX IF NOT EXISTS idx_deliverables_agent ON deliverables(agent_id);
+CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id);
+CREATE INDEX IF NOT EXISTS idx_deliverables_status ON deliverables(status);
+
 CREATE TABLE IF NOT EXISTS marketplace_templates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -2527,5 +2550,106 @@ export class SqliteExternalAgentRepo {
       lastHeartbeat: r['last_heartbeat'] as string | undefined,
       connected: !!(r['connected'] as number),
     }));
+  }
+}
+
+// ─── Deliverables ──────────────────────────────────────────────────────────────
+
+export class SqliteDeliverableRepo {
+  constructor(private db: Database.Database) {}
+
+  async create(data: {
+    id: string; type: string; title: string; summary: string; reference: string;
+    tags: string[]; status: string; taskId?: string; agentId?: string;
+    projectId?: string; requirementId?: string;
+    diffStats?: Record<string, number>; testResults?: Record<string, number>;
+  }) {
+    const n = now();
+    this.db.prepare(`
+      INSERT INTO deliverables (id, type, title, summary, reference, tags, status,
+        task_id, agent_id, project_id, requirement_id, diff_stats, test_results,
+        access_count, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(
+      data.id, data.type, data.title, data.summary, data.reference,
+      toJson(data.tags), data.status,
+      data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
+      data.requirementId ?? null,
+      data.diffStats ? toJson(data.diffStats) : null,
+      data.testResults ? toJson(data.testResults) : null,
+      n, n,
+    );
+    return this.findById(data.id);
+  }
+
+  async findById(id: string) {
+    const r = this.db.prepare('SELECT * FROM deliverables WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.mapRow(r) : null;
+  }
+
+  async search(opts: { query?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; limit?: number }) {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts.query) { where.push("(title LIKE ? OR summary LIKE ? OR tags LIKE ?)"); const q = `%${opts.query}%`; params.push(q, q, q); }
+    if (opts.projectId) { where.push('project_id = ?'); params.push(opts.projectId); }
+    if (opts.agentId) { where.push('agent_id = ?'); params.push(opts.agentId); }
+    if (opts.taskId) { where.push('task_id = ?'); params.push(opts.taskId); }
+    if (opts.type) { where.push('type = ?'); params.push(opts.type); }
+    if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const limit = opts.limit ?? 100;
+    const rows = this.db.prepare(`SELECT * FROM deliverables ${clause} ORDER BY updated_at DESC LIMIT ?`).all(...params, limit) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  async update(id: string, patch: Record<string, unknown>) {
+    const sets: string[] = ['updated_at = ?'];
+    const vals: unknown[] = [now()];
+    if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title); }
+    if (patch.summary !== undefined) { sets.push('summary = ?'); vals.push(patch.summary); }
+    if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status); }
+    if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
+    if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference); }
+    vals.push(id);
+    this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    return this.findById(id);
+  }
+
+  async recordAccess(id: string) {
+    this.db.prepare('UPDATE deliverables SET access_count = access_count + 1 WHERE id = ?').run(id);
+  }
+
+  async remove(id: string) {
+    this.db.prepare("UPDATE deliverables SET status = 'outdated', updated_at = ? WHERE id = ?").run(now(), id);
+  }
+
+  async listAll(limit = 500) {
+    const rows = this.db.prepare("SELECT * FROM deliverables WHERE status != 'outdated' ORDER BY updated_at DESC LIMIT ?").all(limit) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  async deleteByTask(taskId: string) {
+    this.db.prepare('DELETE FROM deliverables WHERE task_id = ?').run(taskId);
+  }
+
+  private mapRow(r: Record<string, unknown>) {
+    return {
+      id: r['id'] as string,
+      type: r['type'] as string,
+      title: r['title'] as string,
+      summary: r['summary'] as string,
+      reference: r['reference'] as string,
+      tags: fromJson<string[]>(r['tags'] as string) ?? [],
+      status: r['status'] as string,
+      taskId: r['task_id'] as string | null,
+      agentId: r['agent_id'] as string | null,
+      projectId: r['project_id'] as string | null,
+      requirementId: r['requirement_id'] as string | null,
+      diffStats: fromJson<Record<string, number>>(r['diff_stats'] as string),
+      testResults: fromJson<Record<string, number>>(r['test_results'] as string),
+      accessCount: (r['access_count'] as number) ?? 0,
+      createdAt: r['created_at'] ? new Date(r['created_at'] as string) : new Date(),
+      updatedAt: r['updated_at'] ? new Date(r['updated_at'] as string) : new Date(),
+    };
   }
 }

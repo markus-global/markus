@@ -105,6 +105,7 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
+  private currentTaskId?: string;
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -967,7 +968,7 @@ export class Agent {
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
-      knowledgeContext: isEphemeral ? undefined : this.getKnowledgeContext(effectiveMessage),
+      deliverableContext: isEphemeral ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
       agentWorkspace: this.pathPolicy ? {
@@ -1011,6 +1012,7 @@ export class Agent {
       let response = await this.llmRouter.chat({
         messages,
         tools: llmTools.length > 0 ? llmTools : undefined,
+        metadata: this.getLLMMetadata(sessionId),
       }, this.getEffectiveProvider());
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
@@ -1190,6 +1192,7 @@ export class Agent {
         response = await this.llmRouter.chat({
           messages: updatedMessages,
           tools: llmTools.length > 0 ? llmTools : undefined,
+          metadata: this.getLLMMetadata(sessionId),
         }, this.getEffectiveProvider());
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
@@ -1309,7 +1312,7 @@ export class Agent {
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       assignedTasks: this.tasksFetcher?.(),
-      knowledgeContext: this.getKnowledgeContext(effectiveMessage),
+      deliverableContext: this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario: 'chat',
       agentWorkspace: this.pathPolicy ? {
@@ -1347,7 +1350,7 @@ export class Agent {
     try {
       const llmStart = Date.now();
       let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined },
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
         onEvent,
         this.getEffectiveProvider(),
         abortController.signal,
@@ -1468,7 +1471,7 @@ export class Agent {
 
         const llmStart2 = Date.now();
         response = await this.llmRouter.chatStream(
-          { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined },
+          { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
           onEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -1632,6 +1635,7 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     taskWorkspace?: TaskWorkspace
   ): Promise<void> {
+    this.currentTaskId = taskId;
     if (
       this.config.profile?.maxConcurrentTasks !== undefined &&
       this.config.profile.maxConcurrentTasks !== null &&
@@ -1752,14 +1756,6 @@ export class Agent {
       '```',
       'IMPORTANT: `deliverables` must be a JSON array of objects. Each object MUST have both `path` and `summary` as non-empty strings.',
       'Do NOT pass file paths as plain strings — always wrap them in objects with both fields.',
-      '',
-      '## Knowledge Contribution',
-      'Before submitting, review what you learned during this task. If you discovered any of the following, use `knowledge_contribute` to share with the team:',
-      '- Architectural decisions or patterns worth documenting',
-      '- Coding conventions or best practices established',
-      '- Gotchas, pitfalls, or troubleshooting steps that would save others time',
-      '- API details, integration notes, or dependency quirks',
-      'This is how your team builds collective intelligence. Skip if nothing novel was learned.',
     ].join('\n');
 
     this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
@@ -1774,7 +1770,7 @@ export class Agent {
       currentQuery: taskPrompt,
       identity: this.identityContext,
       assignedTasks: this.tasksFetcher?.(),
-      knowledgeContext: this.getKnowledgeContext(taskPrompt),
+      deliverableContext: this.getDeliverableContext(taskPrompt),
       environment: this.environmentProfile,
       scenario: 'task_execution',
       ...(taskWorkspace ? {
@@ -1819,7 +1815,7 @@ export class Agent {
       });
 
       let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined },
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId) },
         event => {
           if (event.type === 'text_delta' && event.text) {
             textBuffer += event.text;
@@ -1900,6 +1896,7 @@ export class Agent {
               toolDefinitions: llmTools,
             }),
             tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(sessionId),
           },
           event => {
             if (event.type === 'text_delta' && event.text) {
@@ -2087,11 +2084,19 @@ export class Agent {
     return this.contextEngine;
   }
 
-  private getKnowledgeContext(query?: string): string | undefined {
+  private getDeliverableContext(query?: string): string | undefined {
     if (this.memory instanceof EnhancedMemorySystem) {
       return this.memory.getAgentContext(this.id, query) || undefined;
     }
     return undefined;
+  }
+
+  private getLLMMetadata(sessionId?: string): { agentId: string; taskId?: string; sessionId?: string } {
+    return {
+      agentId: this.id,
+      taskId: this.currentTaskId,
+      sessionId,
+    };
   }
 
   private buildUserContent(text: string, images?: string[]): string | LLMContentPart[] {

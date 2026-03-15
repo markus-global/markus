@@ -165,6 +165,30 @@ async function applyEssentialColumns(db: ReturnType<typeof getDb>): Promise<void
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type varchar(16) NOT NULL DEFAULT 'standard'`,
     `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS schedule_config jsonb`,
 
+    // deliverables: unified deliverable (产出物) table
+    `CREATE TABLE IF NOT EXISTS deliverables (
+      id varchar(64) PRIMARY KEY,
+      type varchar(32) NOT NULL DEFAULT 'text',
+      title varchar(512) NOT NULL,
+      summary text NOT NULL DEFAULT '',
+      reference text NOT NULL DEFAULT '',
+      tags jsonb NOT NULL DEFAULT '[]',
+      status varchar(16) NOT NULL DEFAULT 'active',
+      task_id varchar(64),
+      agent_id varchar(64),
+      project_id varchar(64),
+      requirement_id varchar(64),
+      diff_stats jsonb,
+      test_results jsonb,
+      access_count integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_deliverables_project ON deliverables(project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_deliverables_agent ON deliverables(agent_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_deliverables_status ON deliverables(status)`,
+
     // marketplace_templates: community features (visibility, fork, versioning)
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS visibility varchar(16) NOT NULL DEFAULT 'public'`,
     `ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS forked_from varchar(64)`,

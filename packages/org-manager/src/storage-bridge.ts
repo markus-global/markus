@@ -51,6 +51,7 @@ export interface StorageBridge {
   projectRepo?: any;
   iterationRepo?: any;
   externalAgentRepo?: any;
+  deliverableRepo?: any;
 }
 
 function isPostgresUrl(url: string): boolean {
@@ -102,6 +103,7 @@ async function initPostgresStorage(url: string): Promise<StorageBridge | null> {
       marketplaceRatingRepo: new storage.MarketplaceRatingRepo(db),
       taskCommentRepo: new storage.TaskCommentRepo(db),
       requirementRepo: new storage.RequirementRepo(db),
+      deliverableRepo: new storage.DeliverableRepo(db),
     };
     log.info('PostgreSQL storage initialized');
     return bridge;
@@ -136,6 +138,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       projectRepo: new storage.SqliteProjectRepo(db),
       iterationRepo: new storage.SqliteIterationRepo(db),
       externalAgentRepo: new storage.SqliteExternalAgentRepo(db),
+      deliverableRepo: new storage.SqliteDeliverableRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

@@ -80,6 +80,7 @@ export class ContextEngine {
       assignedAgentName?: string;
     }>;
     knowledgeContext?: string;
+    deliverableContext?: string;
     environment?: EnvironmentProfile;
     // Governance context extensions
     projectContext?: {
@@ -101,7 +102,7 @@ export class ContextEngine {
       content: string;
     }>;
     trustLevel?: { level: string; score: number };
-    projectKnowledge?: Array<{
+    projectDeliverables?: Array<{
       category: string;
       title: string;
       content: string;
@@ -216,10 +217,10 @@ export class ContextEngine {
       }
     }
 
-    // ── Governance: Project Knowledge (P1 priority) ──────────────────────
-    if (opts.projectKnowledge?.length) {
-      parts.push('\n## Project Knowledge Base (key entries)');
-      for (const k of opts.projectKnowledge) {
+    // ── Governance: Project Deliverables (P1 priority) ─────────────────────
+    if (opts.projectDeliverables?.length) {
+      parts.push('\n## Project Deliverables (key entries)');
+      for (const k of opts.projectDeliverables) {
         parts.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, 200)}`);
       }
     }
@@ -240,9 +241,9 @@ export class ContextEngine {
       parts.push(longTermMem.slice(0, 3000));
     }
 
-    if (opts.knowledgeContext) {
-      parts.push('\n## Knowledge Base');
-      parts.push(opts.knowledgeContext.slice(0, 3000));
+    if (opts.deliverableContext || opts.knowledgeContext) {
+      parts.push('\n## Shared Deliverables');
+      parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, 3000));
     }
 
     const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
@@ -313,29 +314,14 @@ export class ContextEngine {
       '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'
     );
 
-    parts.push('\n## Work Discovery (Project → Requirement → Task)');
+    parts.push('\n## Work Discovery');
     parts.push(
-      'To understand the full scope of work, navigate the hierarchy in order:'
-    );
-    parts.push('1. `list_projects` — See all projects in the organization');
-    parts.push('2. `requirement_list` with `project_id` — See approved requirements for a project');
-    parts.push('3. `task_list` with `requirement_id` — See all tasks under a specific requirement');
-    parts.push(
-      '**Never browse the filesystem to discover project structure.** Always use these tools first.'
+      'Navigate: `list_projects` → `requirement_list` → `task_list`. Never browse the filesystem to discover project structure.'
     );
 
-    parts.push('\n## Memory & Knowledge');
+    parts.push('\n## Memory & Deliverables');
     parts.push(
-      '- `memory_save` — Persist important facts/decisions. `memory_search` — Recall past context.'
-    );
-    parts.push(
-      '- `knowledge_search` — Search the shared project/org knowledge base before starting work.'
-    );
-    parts.push(
-      '- `knowledge_contribute` — Share valuable discoveries (conventions, gotchas, decisions) with the team.'
-    );
-    parts.push(
-      '- Save personal notes to memory; share team-relevant insights to knowledge base.'
+      'Use memory tools for personal notes; use deliverable tools for shared team outputs. See your role guidelines for details.'
     );
 
     if (opts.environment) {

@@ -24,6 +24,7 @@ export {
 } from './environment-profile.js';
 export { ToolSelector, type ToolGroup } from './tool-selector.js';
 export { LLMRouter } from './llm/router.js';
+export { LLMLogger, type LLMLogEntry } from './llm/llm-logger.js';
 export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
 export { GoogleProvider } from './llm/google.js';

@@ -53,6 +53,30 @@ export interface TaskDeliverable {
   testResults?: { passed: number; failed: number; skipped: number };
 }
 
+// ─── Unified Deliverable (产出物) ────────────────────────────────────────────
+
+export type DeliverableType = 'file' | 'document' | 'branch' | 'report' | 'directory' | 'url' | 'text';
+export type DeliverableStatus = 'active' | 'verified' | 'outdated';
+
+export interface Deliverable {
+  id: string;
+  type: DeliverableType;
+  title: string;
+  summary: string;
+  reference: string;
+  tags: string[];
+  status: DeliverableStatus;
+  taskId?: string;
+  agentId?: string;
+  projectId?: string;
+  requirementId?: string;
+  diffStats?: { filesChanged: number; additions: number; deletions: number };
+  testResults?: { passed: number; failed: number; skipped: number };
+  accessCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ─── Agent Trust ─────────────────────────────────────────────────────────────
 
 export type TrustLevel = 'probation' | 'standard' | 'trusted' | 'senior';

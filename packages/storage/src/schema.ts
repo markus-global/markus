@@ -276,6 +276,36 @@ export const agentKnowledge = pgTable(
   ]
 );
 
+// ─── Deliverables (产出物) ───────────────────────────────────────────────────
+
+export const deliverables = pgTable(
+  'deliverables',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    type: varchar('type', { length: 32 }).notNull().default('text'),
+    title: varchar('title', { length: 512 }).notNull(),
+    summary: text('summary').notNull().default(''),
+    reference: text('reference').notNull().default(''),
+    tags: jsonb('tags').notNull().default([]),
+    status: varchar('status', { length: 16 }).notNull().default('active'),
+    taskId: varchar('task_id', { length: 64 }),
+    agentId: varchar('agent_id', { length: 64 }),
+    projectId: varchar('project_id', { length: 64 }),
+    requirementId: varchar('requirement_id', { length: 64 }),
+    diffStats: jsonb('diff_stats'),
+    testResults: jsonb('test_results'),
+    accessCount: integer('access_count').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  t => [
+    index('idx_deliverables_project').on(t.projectId),
+    index('idx_deliverables_agent').on(t.agentId),
+    index('idx_deliverables_task').on(t.taskId),
+    index('idx_deliverables_status').on(t.status),
+  ]
+);
+
 // ─── Marketplace ─────────────────────────────────────────────────────────────
 
 export const templateSourceEnum = pgEnum('template_source', ['official', 'community', 'custom']);

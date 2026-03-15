@@ -204,7 +204,7 @@ export function createDefaultTeamTemplates(): TeamTemplateRegistry {
     {
       id: 'team-customer-success',
       name: 'Customer Success Team',
-      description: 'Customer-facing team for support, success management, and knowledge base maintenance.',
+      description: 'Customer-facing team for support, success management, and deliverable management.',
       version: '1.0.0',
       author: 'Markus Team',
       members: [

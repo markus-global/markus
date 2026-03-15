@@ -40,6 +40,7 @@ import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
 import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
+import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
@@ -1586,6 +1587,92 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/tasks/deliverables' && req.method === 'GET') {
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const all = this.taskService.listTasks({ projectId });
+      const items = all
+        .filter(t => t.deliverables && t.deliverables.length > 0)
+        .map(t => ({
+          taskId: t.id,
+          taskTitle: t.title,
+          taskStatus: t.status,
+          projectId: t.projectId,
+          requirementId: t.requirementId,
+          assignedAgentId: t.assignedAgentId,
+          updatedAt: t.updatedAt,
+          deliverables: t.deliverables,
+        }));
+      this.json(res, 200, { items });
+      return;
+    }
+
+    // ── Unified Deliverables CRUD ──────────────────────────────────────────
+
+    if (path === '/api/deliverables' && req.method === 'GET') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const q = url.searchParams.get('q') ?? undefined;
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      const agentId = url.searchParams.get('agentId') ?? undefined;
+      const taskId = url.searchParams.get('taskId') ?? undefined;
+      const type = url.searchParams.get('type') as any ?? undefined;
+      const status = url.searchParams.get('status') as any ?? undefined;
+      const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
+      const results = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, limit });
+      this.json(res, 200, { results });
+      return;
+    }
+
+    if (path === '/api/deliverables' && req.method === 'POST') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const body = await this.readBody(req);
+      try {
+        const d = await this.deliverableService.create({
+          type: body['type'] as any,
+          title: body['title'] as string,
+          summary: body['summary'] as string,
+          reference: body['reference'] as string,
+          tags: body['tags'] as string[],
+          taskId: body['taskId'] as string,
+          agentId: body['agentId'] as string,
+          projectId: body['projectId'] as string,
+          requirementId: body['requirementId'] as string,
+        });
+        this.json(res, 201, { deliverable: d });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'PUT') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const delivId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      try {
+        const d = await this.deliverableService.update(delivId, {
+          title: body['title'] as string | undefined,
+          summary: body['summary'] as string | undefined,
+          reference: body['reference'] as string | undefined,
+          tags: body['tags'] as string[] | undefined,
+          status: body['status'] as any,
+          type: body['type'] as any,
+        });
+        if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
+        this.json(res, 200, { deliverable: d });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/deliverables\/[^/]+$/) && req.method === 'DELETE') {
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+      const delivId = path.split('/')[3]!;
+      await this.deliverableService.remove(delivId);
+      this.json(res, 200, { status: 'removed' });
+      return;
+    }
+
     if (path === '/api/tasks/dashboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? undefined;
       const dashboard = this.taskService.getDashboard(orgId);
@@ -2584,19 +2671,19 @@ export class APIServer {
       return;
     }
 
-    // ── Gateway: Knowledge ──────────────────────────────────────────────────
-    if (path === '/api/gateway/knowledge/search' && req.method === 'GET') {
+    // ── Gateway: Deliverables ──────────────────────────────────────────────
+    if (path === '/api/gateway/deliverables' && req.method === 'GET') {
       if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
       try {
         this.gateway.verifyToken(authHeader.slice(7));
-        const query = url.searchParams.get('query') ?? '';
-        const scope = url.searchParams.get('scope') as any;
-        const category = url.searchParams.get('category') as any;
-        this.json(res, 200, {
-          results: this.knowledgeService?.search({ query, scope, category }) ?? [],
-        });
+        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+        const q = url.searchParams.get('q') ?? undefined;
+        const projectId = url.searchParams.get('projectId') ?? undefined;
+        const type = url.searchParams.get('type') as any ?? undefined;
+        const results = this.deliverableService.search({ query: q, projectId, type });
+        this.json(res, 200, { results });
       } catch (err) {
         if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
         this.json(res, 500, { error: String(err) });
@@ -2604,26 +2691,24 @@ export class APIServer {
       return;
     }
 
-    if (path === '/api/gateway/knowledge' && req.method === 'POST') {
+    if (path === '/api/gateway/deliverables' && req.method === 'POST') {
       if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
       try {
         const token = this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
         const body = await this.readBody(req);
-        const entry = this.knowledgeService.contribute({
-          scope: body['scope'] as any,
-          scopeId: body['scopeId'] as string ?? token.orgId,
-          category: body['category'] as any,
+        const d = await this.deliverableService.create({
+          type: body['type'] as any ?? 'text',
           title: body['title'] as string,
-          content: body['content'] as string,
-          source: token.markusAgentId ?? 'external',
-          importance: body['importance'] as number,
+          summary: body['summary'] as string ?? body['content'] as string,
+          reference: body['reference'] as string,
           tags: body['tags'] as string[],
-          supersedes: body['supersedes'] as string,
+          agentId: token.markusAgentId,
+          projectId: body['projectId'] as string,
         });
-        this.json(res, 201, { entry });
+        this.json(res, 201, { deliverable: d });
       } catch (err) {
         if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
         this.json(res, 500, { error: String(err) });
@@ -2631,17 +2716,23 @@ export class APIServer {
       return;
     }
 
-    if (path.match(/^\/api\/gateway\/knowledge\/[^/]+\/flag-outdated$/) && req.method === 'POST') {
+    if (path.match(/^\/api\/gateway\/deliverables\/[^/]+$/) && req.method === 'PUT') {
       if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
       try {
         this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
-        const knowledgeId = path.split('/')[4]!;
+        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
+        const delivId = path.split('/')[4]!;
         const body = await this.readBody(req);
-        this.knowledgeService.flagOutdated(knowledgeId, (body['reason'] as string) ?? '');
-        this.json(res, 200, { status: 'flagged' });
+        const d = await this.deliverableService.update(delivId, {
+          title: body['title'] as string | undefined,
+          summary: body['summary'] as string | undefined,
+          status: body['status'] as any,
+          tags: body['tags'] as string[] | undefined,
+        });
+        if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
+        this.json(res, 200, { deliverable: d });
       } catch (err) {
         if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
         this.json(res, 500, { error: String(err) });
@@ -6035,11 +6126,20 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         if (task.taskType !== 'scheduled' || !task.scheduleConfig) {
           this.json(res, 400, { error: 'Task is not a scheduled task' }); return;
         }
-        if (task.status === 'in_progress' || task.status === 'assigned') {
-          this.json(res, 400, { error: 'Task is already running or assigned' }); return;
+        if (task.status === 'in_progress') {
+          this.json(res, 400, { error: 'Task is already running' }); return;
         }
-        const terminal = ['completed', 'cancelled', 'failed'];
-        if (terminal.includes(task.status)) {
+        if (task.status === 'review' || task.status === 'revision') {
+          this.json(res, 400, { error: 'Task is awaiting review. Accept or reject before running again.' }); return;
+        }
+        if (task.status === 'blocked') {
+          this.json(res, 400, { error: 'Task is blocked by dependencies' }); return;
+        }
+        if (task.status === 'pending_approval') {
+          this.json(res, 400, { error: 'Task is awaiting approval' }); return;
+        }
+        const resettable = ['completed', 'cancelled', 'failed', 'accepted'];
+        if (resettable.includes(task.status)) {
           await this.taskService.resetTaskForRerun(taskId);
         }
         await this.taskService.runTask(taskId);
@@ -6202,62 +6302,54 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       return;
     }
 
-    // ── Governance: Knowledge ─────────────────────────────────────────────
+    // ── Governance: Knowledge (legacy, redirected to /api/deliverables) ────
 
     if (path === '/api/knowledge/search' && req.method === 'GET') {
-      const query = url.searchParams.get('query') ?? '';
-      const scope = url.searchParams.get('scope') as any;
-      const scopeId = url.searchParams.get('scopeId') ?? undefined;
-      const category = url.searchParams.get('category') as any;
-      this.json(res, 200, {
-        results: this.knowledgeService?.search({ query, scope, scopeId, category }) ?? [],
-      });
+      if (!this.deliverableService) { this.json(res, 200, { results: [] }); return; }
+      const query = url.searchParams.get('query') ?? undefined;
+      const results = this.deliverableService.search({ query });
+      this.json(res, 200, { results });
       return;
     }
 
     if (path === '/api/knowledge' && req.method === 'POST') {
-      if (!this.knowledgeService) {
-        this.json(res, 503, { error: 'Knowledge service not available' });
-        return;
-      }
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const body = await this.readBody(req);
-      const entry = this.knowledgeService.contribute({
-        scope: body['scope'] as any,
-        scopeId: body['scopeId'] as string,
-        category: body['category'] as any,
-        title: body['title'] as string,
-        content: body['content'] as string,
-        source: (body['source'] as string) ?? 'human',
-        importance: body['importance'] as number,
-        tags: body['tags'] as string[],
-        supersedes: body['supersedes'] as string,
-      });
-      this.json(res, 201, { entry });
+      try {
+        const d = await this.deliverableService.create({
+          type: 'document',
+          title: body['title'] as string,
+          summary: body['content'] as string,
+          tags: body['tags'] as string[],
+          agentId: body['source'] as string,
+        });
+        this.json(res, 201, { entry: d });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
       return;
     }
 
     if (path.match(/^\/api\/knowledge\/[^/]+\/flag-outdated$/) && req.method === 'POST') {
-      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const knowledgeId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      this.knowledgeService.flagOutdated(knowledgeId, (body['reason'] as string) ?? '');
+      await this.deliverableService.flagOutdated(knowledgeId);
       this.json(res, 200, { status: 'flagged' });
       return;
     }
 
     if (path.match(/^\/api\/knowledge\/[^/]+\/verify$/) && req.method === 'POST') {
-      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const knowledgeId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      this.knowledgeService.verify(knowledgeId, (body['verifiedBy'] as string) ?? 'human');
+      await this.deliverableService.update(knowledgeId, { status: 'verified' });
       this.json(res, 200, { status: 'verified' });
       return;
     }
 
     if (path.match(/^\/api\/knowledge\/[^/]+$/) && req.method === 'DELETE') {
-      if (!this.knowledgeService) { this.json(res, 503, { error: 'Knowledge service not available' }); return; }
+      if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const knowledgeId = path.split('/')[3]!;
-      this.knowledgeService.flagOutdated(knowledgeId, 'deleted by user');
+      await this.deliverableService.remove(knowledgeId);
       this.json(res, 200, { status: 'deleted' });
       return;
     }
@@ -6268,6 +6360,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
   private projectService?: ProjectService;
   private reportService?: ReportService;
   private knowledgeService?: KnowledgeService;
+  private deliverableService?: DeliverableService;
   private requirementService?: RequirementService;
 
   setProjectService(svc: ProjectService): void {
@@ -6278,6 +6371,9 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
   }
   setKnowledgeService(svc: KnowledgeService): void {
     this.knowledgeService = svc;
+  }
+  setDeliverableService(svc: DeliverableService): void {
+    this.deliverableService = svc;
   }
   setRequirementService(svc: RequirementService): void {
     this.requirementService = svc;

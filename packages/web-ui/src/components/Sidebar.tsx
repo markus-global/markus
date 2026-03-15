@@ -45,7 +45,7 @@ const STATUS_COLORS: Record<string, string> = {
 const navItems: Array<{ id: PageId; label: string; section: string }> = [
   { id: 'dashboard', label: 'Overview', section: 'workspace' },
   { id: 'chat', label: 'Chat', section: 'workspace' },
-  { id: 'knowledge', label: 'Knowledge', section: 'workspace' },
+  { id: 'knowledge', label: 'Deliverables', section: 'workspace' },
   { id: 'builder', label: 'Builder', section: 'build' },
   { id: 'templates', label: 'Agents', section: 'build' },
   { id: 'skills', label: 'Skills', section: 'build' },
@@ -195,7 +195,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   </button>
                   <button
                     onClick={() => onNavigate('knowledge')}
-                    title="Knowledge"
+                    title="Deliverables"
                     className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
                       currentPage === 'knowledge' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                     }`}
@@ -266,7 +266,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                       Show all {projects.length} projects...
                     </button>
                   )}
-                  {/* Knowledge — after Projects */}
+                  {/* Deliverables — after Projects */}
                   <button
                     onClick={() => onNavigate('knowledge')}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
@@ -274,7 +274,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     }`}
                   >
                     <Icon d={ICONS.knowledge ?? ''} />
-                    Knowledge
+                    Deliverables
                   </button>
                 </>
               )}

@@ -44,15 +44,20 @@ const PRIORITY_INDICATOR: Record<string, string> = {
 function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
   const { task, agentName } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
+  const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
+  const schedLabel = isSched ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? 'Cron' : '') : '';
 
   return (
-    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border}`}>
+    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${isSched ? `${colors.bg} border-cyan-500/40 ring-1 ring-cyan-500/20` : `${colors.bg} ${colors.border}`}`}>
       <Handle type="target" position={Position.Top} className="!bg-gray-500 !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
           {task.status.replace('_', ' ')}
         </span>
+        {isSched && (
+          <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-400 ml-auto whitespace-nowrap inline-flex items-center gap-0.5"><svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>{schedLabel}</span>
+        )}
       </div>
       <div className="text-xs font-medium text-gray-200 leading-snug line-clamp-2 mb-1">
         {task.title}
@@ -128,9 +133,32 @@ interface TaskDAGProps {
   onDependencyChange?: () => void;
 }
 
+const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled'] as const;
+const STATUS_LABELS: Record<string, string> = {
+  pending: 'Pending', pending_approval: 'Awaiting', assigned: 'Assigned',
+  in_progress: 'In Progress', blocked: 'Blocked', review: 'Review',
+  revision: 'Revision', accepted: 'Accepted', completed: 'Completed',
+  failed: 'Failed', cancelled: 'Cancelled',
+};
+
 export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: TaskDAGProps) {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(ALL_STATUSES));
+
+  const presentStatuses = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of tasks) if (!t.parentTaskId) s.add(t.status);
+    return ALL_STATUSES.filter(st => s.has(st));
+  }, [tasks]);
+
+  const toggleStatus = useCallback((status: string) => {
+    setStatusFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status); else next.add(status);
+      return next;
+    });
+  }, []);
 
   const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -159,7 +187,7 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
   }), []);
 
   const { initialNodes, initialEdges } = useMemo(() => {
-    const rootTasks = tasks.filter(t => !t.parentTaskId);
+    const rootTasks = tasks.filter(t => !t.parentTaskId && statusFilter.has(t.status));
 
     const rawNodes: Node[] = rootTasks.map(task => ({
       id: task.id,
@@ -183,7 +211,7 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
 
     const layouted = layoutNodes(rawNodes, rawEdges);
     return { initialNodes: layouted, initialEdges: rawEdges };
-  }, [tasks, agentMap, taskMap, makeEdge]);
+  }, [tasks, agentMap, taskMap, makeEdge, statusFilter]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -281,7 +309,9 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
         />
         <MiniMap
           nodeColor={(node) => {
-            const status = (node.data as { task: TaskInfo })?.task?.status;
+            const t = (node.data as { task: TaskInfo })?.task;
+            const status = t?.status;
+            if (t?.taskType === 'scheduled') return '#06b6d4';
             if (status === 'completed' || status === 'accepted') return '#10b981';
             if (status === 'in_progress') return '#f59e0b';
             if (status === 'blocked' || status === 'failed') return '#ef4444';
@@ -292,9 +322,24 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
         />
       </ReactFlow>
 
-      {/* Hint bar */}
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg text-[11px] text-gray-400 pointer-events-none select-none backdrop-blur-sm">
-        Drag from one node to another to add a dependency · Click an edge to remove it
+      {/* Filter + hint bar */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap justify-center">
+          {presentStatuses.map(st => {
+            const active = statusFilter.has(st);
+            const c = STATUS_COLORS[st];
+            return (
+              <button key={st} onClick={() => toggleStatus(st)}
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${c?.bg ?? ''} ${c?.border ?? 'border-gray-600'} ${c?.text ?? 'text-gray-300'}` : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
+                {STATUS_LABELS[st] ?? st}
+              </button>
+            );
+          })}
+          {statusFilter.size < ALL_STATUSES.length && (
+            <button onClick={() => setStatusFilter(new Set(ALL_STATUSES))} className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Reset</button>
+          )}
+        </div>
+        <div className="text-[10px] text-gray-500 select-none">Drag to add dependency · Click edge to remove</div>
       </div>
 
       {/* Toast */}

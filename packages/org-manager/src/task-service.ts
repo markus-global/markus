@@ -15,6 +15,7 @@ import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
 import type { AuditService } from './audit-service.js';
+import type { DeliverableService } from './deliverable-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
 import { mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs';
@@ -86,6 +87,7 @@ export class TaskService {
   private reviewService?: ReviewService;
   private taskCommentRepo?: TaskCommentRepo;
   private auditService?: AuditService;
+  private deliverableService?: DeliverableService;
   private sharedDataDir?: string;
 
   setAgentManager(am: AgentManager): void {
@@ -130,6 +132,10 @@ export class TaskService {
 
   setAuditService(audit: AuditService): void {
     this.auditService = audit;
+  }
+
+  setDeliverableService(ds: DeliverableService): void {
+    this.deliverableService = ds;
   }
 
   setSharedDataDir(dir: string): void {
@@ -1775,32 +1781,6 @@ export class TaskService {
     task.deliverables = deliverables;
     task.updatedAt = new Date().toISOString();
 
-    // Scheduled tasks auto-complete instead of waiting for manual review,
-    // so the scheduler can reset them for the next run.
-    if (task.taskType === 'scheduled') {
-      task.status = 'completed';
-      task.completedAt = new Date().toISOString();
-      if (this.taskRepo) {
-        this.taskRepo.updateStatus(task.id, 'completed')
-          .catch(err => log.warn('Failed to persist completed status to DB', { taskId: task.id, error: String(err) }));
-        this.taskRepo.updateDeliverables(task.id, deliverables)
-          .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
-      }
-      this.ws?.broadcastTaskUpdate(task.id, 'completed', { deliverables });
-      this.emitTaskEvent({
-        type: 'completed',
-        taskId: task.id,
-        taskTitle: task.title,
-        orgId: task.orgId,
-        status: 'completed',
-        previousStatus: 'in_progress',
-        agentId: task.assignedAgentId,
-        timestamp: task.updatedAt,
-      });
-      log.info(`Scheduled task auto-completed (skipping review): ${task.title}`, { id: task.id });
-      return task;
-    }
-
     task.status = 'review';
 
     // Persist status + deliverables to DB
@@ -1809,6 +1789,24 @@ export class TaskService {
         .catch(err => log.warn('Failed to persist review status to DB', { taskId: task.id, error: String(err) }));
       this.taskRepo.updateDeliverables(task.id, deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
+    }
+
+    // Persist each task deliverable as a standalone Deliverable entity
+    if (this.deliverableService && deliverables.length > 0) {
+      for (const d of deliverables) {
+        this.deliverableService.create({
+          type: d.type === 'branch' ? 'branch' : d.type === 'file' ? 'file' : d.type === 'report' ? 'report' : 'document',
+          title: d.summary.slice(0, 200) || d.reference,
+          summary: d.summary,
+          reference: d.reference,
+          taskId: task.id,
+          agentId: task.assignedAgentId,
+          projectId: task.projectId,
+          requirementId: task.requirementId,
+          diffStats: d.diffStats,
+          testResults: d.testResults,
+        }).catch(err => log.warn('Failed to create deliverable entity', { taskId: task.id, error: String(err) }));
+      }
     }
 
     // Publish deliverables to shared workspace so reviewers and other agents can access them
@@ -1961,6 +1959,25 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
 
+    // Scheduled tasks skip branch merge (they keep running across iterations)
+    // and transition to assigned instead of completed, so the scheduler can fire the next run.
+    if (task.taskType === 'scheduled') {
+      this.auditService?.record({
+        orgId: task.orgId,
+        agentId: reviewerAgentId,
+        type: 'task_review_accepted',
+        action: 'accept_task',
+        detail: `Scheduled task "${task.title}" accepted by reviewer`,
+        taskId: task.id,
+        projectId: task.projectId,
+        success: true,
+        metadata: { workerAgentId: task.assignedAgentId },
+      });
+
+      log.info(`Scheduled task accepted (waiting for next run): ${task.title}`, { id: task.id });
+      return task;
+    }
+
     // Merge task branch and clean up worktree for project-bound tasks
     if (task.projectId && this.workspaceManager) {
       const project = this.projectService?.getProject(task.projectId);
@@ -1999,7 +2016,7 @@ export class TaskService {
 
     log.info(`Task accepted: ${task.title}`, { id: task.id });
 
-    // Auto-transition accepted → completed
+    // Auto-transition accepted → completed (standard tasks only)
     setImmediate(() => {
       try {
         this.updateTaskStatus(task.id, 'completed');

@@ -68,11 +68,11 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['todo_write', 'todo_read'],
   },
   {
-    name: 'knowledge',
-    keywords: ['knowledge', 'knowledge base', 'contribute', 'convention', 'architecture decision',
-      'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern',
-      '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
-    toolNames: ['knowledge_contribute', 'knowledge_search', 'knowledge_browse', 'knowledge_flag_outdated'],
+    name: 'deliverables',
+    keywords: ['deliverable', 'deliverables', 'output', 'artifact', 'convention', 'architecture decision',
+      'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern', 'report', 'document',
+      '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
+    toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   },
 ];
 
@@ -87,7 +87,8 @@ const BASE_TOOL_NAMES = new Set([
   'task_update',
   'memory_save',
   'memory_search',
-  'knowledge_search',
+  'deliverable_search',
+  'deliverable_create',
 ]);
 
 export class ToolSelector {

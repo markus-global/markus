@@ -22,7 +22,7 @@ import { createManagerTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
-import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge } from './tools/project-tools.js';
+import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -167,6 +167,7 @@ export class AgentManager {
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
+  private deliverableService?: DeliverableServiceBridge;
   private semanticSearch?: SemanticMemorySearch;
   private requirementService?: RequirementServiceBridge;
   private agentAuditCallback?: (
@@ -249,6 +250,55 @@ export class AgentManager {
       },
       knowledgeFlagOutdated: async (id, reason) => {
         ks.flagOutdated(id, reason);
+      },
+    };
+  }
+
+  private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
+    import('./tools/project-tools.js').ProjectToolsContext,
+    'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate'
+  > {
+    if (!this.deliverableService) return {};
+    const ds = this.deliverableService;
+    return {
+      deliverableCreate: async (opts) => {
+        const tags = opts.tags?.split(',').map(t => t.trim()).filter(Boolean);
+        return ds.create({
+          type: opts.type,
+          title: opts.title,
+          summary: opts.summary,
+          reference: opts.reference,
+          tags,
+          agentId,
+          projectId,
+        });
+      },
+      deliverableSearch: async (opts) => {
+        return ds.search({
+          query: opts.query,
+          projectId: opts.projectId,
+          agentId: opts.agentId,
+          type: opts.type,
+          limit: opts.limit,
+        });
+      },
+      deliverableList: async (opts) => {
+        return ds.search({
+          projectId: opts.projectId,
+          agentId: opts.agentId,
+          type: opts.type,
+          status: opts.status,
+          limit: opts.limit,
+        });
+      },
+      deliverableUpdate: async (id, data) => {
+        const tags = data.tags?.split(',').map(t => t.trim()).filter(Boolean);
+        return ds.update(id, {
+          title: data.title,
+          summary: data.summary,
+          status: data.status,
+          tags,
+        });
       },
     };
   }
@@ -346,6 +396,10 @@ export class AgentManager {
 
   setKnowledgeService(knowledgeService: KnowledgeServiceBridge): void {
     this.knowledgeService = knowledgeService;
+  }
+
+  setDeliverableService(deliverableService: DeliverableServiceBridge): void {
+    this.deliverableService = deliverableService;
   }
 
   getSharedDataDir(): string | undefined {
@@ -724,6 +778,7 @@ export class AgentManager {
         orgId: config.orgId,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
+        ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
       }
@@ -1192,6 +1247,7 @@ export class AgentManager {
         orgId: config.orgId,
         projectService: this.projectService,
         ...this.buildKnowledgeCallbacks(id, config.orgId),
+        ...this.buildDeliverableCallbacks(id, config.orgId),
       })) {
         agent.registerTool(tool);
       }

@@ -267,7 +267,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
     {
       id: 'tpl-customer-support',
       name: 'Customer Support',
-      description: 'Handles customer inquiries, troubleshooting, ticket management, and knowledge base maintenance.',
+      description: 'Handles customer inquiries, troubleshooting, ticket management, and deliverable management.',
       source: 'official',
       version: '1.0.0',
       author: 'Markus Team',

@@ -186,6 +186,25 @@ export interface KnowledgeEntryInfo {
   verifiedBy?: string;
 }
 
+export interface DeliverableInfo {
+  id: string;
+  type: 'file' | 'document' | 'branch' | 'report' | 'directory' | 'url' | 'text';
+  title: string;
+  summary: string;
+  reference: string;
+  tags: string[];
+  status: 'active' | 'verified' | 'outdated';
+  taskId?: string;
+  agentId?: string;
+  projectId?: string;
+  requirementId?: string;
+  diffStats?: { filesChanged: number; additions: number; deletions: number };
+  testResults?: { passed: number; failed: number; skipped: number };
+  accessCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ReportMetricsInfo {
   tasksCompleted: number;
   tasksFailed: number;
@@ -383,6 +402,17 @@ export interface TaskInfo {
     nextRunAt?: string;
     paused?: boolean;
   };
+}
+
+export interface DeliverableItem {
+  taskId: string;
+  taskTitle: string;
+  taskStatus: string;
+  projectId?: string;
+  requirementId?: string;
+  assignedAgentId?: string;
+  updatedAt?: string;
+  deliverables: Array<{ type: string; reference: string; summary: string }>;
 }
 
 export interface RequirementInfo {
@@ -723,6 +753,10 @@ export const api = {
     pauseSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/pause`, { method: 'POST' }),
     resumeSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/resume`, { method: 'POST' }),
     runNow: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/schedule/run-now`, { method: 'POST' }),
+    deliverables: (projectId?: string) => {
+      const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+      return request<{ items: DeliverableItem[] }>(`/tasks/deliverables${qs}`);
+    },
   },
   files: {
     preview: (filePath: string) =>
@@ -1031,7 +1065,7 @@ export const api = {
       request<{ iteration: IterationInfo }>(`/iterations/${iterationId}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   },
 
-  // ─── Knowledge ─────────────────────────────────────────────────────
+  // ─── Knowledge (legacy, redirects to deliverables) ──────────────────
   knowledge: {
     search: (query: string, scope?: string, category?: string) => {
       const params = new URLSearchParams();
@@ -1048,6 +1082,29 @@ export const api = {
       request<{ status: string }>(`/knowledge/${id}/verify`, { method: 'POST', body: JSON.stringify({ verifiedBy: 'human' }) }),
     remove: (id: string) =>
       request<{ status: string }>(`/knowledge/${id}`, { method: 'DELETE' }),
+  },
+
+  // ─── Deliverables (unified) ──────────────────────────────────────────
+  deliverables: {
+    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; limit?: number }) => {
+      const params = new URLSearchParams();
+      if (opts?.q) params.set('q', opts.q);
+      if (opts?.projectId) params.set('projectId', opts.projectId);
+      if (opts?.agentId) params.set('agentId', opts.agentId);
+      if (opts?.taskId) params.set('taskId', opts.taskId);
+      if (opts?.type) params.set('type', opts.type);
+      if (opts?.status) params.set('status', opts.status);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      return request<{ results: DeliverableInfo[] }>(`/deliverables?${params}`);
+    },
+    create: (data: Partial<DeliverableInfo>) =>
+      request<{ deliverable: DeliverableInfo }>('/deliverables', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<DeliverableInfo>) =>
+      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    remove: (id: string) =>
+      request<{ status: string }>(`/deliverables/${id}`, { method: 'DELETE' }),
+    verify: (id: string) =>
+      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'verified' }) }),
   },
 
   // ─── Reports ───────────────────────────────────────────────────────

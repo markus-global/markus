@@ -279,7 +279,7 @@ export class EnhancedMemorySystem implements IMemoryStore {
       });
       
       if (relevantKnowledge.length > 0) {
-        contextParts.push('\n## Relevant Knowledge');
+        contextParts.push('\n## Relevant Deliverables');
         relevantKnowledge.forEach(kb => {
           contextParts.push(`### ${kb.title}`);
           contextParts.push(kb.content.slice(0, 200));

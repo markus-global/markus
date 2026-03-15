@@ -28,6 +28,42 @@ export interface KnowledgeServiceBridge {
   getEntryFilePath?(id: string): string | undefined;
 }
 
+export interface DeliverableServiceBridge {
+  create(opts: {
+    type: string;
+    title: string;
+    summary: string;
+    reference?: string;
+    tags?: string[];
+    taskId?: string;
+    agentId?: string;
+    projectId?: string;
+    requirementId?: string;
+  }): Promise<{ id: string; type: string; title: string; status: string }>;
+  search(opts: {
+    query?: string;
+    projectId?: string;
+    agentId?: string;
+    taskId?: string;
+    type?: string;
+    status?: string;
+    limit?: number;
+  }): Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>;
+  update(id: string, data: {
+    title?: string;
+    summary?: string;
+    status?: string;
+    tags?: string[];
+  }): Promise<{ id: string; status: string } | undefined>;
+  list(opts: {
+    projectId?: string;
+    agentId?: string;
+    type?: string;
+    status?: string;
+    limit?: number;
+  }): Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>;
+}
+
 export interface ProjectServiceBridge {
   listProjects(orgId?: string): Array<{
     id: string;
@@ -114,6 +150,34 @@ export interface ProjectToolsContext {
     scope?: string
   ) => Promise<Record<string, number> | Array<{ id: string; title: string; content: string }>>;
   knowledgeFlagOutdated?: (id: string, reason: string) => Promise<void>;
+
+  deliverableCreate?: (opts: {
+    type: string;
+    title: string;
+    summary: string;
+    reference?: string;
+    tags?: string;
+  }) => Promise<{ id: string; type: string; title: string; status: string }>;
+  deliverableSearch?: (opts: {
+    query?: string;
+    projectId?: string;
+    agentId?: string;
+    type?: string;
+    limit?: number;
+  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[] }>>;
+  deliverableList?: (opts: {
+    projectId?: string;
+    agentId?: string;
+    type?: string;
+    status?: string;
+    limit?: number;
+  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; updatedAt?: string }>>;
+  deliverableUpdate?: (id: string, data: {
+    title?: string;
+    summary?: string;
+    status?: string;
+    tags?: string;
+  }) => Promise<{ id: string; status: string } | undefined>;
 }
 
 export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[] {
@@ -239,70 +303,47 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.knowledgeContribute
+    ...(ctx.deliverableCreate
       ? [
           {
-            name: 'knowledge_contribute',
+            name: 'deliverable_create',
             description:
-              'Contribute knowledge to the project or organization knowledge base. Use this when you discover information that other agents working on the same project should know — architectural decisions, coding patterns, API details, gotchas, troubleshooting tips.',
+              'Publish a deliverable to the shared team repository. Use for files, documents, reports, research findings, conventions, architectural decisions, gotchas, or troubleshooting tips.',
             inputSchema: {
               type: 'object',
               properties: {
-                scope: {
+                type: {
                   type: 'string',
-                  enum: ['project', 'org'],
-                  description:
-                    'Where to save: "project" for current project, "org" for organization-wide',
-                },
-                category: {
-                  type: 'string',
-                  enum: [
-                    'architecture',
-                    'convention',
-                    'api',
-                    'decision',
-                    'gotcha',
-                    'troubleshooting',
-                    'dependency',
-                    'process',
-                    'reference',
-                  ],
-                  description: 'Category of knowledge',
+                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  description: 'Type of deliverable',
                 },
                 title: { type: 'string', description: 'Clear, searchable title' },
-                content: {
+                summary: {
                   type: 'string',
-                  description:
-                    'Detailed knowledge content. Include context, rationale, and examples.',
+                  description: 'Detailed content or description (markdown supported)',
                 },
-                importance: {
-                  type: 'number',
-                  description: 'Importance 0-100: 80+ critical, 50-79 useful, <50 nice-to-know',
+                reference: {
+                  type: 'string',
+                  description: 'File path, URL, branch name, or directory path',
                 },
                 tags: { type: 'string', description: 'Comma-separated tags for discoverability' },
-                supersedes: {
-                  type: 'string',
-                  description: 'Optional: ID of knowledge entry this replaces',
-                },
               },
-              required: ['scope', 'category', 'title', 'content'],
+              required: ['type', 'title', 'summary'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const result = await ctx.knowledgeContribute!({
-                  scope: args['scope'] as string,
-                  category: args['category'] as string,
+                const result = await ctx.deliverableCreate!({
+                  type: args['type'] as string,
                   title: args['title'] as string,
-                  content: args['content'] as string,
-                  importance: args['importance'] as number | undefined,
+                  summary: args['summary'] as string,
+                  reference: args['reference'] as string | undefined,
                   tags: args['tags'] as string | undefined,
-                  supersedes: args['supersedes'] as string | undefined,
                 });
                 return JSON.stringify({
                   status: 'success',
-                  knowledgeId: result.id,
-                  knowledgeStatus: result.status,
-                  ...(result.filePath ? { filePath: result.filePath } : {}),
+                  deliverableId: result.id,
+                  deliverableType: result.type,
+                  deliverableStatus: result.status,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -312,34 +353,36 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.knowledgeSearch
+    ...(ctx.deliverableSearch
       ? [
           {
-            name: 'knowledge_search',
+            name: 'deliverable_search',
             description:
-              'Search the knowledge base. By default searches your current project. Use scope to search organization-wide or your personal memory.',
+              'Search shared deliverables across the team. Search by query, project, type, or agent.',
             inputSchema: {
               type: 'object',
               properties: {
                 query: { type: 'string', description: 'Search keywords or question' },
-                scope: {
+                projectId: { type: 'string', description: 'Filter by project ID (optional)' },
+                agentId: { type: 'string', description: 'Filter by agent ID (optional)' },
+                type: {
                   type: 'string',
-                  enum: ['personal', 'project', 'org', 'all'],
-                  description: 'Search scope (default: project)',
+                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  description: 'Filter by deliverable type (optional)',
                 },
-                category: { type: 'string', description: 'Filter by category (optional)' },
-                limit: { type: 'number', description: 'Max results (default: 10)' },
+                limit: { type: 'number', description: 'Max results (default: 20)' },
               },
               required: ['query'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const results = await ctx.knowledgeSearch!(
-                  args['query'] as string,
-                  args['scope'] as string | undefined,
-                  args['category'] as string | undefined,
-                  args['limit'] as number | undefined
-                );
+                const results = await ctx.deliverableSearch!({
+                  query: args['query'] as string,
+                  projectId: args['projectId'] as string | undefined,
+                  agentId: args['agentId'] as string | undefined,
+                  type: args['type'] as string | undefined,
+                  limit: args['limit'] as number | undefined,
+                });
                 return JSON.stringify({ status: 'success', count: results.length, results });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -349,33 +392,40 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.knowledgeBrowse
+    ...(ctx.deliverableList
       ? [
           {
-            name: 'knowledge_browse',
+            name: 'deliverable_list',
             description:
-              'Browse the project knowledge base by category. Use this to understand what knowledge exists about a topic area.',
+              'List deliverables with optional filters (project, type, agent, status).',
             inputSchema: {
               type: 'object',
               properties: {
-                category: {
+                projectId: { type: 'string', description: 'Filter by project ID' },
+                agentId: { type: 'string', description: 'Filter by agent ID' },
+                type: {
                   type: 'string',
-                  description: 'Category to browse (omit for all categories with counts)',
+                  enum: ['file', 'document', 'branch', 'report', 'directory', 'url', 'text'],
+                  description: 'Filter by type',
                 },
-                scope: {
+                status: {
                   type: 'string',
-                  enum: ['project', 'org'],
-                  description: 'Scope (default: project)',
+                  enum: ['active', 'verified', 'outdated'],
+                  description: 'Filter by status (default: active)',
                 },
+                limit: { type: 'number', description: 'Max results (default: 50)' },
               },
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const result = await ctx.knowledgeBrowse!(
-                  args['category'] as string | undefined,
-                  args['scope'] as string | undefined
-                );
-                return JSON.stringify({ status: 'success', result });
+                const results = await ctx.deliverableList!({
+                  projectId: args['projectId'] as string | undefined,
+                  agentId: args['agentId'] as string | undefined,
+                  type: args['type'] as string | undefined,
+                  status: args['status'] as string | undefined,
+                  limit: args['limit'] as number | undefined,
+                });
+                return JSON.stringify({ status: 'success', count: results.length, results });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -384,30 +434,40 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
         ]
       : []),
 
-    ...(ctx.knowledgeFlagOutdated
+    ...(ctx.deliverableUpdate
       ? [
           {
-            name: 'knowledge_flag_outdated',
+            name: 'deliverable_update',
             description:
-              'Flag a knowledge entry as outdated. Use when you find information that is no longer accurate.',
+              "Update a deliverable's status, title, summary, or tags.",
             inputSchema: {
               type: 'object',
               properties: {
-                knowledge_id: { type: 'string', description: 'The knowledge entry ID' },
-                reason: { type: 'string', description: 'Why this is outdated' },
+                deliverable_id: { type: 'string', description: 'The deliverable ID' },
+                title: { type: 'string', description: 'New title (optional)' },
+                summary: { type: 'string', description: 'New summary/content (optional)' },
+                status: {
+                  type: 'string',
+                  enum: ['active', 'verified', 'outdated'],
+                  description: 'New status (optional)',
+                },
+                tags: { type: 'string', description: 'New comma-separated tags (optional)' },
               },
-              required: ['knowledge_id', 'reason'],
+              required: ['deliverable_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                await ctx.knowledgeFlagOutdated!(
-                  args['knowledge_id'] as string,
-                  args['reason'] as string
+                const result = await ctx.deliverableUpdate!(
+                  args['deliverable_id'] as string,
+                  {
+                    title: args['title'] as string | undefined,
+                    summary: args['summary'] as string | undefined,
+                    status: args['status'] as string | undefined,
+                    tags: args['tags'] as string | undefined,
+                  }
                 );
-                return JSON.stringify({
-                  status: 'success',
-                  message: 'Knowledge entry flagged as outdated',
-                });
+                if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
+                return JSON.stringify({ status: 'success', deliverableId: result.id, deliverableStatus: result.status });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

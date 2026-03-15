@@ -556,6 +556,7 @@ function TaskDetailModal({
     if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
     try { await api.tasks.run(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      onRefresh();
     } finally { setRunning(false); }
   };
 
@@ -563,6 +564,7 @@ function TaskDetailModal({
     if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      onRefresh();
     } finally { setRunning(false); }
   };
 
@@ -905,7 +907,7 @@ function TaskDetailModal({
           <div className={`mx-6 mt-3 mb-0 px-4 py-2.5 rounded-lg border text-xs ${schedPaused ? 'bg-amber-500/5 border-amber-500/20' : 'bg-indigo-500/5 border-indigo-500/20'}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className={schedPaused ? 'text-amber-400' : 'text-indigo-400'}>
-                {schedPaused ? '⏸ Schedule Paused' : '⟳ Scheduled'}
+                {schedPaused ? '⏸ Schedule Paused' : <><svg className="w-3.5 h-3.5 inline -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg> Scheduled</>}
               </span>
               <span className="text-gray-500">·</span>
               <span className="text-gray-300">
@@ -949,7 +951,13 @@ function TaskDetailModal({
           <div className="flex gap-2 flex-wrap">
             {isScheduled ? (<>
               {/* ── Scheduled task buttons ── */}
-              {(task.status === 'pending' || task.status === 'assigned' || isCompleted || isFailed) && task.assignedAgentId && (
+              {task.status === 'pending_approval' && (
+                <>
+                  <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                  <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+                </>
+              )}
+              {(task.status === 'pending' || task.status === 'assigned' || task.status === 'accepted' || isCompleted || isFailed) && task.assignedAgentId && (
                 <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                   {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
                 </button>
@@ -1336,9 +1344,13 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       className={`flex items-center gap-2 px-6 py-2 border-b border-gray-800/40 cursor-pointer hover:bg-gray-800/50 transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''}`}
     >
       <div className="w-12 shrink-0">
-        <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${row.kind === 'req' ? 'bg-amber-500/15 text-amber-400' : 'bg-gray-500/15 text-gray-400'}`}>
-          {row.kind === 'req' ? 'REQ' : 'TASK'}
-        </span>
+        {row.kind === 'req' ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400">REQ</span>
+        ) : row.data.taskType === 'scheduled' ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-cyan-500/15 text-cyan-400 inline-flex items-center gap-0.5" title="Scheduled task">SCHED</span>
+        ) : (
+          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-gray-400">TASK</span>
+        )}
       </div>
       <div className="flex-1 min-w-0 text-sm text-gray-200 truncate">{row.data.title}</div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
@@ -1615,6 +1627,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>('backlog');
+  const [showArchived, setShowArchived] = useState(false);
   const dragTaskRef = useRef<TaskInfo | null>(null);
   const dragReqRef = useRef<RequirementInfo | null>(null);
 
@@ -1678,9 +1691,17 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, 15000);
     const unsub = wsClient.on('task:update', (event) => {
       refreshBoard(); refreshRequirements();
-      const p = event?.payload as { taskId?: string; status?: string } | undefined;
-      if (p?.taskId && p.status) {
-        setSelectedTask(prev => prev && prev.id === p.taskId ? { ...prev, status: p.status as string } : prev);
+      const p = event?.payload as Record<string, unknown> | undefined;
+      if (p?.taskId) {
+        setSelectedTask(prev => {
+          if (!prev || prev.id !== p.taskId) return prev;
+          const patch: Partial<TaskInfo> = {};
+          if (typeof p.status === 'string') patch.status = p.status;
+          if (Array.isArray(p.deliverables)) patch.deliverables = p.deliverables as TaskInfo['deliverables'];
+          if (Array.isArray(p.notes)) patch.notes = p.notes as string[];
+          if (p.result !== undefined) patch.result = p.result as TaskInfo['result'];
+          return { ...prev, ...patch };
+        });
       }
     });
     return () => { clearInterval(i); unsub(); };
@@ -1930,7 +1951,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     t.status === 'completed' && t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
   const filterTasks = (tasks: TaskInfo[]) => {
-    let result = tasks.filter(t => !t.parentTaskId && !isArchived(t));
+    let result = tasks.filter(t => !t.parentTaskId && (showArchived || !isArchived(t)));
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
@@ -2040,7 +2061,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               {projects.length === 1 ? projects[0].name : `${projects.length} Projects`}
             </h2>
           )}
-          {archivedCount > 0 && <span className="text-[10px] text-gray-600 shrink-0">{archivedCount} archived</span>}
+          {archivedCount > 0 && (
+            <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-gray-700 text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}>
+              {showArchived ? `Hide ${archivedCount} archived` : `${archivedCount} archived`}
+            </button>
+          )}
 
           {/* View toggle */}
           <div className="flex items-center border border-gray-700/60 rounded-md overflow-hidden shrink-0">
@@ -2226,6 +2251,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         const subCount = task.subtaskIds?.length ?? 0;
                         const badge = SUB_STATUS_BADGE[task.status];
                         const isApprovalTask = task.status === 'pending_approval';
+                        const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
+                        const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
                         const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
                         const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
                         const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
@@ -2236,11 +2263,19 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                             className={`border rounded-lg p-3 border-l-[3px] transition-colors ${
                               isApprovalTask
                                 ? 'bg-yellow-500/[0.04] border-yellow-500/30 border-l-yellow-500 cursor-pointer'
-                                : `bg-gray-800 border-gray-700 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 cursor-grab active:cursor-grabbing`
+                                : isSchedTask
+                                  ? `bg-cyan-500/[0.03] border-cyan-500/20 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-cyan-500/40 cursor-pointer`
+                                  : `bg-gray-800 border-gray-700 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 cursor-grab active:cursor-grabbing`
                             }`}>
                             <div className="flex items-start justify-between gap-2">
-                              <div className="text-sm font-medium leading-snug">{task.title}</div>
-                              {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                {isSchedTask && <span className="text-cyan-400 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
+                                <div className="text-sm font-medium leading-snug truncate">{task.title}</div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 whitespace-nowrap">{schedLabel}</span>}
+                                {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>}
+                              </div>
                             </div>
                             {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
                             {(taskProjName || taskReqTitle) && (
