@@ -2559,8 +2559,8 @@ export class SqliteDeliverableRepo {
   constructor(private db: Database.Database) {}
 
   async create(data: {
-    id: string; type: string; title: string; summary: string; reference: string;
-    tags: string[]; status: string; taskId?: string; agentId?: string;
+    id: string; type: string; title: string; summary: string; reference?: string;
+    tags?: string[]; status?: string; taskId?: string; agentId?: string;
     projectId?: string; requirementId?: string;
     diffStats?: Record<string, number>; testResults?: Record<string, number>;
   }) {
@@ -2571,8 +2571,8 @@ export class SqliteDeliverableRepo {
         access_count, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
-      data.id, data.type, data.title, data.summary, data.reference,
-      toJson(data.tags), data.status,
+      data.id, data.type, data.title, data.summary, data.reference ?? '',
+      toJson(data.tags ?? []), data.status ?? 'active',
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
       data.requirementId ?? null,
       data.diffStats ? toJson(data.diffStats) : null,
