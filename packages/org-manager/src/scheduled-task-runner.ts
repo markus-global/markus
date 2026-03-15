@@ -1,4 +1,4 @@
-import { createLogger, type Task, type ScheduleConfig } from '@markus/shared';
+import { createLogger, type Task } from '@markus/shared';
 import type { TaskService } from './task-service.js';
 
 const log = createLogger('scheduled-task-runner');
@@ -65,27 +65,17 @@ export class ScheduledTaskRunner {
       }
 
       try {
-        await this.fireScheduledTask(task, config);
+        await this.fireScheduledTask(task);
       } catch (e) {
         log.error('Failed to fire scheduled task', { taskId: task.id, error: String(e) });
       }
     }
   }
 
-  private async fireScheduledTask(task: Task, config: ScheduleConfig): Promise<void> {
+  private async fireScheduledTask(task: Task): Promise<void> {
     log.info('Firing scheduled task', { taskId: task.id, title: task.title });
 
-    const currentRuns = (config.currentRuns ?? 0) + 1;
-    const nextRunAt = this.computeNextRun(config);
-
-    const updatedConfig: ScheduleConfig = {
-      ...config,
-      currentRuns,
-      lastRunAt: new Date().toISOString(),
-      nextRunAt,
-    };
-
-    await this.taskService.updateScheduleConfig(task.id, updatedConfig);
+    await this.taskService.advanceScheduleConfig(task.id);
 
     if (['completed', 'cancelled', 'failed', 'accepted'].includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
@@ -101,68 +91,4 @@ export class ScheduledTaskRunner {
       }
     }
   }
-
-  /**
-   * Compute the next run time based on the schedule config.
-   * Supports `every` (interval shorthand) and `cron` expressions.
-   * Returns undefined if the schedule is exhausted or one-shot.
-   */
-  private computeNextRun(config: ScheduleConfig): string | undefined {
-    if (config.runAt) {
-      return undefined;
-    }
-
-    if (config.every) {
-      const ms = parseInterval(config.every);
-      if (ms > 0) {
-        return new Date(Date.now() + ms).toISOString();
-      }
-    }
-
-    if (config.cron) {
-      const ms = estimateCronInterval(config.cron);
-      if (ms > 0) {
-        return new Date(Date.now() + ms).toISOString();
-      }
-    }
-
-    return undefined;
-  }
-}
-
-function parseInterval(shorthand: string): number {
-  const match = shorthand.match(/^(\d+)(ms|s|m|h|d|w)$/);
-  if (!match) return 0;
-  const value = parseInt(match[1]!, 10);
-  const unit = match[2]!;
-  const multipliers: Record<string, number> = {
-    ms: 1,
-    s: 1_000,
-    m: 60_000,
-    h: 3_600_000,
-    d: 86_400_000,
-    w: 604_800_000,
-  };
-  return value * (multipliers[unit] ?? 0);
-}
-
-/**
- * Simple heuristic to estimate the next interval from a cron expression.
- * For production use this could be replaced with a proper cron parser library,
- * but for now we handle common patterns.
- */
-function estimateCronInterval(cron: string): number {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length < 5) return 3_600_000;
-
-  const [minute, hour] = parts;
-
-  if (minute !== '*' && hour === '*') {
-    return 3_600_000;
-  }
-  if (minute !== '*' && hour !== '*') {
-    return 86_400_000;
-  }
-
-  return 3_600_000;
 }

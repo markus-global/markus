@@ -20,6 +20,7 @@ import {
   DeliverableService,
   ReportService,
   TrustService,
+  ScheduledTaskRunner,
   initStorage,
   runMigrations,
   type AuditEventType,
@@ -550,6 +551,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
+  const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
+  scheduledTaskRunner.start();
+
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });
     hitlService.notify({
@@ -747,6 +751,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   process.on('SIGINT', () => {
     console.log('\nShutting down...');
+    scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()
       .then(() => messageRouter.disconnectAll())

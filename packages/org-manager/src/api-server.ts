@@ -6182,6 +6182,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         if (task.status === 'pending_approval') {
           this.json(res, 400, { error: 'Task is awaiting approval' }); return;
         }
+        await this.taskService.advanceScheduleConfig(taskId);
         const resettable = ['completed', 'cancelled', 'failed', 'accepted'];
         if (resettable.includes(task.status)) {
           await this.taskService.resetTaskForRerun(taskId);

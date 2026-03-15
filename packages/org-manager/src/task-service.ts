@@ -1778,7 +1778,16 @@ export class TaskService {
       }
     }
 
-    task.deliverables = deliverables;
+    if (task.taskType === 'scheduled' && task.deliverables?.length) {
+      const runLabel = `Run #${task.scheduleConfig?.currentRuns ?? '?'} @ ${new Date().toISOString()}`;
+      const tagged = deliverables.map(d => ({
+        ...d,
+        summary: `[${runLabel}] ${d.summary ?? ''}`,
+      }));
+      task.deliverables = [...tagged, ...task.deliverables];
+    } else {
+      task.deliverables = deliverables;
+    }
     task.updatedAt = new Date().toISOString();
 
     task.status = 'review';
@@ -1787,7 +1796,7 @@ export class TaskService {
     if (this.taskRepo) {
       this.taskRepo.updateStatus(task.id, 'review')
         .catch(err => log.warn('Failed to persist review status to DB', { taskId: task.id, error: String(err) }));
-      this.taskRepo.updateDeliverables(task.id, deliverables)
+      this.taskRepo.updateDeliverables(task.id, task.deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
     }
 
@@ -2296,6 +2305,24 @@ export class TaskService {
     }
   }
 
+  /**
+   * Advance the schedule config for a task run (increment currentRuns,
+   * set lastRunAt, compute nextRunAt). Used by both ScheduledTaskRunner
+   * and the run-now API endpoint to keep schedule state consistent.
+   */
+  async advanceScheduleConfig(taskIdStr: string): Promise<void> {
+    const task = this.tasks.get(taskIdStr);
+    if (!task?.scheduleConfig) return;
+    const config = task.scheduleConfig;
+    const updatedConfig: ScheduleConfig = {
+      ...config,
+      currentRuns: (config.currentRuns ?? 0) + 1,
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: computeNextRunFromConfig(config),
+    };
+    await this.updateScheduleConfig(taskIdStr, updatedConfig);
+  }
+
   async resetTaskForRerun(taskIdStr: string): Promise<void> {
     const task = this.tasks.get(taskIdStr);
     if (!task) return;
@@ -2344,5 +2371,41 @@ function computeInitialNextRun(config: ScheduleConfig): string | undefined {
     return new Date(Date.now() + 3_600_000).toISOString();
   }
 
+  return undefined;
+}
+
+const INTERVAL_MULTIPLIERS: Record<string, number> = {
+  ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000,
+};
+
+function parseInterval(shorthand: string): number {
+  const match = shorthand.match(/^(\d+)(ms|s|m|h|d|w)$/);
+  if (!match) return 0;
+  return parseInt(match[1]!, 10) * (INTERVAL_MULTIPLIERS[match[2]!] ?? 0);
+}
+
+function estimateCronInterval(cron: string): number {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length < 5) return 3_600_000;
+  const [minute, hour] = parts;
+  if (minute !== '*' && hour === '*') return 3_600_000;
+  if (minute !== '*' && hour !== '*') return 86_400_000;
+  return 3_600_000;
+}
+
+/**
+ * Compute the next run timestamp from a schedule config.
+ * Returns undefined for one-shot (`runAt`) or unrecognised configs.
+ */
+export function computeNextRunFromConfig(config: ScheduleConfig): string | undefined {
+  if (config.runAt) return undefined;
+  if (config.every) {
+    const ms = parseInterval(config.every);
+    if (ms > 0) return new Date(Date.now() + ms).toISOString();
+  }
+  if (config.cron) {
+    const ms = estimateCronInterval(config.cron);
+    if (ms > 0) return new Date(Date.now() + ms).toISOString();
+  }
   return undefined;
 }
