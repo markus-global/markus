@@ -417,6 +417,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const knowledgeService = new KnowledgeService(knowledgeStore);
   const deliverableService = new DeliverableService(storage?.deliverableRepo);
   await deliverableService.load();
+
+  // One-time migration: sync existing task.deliverables into the unified deliverables table
+  const allTasks = taskService.listTasks({ orgId: 'default' });
+  await deliverableService.migrateFromTasks(allTasks);
+
   const reportService = new ReportService(taskService, billingService, auditService, knowledgeService);
   const _trustService = new TrustService();
   const requirementService = new RequirementService();

@@ -1,4 +1,4 @@
-import { createLogger, generateId, type Deliverable } from '@markus/shared';
+import { createLogger, generateId, type Deliverable, type TaskDeliverable, type Task } from '@markus/shared';
 import type { DeliverableRepo } from '@markus/storage';
 
 const log = createLogger('deliverable-service');
@@ -192,6 +192,57 @@ export class DeliverableService {
       type: opts.type as Deliverable['type'],
       status: opts.status as Deliverable['status'],
     });
+  }
+
+  /**
+   * One-time migration: scan existing tasks and create Deliverable entries
+   * for any task.deliverables that don't yet have a corresponding row.
+   */
+  async migrateFromTasks(tasks: Task[]): Promise<number> {
+    const existingTaskIds = new Set(
+      [...this.cache.values()].map(d => d.taskId).filter(Boolean)
+    );
+
+    let migrated = 0;
+    for (const task of tasks) {
+      if (!task.deliverables?.length) continue;
+      if (existingTaskIds.has(task.id)) continue;
+
+      for (const d of task.deliverables) {
+        try {
+          await this.create({
+            type: this.mapTaskDeliverableType(d.type),
+            title: d.summary?.slice(0, 200) || d.reference,
+            summary: d.summary || '',
+            reference: d.reference,
+            taskId: task.id,
+            agentId: task.assignedAgentId,
+            projectId: task.projectId,
+            requirementId: task.requirementId,
+            diffStats: d.diffStats,
+            testResults: d.testResults,
+          });
+          migrated++;
+        } catch (err) {
+          log.warn('Failed to migrate task deliverable', { taskId: task.id, ref: d.reference, error: String(err) });
+        }
+      }
+    }
+
+    if (migrated > 0) {
+      log.info('Migrated task deliverables to unified table', { migrated });
+    }
+    return migrated;
+  }
+
+  private mapTaskDeliverableType(type: TaskDeliverable['type']): Deliverable['type'] {
+    switch (type) {
+      case 'branch': return 'branch';
+      case 'file': return 'file';
+      case 'report': return 'report';
+      case 'document': return 'document';
+      default: return 'document';
+    }
   }
 
   private rowToDeliverable(r: {
