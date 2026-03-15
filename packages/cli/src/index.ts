@@ -106,7 +106,7 @@ async function main() {
   }
 
   if (command === 'version' || command === '--version') {
-    console.log('markus v0.7.0');
+    console.log('markus v0.1.0');
     return;
   }
 

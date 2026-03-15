@@ -5527,7 +5527,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
     if (path === '/api/health') {
       this.json(res, 200, {
         status: 'ok',
-        version: '0.7.0',
+        version: '0.1.0',
         agents: this.orgService.getAgentManager().listAgents().length,
       });
       return;
