@@ -515,7 +515,7 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-gray-500 mt-0.5 pl-[18px]">Create an empty team</div>
                   </button>
-                  <button onClick={() => { setActionMenu(false); navBus.navigate('templates', { tab: 'agent' }); }}
+                  <button onClick={() => { setActionMenu(false); navBus.navigate('agents'); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-gray-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
@@ -709,7 +709,7 @@ export function ChatTeamSidebar({
               </button>
             )}
             <div className="border-t border-gray-700/50 my-1" />
-            <button onClick={() => { setTeamMenu(null); navBus.navigate('templates', { tab: 'agent' }); }}
+            <button onClick={() => { setTeamMenu(null); navBus.navigate('agents'); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-indigo-300 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               Add Agent

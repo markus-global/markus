@@ -888,6 +888,10 @@ export class AgentManager {
       agent.setStateChangeCallback(this.stateChangeHandler);
     }
 
+    if (config.teamId) {
+      agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
+    }
+
     this.agents.set(id, agent);
     this.delegationManager.registerAgentCard({
       agentId: id,
@@ -1330,6 +1334,10 @@ export class AgentManager {
     }
     if (this.stateChangeHandler) {
       agent.setStateChangeCallback(this.stateChangeHandler);
+    }
+
+    if (config.teamId) {
+      agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
     }
 
     this.agents.set(id, agent);

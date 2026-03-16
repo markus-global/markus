@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   createLogger,
   orgId,
@@ -166,6 +169,23 @@ export class OrganizationService {
     return [...this.orgs.values()];
   }
 
+  getTeamDataDir(teamId: string): string {
+    return join(homedir(), '.markus', 'teams', teamId);
+  }
+
+  ensureTeamDataDir(teamId: string, announcements?: string, norms?: string): void {
+    const dir = this.getTeamDataDir(teamId);
+    mkdirSync(dir, { recursive: true });
+    const annPath = join(dir, 'ANNOUNCEMENT.md');
+    if (!existsSync(annPath)) {
+      writeFileSync(annPath, announcements ?? '', 'utf-8');
+    }
+    const normsPath = join(dir, 'NORMS.md');
+    if (!existsSync(normsPath)) {
+      writeFileSync(normsPath, norms ?? '', 'utf-8');
+    }
+  }
+
   async createTeam(orgId: string, name: string, description?: string): Promise<Team> {
     const org = this.orgs.get(orgId);
     if (!org) throw new Error(`Organization not found: ${orgId}`);
@@ -179,6 +199,8 @@ export class OrganizationService {
       humanMemberIds: [],
     };
     this.teams.set(team.id, team);
+
+    this.ensureTeamDataDir(team.id);
 
     if (this.storage) {
       try {

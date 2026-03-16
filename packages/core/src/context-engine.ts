@@ -119,6 +119,10 @@ export class ContextEngine {
       sharedWorkspace?: string;
     };
     dynamicContext?: string;
+    teamAnnouncements?: string;
+    teamNorms?: string;
+    teamDataDir?: string;
+    isTeamManager?: boolean;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -132,6 +136,23 @@ export class ContextEngine {
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
     if (orgCtx) parts.push(orgCtx);
+
+    // ── Team Announcements & Norms ───────────────────────────────────────
+    if (opts.teamAnnouncements?.trim()) {
+      parts.push('\n## Team Announcements\n' + opts.teamAnnouncements.trim());
+    }
+    if (opts.teamNorms?.trim()) {
+      parts.push('\n## Team Working Norms\n' + opts.teamNorms.trim());
+    }
+    if (opts.teamDataDir) {
+      const lines = ['\n## Team Data Directory', `Path: \`${opts.teamDataDir}\``, 'Files:', '- `ANNOUNCEMENT.md` — team announcements', '- `NORMS.md` — team working norms'];
+      if (opts.isTeamManager) {
+        lines.push('\nAs team manager, you can update these files using `file_write` to communicate guidelines and announcements to your team.');
+      } else {
+        lines.push('\nRead and follow the announcements and norms above. If you need changes, ask the team manager.');
+      }
+      parts.push(lines.join('\n'));
+    }
 
     // ── Governance: Project Context (P1 priority) ────────────────────────
     if (opts.projectContext) {

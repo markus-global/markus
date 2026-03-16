@@ -1,0 +1,10 @@
+{
+  "id": "team-dev-squad",
+  "name": "Development Squad",
+  "description": "A focused development team with a PM who coordinates, developers who build, a reviewer who ensures quality, and a QA engineer who validates. Suitable for feature development sprints and product iteration.",
+  "category": "development",
+  "tags": ["development", "agile", "sprint", "feature", "software"],
+  "version": "2.0.0",
+  "author": "Markus Team",
+  "icon": "users"
+}

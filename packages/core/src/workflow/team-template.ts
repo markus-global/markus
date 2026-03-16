@@ -1,14 +1,21 @@
 import { createLogger, generateId } from '@markus/shared';
 import type { AgentTemplate } from '../templates/types.js';
 import type { WorkflowDefinition } from './types.js';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const log = createLogger('team-template');
 
 export interface TeamMemberSpec {
-  templateId: string;
+  templateId?: string;
+  roleName?: string;
   name?: string;
   count?: number;
   role?: 'manager' | 'worker';
+  description?: string;
+  systemPrompt?: string;
+  skills?: string[];
 }
 
 export interface TeamTemplate {
@@ -23,6 +30,8 @@ export interface TeamTemplate {
   tags?: string[];
   category?: string;
   icon?: string;
+  announcements?: string;
+  norms?: string;
 }
 
 export interface TeamInstantiateRequest {
@@ -72,171 +81,80 @@ export class TeamTemplateRegistry {
   }
 }
 
+function loadTeamTemplateFromDir(dirPath: string): TeamTemplate | null {
+  const teamJsonPath = join(dirPath, 'team.json');
+  const membersJsonPath = join(dirPath, 'members.json');
+
+  if (!existsSync(teamJsonPath)) return null;
+
+  try {
+    const meta = JSON.parse(readFileSync(teamJsonPath, 'utf-8'));
+    const membersData = existsSync(membersJsonPath)
+      ? JSON.parse(readFileSync(membersJsonPath, 'utf-8'))
+      : { members: [] };
+
+    const annPath = join(dirPath, 'ANNOUNCEMENT.md');
+    const normsPath = join(dirPath, 'NORMS.md');
+
+    return {
+      id: meta.id ?? dirPath.split('/').pop() ?? generateId('tpl'),
+      name: meta.name ?? 'Unnamed Team',
+      description: meta.description ?? '',
+      version: meta.version ?? '1.0.0',
+      author: meta.author ?? 'Unknown',
+      members: (membersData.members ?? []).map((m: Record<string, unknown>) => ({
+        templateId: m.templateId as string | undefined,
+        roleName: m.roleName as string | undefined,
+        name: m.name as string | undefined,
+        count: m.count as number | undefined,
+        role: m.role as 'manager' | 'worker' | undefined,
+        description: m.description as string | undefined,
+        systemPrompt: m.systemPrompt as string | undefined,
+        skills: Array.isArray(m.skills) ? m.skills as string[] : typeof m.skills === 'string' ? (m.skills as string).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+      })),
+      tags: Array.isArray(meta.tags) ? meta.tags : [],
+      category: meta.category,
+      icon: meta.icon,
+      announcements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
+      norms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
+    };
+  } catch (err) {
+    log.warn(`Failed to load team template from ${dirPath}`, { error: String(err) });
+    return null;
+  }
+}
+
 /**
- * Create the default set of team templates covering common software development scenarios.
+ * Load team templates from the templates/teams/ directory.
+ * Each subdirectory should contain team.json, members.json, ANNOUNCEMENT.md, NORMS.md.
  */
 export function createDefaultTeamTemplates(): TeamTemplateRegistry {
   const registry = new TeamTemplateRegistry();
 
-  const builtins: TeamTemplate[] = [
-    {
-      id: 'team-dev-squad',
-      name: 'Development Squad',
-      description: 'A full development team with PM, developers, and QA. Suitable for feature development sprints.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-project-manager', name: 'PM', count: 1, role: 'manager' },
-        { templateId: 'tpl-developer', name: 'Developer', count: 2, role: 'worker' },
-        { templateId: 'tpl-reviewer', name: 'Code Reviewer', count: 1, role: 'worker' },
-        { templateId: 'tpl-qa-engineer', name: 'QA', count: 1, role: 'worker' },
-      ],
-      tags: ['development', 'agile', 'sprint', 'feature'],
-      category: 'development',
-      icon: 'users',
-    },
-    {
-      id: 'team-code-review',
-      name: 'Code Review Team',
-      description: 'Developer + Reviewer pair for code review workflows. Developer writes, reviewer checks.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-developer', name: 'Author', count: 1 },
-        { templateId: 'tpl-reviewer', name: 'Reviewer', count: 1 },
-      ],
-      tags: ['review', 'quality', 'pair'],
-      category: 'development',
-      icon: 'git-pull-request',
-    },
-    {
-      id: 'team-devops-pipeline',
-      name: 'DevOps Pipeline Team',
-      description: 'DevOps engineer + Developer for CI/CD setup and infrastructure automation.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-devops', name: 'DevOps Lead', count: 1, role: 'manager' },
-        { templateId: 'tpl-developer', name: 'Developer', count: 1 },
-      ],
-      tags: ['devops', 'ci-cd', 'infrastructure'],
-      category: 'devops',
-      icon: 'server',
-    },
-    {
-      id: 'team-docs-squad',
-      name: 'Documentation Squad',
-      description: 'Technical writer + Research assistant for comprehensive documentation projects.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-tech-writer', name: 'Lead Writer', count: 1, role: 'manager' },
-        { templateId: 'tpl-research-assistant', name: 'Researcher', count: 1 },
-        { templateId: 'tpl-reviewer', name: 'Editor', count: 1 },
-      ],
-      tags: ['documentation', 'writing', 'research'],
-      category: 'productivity',
-      icon: 'book',
-    },
-    {
-      id: 'team-full-stack',
-      name: 'Full Stack Team',
-      description: 'Complete team for end-to-end product development: PM, developers, QA, DevOps, and docs.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-project-manager', name: 'Product Manager', count: 1, role: 'manager' },
-        { templateId: 'tpl-developer', name: 'Developer', count: 3 },
-        { templateId: 'tpl-reviewer', name: 'Senior Reviewer', count: 1 },
-        { templateId: 'tpl-qa-engineer', name: 'QA Engineer', count: 1 },
-        { templateId: 'tpl-devops', name: 'DevOps', count: 1 },
-        { templateId: 'tpl-tech-writer', name: 'Tech Writer', count: 1 },
-      ],
-      tags: ['full-stack', 'complete', 'product', 'enterprise'],
-      category: 'management',
-      icon: 'briefcase',
-    },
-    {
-      id: 'team-marketing',
-      name: 'Marketing Team',
-      description: 'Content-driven marketing team: strategist, content writer, and research support for campaigns and brand building.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-marketing-specialist', name: 'Marketing Lead', count: 1, role: 'manager' },
-        { templateId: 'tpl-content-writer', name: 'Content Writer', count: 2 },
-        { templateId: 'tpl-research-assistant', name: 'Market Researcher', count: 1 },
-      ],
-      tags: ['marketing', 'content', 'campaigns', 'brand'],
-      category: 'general',
-      icon: 'megaphone',
-    },
-    {
-      id: 'team-hr',
-      name: 'HR & People Team',
-      description: 'Human resources team handling recruitment, onboarding, employee relations, and organizational culture.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-hr-specialist', name: 'HR Manager', count: 1, role: 'manager' },
-        { templateId: 'tpl-hr-specialist', name: 'Recruiter', count: 1 },
-        { templateId: 'tpl-content-writer', name: 'HR Communications', count: 1 },
-      ],
-      tags: ['hr', 'recruitment', 'people', 'culture', 'onboarding'],
-      category: 'general',
-      icon: 'users',
-    },
-    {
-      id: 'team-finance',
-      name: 'Finance & Accounting Team',
-      description: 'Financial operations team: budgeting, reporting, forecasting, and financial analysis.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-operations-manager', name: 'Finance Director', count: 1, role: 'manager' },
-        { templateId: 'tpl-finance-analyst', name: 'Financial Analyst', count: 2 },
-        { templateId: 'tpl-research-assistant', name: 'Data Analyst', count: 1 },
-      ],
-      tags: ['finance', 'accounting', 'budget', 'reporting', 'analysis'],
-      category: 'general',
-      icon: 'dollar-sign',
-    },
-    {
-      id: 'team-customer-success',
-      name: 'Customer Success Team',
-      description: 'Customer-facing team for support, success management, and deliverable management.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-operations-manager', name: 'CS Manager', count: 1, role: 'manager' },
-        { templateId: 'tpl-customer-support', name: 'Support Agent', count: 2 },
-        { templateId: 'tpl-tech-writer', name: 'Knowledge Base Writer', count: 1 },
-      ],
-      tags: ['support', 'customer-success', 'helpdesk', 'knowledge-base'],
-      category: 'general',
-      icon: 'headphones',
-    },
-    {
-      id: 'team-product',
-      name: 'Product Team',
-      description: 'Product management team for strategy, research, and roadmap planning with cross-functional coordination.',
-      version: '1.0.0',
-      author: 'Markus Team',
-      members: [
-        { templateId: 'tpl-product-manager', name: 'Head of Product', count: 1, role: 'manager' },
-        { templateId: 'tpl-research-assistant', name: 'UX Researcher', count: 1 },
-        { templateId: 'tpl-content-writer', name: 'Product Writer', count: 1 },
-        { templateId: 'tpl-developer', name: 'Technical Advisor', count: 1 },
-      ],
-      tags: ['product', 'strategy', 'research', 'roadmap', 'ux'],
-      category: 'management',
-      icon: 'target',
-    },
-  ];
-
-  for (const tpl of builtins) {
-    registry.register(tpl);
+  // Resolve templates/teams/ relative to the package root
+  let templatesDir: string;
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    // packages/core/src/workflow/team-template.ts -> root/templates/teams
+    templatesDir = resolve(dirname(thisFile), '..', '..', '..', '..', 'templates', 'teams');
+  } catch {
+    templatesDir = resolve(process.cwd(), 'templates', 'teams');
   }
 
+  if (!existsSync(templatesDir)) {
+    log.warn(`Team templates directory not found: ${templatesDir}`);
+    return registry;
+  }
+
+  const entries = readdirSync(templatesDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const tpl = loadTeamTemplateFromDir(join(templatesDir, entry.name));
+    if (tpl) {
+      registry.register(tpl);
+    }
+  }
+
+  log.info(`Loaded ${registry.list().length} team templates from ${templatesDir}`);
   return registry;
 }

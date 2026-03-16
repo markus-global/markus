@@ -1,0 +1,10 @@
+{
+  "id": "team-content",
+  "name": "Content Creation Team",
+  "description": "A content-focused team with a content strategist who plans, writers who create, and a researcher who provides insights. Ideal for marketing campaigns, documentation projects, and content operations.",
+  "category": "productivity",
+  "tags": ["content", "writing", "marketing", "documentation", "creative"],
+  "version": "2.0.0",
+  "author": "Markus Team",
+  "icon": "edit"
+}

@@ -44,6 +44,8 @@ When outputting the final configuration, wrap it in a JSON code block:
   "description": "Team purpose and goals",
   "category": "development | devops | management | productivity | general",
   "tags": "comma-separated tags",
+  "announcements": "Initial team announcement posted when the team is created. Introduce the team's mission, current priorities, and any important notices. Written in Markdown.",
+  "norms": "Team working norms and behavioral agreements. Define communication patterns, quality standards, collaboration protocols, review expectations, and any domain-specific conventions. Written in Markdown.",
   "members": [
     {
       "name": "Agent Display Name",
@@ -66,6 +68,12 @@ Must be one of the role templates listed in the dynamic context.
 
 #### `skills` — System Skills
 Must ONLY use skill IDs from the dynamic context. Use `""` for agents that don't need tool skills. **DO NOT** use any skill names not listed in the dynamic context.
+
+#### `announcements` — Team Announcements (REQUIRED)
+Initial team announcement content (Markdown). Shared with all team members and injected into their context. Should introduce the team's mission, current focus areas, and any important guidelines.
+
+#### `norms` — Team Working Norms (REQUIRED)
+Team behavioral agreements and working conventions (Markdown). Defines how the team communicates, reviews work, handles conflicts, and maintains quality standards. All team members will follow these norms.
 
 ## Critical Rules
 

@@ -70,7 +70,7 @@ export function Dashboard() {
           </div>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => navBus.navigate('templates', { tab: 'agent' })} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
+          <button onClick={() => navBus.navigate('agents')} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
         </div>
       </div>
 
@@ -91,7 +91,7 @@ export function Dashboard() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
                 { label: 'Chat with Secretary', desc: 'Your default team manager can help coordinate work', page: 'team' as const },
-                { label: 'Browse Agent Templates', desc: 'Hire specialized agents from the template library', page: 'templates' as const },
+                { label: 'Browse Agent Templates', desc: 'Hire specialized agents from the template library', page: 'agents' as const },
                 { label: 'Create a Project', desc: 'Set up a project with tasks and iterations', page: 'projects' as const },
               ].map(item => (
                 <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-gray-800/50 hover:bg-gray-800 border border-gray-700/50 hover:border-indigo-500/30 rounded-lg p-4 transition-colors">

@@ -121,6 +121,7 @@ export class Agent {
   private currentSessionId?: string;
   private orgContext?: OrgContext;
   private contextMdPath?: string;
+  private teamDataDir?: string;
   private identityContext?: IdentityContext;
   private environmentProfile?: EnvironmentProfile;
   private auditCallback?: (event: {
@@ -623,6 +624,22 @@ export class Agent {
     this.orgContext = ctx;
   }
 
+  setTeamDataDir(dir: string): void {
+    this.teamDataDir = dir;
+  }
+
+  private getTeamContextParams(): { teamAnnouncements?: string; teamNorms?: string; teamDataDir?: string; isTeamManager?: boolean } {
+    if (!this.teamDataDir) return {};
+    const annPath = join(this.teamDataDir, 'ANNOUNCEMENT.md');
+    const normsPath = join(this.teamDataDir, 'NORMS.md');
+    return {
+      teamAnnouncements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
+      teamNorms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
+      teamDataDir: this.teamDataDir,
+      isTeamManager: this.config.agentRole === 'manager',
+    };
+  }
+
   setIdentityContext(ctx: IdentityContext): void {
     this.identityContext = ctx;
   }
@@ -976,6 +993,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      ...this.getTeamContextParams(),
     });
 
     let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1320,6 +1338,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      ...this.getTeamContextParams(),
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
@@ -1786,6 +1805,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      ...this.getTeamContextParams(),
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });

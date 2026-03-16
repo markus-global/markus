@@ -706,6 +706,14 @@ export const api = {
       request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/resume`, { method: 'POST' }),
     status: (teamId: string) =>
       request<{ agents: Array<{ id: string; name: string; status: string; role?: string }> }>(`/teams/${teamId}/status`),
+    getFiles: (teamId: string) =>
+      request<{ files: string[] }>(`/teams/${teamId}/files`),
+    getFile: (teamId: string, filename: string) =>
+      request<{ filename: string; content: string }>(`/teams/${teamId}/files/${encodeURIComponent(filename)}`),
+    updateFile: (teamId: string, filename: string, content: string) =>
+      request<{ ok: boolean }>(`/teams/${teamId}/files/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
+    exportTeam: (teamId: string) =>
+      request<{ path: string; config: Record<string, unknown> }>(`/teams/${teamId}/export`, { method: 'POST' }),
   },
   externalAgents: {
     list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),
@@ -1202,3 +1210,64 @@ class WSClient {
 }
 
 export const wsClient = new WSClient();
+
+// ── Markus Hub API Client ────────────────────────────────────────────────────
+
+const HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'http://localhost:3003';
+
+export interface HubItem {
+  id: string;
+  itemType: 'agent' | 'team' | 'skill';
+  name: string;
+  description: string;
+  version: string;
+  category: string;
+  tags: string[];
+  icon?: string;
+  downloadCount: number;
+  avgRating: string;
+  ratingCount: number;
+  createdAt: string;
+  author: { id: string; username: string; displayName?: string };
+  config?: Record<string, unknown>;
+  readme?: string;
+}
+
+async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${HUB_URL}/api${path}`, {
+    ...init,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Hub HTTP ${res.status}`);
+  return data as T;
+}
+
+export const hubApi = {
+  search: (opts?: { type?: string; q?: string; category?: string; sort?: string; page?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.type) params.set('type', opts.type);
+    if (opts?.q) params.set('q', opts.q);
+    if (opts?.category) params.set('category', opts.category);
+    if (opts?.sort) params.set('sort', opts.sort);
+    if (opts?.page) params.set('page', String(opts.page));
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return hubRequest<{ items: HubItem[]; total: number }>(`/items${qs ? `?${qs}` : ''}`);
+  },
+  getItem: (id: string) => hubRequest<{ item: HubItem }>(`/items/${id}`),
+  download: (id: string) =>
+    hubRequest<{ config: unknown; name: string; itemType: string; version: string }>(`/items/${id}/download`, { method: 'POST' }),
+  publish: (data: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config: unknown; readme?: string }) =>
+    hubRequest<{ id: string; name: string }>('/items', { method: 'POST', body: JSON.stringify(data) }),
+  login: (email: string, password: string) =>
+    hubRequest<{ user: { id: string; username: string } }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  register: (username: string, email: string, password: string) =>
+    hubRequest<{ user: { id: string; username: string } }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
+  publishViaProxy: (payload: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config: unknown; readme?: string }) =>
+    request<{ id?: string; name?: string; error?: string }>('/hub/publish', {
+      method: 'POST',
+      body: JSON.stringify({ hubUrl: HUB_URL, payload }),
+    }),
+};

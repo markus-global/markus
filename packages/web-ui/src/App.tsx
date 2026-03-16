@@ -5,6 +5,7 @@ import { Chat } from './pages/Chat.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { SkillStore } from './pages/SkillStore.tsx';
 import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
+import { TeamsStore } from './pages/TeamsStore.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { GovernancePage } from './pages/Governance.tsx';
 import { ProjectsPage } from './pages/Projects.tsx';
@@ -18,14 +19,15 @@ import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 
-const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'templates', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
+const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1).split('/')[0];
-  if (hash === 'agents' || hash === 'team') return 'chat';
+  if (hash === 'team') return 'chat';
   if (hash === 'tasks') return 'projects';
   if (hash === 'usage') return 'reports';
   if (hash === 'prompts') return 'builder';
+  if (hash === 'templates') return 'agents';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -46,7 +48,7 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : p;
+    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : (p as string) === 'templates' ? 'agents' : p;
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
     window.location.hash = normalized;
@@ -77,7 +79,8 @@ export function App() {
     chat: <Chat authUser={currentUser} />,
     settings: <Settings />,
     skills: <SkillStore />,
-    templates: <TemplateMarketplace authUser={currentUser} />,
+    agents: <TemplateMarketplace authUser={currentUser} />,
+    teams: <TeamsStore />,
     builder: <AgentBuilder />,
     governance: <GovernancePage />,
     projects: <ProjectsPage authUser={currentUser} />,

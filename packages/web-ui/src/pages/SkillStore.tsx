@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, AgentInfo } from '../api.ts';
+import { api, hubApi, AgentInfo, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ interface SkillsShSkill {
   description?: string;
 }
 
-type TabId = 'installed' | 'builtin' | 'skillhub' | 'skillssh';
+type TabId = 'installed' | 'builtin' | 'skillhub' | 'skillssh' | 'markus-hub';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +93,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'builtin', label: 'Built-in' },
   { id: 'skillhub', label: 'SkillHub' },
   { id: 'skillssh', label: 'skills.sh' },
+  { id: 'markus-hub', label: 'Markus Hub' },
 ];
 
 // ─── Agent Assignment Modal ──────────────────────────────────────────────────────
@@ -197,6 +198,11 @@ export function SkillStore() {
   const [skillsshSearch, setSkillsshSearch] = useState('');
   const [loadingSkillssh, setLoadingSkillssh] = useState(false);
 
+  // Markus Hub tab
+  const [hubSkills, setHubSkills] = useState<HubItem[]>([]);
+  const [loadingHub, setLoadingHub] = useState(false);
+  const [hubSearch, setHubSearch] = useState('');
+
   // Agents
   const [agents, setAgents] = useState<AgentInfo[]>([]);
 
@@ -261,7 +267,17 @@ export function SkillStore() {
     setLoadingSkillssh(false);
   }, []);
 
+  const loadHubSkills = useCallback(async (q?: string) => {
+    setLoadingHub(true);
+    try {
+      const d = await hubApi.search({ type: 'skill', q: q || undefined, limit: 50 });
+      setHubSkills(d.items);
+    } catch { /* Hub might be offline */ }
+    setLoadingHub(false);
+  }, []);
+
   useEffect(() => { loadInstalled(); loadAgents(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
+  useEffect(() => { if (tab === 'markus-hub') loadHubSkills(hubSearch); }, [tab, hubSearch, loadHubSkills]);
 
   // ── Install helpers ───────────────────────────────────────────────────────────
 
@@ -745,6 +761,68 @@ export function SkillStore() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Markus Hub Tab ────────────────────────────────────────────────────── */}
+      {tab === 'markus-hub' && (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <input
+              value={hubSearch}
+              onChange={e => setHubSearch(e.target.value)}
+              placeholder="Search Markus Hub skills..."
+              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+            />
+            <span className="text-xs text-gray-500 ml-auto">Community skills from Markus Hub</span>
+          </div>
+
+          {loadingHub ? (
+            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Loading from Hub...</div></div>
+          ) : hubSkills.length === 0 ? (
+            <div className="text-center text-gray-500 py-20">
+              <div className="text-4xl mb-3">🏪</div>
+              <div>No skills found on Markus Hub</div>
+              <div className="text-xs mt-1">Hub may be offline or empty. Run the hub server at port 3003.</div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {hubSkills.map(item => (
+                <div key={item.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-sm truncate">{item.name}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-teal-500/15 text-teal-400 shrink-0 ml-2">Hub</span>
+                  </div>
+                  <p className="text-sm text-gray-400 mt-2 line-clamp-2">{item.description}</p>
+                  <div className="mt-2 text-xs text-amber-400">
+                    {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
+                    <span className="text-gray-500 ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
+                  </div>
+                  <div className="mt-2 pt-2 border-t border-gray-800 flex justify-end">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const data = await hubApi.download(item.id);
+                          const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
+                          const a = document.createElement('a');
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `${item.name}.json`;
+                          a.click();
+                          msg(`Downloaded ${item.name}`, 'success');
+                        } catch { msg('Download failed', 'error'); }
+                      }}
+                      className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
+                    >
+                      Download
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

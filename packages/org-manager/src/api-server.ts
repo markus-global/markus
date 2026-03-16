@@ -1542,6 +1542,56 @@ export class APIServer {
       return;
     }
 
+    // Team files (announcements, norms, etc.)
+    if (path.match(/^\/api\/teams\/[^/]+\/files$/) && req.method === 'GET') {
+      const teamId = path.split('/')[3]!;
+      const dir = this.orgService.getTeamDataDir(teamId);
+      if (!existsSync(dir)) {
+        this.json(res, 200, { files: [] });
+        return;
+      }
+      const files = readdirSync(dir).filter(f => f.endsWith('.md'));
+      this.json(res, 200, { files });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+\/files\/[^/]+$/) && req.method === 'GET') {
+      const parts = path.split('/');
+      const teamId = parts[3]!;
+      const filename = decodeURIComponent(parts[5]!);
+      if (filename.includes('..') || filename.includes('/')) {
+        this.json(res, 400, { error: 'Invalid filename' });
+        return;
+      }
+      const filePath = join(this.orgService.getTeamDataDir(teamId), filename);
+      if (!existsSync(filePath)) {
+        this.json(res, 404, { error: 'File not found' });
+        return;
+      }
+      const content = readFileSync(filePath, 'utf-8');
+      this.json(res, 200, { filename, content });
+      return;
+    }
+
+    if (path.match(/^\/api\/teams\/[^/]+\/files\/[^/]+$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const teamId = parts[3]!;
+      const filename = decodeURIComponent(parts[5]!);
+      if (filename.includes('..') || filename.includes('/')) {
+        this.json(res, 400, { error: 'Invalid filename' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const content = body['content'] as string | undefined;
+      const dir = this.orgService.getTeamDataDir(teamId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, filename), content ?? '', 'utf-8');
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
     // Roles
     if (path === '/api/roles' && req.method === 'GET') {
       const roleNames = this.orgService.listAvailableRoles();
@@ -3573,6 +3623,8 @@ When outputting the final configuration, wrap it in a JSON code block:
   "description": "Team purpose",
   "category": "development" | "devops" | "management" | "productivity" | "general",
   "tags": "comma-separated tags",
+  "announcements": "Initial team announcement (Markdown). Introduce the team mission, current priorities, and important notices.",
+  "norms": "Team working norms (Markdown). Communication patterns, quality standards, collaboration protocols, review expectations.",
   "members": [
     {
       "name": "Agent Display Name",
@@ -3587,6 +3639,8 @@ When outputting the final configuration, wrap it in a JSON code block:
   ]
 }
 \`\`\`
+
+IMPORTANT: The \`announcements\` and \`norms\` fields are REQUIRED. They are stored as Markdown files and injected into every team member's context. Write substantive content — not placeholders.
 
 ## Available Role Templates
 ${roleList}
@@ -3754,6 +3808,12 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           const agentManager = this.orgService.getAgentManager();
           const teamName = (artifact.name as string) ?? 'New Team';
           const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
+
+          // Write team announcements and norms if provided
+          const teamAnnouncements = (artifact.announcements as string) ?? '';
+          const teamNorms = (artifact.norms as string) ?? '';
+          this.orgService.ensureTeamDataDir(team.id, teamAnnouncements, teamNorms);
+
           const members = Array.isArray(artifact.members) ? artifact.members as Array<Record<string, unknown>> : [];
           const createdAgents: Array<{ id: string; name: string; role: string }> = [];
 
@@ -4999,6 +5059,30 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         url.searchParams.get('agentId') ?? undefined
       );
       this.json(res, 200, { usage });
+      return;
+    }
+
+    // ── Hub Proxy ─────────────────────────────────────────────────────────────
+    if (path === '/api/hub/publish' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const hubUrl = (body['hubUrl'] as string) ?? 'http://localhost:3001';
+      const hubToken = body['hubToken'] as string | undefined;
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (hubToken) headers['Authorization'] = `Bearer ${hubToken}`;
+        if (body['hubCookie']) headers['Cookie'] = body['hubCookie'] as string;
+        const hubRes = await fetch(`${hubUrl}/api/items`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body['payload']),
+        });
+        const hubData = await hubRes.json();
+        this.json(res, hubRes.status, hubData);
+      } catch (err) {
+        this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
+      }
       return;
     }
 

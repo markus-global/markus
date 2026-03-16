@@ -1,0 +1,10 @@
+{
+  "id": "team-startup",
+  "name": "Startup All-in-One",
+  "description": "A lean startup team covering product strategy, development, marketing, and operations. Each member wears multiple hats and moves fast.",
+  "category": "startup",
+  "tags": ["startup", "lean", "mvp", "product", "growth"],
+  "version": "2.0.0",
+  "author": "Markus Team",
+  "icon": "zap"
+}

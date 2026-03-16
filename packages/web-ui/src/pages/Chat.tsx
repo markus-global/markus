@@ -16,6 +16,7 @@ import {
 import { navBus } from '../navBus.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
+import { TeamProfile } from './TeamProfile.tsx';
 import { BuilderArtifactPanel, getBuilderMode } from '../components/BuilderArtifact.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
@@ -504,7 +505,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const oldestMsgId = useRef<string | null>(null);
 
   // Group chats
-  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number }>>([]);
+  const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string }>>([]);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>([]);
@@ -521,6 +522,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Channel @mention
   const [mentionDropdown, setMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+
+  const activeTeamId = chatMode === 'channel'
+    ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
+    : undefined;
 
   const messagesEnd = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -1493,7 +1498,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               </span>
             )}
 
-            {chatMode === 'direct' && selectedAgent && (
+            {((chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId)) && (
               <div className="flex items-center gap-0.5 ml-4 -mb-px">
                 <button
                   onClick={() => setMainTab('chat')}
@@ -1513,7 +1518,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  Profile
+                  {chatMode === 'channel' ? 'Team' : 'Profile'}
                 </button>
               </div>
             )}
@@ -1634,10 +1639,19 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         </div>
 
         {/* Profile Tab */}
-        {mainTab === 'profile' && selectedAgent && (
+        {mainTab === 'profile' && chatMode === 'direct' && selectedAgent && (
           <div className="flex-1 overflow-y-auto">
             <AgentProfile
               agentId={selectedAgent}
+              onBack={() => setMainTab('chat')}
+              inline
+            />
+          </div>
+        )}
+        {mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
+          <div className="flex-1 overflow-y-auto">
+            <TeamProfile
+              teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
               inline
             />
