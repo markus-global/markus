@@ -3831,6 +3831,11 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           const agentManager = this.orgService.getAgentManager();
           const teamName = (artifact.name as string) ?? 'New Team';
           const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
+          this.ws?.broadcast({
+            type: 'chat:group_created',
+            payload: { chatId: `group:${team.id}`, name: teamName, creatorId: '', creatorName: '' },
+            timestamp: new Date().toISOString(),
+          });
 
           const teamFiles = artifact.files as Record<string, string> | undefined;
           const teamAnnouncements = teamFiles?.['ANNOUNCEMENT.md'] ?? (artifact.announcements as string) ?? '';
@@ -4226,6 +4231,11 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             }
             const teamName = (teamMeta.name as string) ?? name;
             const team = await this.orgService.createTeam('default', teamName, (teamMeta.description as string) ?? '');
+            this.ws?.broadcast({
+              type: 'chat:group_created',
+              payload: { chatId: `group:${team.id}`, name: teamName, creatorId: '', creatorName: '' },
+              timestamp: new Date().toISOString(),
+            });
 
             const announcementPath = join(artDir, 'ANNOUNCEMENT.md');
             const normsPath = join(artDir, 'NORMS.md');
