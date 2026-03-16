@@ -34,6 +34,12 @@ function resolveAndCheckAccess(
     if (policy.roleDir && resolved.startsWith(resolve(policy.roleDir))) {
       return { resolved, access: 'readwrite' };
     }
+    if (policy.teamDataDir && resolved.startsWith(resolve(policy.teamDataDir))) {
+      return { resolved, access: 'readwrite' };
+    }
+    if (policy.builderArtifactsDir && resolved.startsWith(resolve(policy.builderArtifactsDir))) {
+      return { resolved, access: 'readwrite' };
+    }
     return { resolved, access: 'readonly' };
   }
 
@@ -49,6 +55,8 @@ function denyMessage(resolved: string, workspacePath?: string, policy?: PathAcce
     const zones = [policy.primaryWorkspace];
     if (policy.sharedWorkspace) zones.push(policy.sharedWorkspace);
     if (policy.roleDir) zones.push(policy.roleDir);
+    if (policy.teamDataDir) zones.push(policy.teamDataDir);
+    if (policy.builderArtifactsDir) zones.push(policy.builderArtifactsDir);
     if (policy.readOnlyPaths) zones.push(...policy.readOnlyPaths);
     return `File path must be within allowed zones: ${zones.join(', ')}`;
   }

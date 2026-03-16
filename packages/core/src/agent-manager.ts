@@ -414,7 +414,9 @@ export class AgentManager {
    * Build a PathAccessPolicy for an agent, including shared workspace
    * and any project repos as read-only paths.
    */
-  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[], roleDir?: string): PathAccessPolicy {
+  private static readonly BUILDER_ROLES = new Set(['agent-father', 'team-factory', 'skill-architect']);
+
+  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[], roleDir?: string, teamDataDir?: string, builderArtifactsDir?: string): PathAccessPolicy {
     const policy: PathAccessPolicy = {
       primaryWorkspace: workspacePath,
       readOnlyPaths: extraReadOnlyPaths?.length ? [...extraReadOnlyPaths] : undefined,
@@ -424,6 +426,12 @@ export class AgentManager {
     }
     if (roleDir) {
       policy.roleDir = roleDir;
+    }
+    if (teamDataDir) {
+      policy.teamDataDir = teamDataDir;
+    }
+    if (builderArtifactsDir) {
+      policy.builderArtifactsDir = builderArtifactsDir;
     }
     return policy;
   }
@@ -468,9 +476,21 @@ export class AgentManager {
     const workspacePath = request.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
-    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir);
+    // Team managers get write access to team data dir for announcements/norms
+    const teamDataDir = (request.teamId && request.agentRole === 'manager')
+      ? join(homedir(), '.markus', 'teams', request.teamId)
+      : undefined;
+
+    // Builder agents get write access to builder-artifacts directory
+    const builderArtifactsDir = AgentManager.BUILDER_ROLES.has(request.roleName)
+      ? join(homedir(), '.markus', 'builder-artifacts')
+      : undefined;
+
+    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
     const securityAllowlist = [workspacePath, agentRoleDir];
     if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
+    if (pathPolicy.teamDataDir) securityAllowlist.push(pathPolicy.teamDataDir);
+    if (pathPolicy.builderArtifactsDir) securityAllowlist.push(pathPolicy.builderArtifactsDir);
     if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
 
     const basePolicy = request.securityPolicy ?? this.globalSecurityPolicy;
@@ -991,9 +1011,19 @@ export class AgentManager {
     const workspacePath = config.profile?.workspacePath ?? join(this.dataDir, id, 'workspace');
     mkdirSync(workspacePath, { recursive: true });
 
-    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir);
+    const teamDataDir = (config.teamId && config.agentRole === 'manager')
+      ? join(homedir(), '.markus', 'teams', config.teamId)
+      : undefined;
+
+    const builderArtifactsDir = AgentManager.BUILDER_ROLES.has(config.roleId)
+      ? join(homedir(), '.markus', 'builder-artifacts')
+      : undefined;
+
+    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
     const securityAllowlist = [workspacePath, agentRoleDir];
     if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
+    if (pathPolicy.teamDataDir) securityAllowlist.push(pathPolicy.teamDataDir);
+    if (pathPolicy.builderArtifactsDir) securityAllowlist.push(pathPolicy.builderArtifactsDir);
     if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
 
     const basePolicy = this.globalSecurityPolicy;

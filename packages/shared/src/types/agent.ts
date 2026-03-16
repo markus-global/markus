@@ -98,6 +98,10 @@ export interface PathAccessPolicy {
   sharedWorkspace?: string;
   /** Agent's own role files directory — read/write for self-evolution */
   roleDir?: string;
+  /** Team shared data directory — read/write for team managers to update announcements/norms */
+  teamDataDir?: string;
+  /** Builder artifacts directory — read/write for builder agents to write packages */
+  builderArtifactsDir?: string;
   /** Paths the agent can read but not write (project repos, peer worktrees) */
   readOnlyPaths?: string[];
 }

@@ -96,6 +96,39 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'markus-hub', label: 'Markus Hub' },
 ];
 
+// ─── Hub Skill Install Button ────────────────────────────────────────────────
+
+function HubSkillInstallButton({ item, onMsg }: { item: HubItem; onMsg: (text: string, type: 'success' | 'error') => void }) {
+  const [installing, setInstalling] = useState(false);
+
+  const handleInstall = async () => {
+    if (installing) return;
+    setInstalling(true);
+    try {
+      const data = await hubApi.download(item.id);
+      const artifact = { ...(data.config as Record<string, unknown>), name: data.name || item.name, description: item.description };
+      if (data.files) (artifact as Record<string, unknown>).files = data.files;
+      const saved = await api.builder.artifacts.save('skill', artifact);
+      await api.builder.artifacts.install('skill', saved.name);
+      onMsg(`Installed ${item.name}`, 'success');
+    } catch {
+      onMsg('Install failed', 'error');
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={() => void handleInstall()}
+      disabled={installing}
+      className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+    >
+      {installing ? 'Installing...' : 'Install'}
+    </button>
+  );
+}
+
 // ─── Agent Assignment Modal ──────────────────────────────────────────────────────
 
 function AgentAssignModal({
@@ -803,23 +836,8 @@ export function SkillStore() {
                     {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
                     <span className="text-gray-500 ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
                   </div>
-                  <div className="mt-2 pt-2 border-t border-gray-800 flex justify-end">
-                    <button
-                      onClick={async () => {
-                        try {
-                          const data = await hubApi.download(item.id);
-                          const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
-                          const a = document.createElement('a');
-                          a.href = URL.createObjectURL(blob);
-                          a.download = `${item.name}.json`;
-                          a.click();
-                          msg(`Downloaded ${item.name}`, 'success');
-                        } catch { msg('Download failed', 'error'); }
-                      }}
-                      className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
-                    >
-                      Download
-                    </button>
+                  <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-end gap-2">
+                    <HubSkillInstallButton item={item} onMsg={msg} />
                   </div>
                 </div>
               ))}

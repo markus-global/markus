@@ -936,6 +936,18 @@ export const api = {
       request<{ reply: string; artifact: Record<string, unknown> | null; mode: string }>('/builder/chat', { method: 'POST', body: JSON.stringify({ mode, messages }) }),
     create: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
       request('/builder/create', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
+    artifacts: {
+      list: () =>
+        request<{ artifacts: Array<{ type: string; name: string; meta: Record<string, unknown>; path: string; updatedAt: string }> }>('/builder/artifacts'),
+      get: (type: string, name: string) =>
+        request<{ type: string; name: string; path: string; files: Record<string, string> }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`),
+      save: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
+        request<{ type: string; name: string; path: string }>('/builder/artifacts/save', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
+      install: (type: string, name: string) =>
+        request<Record<string, unknown>>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/install`, { method: 'POST' }),
+      delete: (type: string, name: string) =>
+        request<{ deleted: boolean }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    },
   },
   auth: {
     login: (email: string, password: string) =>
@@ -1246,7 +1258,7 @@ export const hubApi = {
   },
   getItem: (id: string) => hubRequest<{ item: HubItem }>(`/items/${id}`),
   download: (id: string) =>
-    hubRequest<{ config: unknown; name: string; itemType: string; version: string }>(`/items/${id}/download`, { method: 'POST' }),
+    hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' }),
   publish: (data: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config: unknown; readme?: string }) =>
     hubRequest<{ id: string; name: string }>('/items', { method: 'POST', body: JSON.stringify(data) }),
   login: (email: string, password: string) =>

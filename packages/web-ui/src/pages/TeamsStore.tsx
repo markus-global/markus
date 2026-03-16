@@ -286,35 +286,51 @@ export function TeamsStore() {
 }
 
 function HubTeamCard({ item }: { item: HubItem }) {
+  const [installing, setInstalling] = useState(false);
+  const [status, setStatus] = useState('');
+
+  const handleInstall = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const data = await hubApi.download(item.id);
+      const artifact = { ...(data.config as Record<string, unknown>), name: data.name || item.name, description: item.description };
+      if (data.files) (artifact as Record<string, unknown>).files = data.files;
+      const saved = await api.builder.artifacts.save('team', artifact);
+      await api.builder.artifacts.install('team', saved.name);
+      setStatus('Installed!');
+    } catch {
+      setStatus('Failed');
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   return (
     <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-indigo-600/50 cursor-pointer transition-all">
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-lg">👥</span>
+        <span className="text-lg">{'\uD83D\uDC65'}</span>
         <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
         <span className="text-[10px] px-1.5 py-0.5 bg-teal-500/15 text-teal-400 rounded">Hub</span>
       </div>
       <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.description}</p>
       <div className="flex items-center gap-3 text-xs text-gray-500">
-        <span className="text-amber-400">{'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
-        <span>↓ {item.downloadCount}</span>
+        <span className="text-amber-400">{'\u2605'.repeat(Math.round(parseFloat(item.avgRating)))}{'\u2606'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
+        <span>{'\u2193'} {item.downloadCount}</span>
         <span>{item.author?.displayName ?? item.author?.username}</span>
       </div>
-      <button
-        onClick={async (e) => {
-          e.stopPropagation();
-          try {
-            const data = await hubApi.download(item.id);
-            const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `${item.name}.json`;
-            a.click();
-          } catch { /* ignore */ }
-        }}
-        className="mt-3 px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
-      >
-        Download
-      </button>
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          onClick={e => void handleInstall(e)}
+          disabled={installing}
+          className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-50"
+        >
+          {installing ? 'Installing...' : 'Install'}
+        </button>
+        {status && <span className={`text-[10px] ${status === 'Installed!' ? 'text-emerald-400' : 'text-red-400'}`}>{status}</span>}
+      </div>
     </div>
   );
 }

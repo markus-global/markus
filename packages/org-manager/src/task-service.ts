@@ -1957,13 +1957,60 @@ export class TaskService {
   ): string {
     const dirMap = { agent: 'agents', team: 'teams', skill: 'skills' } as const;
     const baseDir = join(homedir(), '.markus', 'builder-artifacts', dirMap[mode]);
-    mkdirSync(baseDir, { recursive: true });
     const name = (artifact.name as string ?? `${mode}-${taskId}`)
       .toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const filePath = join(baseDir, `${name}.json`);
-    writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
-    log.info('Builder artifact saved', { mode, name, path: filePath });
-    return filePath;
+    const artDir = join(baseDir, name);
+    mkdirSync(artDir, { recursive: true });
+
+    if (mode === 'agent') {
+      const meta = { name: artifact.name, description: artifact.description, roleName: artifact.roleName, tags: artifact.tags, llmProvider: artifact.llmProvider, llmModel: artifact.llmModel, requiredEnv: artifact.requiredEnv };
+      writeFileSync(join(artDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
+      const files = artifact.files as Record<string, string> | undefined;
+      if (files) {
+        for (const [filename, content] of Object.entries(files)) {
+          writeFileSync(join(artDir, filename), content, 'utf-8');
+        }
+      }
+    } else if (mode === 'team') {
+      const teamMeta = { name: artifact.name, description: artifact.description, category: artifact.category, tags: artifact.tags };
+      writeFileSync(join(artDir, 'team.json'), JSON.stringify(teamMeta, null, 2), 'utf-8');
+      const topFiles = artifact.files as Record<string, string> | undefined;
+      if (topFiles) {
+        for (const [filename, content] of Object.entries(topFiles)) {
+          writeFileSync(join(artDir, filename), content, 'utf-8');
+        }
+      }
+      const members = (artifact.members as Array<Record<string, unknown>>) ?? [];
+      writeFileSync(join(artDir, 'members.json'), JSON.stringify(
+        members.map(m => ({ name: m.name, role: m.role, roleName: m.roleName, count: m.count, skills: m.skills })),
+        null, 2,
+      ), 'utf-8');
+      for (const member of members) {
+        const memberSlug = ((member.name as string) ?? 'agent').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        const memberDir = join(artDir, 'members', memberSlug);
+        mkdirSync(memberDir, { recursive: true });
+        const memberFiles = member.files as Record<string, string> | undefined;
+        if (memberFiles) {
+          for (const [filename, content] of Object.entries(memberFiles)) {
+            writeFileSync(join(memberDir, filename), content, 'utf-8');
+          }
+        }
+      }
+    } else if (mode === 'skill') {
+      const files = artifact.files as Record<string, string> | undefined;
+      if (files) {
+        for (const [filename, content] of Object.entries(files)) {
+          writeFileSync(join(artDir, filename), content, 'utf-8');
+        }
+      }
+      if (!files?.['manifest.json']) {
+        const manifest = { name, version: '1.0.0', description: artifact.description, skillFile: 'SKILL.md' };
+        writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
+      }
+    }
+
+    log.info('Builder artifact saved as directory package', { mode, name, path: artDir });
+    return artDir;
   }
 
   /**

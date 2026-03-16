@@ -186,26 +186,8 @@ export function KnowledgePage() {
     setActionLoading('');
   };
 
-  const handleImportArtifact = async (d: DeliverableInfo) => {
-    if (!d.artifactType || !d.artifactData) return;
-    setActionLoading('import');
-    try {
-      await api.builder.create(d.artifactType as BuilderMode, d.artifactData);
-      const label = { agent: 'Agent', team: 'Team', skill: 'Skill' }[d.artifactType] ?? 'Artifact';
-      flashMsg('success', `${label} "${(d.artifactData.name as string) ?? ''}" imported successfully`);
-    } catch (e) { flashMsg('error', `Import failed: ${e}`); }
-    setActionLoading('');
-  };
-
-  const handleExportArtifact = (d: DeliverableInfo) => {
-    if (!d.artifactData) return;
-    const blob = new Blob([JSON.stringify(d.artifactData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(d.artifactData.name as string) ?? d.artifactType ?? 'artifact'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleOpenInBuilder = () => {
+    navBus.navigate('builder');
   };
 
   const loadPreview = async (d: DeliverableInfo) => {
@@ -539,19 +521,18 @@ export function KnowledgePage() {
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <ArtifactPreview artifact={selected.artifactData} mode={selected.artifactType as BuilderMode} />
                 </div>
+                {selected.reference && (
+                  <div className="px-3 py-2 bg-gray-900/50 border border-gray-800 rounded-lg">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Artifact Directory</span>
+                    <span className="text-xs text-gray-400 font-mono break-all">{selected.reference}</span>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <button
-                    onClick={() => handleImportArtifact(selected)}
-                    disabled={!!actionLoading}
-                    className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
+                    onClick={handleOpenInBuilder}
+                    className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
                   >
-                    {actionLoading === 'import' ? 'Importing...' : `Import ${ARTIFACT_META[selected.artifactType]?.label ?? 'Artifact'}`}
-                  </button>
-                  <button
-                    onClick={() => handleExportArtifact(selected)}
-                    className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg border border-gray-700 transition-colors"
-                  >
-                    Export JSON
+                    Open in Builder
                   </button>
                 </div>
                 {selected.summary && (

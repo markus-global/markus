@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { api, hubApi } from '../api.ts';
+import { navBus } from '../navBus.ts';
 
 export type BuilderMode = 'agent' | 'team' | 'skill';
 
@@ -96,10 +97,34 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
       <div className="space-y-3 text-sm">
         <Field label="Name" value={artifact.name as string} />
         <Field label="Description" value={artifact.description as string} />
-        <div className="flex gap-2">
-          <Badge label="Role" value={artifact.agentRole as string} color={artifact.agentRole === 'manager' ? 'purple' : 'cyan'} />
-          <Badge label="Category" value={artifact.category as string} color="indigo" />
+        <div className="flex flex-wrap gap-2">
+          <Badge label="Role Template" value={artifact.roleName as string} color="indigo" />
+          <Badge label="Agent Role" value={artifact.agentRole as string} color={artifact.agentRole === 'manager' ? 'purple' : 'cyan'} />
         </div>
+        {typeof artifact.tags === 'string' && artifact.tags && (
+          <div className="flex flex-wrap gap-1">
+            {(artifact.tags as string).split(',').map(t => t.trim()).filter(Boolean).map(t => (
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+            ))}
+          </div>
+        )}
+        {(artifact.llmProvider || artifact.llmModel) && (
+          <div className="flex gap-2">
+            {artifact.llmProvider && <Badge label="LLM Provider" value={artifact.llmProvider as string} color="gray" />}
+            {artifact.llmModel && <Badge label="LLM Model" value={artifact.llmModel as string} color="gray" />}
+          </div>
+        )}
+        {Array.isArray(artifact.requiredEnv) && (artifact.requiredEnv as string[]).length > 0 && (
+          <div>
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Required Env</span>
+            <div className="flex flex-wrap gap-1 mt-1">
+              {(artifact.requiredEnv as string[]).map(e => (
+                <span key={e} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-400 rounded font-mono">{e}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {artifact.skills && <Field label="Skills" value={artifact.skills as string} />}
         {files && <FilesPreview files={files} />}
         {!files && artifact.systemPrompt && (
           <div>
@@ -107,18 +132,6 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
             <pre className="mt-1 text-xs text-gray-400 bg-gray-800/50 rounded-lg p-2 whitespace-pre-wrap max-h-[150px] overflow-y-auto">{artifact.systemPrompt as string}</pre>
           </div>
         )}
-        {Array.isArray(artifact.toolWhitelist) && (artifact.toolWhitelist as string[]).length > 0 && (
-          <div>
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Tools</span>
-            <div className="flex flex-wrap gap-1 mt-1">
-              {(artifact.toolWhitelist as string[]).map(t => (
-                <span key={t} className="px-1.5 py-0.5 text-[10px] bg-indigo-500/10 text-indigo-400 rounded font-mono">{t}</span>
-              ))}
-            </div>
-          </div>
-        )}
-        {artifact.skills && <Field label="Skills" value={artifact.skills as string} />}
-        {artifact.temperature !== undefined && <Field label="Temperature" value={String(artifact.temperature)} />}
       </div>
     );
   }
@@ -129,7 +142,16 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
       <div className="space-y-3 text-sm">
         <Field label="Name" value={artifact.name as string} />
         <Field label="Description" value={artifact.description as string} />
-        <Badge label="Category" value={artifact.category as string} color="indigo" />
+        <div className="flex flex-wrap gap-2">
+          <Badge label="Category" value={artifact.category as string} color="indigo" />
+        </div>
+        {typeof artifact.tags === 'string' && artifact.tags && (
+          <div className="flex flex-wrap gap-1">
+            {(artifact.tags as string).split(',').map(t => t.trim()).filter(Boolean).map(t => (
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+            ))}
+          </div>
+        )}
         {files && <FilesPreview files={files} />}
         <div>
           <span className="text-[10px] text-gray-500 uppercase tracking-wider">Members ({members.length})</span>
@@ -142,11 +164,19 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
                     <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
                       m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
                     }`}>
-                      {m.role === 'manager' ? '★' : (i + 1)}
+                      {m.role === 'manager' ? '\u2605' : (i + 1)}
                     </span>
                     <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
+                    {m.roleName && <span className="text-[10px] text-indigo-400/70 font-mono">{m.roleName as string}</span>}
                     <span className="text-[10px] text-gray-500">x{String(m.count ?? 1)}</span>
                   </div>
+                  {m.skills && (
+                    <div className="mt-1 ml-7 flex flex-wrap gap-1">
+                      {String(m.skills).split(',').map(s => s.trim()).filter(Boolean).map(s => (
+                        <span key={s} className="px-1 py-0.5 text-[9px] bg-emerald-500/10 text-emerald-400 rounded font-mono">{s}</span>
+                      ))}
+                    </div>
+                  )}
                   {memberFiles && Object.keys(memberFiles).length > 0 && (
                     <div className="mt-1 ml-7 text-[10px] text-gray-600">
                       {Object.keys(memberFiles).join(', ')}
@@ -247,15 +277,15 @@ export function BuilderArtifactPanel({ mode, messages, collapsed, onToggleCollap
     setJsonError('');
   };
 
-  const handleCreate = useCallback(async () => {
+  const handleSave = useCallback(async () => {
     if (!artifact || creating) return;
     setCreating(true);
     try {
-      await api.builder.create(mode, artifact);
+      await api.builder.artifacts.save(mode, artifact);
       const labels = { agent: 'Agent', team: 'Team', skill: 'Skill' };
-      showFlash(`${labels[mode]} "${(artifact.name as string) ?? ''}" created successfully!`);
+      showFlash(`${labels[mode]} "${(artifact.name as string) ?? ''}" saved! Go to Builder page to install.`);
     } catch (err) {
-      showFlash(`Creation failed: ${String(err)}`);
+      showFlash(`Save failed: ${String(err)}`);
     } finally {
       setCreating(false);
     }
@@ -406,11 +436,11 @@ export function BuilderArtifactPanel({ mode, messages, collapsed, onToggleCollap
       {artifact && (
         <div className="p-4 border-t border-gray-800 space-y-2">
           <button
-            onClick={() => void handleCreate()}
+            onClick={() => void handleSave()}
             disabled={creating || !!jsonError}
             className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
           >
-            {creating ? 'Creating...' : `Create ${createLabels[mode]}`}
+            {creating ? 'Saving...' : `Save ${createLabels[mode]}`}
           </button>
           <button
             onClick={() => void handleShare()}
@@ -420,18 +450,10 @@ export function BuilderArtifactPanel({ mode, messages, collapsed, onToggleCollap
             {sharing ? 'Publishing...' : 'Publish to Markus Hub'}
           </button>
           <button
-            onClick={() => {
-              const blob = new Blob([JSON.stringify(artifact, null, 2)], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `${(artifact.name as string) ?? mode}.json`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
+            onClick={() => navBus.navigate('builder')}
             className="w-full px-4 py-1.5 text-gray-500 hover:text-gray-400 text-xs transition-colors"
           >
-            Export JSON
+            Open Builder Page
           </button>
         </div>
       )}
