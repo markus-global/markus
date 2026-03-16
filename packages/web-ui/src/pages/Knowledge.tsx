@@ -45,6 +45,7 @@ export function KnowledgePage() {
   const [actionLoading, setActionLoading] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   // Create form
   const [newType, setNewType] = useState<string>('document');
@@ -303,6 +304,23 @@ export function KnowledgePage() {
     </div>
   );
 
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleAllGroups = useCallback(() => {
+    if (collapsedGroups.size === grouped.length) {
+      setCollapsedGroups(new Set());
+    } else {
+      setCollapsedGroups(new Set(grouped.map(([key]) => key)));
+    }
+  }, [collapsedGroups.size, grouped]);
+
   const openContributeForm = () => {
     setNewTitle(''); setNewSummary(''); setNewReference(''); setNewTags('');
     setNewType('document');
@@ -356,11 +374,20 @@ export function KnowledgePage() {
           <div className="flex gap-1.5 items-center">
             <span className="text-[10px] text-gray-500">Group:</span>
             {(['project', 'agent', 'date', 'type'] as const).map(g => (
-              <button key={g} onClick={() => setGroupBy(g)}
+              <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
                 className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
                 {g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
+            {grouped.length > 1 && (
+              <button
+                onClick={toggleAllGroups}
+                className="ml-auto px-1.5 py-1 rounded text-[10px] text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+                title={collapsedGroups.size === grouped.length ? 'Expand all' : 'Collapse all'}
+              >
+                {collapsedGroups.size === grouped.length ? '▶ Expand' : '▼ Collapse'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -387,28 +414,43 @@ export function KnowledgePage() {
               <p className="text-xs text-gray-600 mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
               <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Create first</button>
             </div>
-          ) : grouped.map(([key, group]) => (
-            <div key={key}>
-              <div className="text-[10px] font-medium text-gray-500 uppercase tracking-wider px-2 py-1.5">{group.label} <span className="text-gray-600">({group.items.length})</span></div>
-              {group.items.map(item => (
-                <button key={item.id} onClick={() => setSelected(item)}
-                  className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'}`}>
-                  <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
-                  <div className="flex items-center gap-2 mt-1">
-                    {item.artifactType && ARTIFACT_META[item.artifactType] ? (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
-                        {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
-                      </span>
-                    ) : (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
-                    )}
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{item.status}</span>
-                    {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
-                  </div>
+          ) : grouped.map(([key, group]) => {
+            const isCollapsed = collapsedGroups.has(key);
+            return (
+              <div key={key}>
+                <button
+                  onClick={() => toggleGroup(key)}
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-gray-800/50 transition-colors group/header"
+                >
+                  <svg
+                    className={`w-3 h-3 text-gray-600 transition-transform duration-200 shrink-0 ${isCollapsed ? '' : 'rotate-90'}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                  <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider truncate">{group.label}</span>
+                  <span className="text-[10px] text-gray-600 shrink-0">({group.items.length})</span>
                 </button>
-              ))}
-            </div>
-          ))}
+                {!isCollapsed && group.items.map(item => (
+                  <button key={item.id} onClick={() => setSelected(item)}
+                    className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'}`}>
+                    <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      {item.artifactType && ARTIFACT_META[item.artifactType] ? (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
+                          {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
+                        </span>
+                      ) : (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
+                      )}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{item.status}</span>
+                      {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
           {!loading && items.length > 0 && (
             <div className="text-center text-[10px] text-gray-600 py-2">{items.length} deliverables</div>
           )}
