@@ -4236,7 +4236,10 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             const membersPath = join(artDir, 'members.json');
             let members: Array<Record<string, unknown>> = [];
             if (existsSync(membersPath)) {
-              try { members = JSON.parse(readFileSync(membersPath, 'utf-8')); } catch { /* */ }
+              try {
+                const parsed = JSON.parse(readFileSync(membersPath, 'utf-8'));
+                members = Array.isArray(parsed) ? parsed : Array.isArray(parsed.members) ? parsed.members : [];
+              } catch { /* */ }
             }
 
             const createdAgents: Array<{ id: string; name: string; role: string }> = [];

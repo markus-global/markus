@@ -520,7 +520,7 @@ export interface TeamTemplateInfo {
   description: string;
   version: string;
   author: string;
-  members: Array<{ templateId: string; name?: string; count?: number; role?: 'manager' | 'worker' }>;
+  members: Array<{ templateId?: string; roleName?: string; name?: string; count?: number; role?: 'manager' | 'worker'; skills?: string[] }>;
   tags?: string[];
   category?: string;
 }

@@ -63,17 +63,20 @@ export function TeamsStore() {
         const count = member.count ?? 1;
         for (let i = 0; i < count; i++) {
           const name = member.name ?? `${tpl.name} Agent ${i + 1}`;
+          const displayName = count > 1 ? `${name} ${i + 1}` : name;
+          const roleName = member.roleName ?? member.templateId ?? 'developer';
           try {
-            const res = await fetch('/api/templates/instantiate', {
+            const res = await fetch('/api/agents', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               credentials: 'include',
               body: JSON.stringify({
-                templateId: member.templateId,
-                name: count > 1 ? `${name} ${i + 1}` : name,
+                name: displayName,
+                roleName,
                 orgId: 'default',
                 teamId,
-                agentRole: member.role,
+                agentRole: member.role ?? 'worker',
+                skills: member.skills ?? [],
               }),
             });
             if (res.ok) {
@@ -82,10 +85,10 @@ export function TeamsStore() {
               if (member.role === 'manager' && !managerId) managerId = data.agent?.id;
             } else {
               const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-              errors.push(`${member.templateId}: ${data.error ?? res.statusText}`);
+              errors.push(`${displayName}: ${data.error ?? res.statusText}`);
             }
           } catch (err) {
-            errors.push(`${member.templateId}: ${String(err)}`);
+            errors.push(`${displayName}: ${String(err)}`);
           }
         }
       }
@@ -233,9 +236,9 @@ export function TeamsStore() {
                         {m.role === 'manager' ? '★' : (i + 1)}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm text-gray-200">{m.name ?? m.templateId}</div>
+                        <div className="text-sm text-gray-200">{m.name ?? m.roleName ?? m.templateId}</div>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[10px] text-gray-500 font-mono">{m.templateId}</span>
+                          <span className="text-[10px] text-gray-500 font-mono">{m.roleName ?? m.templateId}</span>
                           <span className={`px-1.5 py-0.5 rounded text-[10px] capitalize ${
                             m.role === 'manager' ? 'bg-purple-500/15 text-purple-400' : 'bg-cyan-500/15 text-cyan-400'
                           }`}>
@@ -375,7 +378,7 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
           <span key={i} className={`px-2 py-0.5 text-[10px] rounded-full border ${
             m.role === 'manager' ? 'bg-purple-500/10 text-purple-400 border-purple-500/15' : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/15'
           }`}>
-            {m.name ?? m.templateId}
+            {m.name ?? m.roleName ?? m.templateId}
             {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
           </span>
         ))}

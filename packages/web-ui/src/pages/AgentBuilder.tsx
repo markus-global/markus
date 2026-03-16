@@ -70,6 +70,7 @@ export function AgentBuilder() {
   const [loading, setLoading] = useState(false);
   const [filterType, setFilterType] = useState<string>('all');
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+  const [installedSet, setInstalledSet] = useState<Set<string>>(new Set());
 
   const loadArtifacts = useCallback(() => {
     setLoading(true);
@@ -95,12 +96,14 @@ export function AgentBuilder() {
 
   const handleInstall = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
+    if (installedSet.has(key)) return;
     setActionInProgress(key);
     try {
       await api.builder.artifacts.install(art.type, art.name);
-      loadArtifacts();
+      setInstalledSet(prev => new Set(prev).add(key));
     } catch (err) {
       console.error('Install failed:', err);
+      alert(`Install failed: ${err}`);
     } finally {
       setActionInProgress(null);
     }
@@ -247,13 +250,19 @@ export function AgentBuilder() {
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => handleInstall(art)}
-                        disabled={busy}
-                        className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
-                      >
-                        {busy ? '...' : 'Install'}
-                      </button>
+                      {installedSet.has(key) ? (
+                        <span className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">
+                          Installed
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleInstall(art)}
+                          disabled={busy}
+                          className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+                        >
+                          {busy ? 'Installing...' : 'Install'}
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDelete(art)}
                         disabled={busy}
