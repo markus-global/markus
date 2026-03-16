@@ -604,6 +604,7 @@ export const api = {
     updateLongTermMemory: (id: string, key: string, content: string) =>
       request<{ ok: boolean }>(`/agents/${id}/memory/longterm`, { method: 'PUT', body: JSON.stringify({ key, content }) }),
     getFiles: (id: string) => request<{ files: Array<{ name: string; content: string }> }>(`/agents/${id}/files`),
+    getFilesMap: (id: string) => request<{ filesMap: Record<string, string> }>(`/agents/${id}/files`),
     updateFile: (id: string, filename: string, content: string) =>
       request<{ ok: boolean }>(`/agents/${id}/files/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
     updateSystemPrompt: (id: string, systemPrompt: string) =>
@@ -714,6 +715,8 @@ export const api = {
       request<{ ok: boolean }>(`/teams/${teamId}/files/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
     exportTeam: (teamId: string) =>
       request<{ path: string; config: Record<string, unknown> }>(`/teams/${teamId}/export`, { method: 'POST' }),
+    getFilesMap: (teamId: string) =>
+      request<{ files: Record<string, string>; team: { id: string; name: string; description: string } }>(`/teams/${teamId}/export`),
   },
   externalAgents: {
     list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),
@@ -924,25 +927,10 @@ export const api = {
       request<{ installed: boolean; name: string; path: string; method: string }>('/skills/install', { method: 'POST', body: JSON.stringify(opts) }),
     uninstall: (name: string) =>
       request<{ deleted: boolean; name: string; path: string }>(`/skills/installed/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    getFilesMap: (name: string) =>
+      request<{ files: Record<string, string> }>(`/skills/${encodeURIComponent(name)}/files`),
   },
-  marketplace: {
-    skills: (opts?: { source?: string; category?: string; q?: string }) => {
-      const params = new URLSearchParams();
-      if (opts?.source) params.set('source', opts.source);
-      if (opts?.category) params.set('category', opts.category);
-      if (opts?.q) params.set('q', opts.q);
-      const qs = params.toString();
-      return request<{ skills: Array<{ id: string; name: string; description: string; source: string; status: string; version: string; authorName: string; category: string; tags: string[]; tools: Array<{ name: string; description: string }>; readme: string | null; downloadCount: number; avgRating: number; ratingCount: number }>; total: number }>(`/marketplace/skills${qs ? `?${qs}` : ''}`);
-    },
-    installSkill: (skillId: string) =>
-      request(`/marketplace/skills/${skillId}/install`, { method: 'POST' }),
-    publishSkill: (data: { name: string; description: string; authorName: string; category: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; readme?: string; requiredPermissions?: string[]; requiredEnv?: string[]; publish?: boolean }) =>
-      request('/marketplace/skills', { method: 'POST', body: JSON.stringify(data) }),
-    shareTemplate: (data: { name: string; description: string; roleId: string; agentRole: string; category: string; authorName: string; skills?: string[]; tags?: string[]; config?: Record<string, unknown>; publish?: boolean }) =>
-      request('/marketplace/templates', { method: 'POST', body: JSON.stringify(data) }),
-    deleteTemplate: (templateId: string) =>
-      request(`/marketplace/templates/${templateId}`, { method: 'DELETE' }),
-  },
+  // marketplace object removed — publishing now goes through Markus Hub
   builder: {
     chat: (mode: 'agent' | 'team' | 'skill', messages: Array<{ role: string; content: string }>) =>
       request<{ reply: string; artifact: Record<string, unknown> | null; mode: string }>('/builder/chat', { method: 'POST', body: JSON.stringify({ mode, messages }) }),
@@ -1265,7 +1253,7 @@ export const hubApi = {
     hubRequest<{ user: { id: string; username: string } }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   register: (username: string, email: string, password: string) =>
     hubRequest<{ user: { id: string; username: string } }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
-  publishViaProxy: (payload: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config: unknown; readme?: string }) =>
+  publishViaProxy: (payload: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config?: unknown; files?: Record<string, string>; readme?: string }) =>
     request<{ id?: string; name?: string; error?: string }>('/hub/publish', {
       method: 'POST',
       body: JSON.stringify({ hubUrl: HUB_URL, payload }),

@@ -74,9 +74,10 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
             <button onClick={() => navBus.navigate('chat', { agentId })} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
             <button onClick={async () => {
               if (!agent) return;
-              const config = { name: agent.name, role: agent.role, agentRole: agent.agentRole, skills: agent.skills, systemPrompt: agent.roleDescription ?? '' };
               try {
-                await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: agent.roleDescription ?? agent.role, category: 'general', config });
+                const { filesMap } = await api.agents.getFilesMap(agentId);
+                const config = { name: agent.name, role: agent.role, agentRole: agent.agentRole, skills: agent.skills };
+                await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: agent.roleDescription ?? agent.role, category: 'general', config, files: filesMap });
                 alert(`Published "${agent.name}" to Markus Hub`);
               } catch (e) { alert(`Failed to publish: ${e}`); }
             }} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>

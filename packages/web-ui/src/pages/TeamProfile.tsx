@@ -119,9 +119,10 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
           </div>
           <button onClick={async () => {
             if (!team) return;
-            const config = { name: team.name, description: team.description, members: team.members.map(m => ({ name: m.name, role: m.role, type: m.type })), announcements, norms };
             try {
-              await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config });
+              const { files } = await api.teams.getFilesMap(team.id);
+              const config = { name: team.name, description: team.description, members: team.members.map(m => ({ name: m.name, role: m.role, type: m.type })) };
+              await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config, files });
               alert(`Published "${team.name}" to Markus Hub`);
             } catch (e) { alert(`Failed to publish: ${e}`); }
           }} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>

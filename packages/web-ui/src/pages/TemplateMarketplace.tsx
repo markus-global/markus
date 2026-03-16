@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, hubApi, type AuthUser, type HubItem } from '../api.ts';
+import { hubApi, type AuthUser, type HubItem } from '../api.ts';
+
+type FilterId = 'all' | 'hub';
 
 interface TemplateInfo {
   id: string;
@@ -14,9 +16,6 @@ interface TemplateInfo {
   tags: string[];
   category: string;
   icon?: string;
-  downloadCount?: number;
-  avgRating?: number;
-  ratingCount?: number;
   starterTasks?: Array<{ title: string; description: string; priority: string }>;
 }
 
@@ -36,52 +35,21 @@ const CATEGORY_COLORS: Record<string, string> = {
   general: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
 };
 
-const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  official: { label: 'Official', color: 'bg-indigo-500/20 text-indigo-400' },
-  community: { label: 'Community', color: 'bg-emerald-500/20 text-emerald-400' },
-  custom: { label: 'Custom', color: 'bg-amber-500/20 text-amber-400' },
-};
-
 const ROLE_COLORS: Record<string, string> = {
   manager: 'bg-purple-500/15 text-purple-400',
   worker: 'bg-cyan-500/15 text-cyan-400',
 };
 
-function StarRating({ rating, count }: { rating: number; count: number }) {
-  const stars = Math.round(rating);
-  return (
-    <span className="inline-flex items-center gap-1 text-xs text-gray-500">
-      {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} className={i <= stars ? 'text-amber-400' : 'text-gray-700'}>&#9733;</span>
-      ))}
-      {count > 0 && <span className="ml-1">({count})</span>}
-    </span>
-  );
-}
-
-export function TemplateMarketplace({ authUser }: { authUser?: AuthUser } = {}) {
-  return (
-    <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="flex items-center gap-4 px-7 h-15 border-b border-gray-800 bg-gray-900 shrink-0">
-        <h2 className="text-lg font-semibold">Agent Store</h2>
-      </div>
-      <AgentTemplatesTab authUser={authUser} />
-    </div>
-  );
-}
-
-function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
-  const [selected, setSelected] = useState<TemplateInfo | null>(null);
-  const [filter, setFilter] = useState<'all' | 'official' | 'community' | 'hub'>('all');
-  const [categoryFilter, setCategoryFilter] = useState('');
+export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUser } = {}) {
+  const [filter, setFilter] = useState<FilterId>('all');
   const [search, setSearch] = useState('');
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [hubItems, setHubItems] = useState<HubItem[]>([]);
+  const [selected, setSelected] = useState<TemplateInfo | null>(null);
   const [showHireModal, setShowHireModal] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [deleting, setDeleting] = useState(false);
-  const [hubItems, setHubItems] = useState<HubItem[]>([]);
 
-  const loadTemplates = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       if (filter === 'hub') {
@@ -91,42 +59,19 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
       } else {
         setHubItems([]);
         const params = new URLSearchParams();
-        if (filter !== 'all') params.set('source', filter);
         if (search) params.set('q', search);
-
-        const [registryRes, marketplaceRes] = await Promise.all([
-          fetch('/api/templates?' + params.toString()).then(r => r.json()).catch(() => ({ templates: [] })),
-          fetch('/api/marketplace/templates?' + params.toString()).then(r => r.json()).catch(() => ({ templates: [] })),
-        ]);
-
-        const registry: TemplateInfo[] = Array.isArray(registryRes.templates) ? registryRes.templates : [];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const marketplace: TemplateInfo[] = (Array.isArray(marketplaceRes.templates) ? marketplaceRes.templates : []).map((t: any) => ({
-          ...t,
-          author: t.author || t.authorName || 'Unknown',
-        }));
-
-        const seen = new Set<string>();
-        const merged: TemplateInfo[] = [];
-        for (const t of [...registry, ...marketplace]) {
-          if (!seen.has(t.id)) {
-            seen.add(t.id);
-            merged.push(t);
-          }
-        }
-        setTemplates(merged);
+        const res = await fetch('/api/templates?' + params.toString()).then(r => r.json()).catch(() => ({ templates: [] }));
+        setTemplates(Array.isArray(res.templates) ? res.templates : []);
       }
     } catch {
       setTemplates([]);
+      setHubItems([]);
     } finally {
       setLoading(false);
     }
   }, [filter, search]);
 
-  useEffect(() => { loadTemplates(); }, [loadTemplates]);
-
-  const categories = [...new Set(templates.map(t => t.category))].sort();
-  const filtered = categoryFilter ? templates.filter(t => t.category === categoryFilter) : templates;
+  useEffect(() => { load(); }, [load]);
 
   const handleInstantiate = async (templateId: string, name: string, teamId?: string) => {
     try {
@@ -144,57 +89,35 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
     }
   };
 
-  const isAuthor = (tpl: TemplateInfo) =>
-    authUser?.name && tpl.author && tpl.author === authUser.name;
-
-  const handleDelete = async (tpl: TemplateInfo) => {
-    if (!confirm(`Delete template "${tpl.name}"? This cannot be undone.`)) return;
-    setDeleting(true);
-    try {
-      await api.marketplace.deleteTemplate(tpl.id);
-      setSelected(null);
-      loadTemplates();
-    } catch (err) {
-      alert(`Failed to delete: ${err}`);
-    } finally {
-      setDeleting(false);
-    }
-  };
-
   return (
-    <>
+    <div className="flex-1 overflow-hidden flex flex-col">
+      <div className="flex items-center gap-4 px-7 h-15 border-b border-gray-800 bg-gray-900 shrink-0">
+        <h2 className="text-lg font-semibold">Agent Store</h2>
+      </div>
+
       {/* Filter Bar */}
       <div className="flex items-center gap-3 px-7 py-2.5 border-b border-gray-800/50 bg-gray-900/50 shrink-0">
         <div className="flex gap-1">
-          {(['all', 'official', 'community', 'hub'] as const).map(f => (
+          {([
+            { id: 'all' as const, label: 'Built-in' },
+            { id: 'hub' as const, label: 'Markus Hub' },
+          ]).map(f => (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-3 py-1 text-xs rounded-md transition-colors capitalize ${
-                filter === f ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+              key={f.id}
+              onClick={() => { setFilter(f.id); setSelected(null); }}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                filter === f.id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
               }`}
             >
-              {f === 'hub' ? 'Markus Hub' : f}
+              {f.label}
             </button>
           ))}
         </div>
-
-        {categories.length > 1 && (
-          <div className="flex gap-1 border-l border-gray-700 pl-3">
-            {categories.map(c => (
-              <button
-                key={c}
-                onClick={() => setCategoryFilter(prev => prev === c ? '' : c)}
-                className={`px-3 py-1 text-xs rounded-md transition-colors capitalize ${
-                  categoryFilter === c ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
-                }`}
-              >
-                {c}
-              </button>
-            ))}
+        {filter === 'all' && (
+          <div className="text-xs text-gray-500">
+            {templates.length} agent{templates.length !== 1 ? 's' : ''} available
           </div>
         )}
-
         <div className="ml-auto">
           <input
             type="text"
@@ -220,42 +143,23 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubItems.map(item => (
-                <div key={item.id} className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-indigo-600/50 cursor-pointer transition-all">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-lg">🤖</span>
-                    <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
-                    <span className="text-[10px] px-1.5 py-0.5 bg-teal-500/15 text-teal-400 rounded">Hub</span>
-                  </div>
-                  <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.description}</p>
-                  <div className="flex items-center gap-3 text-xs text-gray-500">
-                    <span className="text-amber-400">{'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
-                    <span>↓ {item.downloadCount}</span>
-                    <span>{item.author?.displayName ?? item.author?.username}</span>
-                  </div>
-                  <button
-                    onClick={async () => {
-                      try {
-                        const data = await hubApi.download(item.id);
-                        const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
-                        const a = document.createElement('a');
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `${item.name}.json`;
-                        a.click();
-                      } catch { /* ignore */ }
-                    }}
-                    className="mt-3 px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
-                  >
-                    Install
-                  </button>
-                </div>
+                <HubAgentCard key={item.id} item={item} />
               ))}
             </div>
           )
-        ) : filtered.length === 0 ? (
-          <EmptyState filter={filter} search={search} />
+        ) : templates.length === 0 ? (
+          <div className="text-center py-20">
+            <div className="text-4xl mb-4 opacity-30">&#x29C9;</div>
+            <div className="text-gray-400 font-medium mb-1">
+              {search ? `No agents match "${search}"` : 'No agents found'}
+            </div>
+            <div className="text-gray-600 text-sm">
+              {search ? 'Try different search terms.' : 'Agents come from the built-in registry.'}
+            </div>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map(tpl => (
+            {templates.map(tpl => (
               <TemplateCard
                 key={tpl.id}
                 template={tpl}
@@ -268,7 +172,7 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
       </div>
 
       {/* Detail Panel */}
-      {selected && (
+      {selected && filter === 'all' && (
         <div className="border-t border-gray-800 bg-gray-900 shrink-0 max-h-72 overflow-y-auto">
           <div className="p-5">
             <div className="flex items-center justify-between mb-4">
@@ -282,15 +186,6 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {isAuthor(selected) && (
-                  <button
-                    onClick={() => handleDelete(selected)}
-                    disabled={deleting}
-                    className="px-4 py-2 bg-red-600/20 text-red-400 text-sm rounded-lg hover:bg-red-600/30 border border-red-500/30 transition-colors disabled:opacity-50"
-                  >
-                    {deleting ? 'Deleting...' : 'Delete'}
-                  </button>
-                )}
                 <button
                   onClick={() => setShowHireModal(true)}
                   className="px-5 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 transition-colors font-medium"
@@ -351,7 +246,41 @@ function AgentTemplatesTab({ authUser }: { authUser?: AuthUser }) {
           onHire={handleInstantiate}
         />
       )}
-    </>
+    </div>
+  );
+}
+
+function HubAgentCard({ item }: { item: HubItem }) {
+  return (
+    <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-indigo-600/50 cursor-pointer transition-all">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">🤖</span>
+        <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
+        <span className="text-[10px] px-1.5 py-0.5 bg-teal-500/15 text-teal-400 rounded">Hub</span>
+      </div>
+      <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.description}</p>
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        <span className="text-amber-400">{'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
+        <span>↓ {item.downloadCount}</span>
+        <span>{item.author?.displayName ?? item.author?.username}</span>
+      </div>
+      <button
+        onClick={async (e) => {
+          e.stopPropagation();
+          try {
+            const data = await hubApi.download(item.id);
+            const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${item.name}.json`;
+            a.click();
+          } catch { /* ignore */ }
+        }}
+        className="mt-3 px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+      >
+        Install
+      </button>
+    </div>
   );
 }
 
@@ -370,13 +299,11 @@ function TemplateCard({ template: tpl, isSelected, onSelect }: { template: Templ
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <div className="font-semibold text-white truncate">{tpl.name}</div>
-            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ${
-              SOURCE_LABELS[tpl.source]?.color ?? 'bg-gray-500/15 text-gray-400'
-            }`}>
-              {SOURCE_LABELS[tpl.source]?.label ?? tpl.source}
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 bg-indigo-500/20 text-indigo-400">
+              v{tpl.version}
             </span>
           </div>
-          <div className="text-xs text-gray-500 mt-0.5">v{tpl.version} by {tpl.author}</div>
+          <div className="text-xs text-gray-500 mt-0.5">by {tpl.author}</div>
         </div>
       </div>
 
@@ -391,54 +318,16 @@ function TemplateCard({ template: tpl, isSelected, onSelect }: { template: Templ
         )}
       </div>
 
-      <div className="mt-3 pt-3 border-t border-gray-800 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium capitalize ${
-            ROLE_COLORS[tpl.agentRole] ?? 'bg-gray-700 text-gray-400'
-          }`}>
-            {tpl.agentRole}
-          </span>
-          {tpl.tags.length > 0 && (
-            <span className="text-gray-600">{tpl.tags.slice(0, 2).join(', ')}</span>
-          )}
-          {(tpl.downloadCount ?? 0) > 0 && (
-            <span>{tpl.downloadCount} installs</span>
-          )}
-        </div>
-        {(tpl.ratingCount ?? 0) > 0 && (
-          <StarRating rating={tpl.avgRating ?? 0} count={tpl.ratingCount ?? 0} />
+      <div className="mt-3 pt-3 border-t border-gray-800 flex items-center gap-2 text-xs text-gray-500">
+        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium capitalize ${
+          ROLE_COLORS[tpl.agentRole] ?? 'bg-gray-700 text-gray-400'
+        }`}>
+          {tpl.agentRole}
+        </span>
+        {tpl.tags.length > 0 && (
+          <span className="text-gray-600">{tpl.tags.slice(0, 2).join(', ')}</span>
         )}
       </div>
-    </div>
-  );
-}
-
-function EmptyState({ filter, search }: { filter: string; search: string }) {
-  if (search) {
-    return (
-      <div className="text-center py-20">
-        <div className="text-4xl mb-4 opacity-30">&#128269;</div>
-        <div className="text-gray-400 font-medium mb-1">No agents match "{search}"</div>
-        <div className="text-gray-600 text-sm">Try adjusting your search terms or filters.</div>
-      </div>
-    );
-  }
-  if (filter === 'community') {
-    return (
-      <div className="text-center py-20">
-        <div className="text-4xl mb-4 opacity-30">&#127760;</div>
-        <div className="text-gray-400 font-medium mb-1">No community agents yet</div>
-        <div className="text-gray-600 text-sm max-w-md mx-auto">
-          Community agents are created by users. Go to the Builder page to create and publish your own agents.
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="text-center py-20">
-      <div className="text-4xl mb-4 opacity-30">&#x29C9;</div>
-      <div className="text-gray-400 font-medium mb-1">No agents found</div>
-      <div className="text-gray-600 text-sm">Agents come from the built-in registry and the store.</div>
     </div>
   );
 }

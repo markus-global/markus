@@ -2031,6 +2031,50 @@ export class APIServer {
       return;
     }
 
+    // Team export — read all team directory files
+    if (path.match(/^\/api\/teams\/[^/]+\/export$/) && req.method === 'GET') {
+      const teamId = path.split('/')[3]!;
+      try {
+        const team = this.orgService.getTeam(teamId);
+        if (!team) { this.json(res, 404, { error: 'Team not found' }); return; }
+        const teamDataDir = this.orgService.getTeamDataDir(teamId);
+        const files: Record<string, string> = {};
+        if (teamDataDir && existsSync(teamDataDir)) {
+          for (const fname of readdirSync(teamDataDir)) {
+            const fpath = join(teamDataDir, fname);
+            try {
+              files[fname] = readFileSync(fpath, 'utf-8');
+            } catch { /* skip */ }
+          }
+        }
+        this.json(res, 200, { files, team: { id: team.id, name: team.name, description: team.description } });
+      } catch {
+        this.json(res, 404, { error: `Team not found: ${teamId}` });
+      }
+      return;
+    }
+
+    // Skill files — read all files from a skill directory
+    if (path.match(/^\/api\/skills\/[^/]+\/files$/) && req.method === 'GET') {
+      const skillName = decodeURIComponent(path.split('/')[3]!);
+      const skillDir = join(homedir(), '.markus', 'skills', skillName);
+      const files: Record<string, string> = {};
+      if (existsSync(skillDir)) {
+        for (const fname of readdirSync(skillDir)) {
+          const fpath = join(skillDir, fname);
+          try {
+            files[fname] = readFileSync(fpath, 'utf-8');
+          } catch { /* skip */ }
+        }
+      }
+      if (Object.keys(files).length === 0) {
+        this.json(res, 404, { error: `Skill not found: ${skillName}` });
+      } else {
+        this.json(res, 200, { files });
+      }
+      return;
+    }
+
     // Agent metrics — must be before the generic GET /api/agents/:id handler
     if (path.match(/^\/api\/agents\/[^/]+\/metrics$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -2202,13 +2246,16 @@ export class APIServer {
         }
         const allowedNames = ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'];
         const files: Array<{ name: string; content: string }> = [];
+        const filesMap: Record<string, string> = {};
         for (const name of allowedNames) {
           const filePath = join(roleDir, name);
           if (existsSync(filePath)) {
-            files.push({ name, content: readFileSync(filePath, 'utf-8') });
+            const content = readFileSync(filePath, 'utf-8');
+            files.push({ name, content });
+            filesMap[name] = content;
           }
         }
-        this.json(res, 200, { files });
+        this.json(res, 200, { files, filesMap });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -3142,24 +3189,7 @@ export class APIServer {
         }
       }
 
-      // DB imported skills
-      let imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; hasInstructions: boolean; type: string }> = [];
-      if (this.storage) {
-        try {
-          const mktSkills = (await this.storage.marketplaceSkillRepo.list()) as Array<{ name: string; description: string; category: string; version: string; tags: unknown }>;
-          imported = mktSkills
-            .filter(s => !seen.has(s.name))
-            .map(s => ({
-              name: s.name,
-              description: s.description,
-              category: s.category,
-              version: s.version,
-              tags: Array.isArray(s.tags) ? s.tags as string[] : [],
-              hasInstructions: false,
-              type: 'imported',
-            }));
-        } catch { /* storage unavailable */ }
-      }
+      const imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; hasInstructions: boolean; type: string }> = [];
 
       const agents = this.orgService.getAgentManager().listAgents();
       const skillAgents: Record<string, string[]> = {};
@@ -3465,7 +3495,6 @@ export class APIServer {
       }
 
       let deletedFs = false;
-      let deletedDb = false;
 
       // Try delete from filesystem (~/.markus/skills/)
       const skillsDir = join(homedir(), '.markus', 'skills');
@@ -3480,21 +3509,7 @@ export class APIServer {
         }
       }
 
-      // Try delete from marketplace_skills DB
-      if (this.storage) {
-        try {
-          const dbSkills = (await this.storage.marketplaceSkillRepo.list()) as Array<{ id: string; name: string }>;
-          const match = dbSkills.find(s => s.name === skillName);
-          if (match) {
-            await this.storage.marketplaceSkillRepo.delete(match.id);
-            deletedDb = true;
-          }
-        } catch (err) {
-          console.warn(`[skills/uninstall] db delete failed: ${String(err)}`);
-        }
-      }
-
-      if (!deletedFs && !deletedDb) {
+      if (!deletedFs) {
         this.json(res, 404, { error: `Skill "${skillName}" not found` });
         return;
       }
@@ -3521,7 +3536,7 @@ export class APIServer {
         } catch { /* agent not accessible */ }
       }
 
-      this.json(res, 200, { deleted: true, name: skillName, deletedFs, deletedDb, removedFromAgents: affectedAgents });
+      this.json(res, 200, { deleted: true, name: skillName, deletedFs, removedFromAgents: affectedAgents });
       return;
     }
 
@@ -3770,13 +3785,21 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             skills,
           });
 
-          // Overwrite the copied ROLE.md with the custom systemPrompt
-          const customPrompt = (artifact.systemPrompt as string) ?? '';
-          if (customPrompt) {
-            const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+          const artifactFiles = artifact.files as Record<string, string> | undefined;
+          const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+          if (artifactFiles && Object.keys(artifactFiles).length > 0) {
             mkdirSync(agentRoleDir, { recursive: true });
-            writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${agentName}\n\n${customPrompt}`);
+            for (const [filename, content] of Object.entries(artifactFiles)) {
+              writeFileSync(join(agentRoleDir, filename), content);
+            }
             agent.reloadRole();
+          } else {
+            const customPrompt = (artifact.systemPrompt as string) ?? '';
+            if (customPrompt) {
+              mkdirSync(agentRoleDir, { recursive: true });
+              writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${agentName}\n\n${customPrompt}`);
+              agent.reloadRole();
+            }
           }
 
           await agentManager.startAgent(agent.id);
@@ -3809,9 +3832,9 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           const teamName = (artifact.name as string) ?? 'New Team';
           const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
 
-          // Write team announcements and norms if provided
-          const teamAnnouncements = (artifact.announcements as string) ?? '';
-          const teamNorms = (artifact.norms as string) ?? '';
+          const teamFiles = artifact.files as Record<string, string> | undefined;
+          const teamAnnouncements = teamFiles?.['ANNOUNCEMENT.md'] ?? (artifact.announcements as string) ?? '';
+          const teamNorms = teamFiles?.['NORMS.md'] ?? (artifact.norms as string) ?? '';
           this.orgService.ensureTeamDataDir(team.id, teamAnnouncements, teamNorms);
 
           const members = Array.isArray(artifact.members) ? artifact.members as Array<Record<string, unknown>> : [];
@@ -3841,6 +3864,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             const memberSkills = typeof member.skills === 'string'
               ? (member.skills as string).split(',').map(s => s.trim()).filter(Boolean)
               : [];
+            const memberFiles = member.files as Record<string, string> | undefined;
             const customPrompt = (member.systemPrompt as string) ?? '';
 
             for (let i = 0; i < count; i++) {
@@ -3855,9 +3879,14 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
                 skills: memberSkills.length > 0 ? memberSkills : undefined,
               });
 
-              // Write custom ROLE.md if systemPrompt is provided (specialized agent)
-              if (customPrompt) {
-                const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+              const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+              if (memberFiles && Object.keys(memberFiles).length > 0) {
+                mkdirSync(agentRoleDir, { recursive: true });
+                for (const [filename, content] of Object.entries(memberFiles)) {
+                  writeFileSync(join(agentRoleDir, filename), content);
+                }
+                agent.reloadRole();
+              } else if (customPrompt) {
                 mkdirSync(agentRoleDir, { recursive: true });
                 writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${displayName}\n\n${customPrompt}`);
                 agent.reloadRole();
@@ -3893,60 +3922,48 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           this.json(res, 201, { team: { id: team.id, name: teamName }, agents: createdAgents });
 
         } else if (mode === 'skill') {
-          // Write SKILL.md to filesystem and register into runtime SkillRegistry
           const skillName = (artifact.name as string) ?? 'unnamed-skill';
-          const skillMd = (artifact.skillMd as string) ?? '';
           const description = (artifact.description as string) ?? `Skill: ${skillName}`;
           const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-');
           const skillDir = join(homedir(), '.markus', 'skills', safeName);
           mkdirSync(skillDir, { recursive: true });
 
-          // Write the SKILL.md file
-          writeFileSync(join(skillDir, 'SKILL.md'), skillMd, 'utf-8');
+          const skillFiles = artifact.files as Record<string, string> | undefined;
+          let skillMd = '';
 
-          // Extract instructions (body without frontmatter)
-          const instructions = skillMd.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
-
-          // Write manifest.json for metadata
-          const manifest = {
-            name: skillName,
-            version: '1.0.0',
-            description,
-            author: 'AI Generated',
-            category: 'custom' as SkillCategory,
-            source: 'builder',
-            instructions: instructions || undefined,
-            sourcePath: skillDir,
-          };
-          writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-
-          // Register into runtime SkillRegistry immediately
-          if (this.skillRegistry) {
-            try {
-              this.skillRegistry.register({ manifest });
-            } catch (regErr) {
-              log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
+          if (skillFiles && Object.keys(skillFiles).length > 0) {
+            for (const [filename, content] of Object.entries(skillFiles)) {
+              writeFileSync(join(skillDir, filename), content, 'utf-8');
             }
+            skillMd = skillFiles['SKILL.md'] ?? '';
+          } else {
+            skillMd = (artifact.skillMd as string) ?? '';
+            writeFileSync(join(skillDir, 'SKILL.md'), skillMd, 'utf-8');
           }
 
-          // Also save to marketplace DB for persistence
-          if (this.storage) {
+          const instructions = skillMd.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
+
+          if (!skillFiles?.['manifest.json']) {
+            const manifest = {
+              name: skillName,
+              version: '1.0.0',
+              description,
+              author: 'AI Generated',
+              category: 'custom' as SkillCategory,
+              source: 'builder',
+              instructions: instructions || undefined,
+              sourcePath: skillDir,
+            };
+            writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+          }
+
+          if (this.skillRegistry) {
             try {
-              const id = generateId('mkt-skill');
-              await this.storage.marketplaceSkillRepo.create({
-                id,
-                name: skillName,
-                description,
-                source: 'community',
-                status: 'published',
-                version: '1.0.0',
-                authorName: 'AI Generated',
-                category: 'custom',
-                tags: [],
-                tools: [],
-              });
-            } catch (dbErr) {
-              log.warn('Failed to persist skill to marketplace DB', { error: String(dbErr) });
+              const manifestPath = join(skillDir, 'manifest.json');
+              const manifestData = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+              this.skillRegistry.register({ manifest: manifestData });
+            } catch (regErr) {
+              log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
             }
           }
 
@@ -4212,24 +4229,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       try {
         const agentManager = this.orgService.getAgentManager();
 
-        // Try template registry first, fall back to marketplace DB for mkt-tpl-* IDs
-        const registryHit = this.templateRegistry?.get(templateId);
-        const agent = (!registryHit && templateId.startsWith('mkt-tpl-') && this.storage)
-          ? await (async () => {
-              const mktTpl = await this.storage!.marketplaceTemplateRepo.findById(templateId);
-              if (!mktTpl) throw new Error(`Template not found: ${templateId}`);
-              const knownRoles = this.orgService.listAvailableRoles();
-              const resolvedRole = knownRoles.includes(mktTpl.roleId) ? mktTpl.roleId : 'developer';
-              return agentManager.createAgent({
-                name,
-                roleName: resolvedRole,
-                orgId,
-                teamId,
-                agentRole: (mktTpl.agentRole as 'manager' | 'worker') ?? 'worker',
-                skills: mktTpl.skills ?? undefined,
-              });
-            })()
-          : await agentManager.createAgentFromTemplate({
+        const agent = await agentManager.createAgentFromTemplate({
               templateId,
               name,
               orgId,
@@ -4343,405 +4343,6 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         try { await this.orgService.fireAgent(reg.markusAgentId); } catch { /* already gone */ }
       }
       this.json(res, reg ? 200 : 404, reg ? { deleted: true } : { error: 'Not found' });
-      return;
-    }
-
-    // ── Marketplace: Templates ────────────────────────────────────────────────
-    if (path === '/api/marketplace/templates' && req.method === 'GET') {
-      if (!this.storage) {
-        this.json(res, 200, { templates: [], total: 0 });
-        return;
-      }
-      const source = url.searchParams.get('source') as
-        | 'official'
-        | 'community'
-        | 'custom'
-        | undefined;
-      const category = url.searchParams.get('category') ?? undefined;
-      const q = url.searchParams.get('q');
-      const status = url.searchParams.get('status') ?? 'published';
-      const limit = Number(url.searchParams.get('limit') ?? 50);
-      const offset = Number(url.searchParams.get('offset') ?? 0);
-
-      const templates = q
-        ? await this.storage.marketplaceTemplateRepo.search(q, {
-            source: source ?? undefined,
-            category,
-            limit,
-          })
-        : await this.storage.marketplaceTemplateRepo.list({
-            source: source ?? undefined,
-            status,
-            category,
-            limit,
-            offset,
-          });
-      this.json(res, 200, { templates, total: templates.length });
-      return;
-    }
-
-    if (path === '/api/marketplace/templates' && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const id = generateId('mkt-tpl');
-      const template = await this.storage.marketplaceTemplateRepo.create({
-        id,
-        name: body['name'] as string,
-        description: body['description'] as string,
-        source: (body['source'] as 'official' | 'community' | 'custom') ?? 'community',
-        status: (body['publish'] as boolean) ? 'published' : 'draft',
-        version: (body['version'] as string) ?? '1.0.0',
-        authorId: body['authorId'] as string | undefined,
-        authorName: body['authorName'] as string,
-        roleId: body['roleId'] as string,
-        agentRole: (body['agentRole'] as string) ?? 'worker',
-        skills: body['skills'] as string[] | undefined,
-        llmProvider: body['llmProvider'] as string | undefined,
-        tags: body['tags'] as string[] | undefined,
-        category: body['category'] as string,
-        icon: body['icon'] as string | undefined,
-        heartbeatIntervalMs: body['heartbeatIntervalMs'] as number | undefined,
-        starterTasks: body['starterTasks'] as
-          | Array<{ title: string; description: string; priority: string }>
-          | undefined,
-        config: body['config'] as Record<string, unknown> | undefined,
-      });
-      this.json(res, 201, { template });
-      return;
-    }
-
-    if (
-      path.match(/^\/api\/marketplace\/templates\/[^/]+$/) &&
-      !path.includes('/rate') &&
-      !path.includes('/reviews')
-    ) {
-      const templateId = path.split('/')[4]!;
-
-      if (req.method === 'GET') {
-        if (!this.storage) {
-          this.json(res, 503, { error: 'Database not configured' });
-          return;
-        }
-        const template = await this.storage.marketplaceTemplateRepo.findById(templateId);
-        if (!template) {
-          this.json(res, 404, { error: 'Template not found' });
-          return;
-        }
-        this.json(res, 200, { template });
-        return;
-      }
-
-      if (req.method === 'PUT') {
-        if (!this.storage) {
-          this.json(res, 503, { error: 'Database not configured' });
-          return;
-        }
-        const body = await this.readBody(req);
-        await this.storage.marketplaceTemplateRepo.update(templateId, {
-          name: body['name'] as string | undefined,
-          description: body['description'] as string | undefined,
-          version: body['version'] as string | undefined,
-          skills: body['skills'] as string[] | undefined,
-          tags: body['tags'] as string[] | undefined,
-          category: body['category'] as string | undefined,
-          icon: body['icon'] as string | undefined,
-        });
-        const updated = await this.storage.marketplaceTemplateRepo.findById(templateId);
-        this.json(res, 200, { template: updated });
-        return;
-      }
-
-      if (req.method === 'DELETE') {
-        if (!this.storage) {
-          this.json(res, 503, { error: 'Database not configured' });
-          return;
-        }
-        await this.storage.marketplaceTemplateRepo.delete(templateId);
-        this.json(res, 200, { deleted: true });
-        return;
-      }
-    }
-
-    if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/publish$/) && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const templateId = path.split('/')[4]!;
-      await this.storage.marketplaceTemplateRepo.updateStatus(templateId, 'published');
-      this.json(res, 200, { published: true });
-      return;
-    }
-
-    if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/install$/) && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const templateId = path.split('/')[4]!;
-      const mktTemplate = await this.storage.marketplaceTemplateRepo.findById(templateId);
-      if (!mktTemplate) {
-        this.json(res, 404, { error: 'Template not found' });
-        return;
-      }
-
-      await this.storage.marketplaceTemplateRepo.incrementDownloads(templateId);
-
-      if (this.templateRegistry) {
-        this.templateRegistry.register({
-          id: mktTemplate.id,
-          name: mktTemplate.name,
-          description: mktTemplate.description,
-          source: mktTemplate.source,
-          version: mktTemplate.version,
-          author: mktTemplate.authorName,
-          roleId: mktTemplate.roleId,
-          agentRole: mktTemplate.agentRole as 'manager' | 'worker',
-          skills: mktTemplate.skills,
-          llmProvider: mktTemplate.llmProvider ?? undefined,
-          tags: mktTemplate.tags,
-          category: mktTemplate.category as
-            | 'development'
-            | 'devops'
-            | 'productivity'
-            | 'management'
-            | 'general',
-          heartbeatIntervalMs: mktTemplate.heartbeatIntervalMs ?? undefined,
-          starterTasks: mktTemplate.starterTasks as Array<{
-            title: string;
-            description: string;
-            priority: 'low' | 'medium' | 'high';
-          }>,
-          icon: mktTemplate.icon ?? undefined,
-        });
-      }
-      this.json(res, 200, { installed: true, templateId });
-      return;
-    }
-
-    // ── Marketplace: Template Fork ──────────────────────────────────────────
-    if (path.match(/^\/api\/marketplace\/templates\/[^/]+\/fork$/) && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const templateId = path.split('/')[4]!;
-      const original = await this.storage.marketplaceTemplateRepo.findById(templateId);
-      if (!original) {
-        this.json(res, 404, { error: 'Template not found' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const forkId = generateId('mkt-tpl');
-      const forked = await this.storage.marketplaceTemplateRepo.create({
-        id: forkId,
-        name: (body['name'] as string) ?? `${original.name} (fork)`,
-        description: original.description,
-        source: 'custom',
-        status: 'draft',
-        version: '1.0.0',
-        authorId: body['authorId'] as string | undefined,
-        authorName: (body['authorName'] as string) ?? 'anonymous',
-        roleId: original.roleId,
-        agentRole: original.agentRole,
-        skills: original.skills,
-        llmProvider: original.llmProvider ?? undefined,
-        tags: original.tags,
-        category: original.category,
-        icon: original.icon ?? undefined,
-        heartbeatIntervalMs: original.heartbeatIntervalMs ?? undefined,
-        starterTasks: original.starterTasks as
-          | Array<{ title: string; description: string; priority: string }>
-          | undefined,
-        config: { ...((original.config ?? {}) as Record<string, unknown>), forkedFrom: templateId },
-      });
-      // Increment fork count on original (best-effort via raw SQL)
-      try {
-        const db = (
-          this.storage as unknown as { db: { execute: (q: unknown) => Promise<unknown> } }
-        ).db;
-        if (db?.execute) {
-          await db.execute({
-            sql: `UPDATE marketplace_templates SET fork_count = COALESCE(fork_count, 0) + 1 WHERE id = $1`,
-            params: [templateId],
-          });
-        }
-      } catch {
-        /* ignore */
-      }
-      this.json(res, 201, { template: forked, forkedFrom: templateId });
-      return;
-    }
-
-    // ── Marketplace: Skills ──────────────────────────────────────────────────
-    if (path === '/api/marketplace/skills' && req.method === 'GET') {
-      if (!this.storage) {
-        this.json(res, 200, { skills: [], total: 0 });
-        return;
-      }
-      const source = url.searchParams.get('source') as
-        | 'official'
-        | 'community'
-        | 'custom'
-        | undefined;
-      const category = url.searchParams.get('category') ?? undefined;
-      const q = url.searchParams.get('q');
-      const status = url.searchParams.get('status') ?? 'published';
-      const limit = Number(url.searchParams.get('limit') ?? 50);
-      const offset = Number(url.searchParams.get('offset') ?? 0);
-
-      const skills = q
-        ? await this.storage.marketplaceSkillRepo.search(q, {
-            source: source ?? undefined,
-            category,
-            limit,
-          })
-        : await this.storage.marketplaceSkillRepo.list({
-            source: source ?? undefined,
-            status,
-            category,
-            limit,
-            offset,
-          });
-      this.json(res, 200, { skills, total: skills.length });
-      return;
-    }
-
-    if (path === '/api/marketplace/skills' && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const id = generateId('mkt-skill');
-      const skill = await this.storage.marketplaceSkillRepo.create({
-        id,
-        name: body['name'] as string,
-        description: body['description'] as string,
-        source: (body['source'] as 'official' | 'community' | 'custom') ?? 'community',
-        status: (body['publish'] as boolean) ? 'published' : 'draft',
-        version: (body['version'] as string) ?? '1.0.0',
-        authorId: body['authorId'] as string | undefined,
-        authorName: body['authorName'] as string,
-        category: body['category'] as string,
-        tags: body['tags'] as string[] | undefined,
-        tools: body['tools'] as Array<{ name: string; description: string }> | undefined,
-        readme: body['readme'] as string | undefined,
-        requiredPermissions: body['requiredPermissions'] as string[] | undefined,
-        requiredEnv: body['requiredEnv'] as string[] | undefined,
-      });
-      this.json(res, 201, { skill });
-      return;
-    }
-
-    if (path.match(/^\/api\/marketplace\/skills\/[^/]+$/) && req.method === 'GET') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const skillId = path.split('/')[4]!;
-      const skill = await this.storage.marketplaceSkillRepo.findById(skillId);
-      if (!skill) {
-        this.json(res, 404, { error: 'Skill not found' });
-        return;
-      }
-      this.json(res, 200, { skill });
-      return;
-    }
-
-    if (path.match(/^\/api\/marketplace\/skills\/[^/]+\/publish$/) && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const skillId = path.split('/')[4]!;
-      await this.storage.marketplaceSkillRepo.updateStatus(skillId, 'published');
-      this.json(res, 200, { published: true });
-      return;
-    }
-
-    if (path.match(/^\/api\/marketplace\/skills\/[^/]+\/install$/) && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const skillId = path.split('/')[4]!;
-      await this.storage.marketplaceSkillRepo.incrementDownloads(skillId);
-      this.json(res, 200, { installed: true, skillId });
-      return;
-    }
-
-    // ── Marketplace: Ratings ──────────────────────────────────────────────────
-    if (path === '/api/marketplace/ratings' && req.method === 'POST') {
-      if (!this.storage) {
-        this.json(res, 503, { error: 'Database not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const targetType = body['targetType'] as 'template' | 'skill';
-      const targetId = body['targetId'] as string;
-      const userId = body['userId'] as string;
-      const rating = body['rating'] as number;
-      const review = body['review'] as string | undefined;
-
-      if (!targetType || !targetId || !userId || !rating) {
-        this.json(res, 400, { error: 'targetType, targetId, userId, and rating are required' });
-        return;
-      }
-
-      const existing = await this.storage.marketplaceRatingRepo.findUserRating(
-        userId,
-        targetType,
-        targetId
-      );
-      if (existing) {
-        await this.storage.marketplaceRatingRepo.update(existing.id, { rating, review });
-      } else {
-        const id = generateId('rating');
-        await this.storage.marketplaceRatingRepo.create({
-          id,
-          targetType,
-          targetId,
-          userId,
-          rating,
-          review,
-        });
-      }
-
-      const agg = await this.storage.marketplaceRatingRepo.getAggregation(targetType, targetId);
-      if (targetType === 'template') {
-        await this.storage.marketplaceTemplateRepo.updateRating(targetId, agg.avg, agg.count);
-      } else {
-        await this.storage.marketplaceSkillRepo.updateRating(targetId, agg.avg, agg.count);
-      }
-      this.json(res, 200, { rating: agg });
-      return;
-    }
-
-    if (path.match(/^\/api\/marketplace\/ratings\/[^/]+$/) && req.method === 'GET') {
-      if (!this.storage) {
-        this.json(res, 200, { ratings: [] });
-        return;
-      }
-      const targetId = path.split('/')[4]!;
-      const targetType = (url.searchParams.get('type') as 'template' | 'skill') ?? 'template';
-      const ratings = await this.storage.marketplaceRatingRepo.findByTarget(targetType, targetId);
-      const agg = await this.storage.marketplaceRatingRepo.getAggregation(targetType, targetId);
-      this.json(res, 200, { ratings, aggregation: agg });
-      return;
-    }
-
-    // ── Marketplace: Stats ────────────────────────────────────────────────────
-    if (path === '/api/marketplace/stats' && req.method === 'GET') {
-      if (!this.storage) {
-        this.json(res, 200, { templates: {}, skills: {} });
-        return;
-      }
-      const templateCounts = await this.storage.marketplaceTemplateRepo.countBySource();
-      this.json(res, 200, { templates: templateCounts });
       return;
     }
 

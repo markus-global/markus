@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { api } from '../api.ts';
+import { api, hubApi } from '../api.ts';
 
 export type BuilderMode = 'agent' | 'team' | 'skill';
 
@@ -22,6 +22,15 @@ export function extractArtifact(messages: Array<{ sender: string; text: string }
     if (match?.[1]) {
       try { return JSON.parse(match[1]); } catch { /* ignore */ }
     }
+  }
+  return null;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function getArtifactFiles(artifact: Record<string, unknown>): Record<string, string> | null {
+  if (artifact.files && typeof artifact.files === 'object' && !Array.isArray(artifact.files)) {
+    return artifact.files as Record<string, string>;
   }
   return null;
 }
@@ -55,7 +64,33 @@ function Badge({ label, value, color }: { label: string; value?: string; color: 
   );
 }
 
+function FilesPreview({ files }: { files: Record<string, string> }) {
+  const [active, setActive] = useState(Object.keys(files)[0] ?? '');
+  const names = Object.keys(files);
+  if (names.length === 0) return null;
+  return (
+    <div>
+      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Files ({names.length})</span>
+      <div className="mt-1 bg-gray-800/50 rounded-lg border border-gray-700/30 overflow-hidden">
+        <div className="flex gap-0.5 px-1.5 py-1 border-b border-gray-700/30 overflow-x-auto">
+          {names.map(fn => (
+            <button key={fn} onClick={() => setActive(fn)}
+              className={`px-2 py-0.5 text-[10px] rounded whitespace-nowrap transition-colors ${active === fn ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300'}`}>
+              {fn}
+            </button>
+          ))}
+        </div>
+        {active && files[active] != null && (
+          <pre className="p-2 text-[10px] text-gray-400 max-h-[120px] overflow-auto whitespace-pre-wrap font-mono">{files[active]}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, unknown>; mode: BuilderMode }) {
+  const files = getArtifactFiles(artifact);
+
   if (mode === 'agent') {
     return (
       <div className="space-y-3 text-sm">
@@ -65,7 +100,8 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
           <Badge label="Role" value={artifact.agentRole as string} color={artifact.agentRole === 'manager' ? 'purple' : 'cyan'} />
           <Badge label="Category" value={artifact.category as string} color="indigo" />
         </div>
-        {artifact.systemPrompt && (
+        {files && <FilesPreview files={files} />}
+        {!files && artifact.systemPrompt && (
           <div>
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">System Prompt</span>
             <pre className="mt-1 text-xs text-gray-400 bg-gray-800/50 rounded-lg p-2 whitespace-pre-wrap max-h-[150px] overflow-y-auto">{artifact.systemPrompt as string}</pre>
@@ -81,12 +117,8 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
             </div>
           </div>
         )}
-        {artifact.skills && (
-          <Field label="Skills" value={artifact.skills as string} />
-        )}
-        {artifact.temperature !== undefined && (
-          <Field label="Temperature" value={String(artifact.temperature)} />
-        )}
+        {artifact.skills && <Field label="Skills" value={artifact.skills as string} />}
+        {artifact.temperature !== undefined && <Field label="Temperature" value={String(artifact.temperature)} />}
       </div>
     );
   }
@@ -98,20 +130,31 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         <Field label="Name" value={artifact.name as string} />
         <Field label="Description" value={artifact.description as string} />
         <Badge label="Category" value={artifact.category as string} color="indigo" />
+        {files && <FilesPreview files={files} />}
         <div>
           <span className="text-[10px] text-gray-500 uppercase tracking-wider">Members ({members.length})</span>
           <div className="mt-1.5 space-y-1.5">
-            {members.map((m, i) => (
-              <div key={i} className="flex items-center gap-2 bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
-                <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
-                  m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
-                }`}>
-                  {m.role === 'manager' ? '★' : (i + 1)}
-                </span>
-                <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
-                <span className="text-[10px] text-gray-500">x{String(m.count ?? 1)}</span>
-              </div>
-            ))}
+            {members.map((m, i) => {
+              const memberFiles = m.files as Record<string, string> | undefined;
+              return (
+                <div key={i} className="bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
+                      m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
+                    }`}>
+                      {m.role === 'manager' ? '★' : (i + 1)}
+                    </span>
+                    <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
+                    <span className="text-[10px] text-gray-500">x{String(m.count ?? 1)}</span>
+                  </div>
+                  {memberFiles && Object.keys(memberFiles).length > 0 && (
+                    <div className="mt-1 ml-7 text-[10px] text-gray-600">
+                      {Object.keys(memberFiles).join(', ')}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -119,41 +162,17 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
   }
 
   // skill
-  const tools = Array.isArray(artifact.tools) ? artifact.tools as Array<Record<string, unknown>> : [];
   return (
     <div className="space-y-3 text-sm">
       <Field label="Name" value={artifact.name as string} />
       <Field label="Description" value={artifact.description as string} />
       <div className="flex gap-2">
         <Badge label="Category" value={artifact.category as string} color="indigo" />
-        {artifact.version && <Badge label="Version" value={artifact.version as string} color="gray" />}
       </div>
-      {tools.length > 0 && (
-        <div>
-          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Tools ({tools.length})</span>
-          <div className="mt-1.5 space-y-1">
-            {tools.map((t, i) => (
-              <div key={i} className="bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
-                <div className="text-xs text-indigo-400 font-medium">{t.name as string}</div>
-                {t.description && <div className="text-[10px] text-gray-500 mt-0.5">{t.description as string}</div>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {Array.isArray(artifact.requiredPermissions) && (artifact.requiredPermissions as string[]).length > 0 && (
-        <div>
-          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Permissions</span>
-          <div className="flex flex-wrap gap-1 mt-1">
-            {(artifact.requiredPermissions as string[]).map(p => (
-              <span key={p} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-400 rounded">{p}</span>
-            ))}
-          </div>
-        </div>
-      )}
-      {Array.isArray(artifact.tags) && (artifact.tags as string[]).length > 0 && (
+      {files && <FilesPreview files={files} />}
+      {typeof artifact.tags === 'string' && artifact.tags && (
         <div className="flex flex-wrap gap-1">
-          {(artifact.tags as string[]).map(t => (
+          {(artifact.tags as string).split(',').map(t => t.trim()).filter(Boolean).map(t => (
             <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
           ))}
         </div>
@@ -164,7 +183,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
 
 // ─── Artifact Sidebar Panel (for Chat page) ──────────────────────────────────
 
-export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous', collapsed, onToggleCollapse, width, onResizeStart }: {
+export function BuilderArtifactPanel({ mode, messages, collapsed, onToggleCollapse, width, onResizeStart }: {
   mode: BuilderMode;
   messages: Array<{ sender: string; text: string }>;
   authorName?: string;
@@ -185,7 +204,6 @@ export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous',
   const rawArtifact = extractArtifact(messages);
   const artifact = editedArtifact ?? rawArtifact;
 
-  // Sync edit JSON when raw artifact changes and user hasn't manually edited
   const prevRawRef = useRef<string | null>(null);
   useEffect(() => {
     const rawStr = rawArtifact ? JSON.stringify(rawArtifact) : null;
@@ -247,75 +265,33 @@ export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous',
     if (!artifact || sharing) return;
     setSharing(true);
     try {
-      if (mode === 'agent') {
-        const name = (artifact.name as string) ?? 'Unnamed Agent';
-        const roleId = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        await api.marketplace.shareTemplate({
-          name,
-          description: (artifact.description as string) ?? '',
-          roleId,
-          agentRole: (artifact.agentRole as string) ?? 'worker',
-          category: (artifact.category as string) ?? 'general',
-          authorName,
-          skills: typeof artifact.skills === 'string'
-            ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean)
-            : [],
-          tags: typeof artifact.tags === 'string'
-            ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean)
-            : Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
-          config: {
-            systemPrompt: artifact.systemPrompt,
-            llmProvider: artifact.llmProvider,
-            llmModel: artifact.llmModel,
-            temperature: artifact.temperature,
-            toolWhitelist: artifact.toolWhitelist,
-            requiredEnv: artifact.requiredEnv,
-          },
-          publish: true,
-        });
-      } else if (mode === 'team') {
-        const name = (artifact.name as string) ?? 'Unnamed Team';
-        const roleId = `team-${name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`;
-        await api.marketplace.shareTemplate({
-          name,
-          description: (artifact.description as string) ?? '',
-          roleId,
-          agentRole: 'manager',
-          category: (artifact.category as string) ?? 'general',
-          authorName,
-          tags: typeof artifact.tags === 'string'
-            ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean)
-            : Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
-          config: {
-            type: 'team',
-            members: artifact.members,
-          },
-          publish: true,
-        });
-      } else {
-        // skill
-        await api.marketplace.publishSkill({
-          name: (artifact.name as string) ?? 'unnamed-skill',
-          description: (artifact.description as string) ?? '',
-          authorName: (artifact.author as string) ?? authorName,
-          category: (artifact.category as string) ?? 'custom',
-          tags: Array.isArray(artifact.tags) ? artifact.tags as string[] : [],
-          tools: Array.isArray(artifact.tools) ? (artifact.tools as Array<{ name: string; description: string }>) : [],
-          requiredPermissions: Array.isArray(artifact.requiredPermissions) ? artifact.requiredPermissions as string[] : [],
-          requiredEnv: Array.isArray(artifact.requiredEnv) ? artifact.requiredEnv as string[] : [],
-          publish: true,
-        });
-      }
-      const labels = { agent: 'Agent template', team: 'Team template', skill: 'Skill' };
-      showFlash(`${labels[mode]} shared to Agent Store!`);
+      const name = (artifact.name as string) ?? `Unnamed ${mode}`;
+      const description = (artifact.description as string) ?? '';
+      const category = (artifact.category as string) ?? 'general';
+      const tags = typeof artifact.tags === 'string'
+        ? (artifact.tags as string).split(',').map(s => s.trim()).filter(Boolean)
+        : Array.isArray(artifact.tags) ? artifact.tags as string[] : [];
+      const files = getArtifactFiles(artifact) ?? {};
+
+      await hubApi.publishViaProxy({
+        itemType: mode === 'team' ? 'team' : mode === 'skill' ? 'skill' : 'agent',
+        name,
+        description,
+        category,
+        tags,
+        config: artifact,
+        files: Object.keys(files).length > 0 ? files : undefined,
+      });
+
+      showFlash(`Published "${name}" to Markus Hub!`);
     } catch (err) {
-      showFlash(`Share failed: ${String(err)}`);
+      showFlash(`Publish failed: ${String(err)}`);
     } finally {
       setSharing(false);
     }
-  }, [artifact, sharing, mode, authorName]);
+  }, [artifact, sharing, mode]);
 
-  const modeLabels = { agent: 'Agent Config', team: 'Team Config', skill: 'Skill Manifest' };
+  const modeLabels = { agent: 'Agent Config', team: 'Team Config', skill: 'Skill Config' };
   const modeIcons = { agent: '\u2726', team: '\u25C8', skill: '\u2B21' };
   const createLabels = { agent: 'Agent', team: 'Team', skill: 'Skill' };
 
@@ -338,7 +314,6 @@ export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous',
 
   return (
     <div className="flex shrink-0">
-      {/* Resize handle */}
       {onResizeStart && (
         <div
           className="w-1 cursor-col-resize group relative"
@@ -442,7 +417,7 @@ export function BuilderArtifactPanel({ mode, messages, authorName = 'Anonymous',
             disabled={sharing || !!jsonError}
             className="w-full px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg border border-gray-700 disabled:opacity-50 transition-colors"
           >
-            {sharing ? 'Sharing...' : 'Share to Agent Store'}
+            {sharing ? 'Publishing...' : 'Publish to Markus Hub'}
           </button>
           <button
             onClick={() => {

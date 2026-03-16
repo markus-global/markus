@@ -11,9 +11,6 @@ import type {
   ChatSessionRepo,
   ChannelMessageRepo,
   UserRepo,
-  MarketplaceTemplateRepo,
-  MarketplaceSkillRepo,
-  MarketplaceRatingRepo,
 } from '@markus/storage';
 import type { SqliteProjectRepo, SqliteIterationRepo, RequirementRepo } from '@markus/storage';
 import { homedir } from 'node:os';
@@ -43,9 +40,6 @@ export interface StorageBridge {
   chatSessionRepo: ChatSessionRepo;
   channelMessageRepo: ChannelMessageRepo;
   userRepo: UserRepo;
-  marketplaceTemplateRepo: MarketplaceTemplateRepo;
-  marketplaceSkillRepo: MarketplaceSkillRepo;
-  marketplaceRatingRepo: MarketplaceRatingRepo;
   taskCommentRepo?: TaskCommentRepo | any;
   requirementRepo?: RequirementRepo | any;
   projectRepo?: any;
@@ -98,9 +92,6 @@ async function initPostgresStorage(url: string): Promise<StorageBridge | null> {
       chatSessionRepo: new storage.ChatSessionRepo(db),
       channelMessageRepo: new storage.ChannelMessageRepo(db),
       userRepo: new storage.UserRepo(db),
-      marketplaceTemplateRepo: new storage.MarketplaceTemplateRepo(db),
-      marketplaceSkillRepo: new storage.MarketplaceSkillRepo(db),
-      marketplaceRatingRepo: new storage.MarketplaceRatingRepo(db),
       taskCommentRepo: new storage.TaskCommentRepo(db),
       requirementRepo: new storage.RequirementRepo(db),
       deliverableRepo: new storage.DeliverableRepo(db),
@@ -130,9 +121,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       chatSessionRepo: new storage.SqliteChatSessionRepo(db) as any,
       channelMessageRepo: new storage.SqliteChannelMessageRepo(db) as any,
       userRepo: new storage.SqliteUserRepo(db) as any,
-      marketplaceTemplateRepo: new storage.SqliteMarketplaceTemplateRepo(db) as any,
-      marketplaceSkillRepo: new storage.SqliteMarketplaceSkillRepo(db) as any,
-      marketplaceRatingRepo: new storage.SqliteMarketplaceRatingRepo(db) as any,
       taskCommentRepo: new storage.SqliteTaskCommentRepo(db) as any,
       requirementRepo: new storage.SqliteRequirementRepo(db) as any,
       projectRepo: new storage.SqliteProjectRepo(db),
