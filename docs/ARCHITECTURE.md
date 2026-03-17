@@ -153,25 +153,51 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 
 ### 3.5 Task System
 
-```
-Task state flow:
+See [Task & Requirement State Machines](./STATE-MACHINES.md) for the complete FSM specification.
 
-pending -> assigned -> in_progress -> review -> accepted -> completed -> archived
-                  \-> blocked                /-> revision (rework)
-                  \-> failed / cancelled
+#### Standard Task State Flow
+
+```
+pending -> pending_approval -> assigned -> in_progress -> review -> accepted -> completed -> archived
+                                      \-> blocked              /-> revision (rework)
+                                      \-> failed / cancelled
+```
+
+- `accepted → completed` is automatic (branch merged, then auto-completed).
+- Workers submit via `task_submit_review` with a `reviewer_id`.
+- The system notifies the reviewer; workers do NOT broadcast to all agents.
+
+#### Scheduled (Recurring) Task State Flow
+
+```
+pending -> assigned -> in_progress -> review -> accepted -> pending (awaits next run)
+                                            /-> revision -> in_progress (rework)
+```
+
+- After acceptance, scheduled tasks return to `pending` (not `completed`).
+- The `ScheduledTaskRunner` fires the next run when `nextRunAt` arrives.
+- Scheduled tasks go through the same review pipeline as standard tasks.
+
+#### Requirement State Flow
+
+```
+draft -> pending_review -> approved -> in_progress -> completed
+                       \-> rejected
+                       \-> cancelled
 ```
 
 | State | Description |
 |-------|-------------|
 | `pending` | Created, awaiting assignment |
+| `pending_approval` | Awaiting human/manager approval |
 | `assigned` | Assigned to Agent |
 | `in_progress` | Agent is working |
 | `review` | Agent submitted delivery, awaiting review |
 | `revision` | Review requested rework |
-| `accepted` | Review passed, branch merged |
-| `completed` | Task done |
+| `accepted` | Review passed |
+| `completed` | Task done (standard) / N/A for scheduled |
 | `archived` | Archived |
-| `blocked` | Blocked |
+| `blocked` | Blocked by dependencies |
 | `failed` / `cancelled` | Failed / Cancelled |
 
 **Task governance policy:**

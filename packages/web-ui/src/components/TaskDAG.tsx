@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect } from 'react';
+import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -9,6 +9,7 @@ import {
   type NodeTypes,
   type Connection,
   type EdgeMouseHandler,
+  type ReactFlowInstance,
   Handle,
   Position,
   useNodesState,
@@ -17,7 +18,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from '@dagrejs/dagre';
-import type { TaskInfo, AgentInfo } from '../api.ts';
+import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
@@ -77,37 +78,139 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
   );
 }
 
+const REQ_STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
+  draft:          { bg: 'bg-gray-800/60',    border: 'border-gray-600/50',   text: 'text-gray-400' },
+  pending_review: { bg: 'bg-yellow-900/40',  border: 'border-yellow-500/50', text: 'text-yellow-300' },
+  approved:       { bg: 'bg-blue-900/40',    border: 'border-blue-500/50',   text: 'text-blue-300' },
+  in_progress:    { bg: 'bg-indigo-900/40',  border: 'border-indigo-500/50', text: 'text-indigo-300' },
+  completed:      { bg: 'bg-emerald-900/40', border: 'border-emerald-500/50',text: 'text-emerald-300' },
+  rejected:       { bg: 'bg-red-900/40',     border: 'border-red-500/50',    text: 'text-red-300' },
+  cancelled:      { bg: 'bg-gray-800/40',    border: 'border-gray-700/50',   text: 'text-gray-500' },
+};
+
+const REQ_GROUP_MAP: Record<string, string> = {
+  draft: 'todo', pending_review: 'todo', approved: 'todo',
+  in_progress: 'in_progress',
+  completed: 'done',
+  rejected: 'done', cancelled: 'done',
+};
+
+function RequirementNode({ data }: { data: { req: RequirementInfo } }) {
+  const { req } = data;
+  const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['draft']!;
+  return (
+    <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border}`}>
+      <Handle type="target" position={Position.Top} className="!bg-gray-500 !w-2 !h-2" />
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400">REQ</span>
+        <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
+          {req.status.replace('_', ' ')}
+        </span>
+      </div>
+      <div className="text-xs font-medium text-gray-200 leading-snug line-clamp-2 mb-1">
+        {req.title}
+      </div>
+      {req.taskIds.length > 0 && (
+        <div className="text-[10px] text-gray-500">
+          {req.taskIds.length} task{req.taskIds.length > 1 ? 's' : ''}
+        </div>
+      )}
+      <Handle type="source" position={Position.Bottom} className="!bg-gray-500 !w-2 !h-2" />
+    </div>
+  );
+}
+
 const nodeTypes: NodeTypes = {
   task: TaskNode as unknown as NodeTypes[string],
+  requirement: RequirementNode as unknown as NodeTypes[string],
 };
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 80;
 
-function layoutNodes(nodes: Node[], edges: Edge[], direction: 'TB' | 'LR' = 'TB'): Node[] {
+function layoutSingleComponent(nodes: Node[], edges: Edge[], direction: 'TB' | 'LR' = 'TB'): Node[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: direction, nodesep: 40, ranksep: 60 });
-
-  for (const node of nodes) {
-    g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-  }
-  for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
-  }
-
+  for (const node of nodes) g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+  for (const edge of edges) g.setEdge(edge.source, edge.target);
   dagre.layout(g);
-
   return nodes.map(node => {
     const pos = g.node(node.id);
-    return {
-      ...node,
-      position: {
-        x: (pos?.x ?? 0) - NODE_WIDTH / 2,
-        y: (pos?.y ?? 0) - NODE_HEIGHT / 2,
-      },
-    };
+    return { ...node, position: { x: (pos?.x ?? 0) - NODE_WIDTH / 2, y: (pos?.y ?? 0) - NODE_HEIGHT / 2 } };
   });
+}
+
+function findConnectedComponents(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] }[] {
+  const adj = new Map<string, Set<string>>();
+  const nodeMap = new Map<string, Node>();
+  for (const n of nodes) { nodeMap.set(n.id, n); adj.set(n.id, new Set()); }
+  for (const e of edges) {
+    adj.get(e.source)?.add(e.target);
+    adj.get(e.target)?.add(e.source);
+  }
+  const visited = new Set<string>();
+  const components: { nodes: Node[]; edges: Edge[] }[] = [];
+  for (const n of nodes) {
+    if (visited.has(n.id)) continue;
+    const compIds = new Set<string>();
+    const stack = [n.id];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      compIds.add(id);
+      for (const neighbor of adj.get(id) ?? []) {
+        if (!visited.has(neighbor)) stack.push(neighbor);
+      }
+    }
+    components.push({
+      nodes: nodes.filter(nd => compIds.has(nd.id)),
+      edges: edges.filter(e => compIds.has(e.source) && compIds.has(e.target)),
+    });
+  }
+  return components;
+}
+
+function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return [];
+  const components = findConnectedComponents(nodes, edges);
+  if (components.length === 1) return layoutSingleComponent(nodes, edges);
+
+  const laid: { nodes: Node[]; w: number; h: number }[] = components.map(c => {
+    const laidNodes = layoutSingleComponent(c.nodes, c.edges);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of laidNodes) {
+      minX = Math.min(minX, n.position.x);
+      maxX = Math.max(maxX, n.position.x + NODE_WIDTH);
+      minY = Math.min(minY, n.position.y);
+      maxY = Math.max(maxY, n.position.y + NODE_HEIGHT);
+    }
+    for (const n of laidNodes) { n.position.x -= minX; n.position.y -= minY; }
+    return { nodes: laidNodes, w: maxX - minX, h: maxY - minY };
+  });
+
+  laid.sort((a, b) => b.h - a.h);
+
+  const gap = 60;
+  const totalArea = laid.reduce((s, c) => s + (c.w + gap) * (c.h + gap), 0);
+  const targetSide = Math.sqrt(totalArea) * 1.1;
+
+  const result: Node[] = [];
+  let curX = 0, curY = 0, rowHeight = 0;
+  for (const comp of laid) {
+    if (curX > 0 && curX + comp.w > targetSide) {
+      curX = 0;
+      curY += rowHeight + gap;
+      rowHeight = 0;
+    }
+    for (const n of comp.nodes) {
+      result.push({ ...n, position: { x: n.position.x + curX, y: n.position.y + curY } });
+    }
+    curX += comp.w + gap;
+    rowHeight = Math.max(rowHeight, comp.h);
+  }
+  return result;
 }
 
 function wouldCreateCycle(taskMap: Map<string, TaskInfo>, sourceId: string, targetId: string): boolean {
@@ -128,34 +231,66 @@ function wouldCreateCycle(taskMap: Map<string, TaskInfo>, sourceId: string, targ
 
 interface TaskDAGProps {
   tasks: TaskInfo[];
+  requirements?: RequirementInfo[];
   agents: AgentInfo[];
   onTaskClick?: (task: TaskInfo) => void;
+  onReqClick?: (req: RequirementInfo) => void;
   onDependencyChange?: () => void;
 }
 
 const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled'] as const;
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'Pending', pending_approval: 'Awaiting', assigned: 'Assigned',
-  in_progress: 'In Progress', blocked: 'Blocked', review: 'Review',
-  revision: 'Revision', accepted: 'Accepted', completed: 'Completed',
-  failed: 'Failed', cancelled: 'Cancelled',
-};
 
-export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: TaskDAGProps) {
+const DAG_FILTER_GROUPS = [
+  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending_approval', 'pending', 'assigned']),          color: { bg: 'bg-blue-900/40', border: 'border-blue-500/50', text: 'text-blue-300' } },
+  { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-900/40', border: 'border-amber-500/50', text: 'text-amber-300' } },
+  { id: 'review',      label: 'In Review',   statuses: new Set(['review', 'revision', 'accepted']),                   color: { bg: 'bg-purple-900/40', border: 'border-purple-500/50', text: 'text-purple-300' } },
+  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'cancelled']),                 color: { bg: 'bg-emerald-900/40', border: 'border-emerald-500/50', text: 'text-emerald-300' } },
+] as const;
+
+const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const isArchivedTask = (t: TaskInfo) =>
+  t.status === 'completed' && t.updatedAt && (Date.now() - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
+
+export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqClick, onDependencyChange }: TaskDAGProps) {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
-  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set(ALL_STATUSES));
+  const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
+  const [showArchived, setShowArchived] = useState(false);
 
-  const presentStatuses = useMemo(() => {
+  const archivedCount = useMemo(() => tasks.filter(t => !t.parentTaskId && isArchivedTask(t)).length, [tasks]);
+
+  const allowedStatuses = useMemo(() => {
     const s = new Set<string>();
-    for (const t of tasks) if (!t.parentTaskId) s.add(t.status);
-    return ALL_STATUSES.filter(st => s.has(st));
-  }, [tasks]);
+    for (const g of DAG_FILTER_GROUPS) {
+      if (groupFilter.has(g.id)) {
+        for (const st of g.statuses) s.add(st);
+      }
+    }
+    return s;
+  }, [groupFilter]);
 
-  const toggleStatus = useCallback((status: string) => {
-    setStatusFilter(prev => {
+  const presentGroups = useMemo(() => {
+    const activeGroupIds = new Set<string>();
+    for (const t of tasks) {
+      if (!t.parentTaskId) {
+        for (const g of DAG_FILTER_GROUPS) {
+          if (g.statuses.has(t.status)) { activeGroupIds.add(g.id); break; }
+        }
+      }
+    }
+    for (const r of requirements) {
+      const gid = REQ_GROUP_MAP[r.status];
+      if (gid) activeGroupIds.add(gid);
+    }
+    return DAG_FILTER_GROUPS.filter(g => activeGroupIds.has(g.id));
+  }, [tasks, requirements]);
+
+  const toggleGroup = useCallback((groupId: string) => {
+    setGroupFilter(prev => {
       const next = new Set(prev);
-      if (next.has(status)) next.delete(status); else next.add(status);
+      if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
       return next;
     });
   }, []);
@@ -177,6 +312,12 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
     return m;
   }, [tasks]);
 
+  const reqMap = useMemo(() => {
+    const m = new Map<string, RequirementInfo>();
+    for (const r of requirements) m.set(r.id, r);
+    return m;
+  }, [requirements]);
+
   const makeEdge = useCallback((depId: string, taskId: string, status: string): Edge => ({
     id: `${depId}->${taskId}`,
     source: depId,
@@ -187,7 +328,7 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
   }), []);
 
   const { initialNodes, initialEdges } = useMemo(() => {
-    const rootTasks = tasks.filter(t => !t.parentTaskId && statusFilter.has(t.status));
+    const rootTasks = tasks.filter(t => !t.parentTaskId && allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
 
     const rawNodes: Node[] = rootTasks.map(task => ({
       id: task.id,
@@ -197,6 +338,25 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
     }));
 
     const nodeIdSet = new Set(rawNodes.map(n => n.id));
+
+    const allowedGroupIds = new Set<string>();
+    for (const g of DAG_FILTER_GROUPS) {
+      if (groupFilter.has(g.id)) allowedGroupIds.add(g.id);
+    }
+    const filteredReqs = requirements.filter(r => {
+      const gid = REQ_GROUP_MAP[r.status];
+      return gid && allowedGroupIds.has(gid);
+    });
+    for (const req of filteredReqs) {
+      const reqNodeId = `req-${req.id}`;
+      rawNodes.push({
+        id: reqNodeId,
+        type: 'requirement',
+        data: { req },
+        position: { x: 0, y: 0 },
+      });
+      nodeIdSet.add(reqNodeId);
+    }
 
     const rawEdges: Edge[] = [];
     for (const task of rootTasks) {
@@ -209,22 +369,57 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
       }
     }
 
+    const reqEdgeIds = new Set<string>();
+    const addReqEdge = (reqNodeId: string, taskId: string) => {
+      const edgeId = `${reqNodeId}->${taskId}`;
+      if (reqEdgeIds.has(edgeId)) return;
+      reqEdgeIds.add(edgeId);
+      rawEdges.push({
+        id: edgeId,
+        source: reqNodeId,
+        target: taskId,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#8b5cf6' },
+        style: { stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4 2' },
+      });
+    };
+    for (const req of filteredReqs) {
+      const reqNodeId = `req-${req.id}`;
+      for (const taskId of req.taskIds) {
+        if (nodeIdSet.has(taskId)) addReqEdge(reqNodeId, taskId);
+      }
+    }
+    for (const task of rootTasks) {
+      if (task.requirementId) {
+        const reqNodeId = `req-${task.requirementId}`;
+        if (nodeIdSet.has(reqNodeId)) addReqEdge(reqNodeId, task.id);
+      }
+    }
+
     const layouted = layoutNodes(rawNodes, rawEdges);
     return { initialNodes: layouted, initialEdges: rawEdges };
-  }, [tasks, agentMap, taskMap, makeEdge, statusFilter]);
+  }, [tasks, requirements, agentMap, taskMap, makeEdge, allowedStatuses, groupFilter, showArchived]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const rfRef = useRef<ReactFlowInstance | null>(null);
 
   useEffect(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
+    requestAnimationFrame(() => {
+      rfRef.current?.fitView({ padding: 0.2, duration: 300 });
+    });
   }, [initialNodes, initialEdges, setNodes, setEdges]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    const task = taskMap.get(node.id);
-    if (task && onTaskClick) onTaskClick(task);
-  }, [taskMap, onTaskClick]);
+    if (node.id.startsWith('req-')) {
+      const req = reqMap.get(node.id.slice(4));
+      if (req && onReqClick) onReqClick(req);
+    } else {
+      const task = taskMap.get(node.id);
+      if (task && onTaskClick) onTaskClick(task);
+    }
+  }, [taskMap, reqMap, onTaskClick, onReqClick]);
 
   // Drag from source (blocker) → target (dependent): source blocks target
   const handleConnect = useCallback(async (connection: Connection) => {
@@ -295,6 +490,7 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
         onNodeClick={handleNodeClick}
         onConnect={handleConnect}
         onEdgeClick={handleEdgeClick}
+        onInit={(instance) => { rfRef.current = instance; }}
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.3}
@@ -325,18 +521,23 @@ export function TaskDAG({ tasks, agents, onTaskClick, onDependencyChange }: Task
       {/* Filter + hint bar */}
       <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">
         <div className="flex items-center gap-1 flex-wrap justify-center">
-          {presentStatuses.map(st => {
-            const active = statusFilter.has(st);
-            const c = STATUS_COLORS[st];
+          {presentGroups.map(g => {
+            const active = groupFilter.has(g.id);
             return (
-              <button key={st} onClick={() => toggleStatus(st)}
-                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${c?.bg ?? ''} ${c?.border ?? 'border-gray-600'} ${c?.text ?? 'text-gray-300'}` : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
-                {STATUS_LABELS[st] ?? st}
+              <button key={g.id} onClick={() => toggleGroup(g.id)}
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
+                {g.label}
               </button>
             );
           })}
-          {statusFilter.size < ALL_STATUSES.length && (
-            <button onClick={() => setStatusFilter(new Set(ALL_STATUSES))} className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Reset</button>
+          {archivedCount > 0 && (
+            <button onClick={() => setShowArchived(v => !v)}
+              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-gray-700/60 border-gray-500/50 text-gray-300' : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
+              Archived {archivedCount}
+            </button>
+          )}
+          {groupFilter.size < ALL_DAG_GROUP_IDS.size && (
+            <button onClick={() => { setGroupFilter(new Set(ALL_DAG_GROUP_IDS)); setShowArchived(false); }} className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Reset</button>
           )}
         </div>
         <div className="text-[10px] text-gray-500 select-none">Drag to add dependency · Click edge to remove</div>

@@ -26,7 +26,7 @@ const ICONS: Record<string, string> = {
   projects:  'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
   chat:      'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   reports:   'M18 20V10 M12 20V4 M6 20v-6',
-  knowledge: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z',
+  deliverables: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z',
   usage:     'M21.21 15.89A10 10 0 1 1 8 2.83 M22 12A10 10 0 0 0 12 2v10z',
   builder:   'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
   agents:    'M8 3H5a2 2 0 0 0-2 2v3 M21 8V5a2 2 0 0 0-2-2h-3 M3 16v3a2 2 0 0 0 2 2h3 M16 21h3a2 2 0 0 0 2-2v-3 M9 9h6v6H9z',
@@ -46,7 +46,7 @@ const STATUS_COLORS: Record<string, string> = {
 const navItems: Array<{ id: PageId; label: string; section: string }> = [
   { id: 'dashboard', label: 'Overview', section: 'workspace' },
   { id: 'chat', label: 'Chat', section: 'workspace' },
-  { id: 'knowledge', label: 'Deliverables', section: 'workspace' },
+  { id: 'deliverables', label: 'Deliverables', section: 'workspace' },
   { id: 'builder', label: 'Builder', section: 'build' },
   { id: 'agents', label: 'Agents', section: 'build' },
   { id: 'teams', label: 'Teams', section: 'build' },
@@ -159,8 +159,8 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                 </div>
               )}
               {collapsed && si > 0 && <div className="border-t border-gray-800 my-2 mx-1" />}
-              {/* Render nav items, but defer Knowledge to after Projects */}
-              {navItems.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === 'knowledge')).map((item) => {
+              {/* Render nav items, but defer Deliverables to after Projects */}
+              {navItems.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === 'deliverables')).map((item) => {
                 const isActive = currentPage === item.id;
                 return (
                   <button
@@ -179,7 +179,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                 );
               })}
 
-              {/* Projects + sub-list — inside WORKSPACE, after Chat, before Knowledge */}
+              {/* Projects + sub-list — inside WORKSPACE, after Chat, before Deliverables */}
               {section.key === 'workspace' && collapsed && (
                 <>
                   <button
@@ -196,13 +196,13 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     <Icon d={ICONS.projects ?? ''} />
                   </button>
                   <button
-                    onClick={() => onNavigate('knowledge')}
+                    onClick={() => onNavigate('deliverables')}
                     title="Deliverables"
                     className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'knowledge' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                      currentPage === 'deliverables' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                     }`}
                   >
-                    <Icon d={ICONS.knowledge ?? ''} />
+                    <Icon d={ICONS.deliverables ?? ''} />
                   </button>
                 </>
               )}
@@ -270,12 +270,12 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   )}
                   {/* Deliverables — after Projects */}
                   <button
-                    onClick={() => onNavigate('knowledge')}
+                    onClick={() => onNavigate('deliverables')}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'knowledge' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                      currentPage === 'deliverables' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                     }`}
                   >
-                    <Icon d={ICONS.knowledge ?? ''} />
+                    <Icon d={ICONS.deliverables ?? ''} />
                     Deliverables
                   </button>
                 </>

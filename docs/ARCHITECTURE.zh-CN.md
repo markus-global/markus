@@ -153,8 +153,11 @@ Organization (Org)
 
 ### 3.5 任务系统
 
+完整的状态机规范请参见 [Task & Requirement State Machines](./STATE-MACHINES.md)。
+
+#### 普通任务状态流
+
 ```
-Task 完整状态流：
 
 pending → assigned → in_progress → review → accepted → completed → archived
                    ↘ blocked                ↗ revision (返工)
@@ -164,15 +167,43 @@ pending → assigned → in_progress → review → accepted → completed → a
 | 状态 | 说明 |
 |------|------|
 | `pending` | 已创建，等待分配 |
+| `pending_approval` | 等待人工/管理者审批 |
 | `assigned` | 已分配给 Agent |
 | `in_progress` | Agent 正在工作 |
 | `review` | Agent 提交了交付物，等待评审 |
 | `revision` | 评审要求返工 |
-| `accepted` | 评审通过，分支已合并 |
-| `completed` | 任务完成 |
+| `accepted` | 评审通过 |
+| `completed` | 任务完成（仅普通任务）/ 定时任务不适用 |
 | `archived` | 已归档 |
-| `blocked` | 被阻塞 |
+| `blocked` | 被依赖阻塞 |
 | `failed` / `cancelled` | 失败 / 取消 |
+
+- `accepted` 后：普通任务自动进入 `completed`；定时任务回到 `pending` 等待下次调度。
+- Worker 通过 `task_submit_review` 提交评审，必须指定 `reviewer_id`。
+- 系统自动通知评审者；Worker 不需要广播给所有人。
+
+#### 定时（循环）任务状态流
+
+```
+pending → assigned → in_progress → review → accepted → pending（等待下次调度）
+                                         ↗ revision → in_progress（返工）
+```
+
+- 评审通过后，定时任务回到 `pending`（而不是 `completed`）。
+- `ScheduledTaskRunner` 在 `nextRunAt` 到达时触发下一次执行。
+- 定时任务与普通任务走相同的评审流程。
+
+#### 需求（Requirement）状态流
+
+```
+draft → pending_review → approved → in_progress → completed
+                      ↘ rejected
+                      ↘ cancelled
+```
+
+- 用户创建的需求自动 approved。
+- Agent 提出的需求从 `draft` 开始，需要用户审批。
+- 需求关联的所有任务完成后，需求自动标为 `completed`。
 
 **任务治理策略（Task Governance）：**
 

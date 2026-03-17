@@ -6203,7 +6203,8 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       try {
         const task = this.taskService.requestRevision(
           taskId,
-          (body['reason'] as string) ?? 'Revisions needed'
+          (body['reason'] as string) ?? 'Revisions needed',
+          authUser?.userId
         );
         this.json(res, 200, { task });
       } catch (err) {

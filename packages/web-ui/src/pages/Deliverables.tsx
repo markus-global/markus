@@ -27,7 +27,7 @@ const ARTIFACT_META: Record<string, { icon: string; label: string; color: string
   skill: { icon: '\u2B21', label: 'Skill', color: 'bg-amber-900/40 text-amber-400' },
 };
 
-export function KnowledgePage() {
+export function DeliverablesPage() {
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -39,7 +39,7 @@ export function KnowledgePage() {
   const [filterAgent, setFilterAgent] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
-  const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('project');
+  const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'type'>('date');
   const [selected, setSelected] = useState<DeliverableInfo | null>(null);
   const [flash, setFlash] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [actionLoading, setActionLoading] = useState('');
@@ -326,7 +326,7 @@ export function KnowledgePage() {
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors"
           />
           {/* Type filter */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
             <FilterPill label="All types" value="" current={filterType} onClick={setFilterType} />
             {ALL_TYPES.map(t => (
               <FilterPill key={t} label={`${TYPE_META[t]?.icon ?? ''} ${t}`} value={t} current={filterType} onClick={setFilterType} />
@@ -334,19 +334,19 @@ export function KnowledgePage() {
           </div>
           {/* Project filter */}
           {projects.length > 0 && (
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex gap-1 overflow-x-auto scrollbar-hide">
               <FilterPill label="All projects" value="" current={filterProject} onClick={setFilterProject} />
               {projects.map(p => <FilterPill key={p.id} label={p.name} value={p.id} current={filterProject} onClick={setFilterProject} />)}
             </div>
           )}
           {/* Status filter */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
             <FilterPill label="Active" value="" current={filterStatus} onClick={setFilterStatus} />
             <FilterPill label="Verified" value="verified" current={filterStatus} onClick={setFilterStatus} />
             <FilterPill label="Outdated" value="outdated" current={filterStatus} onClick={setFilterStatus} />
           </div>
           {/* Builder artifact filter */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
             <FilterPill label="All" value="" current={filterArtifact} onClick={setFilterArtifact} />
             {(['agent', 'team', 'skill'] as const).map(a => (
               <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${ARTIFACT_META[a].label}`} value={a} current={filterArtifact} onClick={setFilterArtifact} />
@@ -355,7 +355,7 @@ export function KnowledgePage() {
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
             <span className="text-[10px] text-gray-500">Group:</span>
-            {(['project', 'agent', 'date', 'type'] as const).map(g => (
+            {(['date', 'project', 'agent', 'type'] as const).map(g => (
               <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
                 className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
                 {g.charAt(0).toUpperCase() + g.slice(1)}
@@ -451,29 +451,27 @@ export function KnowledgePage() {
             </div>
           </div>
         ) : (
-          <div className="p-6 max-w-3xl space-y-5">
+          <div className="p-6 space-y-5">
             {/* Header */}
             <div>
-              <div className="flex items-start justify-between gap-4">
-                <h2 className="text-xl font-semibold text-white">{selected.title}</h2>
-                <div className="flex items-center gap-2 shrink-0">
-                  {selected.status !== 'verified' && (
-                    <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
-                      className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-50 transition-colors">
-                      {actionLoading === 'verify' ? 'Verifying...' : 'Verify'}
-                    </button>
-                  )}
-                  {selected.status !== 'outdated' && (
-                    <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
-                      className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
-                      {actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}
-                    </button>
-                  )}
-                  <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
-                    {actionLoading === 'remove' ? 'Removing...' : 'Remove'}
+              <h2 className="text-xl font-semibold text-white">{selected.title}</h2>
+              <div className="flex items-center gap-2 mt-2">
+                {selected.status !== 'verified' && (
+                  <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-50 transition-colors">
+                    {actionLoading === 'verify' ? 'Verifying...' : 'Verify'}
                   </button>
-                </div>
+                )}
+                {selected.status !== 'outdated' && (
+                  <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
+                    {actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}
+                  </button>
+                )}
+                <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
+                  {actionLoading === 'remove' ? 'Removing...' : 'Remove'}
+                </button>
               </div>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
@@ -785,7 +783,7 @@ function FilterPill({ label, value, current, onClick }: { label: string; value: 
   return (
     <button
       onClick={() => onClick(current === value ? '' : value)}
-      className={`px-2 py-1 rounded text-xs transition-colors ${
+      className={`px-2 py-1 rounded text-xs whitespace-nowrap shrink-0 transition-colors ${
         current === value ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
       }`}
     >

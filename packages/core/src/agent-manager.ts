@@ -121,9 +121,10 @@ export interface TaskServiceBridge {
       }
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
-  addTaskNote(id: string, note: string): void;
+  addTaskNote(id: string, note: string, author?: string): void;
   updateTask(id: string, data: { description?: string }, updatedBy?: string): { id: string; title: string; status: string };
-  submitForReview(taskId: string, deliverables: TaskDeliverable[]): Promise<{ id: string; status: string }> | { id: string; status: string };
+  listSubtasks(parentId: string): Array<{ id: string; title: string; status: string; priority: string; assignedAgentId?: string }>;
+  submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerAgentId?: string): Promise<{ id: string; status: string }> | { id: string; status: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
@@ -700,14 +701,17 @@ export class AgentManager {
         assignTask: async (taskId, agentId) => {
           return ts.assignTask(taskId, agentId);
         },
-        addTaskNote: async (taskId, note) => {
-          ts.addTaskNote(taskId, note);
+        addTaskNote: async (taskId, note, author) => {
+          ts.addTaskNote(taskId, note, author);
         },
         updateTaskFields: async (taskId, fields) => {
           const task = ts.updateTask(taskId, fields, id);
           return { id: task.id, title: task.title, status: task.status };
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables) => {
+        listSubtasks: async (parentId) => {
+          return ts.listSubtasks(parentId).map(s => ({ id: s.id, title: s.title, status: s.status, priority: s.priority, assignedAgentId: s.assignedAgentId }));
+        },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables, reviewerAgentId) => {
           const deliverables: TaskDeliverable[] = [{
             type: 'branch',
             reference: branchName ?? `task/${taskId}`,
@@ -728,7 +732,7 @@ export class AgentManager {
               }
             }
           }
-          return ts.submitForReview(taskId, deliverables);
+          return ts.submitForReview(taskId, deliverables, reviewerAgentId);
         },
         proposeRequirement: this.requirementService
           ? async params => {
@@ -1190,14 +1194,17 @@ export class AgentManager {
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
-        addTaskNote: async (taskId, note) => {
-          ts.addTaskNote(taskId, note);
+        addTaskNote: async (taskId, note, author) => {
+          ts.addTaskNote(taskId, note, author);
         },
         updateTaskFields: async (taskId, fields) => {
           const task = ts.updateTask(taskId, fields, id);
           return { id: task.id, title: task.title, status: task.status };
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables) => {
+        listSubtasks: async (parentId) => {
+          return ts.listSubtasks(parentId).map(s => ({ id: s.id, title: s.title, status: s.status, priority: s.priority, assignedAgentId: s.assignedAgentId }));
+        },
+        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables, reviewerAgentId) => {
           const deliverables: TaskDeliverable[] = [{
             type: 'branch',
             reference: branchName ?? `task/${taskId}`,
@@ -1218,7 +1225,7 @@ export class AgentManager {
               }
             }
           }
-          return ts.submitForReview(taskId, deliverables);
+          return ts.submitForReview(taskId, deliverables, reviewerAgentId);
         },
         proposeRequirement: this.requirementService
           ? async params => {

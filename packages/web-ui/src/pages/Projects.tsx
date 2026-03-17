@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { ExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { navBus } from '../navBus.ts';
@@ -194,7 +194,7 @@ function convertLogs(logs: TaskLogEntry[]): ExecEntry[] {
   );
 }
 
-function CommentBubble({ comment }: { comment: TaskComment }) {
+const MemoCommentBubble = memo(function CommentBubble({ comment }: { comment: TaskComment }) {
   return (
     <div className="bg-blue-950/30 border border-blue-800/30 rounded-lg px-3 py-2.5 my-1.5">
       <div className="flex items-center gap-2 mb-1">
@@ -212,7 +212,146 @@ function CommentBubble({ comment }: { comment: TaskComment }) {
       ))}
     </div>
   );
+});
+
+// ─── Run-based types ────────────────────────────────────────────────────────
+
+type TimelineItem =
+  | { kind: 'log'; entry: ExecEntry; time: number }
+  | { kind: 'comment'; entry: TaskComment; time: number };
+
+interface RunGroup {
+  runNumber: number;
+  startTime: string;
+  endTime?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  items: TimelineItem[];
+  preComments: TimelineItem[]; // comments between previous run end and this run start
 }
+
+function groupTimelineIntoRuns(timeline: TimelineItem[]): RunGroup[] {
+  const runs: RunGroup[] = [];
+  let currentRun: RunGroup | null = null;
+  let pendingComments: TimelineItem[] = [];
+
+  for (const item of timeline) {
+    if (item.kind === 'log' && item.entry.type === 'status' && item.entry.content === 'started') {
+      currentRun = {
+        runNumber: runs.length + 1,
+        startTime: item.entry.timestamp ?? item.entry.time ?? '',
+        status: 'running',
+        items: [],
+        preComments: [...pendingComments],
+      };
+      pendingComments = [];
+      runs.push(currentRun);
+      continue;
+    }
+    if (item.kind === 'log' && item.entry.type === 'status' && ['completed', 'failed', 'cancelled'].includes(item.entry.content)) {
+      if (currentRun) {
+        currentRun.status = item.entry.content as RunGroup['status'];
+        currentRun.endTime = item.entry.timestamp ?? item.entry.time;
+        currentRun = null;
+      }
+      continue;
+    }
+    if (currentRun) {
+      currentRun.items.push(item);
+    } else if (item.kind === 'comment') {
+      pendingComments.push(item);
+    }
+  }
+  if (currentRun && currentRun.status === 'running') {
+    // Check if the task is still actually running vs interrupted
+    const hasRecentActivity = currentRun.items.length > 0;
+    if (!hasRecentActivity) currentRun.status = 'interrupted';
+  }
+  // Attach any trailing comments to the last run
+  if (pendingComments.length > 0 && runs.length > 0) {
+    runs[runs.length - 1]!.items.push(...pendingComments);
+  }
+  return runs;
+}
+
+function formatDurationShort(startTime: string, endTime?: string): string {
+  if (!endTime) return '';
+  const ms = new Date(endTime).getTime() - new Date(startTime).getTime();
+  if (ms < 1000) return '<1s';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
+  running: { label: 'Running', color: 'text-blue-400', bg: 'bg-blue-500/15' },
+  completed: { label: 'Completed', color: 'text-green-400', bg: 'bg-green-500/15' },
+  failed: { label: 'Failed', color: 'text-red-400', bg: 'bg-red-500/15' },
+  cancelled: { label: 'Cancelled', color: 'text-gray-400', bg: 'bg-gray-500/15' },
+  interrupted: { label: 'Interrupted', color: 'text-amber-400', bg: 'bg-amber-500/15' },
+};
+
+const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, streamingText, isExecuting }: {
+  run: RunGroup;
+  expanded: boolean;
+  onToggle: () => void;
+  isLive: boolean;
+  streamingText?: string;
+  isExecuting?: boolean;
+}) {
+  const sc = statusConfig[run.status] ?? statusConfig.running!;
+  const duration = formatDurationShort(run.startTime, run.endTime);
+  const startDate = (() => {
+    try { return new Date(run.startTime).toLocaleString(); } catch { return run.startTime; }
+  })();
+  const toolCount = run.items.filter(i => i.kind === 'log' && i.entry.type === 'tool').length;
+  const errorCount = run.items.filter(i => i.kind === 'log' && i.entry.type === 'error').length;
+
+  return (
+    <div className="border-b border-gray-800/60 last:border-b-0">
+      {/* Pre-comments (between runs) */}
+      {run.preComments.length > 0 && (
+        <div className="px-4 py-2">
+          {run.preComments.map((item, i) =>
+            item.kind === 'comment' ? <MemoCommentBubble key={`pc-${item.entry.id}`} comment={item.entry} /> : null
+          )}
+        </div>
+      )}
+      {/* Run header */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-gray-800/40 transition-colors text-left"
+      >
+        <svg className={`w-3 h-3 text-gray-500 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 12 12" fill="currentColor">
+          <path d="M4 2l5 4-5 4V2z" />
+        </svg>
+        <span className="text-xs font-medium text-gray-300">Run #{run.runNumber}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded ${sc.bg} ${sc.color}`}>{sc.label}</span>
+        {run.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
+        <span className="text-[10px] text-gray-600 ml-auto flex items-center gap-2">
+          {toolCount > 0 && <span>{toolCount} tool calls</span>}
+          {errorCount > 0 && <span className="text-red-400">{errorCount} errors</span>}
+          {duration && <span>{duration}</span>}
+          <span>{startDate}</span>
+        </span>
+      </button>
+      {/* Run body (lazy rendered) */}
+      {expanded && (
+        <div className="px-4 pb-3 space-y-0.5">
+          {run.items.map((item, i) =>
+            item.kind === 'comment'
+              ? <MemoCommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
+              : <MemoExecEntryRow key={`l-${(item.entry.type === 'tool' ? item.entry.key : undefined) ?? item.entry.timestamp ?? i}`} entry={item.entry} showTime />
+          )}
+          {isLive && streamingText && <StreamingText content={streamingText} />}
+          {isLive && isExecuting && !streamingText && <ThinkingDots label="Thinking" />}
+        </div>
+      )}
+    </div>
+  );
+});
 
 function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId: string; isVisible: boolean; isRunning: boolean; authUser?: { id: string; name: string } }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
@@ -223,8 +362,11 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
-  const endRef = useRef<HTMLDivElement>(null);
+  const [expandedRuns, setExpandedRuns] = useState<Set<number>>(new Set());
+  const [runsPage, setRunsPage] = useState(1);
+  const RUNS_PAGE_SIZE = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 
@@ -275,9 +417,44 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
 
+  const timeline = useMemo(() => {
+    const execEntries = convertLogs(logs);
+    const items: TimelineItem[] = [
+      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.timestamp ?? entry.time ?? 0).getTime() })),
+      ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
+    ];
+    items.sort((a, b) => a.time - b.time);
+    return items;
+  }, [logs, comments]);
+
+  const runs = useMemo(() => groupTimelineIntoRuns(timeline), [timeline]);
+
+  // Auto-expand the latest run; keep manually toggled runs in sync
   useEffect(() => {
-    if (isVisible) endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs, comments, streamingText, isVisible]);
+    if (runs.length > 0) {
+      setExpandedRuns(prev => {
+        const lastRunNum = runs[runs.length - 1]!.runNumber;
+        if (prev.has(lastRunNum)) return prev;
+        return new Set([lastRunNum]);
+      });
+    }
+  }, [runs.length]); // only re-run when run count changes
+
+  // Scroll to bottom when new content arrives for the expanded live run
+  useEffect(() => {
+    if (isVisible && isExecuting) {
+      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, streamingText, isVisible, isExecuting]);
+
+  const toggleRun = useCallback((runNumber: number) => {
+    setExpandedRuns(prev => {
+      const next = new Set(prev);
+      if (next.has(runNumber)) next.delete(runNumber);
+      else next.add(runNumber);
+      return next;
+    });
+  }, []);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -307,23 +484,34 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     setSubmitting(false);
   };
 
-  // Merge logs and comments into a unified timeline
-  type TimelineItem =
-    | { kind: 'log'; entry: ExecEntry; time: number }
-    | { kind: 'comment'; entry: TaskComment; time: number };
-
-  const timeline = useMemo(() => {
-    const execEntries = convertLogs(logs);
-    const items: TimelineItem[] = [
-      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.timestamp ?? entry.time ?? 0).getTime() })),
-      ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
-    ];
-    items.sort((a, b) => a.time - b.time);
-    return items;
-  }, [logs, comments]);
+  const commentInput = (
+    <div className="border-t border-gray-800 px-4 py-3">
+      {imageAttachments.length > 0 && (
+        <div className="flex gap-2 mb-2 flex-wrap">
+          {imageAttachments.map((att, i) => (
+            <div key={i} className="relative group">
+              <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
+              <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
+                className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
+          placeholder="Add a comment or instruction…"
+          className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
+        <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
+        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
+        <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
+          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
+      </div>
+    </div>
+  );
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-600">Loading logs…</div>;
-  if (timeline.length === 0 && !streamingText) {
+  if (runs.length === 0 && !streamingText) {
     return (
       <div className="flex flex-col flex-1">
         <div className="flex-1 flex items-center justify-center">
@@ -332,70 +520,43 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
             <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
           </div>
         </div>
-        {/* Comment input always visible */}
-        <div className="border-t border-gray-800 px-4 py-3">
-          {imageAttachments.length > 0 && (
-            <div className="flex gap-2 mb-2 flex-wrap">
-              {imageAttachments.map((att, i) => (
-                <div key={i} className="relative group">
-                  <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
-                  <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="flex gap-2">
-            <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
-              placeholder="Add a comment or instruction…"
-              className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
-            <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-            <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
-            <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
-          </div>
-        </div>
+        {commentInput}
       </div>
     );
   }
 
+  // Paginate runs: show latest page first (reversed order, latest on page 1)
+  const reversedRuns = [...runs].reverse();
+  const totalRunPages = Math.ceil(reversedRuns.length / RUNS_PAGE_SIZE);
+  const pagedRuns = reversedRuns.slice((runsPage - 1) * RUNS_PAGE_SIZE, runsPage * RUNS_PAGE_SIZE).reverse();
+
   return (
-    <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-0.5">
-        {timeline.map((item, i) =>
-          item.kind === 'comment'
-            ? <CommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
-            : <ExecEntryRow key={`l-${i}`} entry={item.entry} showTime />
-        )}
-        {streamingText && <StreamingText content={streamingText} />}
-        {isExecuting && !streamingText && <ThinkingDots label="Thinking" />}
+    <div>
+      {totalRunPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+          <span className="text-[10px] text-gray-500">{runs.length} runs total</span>
+          <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+            <button disabled={runsPage >= totalRunPages} onClick={() => setRunsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">← Older</button>
+            <span>{runsPage}/{totalRunPages}</span>
+            <button disabled={runsPage <= 1} onClick={() => setRunsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">Newer →</button>
+          </div>
+        </div>
+      )}
+      <div className="py-1">
+        {pagedRuns.map(run => (
+          <RunSection
+            key={run.runNumber}
+            run={run}
+            expanded={expandedRuns.has(run.runNumber)}
+            onToggle={() => toggleRun(run.runNumber)}
+            isLive={run.runNumber === runs.length && isExecuting}
+            streamingText={run.runNumber === runs.length ? streamingText : undefined}
+            isExecuting={run.runNumber === runs.length ? isExecuting : false}
+          />
+        ))}
         <div ref={endRef} />
       </div>
-      {/* Comment input */}
-      <div className="border-t border-gray-800 px-4 py-3 shrink-0">
-        {imageAttachments.length > 0 && (
-          <div className="flex gap-2 mb-2 flex-wrap">
-            {imageAttachments.map((att, i) => (
-              <div key={i} className="relative group">
-                <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
-                <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
-                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="flex gap-2">
-          <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
-            placeholder="Add a comment or instruction…"
-            className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
-          <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-          <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
-          <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
-        </div>
-      </div>
+      {commentInput}
     </div>
   );
 }
@@ -471,7 +632,7 @@ function TaskDetailModal({
   const [pendingDelete, setPendingDelete] = useState<TaskInfo | null>(null);
   const [pendingDeleteParent, setPendingDeleteParent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'notes' | 'deliverables'>('details');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
@@ -479,7 +640,9 @@ function TaskDetailModal({
   const [descDraft, setDescDraft] = useState(task.description);
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
-
+  const [deliverablesPage, setDeliverablesPage] = useState(1);
+  const [notesPage, setNotesPage] = useState(1);
+  const PAGE_SIZE = 20;
   const loadSubtasks = useCallback(async () => {
     try { const d = await api.tasks.listSubtasks(task.id); setSubtasks(d.subtasks); } catch { /* ok */ }
   }, [task.id]);
@@ -719,17 +882,27 @@ function TaskDetailModal({
               Execution Log
               {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
             </button>
+            <button onClick={() => setActiveTab('notes')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'notes' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+              Notes
+              {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-500 font-normal">{task.notes.length}</span>}
+            </button>
+            <button onClick={() => setActiveTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+              Deliverables
+              {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-gray-500 font-normal">{c}</span> : null; })()}
+            </button>
           </div>
 
-          {/* Logs tab */}
-          <div className={activeTab !== 'logs' ? 'hidden' : ''}>
-            {runError && (
-              <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
-                <span className="font-medium">Failed to start:</span> {runError}
-              </div>
-            )}
-            <TaskExecutionLogs taskId={task.id} isVisible={activeTab === 'logs'} isRunning={task.status === 'in_progress'} authUser={authUser} />
-          </div>
+          {/* Logs tab — conditionally mounted to avoid unnecessary DOM / fetches */}
+          {activeTab === 'logs' && (
+            <div>
+              {runError && (
+                <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
+                  <span className="font-medium">Failed to start:</span> {runError}
+                </div>
+              )}
+              <TaskExecutionLogs taskId={task.id} isVisible isRunning={task.status === 'in_progress'} authUser={authUser} />
+            </div>
+          )}
 
           {activeTab === 'details' && (
             <>
@@ -852,6 +1025,7 @@ function TaskDetailModal({
                     <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
                   </div>
                 )}
+                {/* Deliverables preview — latest 3 */}
                 {(() => {
                   const validDeliverables = (task.deliverables ?? []).filter(
                     d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
@@ -862,11 +1036,17 @@ function TaskDetailModal({
                     document: 'bg-blue-500/15 text-blue-400',
                     report: 'bg-purple-500/15 text-purple-400',
                   };
+                  const latest3 = validDeliverables.slice(0, 3);
                   return (
                     <div className="mt-5">
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Deliverables</p>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Deliverables <span className="text-gray-600 font-normal">({validDeliverables.length})</span></p>
+                        {validDeliverables.length > 3 && (
+                          <button onClick={() => setActiveTab('deliverables')} className="text-[10px] text-indigo-400 hover:text-indigo-300">View all →</button>
+                        )}
+                      </div>
                       <div className="space-y-1.5">
-                        {validDeliverables.map((d, i) => {
+                        {latest3.map((d, i) => {
                           const fileName = d.reference.split('/').pop() ?? d.reference;
                           return (
                             <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group hover:bg-gray-800/80 transition-colors">
@@ -889,16 +1069,109 @@ function TaskDetailModal({
                     </div>
                   );
                 })()}
-                {task.notes && task.notes.length > 0 && (
-                  <div className="mt-5">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Progress Notes</p>
-                    <div className="space-y-1.5">
-                      {task.notes.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                {/* Notes preview — latest 3 */}
+                {task.notes && task.notes.length > 0 && (() => {
+                  const latest3 = [...task.notes].reverse().slice(0, 3);
+                  return (
+                    <div className="mt-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress Notes <span className="text-gray-600 font-normal">({task.notes.length})</span></p>
+                        {task.notes.length > 3 && (
+                          <button onClick={() => setActiveTab('notes')} className="text-[10px] text-indigo-400 hover:text-indigo-300">View all →</button>
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        {latest3.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </>
+          )}
+
+          {/* Notes tab — full paginated list */}
+          {activeTab === 'notes' && (
+            <div className="px-6 py-4">
+              {task.notes && task.notes.length > 0 ? (() => {
+                const reversed = [...task.notes].reverse();
+                const totalPages = Math.ceil(reversed.length / PAGE_SIZE);
+                const paged = reversed.slice((notesPage - 1) * PAGE_SIZE, notesPage * PAGE_SIZE);
+                return (
+                  <>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress Notes <span className="text-gray-600 font-normal">({task.notes.length})</span></p>
+                      {totalPages > 1 && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                          <button disabled={notesPage <= 1} onClick={() => setNotesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">‹</button>
+                          <span>{notesPage}/{totalPages}</span>
+                          <button disabled={notesPage >= totalPages} onClick={() => setNotesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">›</button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      {paged.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                    </div>
+                  </>
+                );
+              })() : (
+                <div className="flex items-center justify-center py-12 text-xs text-gray-600">No progress notes yet.</div>
+              )}
+            </div>
+          )}
+
+          {/* Deliverables tab — full paginated list */}
+          {activeTab === 'deliverables' && (
+            <div className="px-6 py-4">
+              {(() => {
+                const validDeliverables = (task.deliverables ?? []).filter(
+                  d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
+                );
+                if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-gray-600">No deliverables yet.</div>;
+                const typeColors: Record<string, string> = {
+                  file: 'bg-cyan-500/15 text-cyan-400',
+                  document: 'bg-blue-500/15 text-blue-400',
+                  report: 'bg-purple-500/15 text-purple-400',
+                };
+                const totalPages = Math.ceil(validDeliverables.length / PAGE_SIZE);
+                const paged = validDeliverables.slice((deliverablesPage - 1) * PAGE_SIZE, deliverablesPage * PAGE_SIZE);
+                return (
+                  <>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Deliverables <span className="text-gray-600 font-normal">({validDeliverables.length})</span></p>
+                      {totalPages > 1 && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                          <button disabled={deliverablesPage <= 1} onClick={() => setDeliverablesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">‹</button>
+                          <span>{deliverablesPage}/{totalPages}</span>
+                          <button disabled={deliverablesPage >= totalPages} onClick={() => setDeliverablesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">›</button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      {paged.map((d, i) => {
+                        const fileName = d.reference.split('/').pop() ?? d.reference;
+                        return (
+                          <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group hover:bg-gray-800/80 transition-colors">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
+                            <div className="flex-1 min-w-0">
+                              <button
+                                onClick={() => setPreviewFile(d.reference)}
+                                className="text-sm text-indigo-400 hover:text-indigo-300 font-medium truncate block max-w-full text-left hover:underline"
+                                title={d.reference}
+                              >
+                                {fileName}
+                              </button>
+                              {d.summary && <p className="text-[11px] text-gray-400 mt-0.5 line-clamp-2">{d.summary}</p>}
+                              <p className="text-[10px] text-gray-600 font-mono truncate mt-0.5">{d.reference}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
           )}
         </div>
 
@@ -1352,7 +1625,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-gray-400">TASK</span>
         )}
       </div>
-      <div className="flex-1 min-w-0 text-sm text-gray-200 truncate">{row.data.title}</div>
+      <div className="flex-1 min-w-[200px] text-sm text-gray-200 truncate">{row.data.title}</div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <select
           value={status}
@@ -1366,20 +1639,16 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         </select>
       </div>
       <div className="w-[100px] shrink-0" onClick={e => e.stopPropagation()}>
-        {row.kind === 'task' ? (
-          <select
-            value={priority}
-            onChange={e => void handlePriorityChange(row, e.target.value)}
-            className="w-full px-1.5 py-1 bg-gray-800/80 border border-gray-700/50 rounded text-[11px] text-gray-300 outline-none focus:border-indigo-500 cursor-pointer"
-          >
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="urgent">Urgent</option>
-          </select>
-        ) : (
-          <span className="text-[11px] text-gray-500 capitalize">{priority}</span>
-        )}
+        <select
+          value={priority}
+          onChange={e => void handlePriorityChange(row, e.target.value)}
+          className="w-full px-1.5 py-1 bg-gray-800/80 border border-gray-700/50 rounded text-[11px] text-gray-300 outline-none focus:border-indigo-500 cursor-pointer"
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select>
       </div>
       <div className="w-[120px] shrink-0 text-[11px] text-gray-400 truncate">
         {assignee ? (
@@ -1459,6 +1728,8 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     try {
       if (row.kind === 'task') {
         await api.tasks.update(row.data.id, { priority: newPriority });
+      } else {
+        await api.requirements.update(row.data.id, { priority: newPriority });
       }
       onRefresh();
     } catch { /* */ }
@@ -1532,11 +1803,12 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows, sortMode]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto flex flex-col">
+    <div className="flex-1 min-h-0 overflow-auto">
+      <div className="min-w-[850px] h-full flex flex-col">
       {/* Table header with integrated sort */}
       <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-800 text-[10px] font-semibold text-gray-600 uppercase tracking-wider shrink-0 bg-gray-900/80">
         <div className="w-12 shrink-0 text-gray-700 normal-case font-normal">{rows.length}</div>
-        <div className="flex-1 min-w-0">Title</div>
+        <div className="flex-1 min-w-[200px]">Title</div>
         <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-indigo-400' : 'hover:text-gray-400'}`}>
           Status {sortMode === 'status' && <span className="text-[8px]">▼</span>}
         </button>
@@ -1579,6 +1851,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
         {rows.length === 0 && (
           <div className="flex items-center justify-center py-16 text-sm text-gray-600">No items</div>
         )}
+      </div>
       </div>
     </div>
   );
@@ -1685,17 +1958,21 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   }, [refreshProjects, refreshBoard, refreshAgents, refreshRequirements]);
 
   useEffect(() => { refresh(); }, [refresh]);
-  useEffect(() => { refreshBoard(); }, [refreshBoard]);
 
   useEffect(() => {
     if (selectedProjectId) loadIterations(selectedProjectId);
     else setIterations([]);
   }, [selectedProjectId, loadIterations]);
 
+  const selectedTaskRef = useRef(selectedTask);
+  selectedTaskRef.current = selectedTask;
+
   useEffect(() => {
-    const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, 15000);
+    // Reduce polling frequency when modal is open (60s vs 15s)
+    const pollMs = selectedTask ? 60000 : 15000;
+    const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
     const unsub = wsClient.on('task:update', (event) => {
-      refreshBoard(); refreshRequirements();
+      if (!selectedTaskRef.current) { refreshBoard(); refreshRequirements(); }
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
         setSelectedTask(prev => {
@@ -1710,7 +1987,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       }
     });
     return () => { clearInterval(i); unsub(); };
-  }, [refreshBoard, refreshAgents, refreshRequirements]);
+  }, [refreshBoard, refreshAgents, refreshRequirements, selectedTask]);
 
   // Board ref for event handlers that need current board without re-registering
   const boardRef = useRef(board);
@@ -1968,8 +2245,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const isArchived = (t: TaskInfo) =>
     t.status === 'completed' && t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
-  const filterTasks = (tasks: TaskInfo[]) => {
-    let result = tasks.filter(t => !t.parentTaskId && (showArchived || !isArchived(t)));
+  const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
+    let result = tasks.filter(t => !t.parentTaskId && (showArchived || includeArchived || !isArchived(t)));
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
@@ -2041,21 +2318,17 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     });
   }, [projects, board]);
 
-  // Count tasks per project (from full unfiltered board for sidebar)
-  const [allTaskCounts, setAllTaskCounts] = useState<Record<string, number>>({});
-  useEffect(() => {
-    api.tasks.board().then(({ board: fullBoard }) => {
-      const counts: Record<string, number> = {};
-      for (const tasks of Object.values(fullBoard)) {
-        for (const t of tasks as TaskInfo[]) {
-          if (t.parentTaskId) continue;
-          const key = t.projectId ?? '__none__';
-          counts[key] = (counts[key] ?? 0) + 1;
-        }
+  // Count tasks per project — computed locally from existing board data
+  const allTaskCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const tasks of Object.values(board)) {
+      for (const t of tasks) {
+        if (t.parentTaskId) continue;
+        const key = t.projectId ?? '__none__';
+        counts[key] = (counts[key] ?? 0) + 1;
       }
-      setAllTaskCounts(counts);
-    }).catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    }
+    return counts;
   }, [board]);
 
   const totalTaskCount = Object.values(allTaskCounts).reduce((a, b) => a + b, 0);
@@ -2229,9 +2502,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           />
         ) : boardType === 'dag' ? (
           <TaskDAG
-            tasks={Object.values(board).flat()}
+            tasks={filterTasks(Object.values(board).flat(), true)}
+            requirements={filteredReqs}
             agents={agents}
             onTaskClick={(task) => setSelectedTask(task)}
+            onReqClick={(req) => setSelectedReq(req)}
             onDependencyChange={refreshBoard}
           />
         ) : (

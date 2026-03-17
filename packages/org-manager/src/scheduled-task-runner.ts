@@ -77,7 +77,8 @@ export class ScheduledTaskRunner {
 
     await this.taskService.advanceScheduleConfig(task.id);
 
-    if (['completed', 'cancelled', 'failed', 'accepted'].includes(task.status)) {
+    // Reset from terminal states that require cleanup (pending is already ready)
+    if (['completed', 'cancelled', 'failed'].includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
     }
 

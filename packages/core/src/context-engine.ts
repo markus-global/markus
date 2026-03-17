@@ -329,7 +329,10 @@ export class ContextEngine {
 
     parts.push('');
     parts.push(
-      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` → `task_update(in_progress)` → `task_submit_review` (never `task_update(completed)` yourself). After submitting, notify the reviewer and PM via `agent_send_message`, then call `agent_broadcast_status`. Reviewer flow: `task_update(accepted)` or `task_update(revision)` → `task_update(completed)` when fully resolved. Check `task_list` before creating duplicates.'
+      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` → `task_update(in_progress)` → decompose with `subtask_create` → work through subtasks → `task_submit_review` with `reviewer_id` (never `task_update(completed)` yourself). Choose the right reviewer: if the task was delegated to you, the delegator is the reviewer; if you created it yourself, use your team manager. The system notifies the reviewer automatically — do NOT call `agent_broadcast_status`. Reviewer flow: `task_update(accepted)` or `task_update(revision)`. Standard tasks auto-complete after acceptance. Scheduled tasks return to pending after acceptance, awaiting the next scheduled run. Check `task_list` before creating duplicates.'
+    );
+    parts.push(
+      '**Subtask Rule:** For any complex task, decompose it into subtasks using `subtask_create` BEFORE starting work. Mark each done with `subtask_complete` as you progress. Use `subtask_list` to check progress. Only submit the parent task for review when all subtasks are complete.'
     );
     parts.push(
       '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'
@@ -394,10 +397,17 @@ export class ContextEngine {
     const scenario = opts.scenario ?? 'chat';
     parts.push(this.buildScenarioSection(scenario));
 
-    // --- KV-Cache optimization: timestamp at end, date-only precision ---
-    // Placing time at the end of the system prompt preserves cache for the
+    // Timestamp at the end of the system prompt preserves KV-cache for the
     // stable prefix (identity, role, policies, memory) which rarely changes.
-    parts.push(`\n---\nCurrent date: ${new Date().toISOString().split('T')[0]}`);
+    const now = new Date();
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const offset = now.getTimezoneOffset();
+    const sign = offset <= 0 ? '+' : '-';
+    const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+    const absM = String(Math.abs(offset) % 60).padStart(2, '0');
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    parts.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
 
     return parts.join('\n');
   }

@@ -7,7 +7,7 @@
  * - Agent profile task logs
  * - Team busy-agent modal
  */
-import { useState, useRef, useEffect, useCallback, type RefObject } from 'react';
+import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { TaskLogEntry, AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
@@ -482,6 +482,8 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 }
 
 // ─── ExecEntryRow — renders a single execution entry ──────────────────────────
+
+export const MemoExecEntryRow = memo(ExecEntryRow);
 
 export function ExecEntryRow({ entry, showTime, isLast }: {
   entry: ExecEntry;

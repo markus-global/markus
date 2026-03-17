@@ -9,7 +9,7 @@ import { TeamsStore } from './pages/TeamsStore.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
 import { GovernancePage } from './pages/Governance.tsx';
 import { ProjectsPage } from './pages/Projects.tsx';
-import { KnowledgePage } from './pages/Knowledge.tsx';
+import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
@@ -19,7 +19,7 @@ import { api, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 
-const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'knowledge', 'reports'];
+const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'deliverables', 'reports'];
 
 function getPageFromHash(): PageId {
   const hash = window.location.hash.slice(1).split('/')[0];
@@ -28,6 +28,7 @@ function getPageFromHash(): PageId {
   if (hash === 'usage') return 'reports';
   if (hash === 'prompts') return 'builder';
   if (hash === 'templates') return 'agents';
+  if (hash === 'knowledge') return 'deliverables';
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
@@ -84,7 +85,7 @@ export function App() {
     builder: <AgentBuilder />,
     governance: <GovernancePage />,
     projects: <ProjectsPage authUser={currentUser} />,
-    knowledge: <KnowledgePage />,
+    deliverables: <DeliverablesPage />,
     reports: <ReportsPage />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [currentUser?.id]);

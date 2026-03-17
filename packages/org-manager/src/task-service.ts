@@ -25,6 +25,18 @@ import { homedir } from 'node:os';
 
 const log = createLogger('task-service');
 
+/** Format a Date as local time with timezone, e.g. "2026-03-17 22:45:59 (Asia/Shanghai, UTC+08:00)" */
+function formatLocalTimestamp(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const offset = d.getTimezoneOffset();
+  const sign = offset <= 0 ? '+' : '-';
+  const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+  const absM = String(Math.abs(offset) % 60).padStart(2, '0');
+  return `${dateStr} (${tz}, UTC${sign}${absH}:${absM})`;
+}
+
 export interface CreateTaskRequest {
   orgId: string;
   title: string;
@@ -240,14 +252,13 @@ export class TaskService {
   }
 
   /**
-   * Format previous execution logs AND human comments into a chronological
-   * context block so the agent can resume from where it left off.
-   * Comments and logs are interleaved by timestamp for a conversation-like view.
+   * Format previous execution context for the agent prompt.
+   * Optimized: includes only task notes + last run details + error summary
+   * from all runs, instead of dumping the entire execution history.
    */
-  private formatPreviousExecutionContext(logs: TaskLogRow[], comments: TaskCommentRow[] = []): string {
+  private formatPreviousExecutionContext(logs: TaskLogRow[], comments: TaskCommentRow[] = [], task?: Task): string {
     if (logs.length === 0 && comments.length === 0) return '';
 
-    // Merge logs and comments into a unified timeline sorted by createdAt
     type TimelineEntry =
       | { kind: 'log'; entry: TaskLogRow }
       | { kind: 'comment'; entry: TaskCommentRow };
@@ -262,54 +273,127 @@ export class TaskService {
       return ta - tb;
     });
 
-    const lines: string[] = [];
-    lines.push('## Previous Execution History');
-    lines.push(
-      'This task was previously worked on and paused/interrupted. Below is a chronological record of execution and human comments.'
-    );
-    lines.push(
-      '**CRITICAL: Continue from where the work stopped. Do NOT repeat steps already completed (✓). Do NOT re-read files that were already read. Pay close attention to human comments — they may contain new instructions or feedback.**'
-    );
-    lines.push('');
-
+    // First pass: identify run boundaries + collect errors/files from ALL runs
+    const runStarts: number[] = []; // timeline indices where each run starts
     let runIndex = 0;
     let inRun = false;
     const filesRead = new Set<string>();
     const filesWritten = new Set<string>();
     const collectedErrors: Array<{ run: number; content: string }> = [];
 
-    for (const item of timeline) {
-      if (item.kind === 'comment') {
-        const c = item.entry as TaskCommentRow;
-        const time = c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt);
-        lines.push(`### 💬 Comment by ${c.authorName} (${time})`);
-        lines.push(c.content);
-        const attachments = (Array.isArray(c.attachments) ? c.attachments : []) as Array<{ type?: string; name?: string; url?: string }>;
-        for (const att of attachments) {
-          if (att.type === 'image') {
-            lines.push(`[Image: ${att.name ?? 'attachment'}]`);
-          }
-        }
-        lines.push('');
-        continue;
-      }
-
-      // kind === 'log'
+    for (let i = 0; i < timeline.length; i++) {
+      const item = timeline[i]!;
+      if (item.kind !== 'log') continue;
       const entry = item.entry as TaskLogRow;
 
       if (entry.type === 'status' && entry.content === 'started') {
         runIndex++;
-        lines.push(`### Run ${runIndex}`);
+        runStarts.push(i);
         inRun = true;
+        continue;
+      }
+      if (entry.type === 'status') {
+        inRun = false;
+        continue;
+      }
+      if (!inRun) continue;
+
+      if (entry.type === 'tool_start') {
+        const meta = entry.metadata as Record<string, unknown> | null;
+        const args = meta?.arguments as Record<string, unknown> | undefined;
+        if (args) {
+          const path = (args['path'] ?? args['file'] ?? args['filePath'] ?? args['filename']) as string | undefined;
+          if (path) {
+            if (entry.content === 'file_read' || entry.content === 'read_file') filesRead.add(path);
+            else if (entry.content === 'file_write' || entry.content === 'write_file') filesWritten.add(path);
+          }
+        }
+      } else if (entry.type === 'error') {
+        collectedErrors.push({ run: runIndex, content: entry.content });
+      }
+    }
+
+    const totalRuns = runIndex;
+
+    // Determine the start of the last run in the timeline
+    const lastRunStart = runStarts.length > 0 ? runStarts[runStarts.length - 1]! : 0;
+
+    const lines: string[] = [];
+    lines.push('## Previous Execution Context');
+
+    if (totalRuns > 1) {
+      lines.push(`This task has been executed ${totalRuns} times. Below are the task notes (cumulative knowledge) and the most recent run details.`);
+    } else {
+      lines.push('This task was previously worked on. Below is the execution context.');
+    }
+    lines.push('**CRITICAL: Pay close attention to task notes and human comments — they contain instructions, feedback, and accumulated knowledge.**');
+    lines.push('');
+
+    // Task notes (curated summaries from each completed run) — keep last 20
+    if (task?.notes?.length) {
+      const recentNotes = task.notes.slice(-20);
+      lines.push('### Task Notes (accumulated knowledge)');
+      if (task.notes.length > 20) {
+        lines.push(`_(showing most recent 20 of ${task.notes.length} notes)_`);
+      }
+      for (const note of recentNotes) {
+        lines.push(`- ${note.slice(0, 800)}`);
+      }
+      lines.push('');
+    }
+
+    // Recent comments (since the last completed run, or all if only 1 run)
+    const lastCompletedRunEnd = (() => {
+      for (let i = timeline.length - 1; i >= 0; i--) {
+        const item = timeline[i]!;
+        if (item.kind === 'log') {
+          const entry = item.entry as TaskLogRow;
+          if (entry.type === 'status' && ['completed', 'failed', 'cancelled'].includes(entry.content)) {
+            return i;
+          }
+        }
+      }
+      return 0;
+    })();
+
+    const recentComments = timeline.filter((item, idx) => {
+      if (item.kind !== 'comment') return false;
+      return totalRuns <= 1 || idx >= lastCompletedRunEnd;
+    });
+    if (recentComments.length > 0) {
+      lines.push('### Recent Comments');
+      for (const item of recentComments) {
+        const c = item.entry as TaskCommentRow;
+        const time = c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt);
+        lines.push(`**${c.authorName}** (${time}): ${c.content}`);
+        const attachments = (Array.isArray(c.attachments) ? c.attachments : []) as Array<{ type?: string; name?: string; url?: string }>;
+        for (const att of attachments) {
+          if (att.type === 'image') lines.push(`[Image: ${att.name ?? 'attachment'}]`);
+        }
+      }
+      lines.push('');
+    }
+
+    // Last run details only
+    lines.push(`### Last Run (#${totalRuns}) Details`);
+    let lastRunActive = false;
+    for (let i = lastRunStart; i < timeline.length; i++) {
+      const item = timeline[i]!;
+
+      if (item.kind === 'comment') continue; // already handled above
+
+      const entry = item.entry as TaskLogRow;
+      if (entry.type === 'status' && entry.content === 'started') {
+        lastRunActive = true;
         continue;
       }
       if (entry.type === 'status') {
         lines.push(`[${entry.content}]`);
         lines.push('');
-        inRun = false;
+        lastRunActive = false;
         continue;
       }
-      if (!inRun) continue;
+      if (!lastRunActive) continue;
 
       if (entry.type === 'text') {
         const text = entry.content.length > 800 ? entry.content.slice(0, 800) + '…' : entry.content;
@@ -320,17 +404,6 @@ export class TaskService {
         const args = meta?.arguments as Record<string, unknown> | undefined;
         const argStr = args ? ` (${JSON.stringify(args).slice(0, 200)})` : '';
         lines.push(`→ Calling: ${entry.content}${argStr}`);
-
-        if (args) {
-          const path = (args['path'] ?? args['file'] ?? args['filePath'] ?? args['filename']) as string | undefined;
-          if (path) {
-            if (entry.content === 'file_read' || entry.content === 'read_file') {
-              filesRead.add(path);
-            } else if (entry.content === 'file_write' || entry.content === 'write_file') {
-              filesWritten.add(path);
-            }
-          }
-        }
       } else if (entry.type === 'tool_end') {
         const meta = entry.metadata as Record<string, unknown> | null;
         const ok = meta?.success !== false;
@@ -339,17 +412,17 @@ export class TaskService {
       } else if (entry.type === 'error') {
         lines.push(`[ERROR] ${entry.content}`);
         lines.push('');
-        collectedErrors.push({ run: runIndex, content: entry.content });
       }
     }
 
-    if (inRun) {
+    if (lastRunActive) {
       lines.push('[interrupted — work was not completed]');
       lines.push('');
     }
 
+    // Cumulative file access summary from ALL runs
     if (filesRead.size > 0 || filesWritten.size > 0) {
-      lines.push('### Files Already Accessed');
+      lines.push('### Files Already Accessed (all runs)');
       if (filesRead.size > 0) {
         lines.push('**Files already read (do NOT re-read these):**');
         for (const f of filesRead) lines.push(`- ${f}`);
@@ -362,7 +435,7 @@ export class TaskService {
       }
     }
 
-    // Build explicit error analysis so the agent avoids repeating the same mistakes
+    // Error analysis from ALL runs
     if (collectedErrors.length > 0) {
       lines.push('### ⚠ Errors from Previous Attempts — MUST READ');
       lines.push(`The previous ${collectedErrors.length} attempt(s) failed with the following errors. You MUST use a different approach to avoid these exact failures.`);
@@ -371,13 +444,10 @@ export class TaskService {
         lines.push(`- **Run ${err.run}**: ${err.content}`);
       }
       lines.push('');
-      // Provide specific guidance based on error patterns
       const guidance = TaskService.analyzeErrorPatterns(collectedErrors.map(e => e.content));
       if (guidance.length > 0) {
         lines.push('**Specific guidance to avoid these errors:**');
-        for (const g of guidance) {
-          lines.push(`- ${g}`);
-        }
+        for (const g of guidance) lines.push(`- ${g}`);
         lines.push('');
       }
     }
@@ -431,7 +501,7 @@ export class TaskService {
         if (this.taskCommentRepo) {
           try { prevComments = await this.taskCommentRepo.getByTask(taskId); } catch { /* ignore */ }
         }
-        prevContext = this.formatPreviousExecutionContext(prevLogs, prevComments);
+        prevContext = this.formatPreviousExecutionContext(prevLogs, prevComments, task);
       } catch (err) {
         log.warn('Failed to load previous task logs for context', { taskId, error: String(err) });
       }
@@ -475,9 +545,21 @@ export class TaskService {
       }
     }
 
+    // Include task notes even when there's no previous execution context — keep last 20
+    let notesSection = '';
+    if (!prevContext && task.notes?.length) {
+      const recentNotes = task.notes.slice(-20);
+      const noteLines: string[] = ['## Task Notes'];
+      if (task.notes.length > 20) {
+        noteLines.push(`_(showing most recent 20 of ${task.notes.length} notes)_`);
+      }
+      noteLines.push(...recentNotes.map(n => `- ${n.slice(0, 800)}`), '', '---', '');
+      notesSection = noteLines.join('\n');
+    }
+
     const taskDescription = prevContext
       ? `${prevContext}${dependencyContext}${task.title}\n\n${task.description}`
-      : `${dependencyContext}${task.title}\n\n${task.description}`;
+      : `${notesSection}${dependencyContext}${task.title}\n\n${task.description}`;
 
     // Create git worktree for project-bound tasks
     let taskWorkspace: TaskWorkspace | undefined;
@@ -575,14 +657,16 @@ export class TaskService {
           if (entry.type === 'status') {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
-              const alreadyTerminal = currentTask && ['review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
-              if (!alreadyTerminal && currentTask) {
-                if (currentTask.taskType === 'scheduled') {
-                  this.updateTaskStatus(taskId, 'completed');
-                } else {
-                  this.updateTaskStatus(taskId, 'review');
-                  log.info('Task auto-transitioned to review after execution finished', { taskId, title: currentTask.title });
-                }
+              const meta = entry.metadata as Record<string, unknown> | undefined;
+              // If the agent already submitted for review, the task has already
+              // transitioned (or been reviewed/accepted). Do NOT auto-transition again —
+              // this prevents a race where a fast reviewer accepts before this event fires,
+              // causing the task to flip back to 'review' from 'pending' (scheduled) or 'completed'.
+              const submittedForReview = meta?.submittedForReview === true;
+              const alreadyTerminal = currentTask && ['review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived', 'pending'].includes(currentTask.status);
+              if (!submittedForReview && !alreadyTerminal && currentTask) {
+                this.updateTaskStatus(taskId, 'review');
+                log.info('Task auto-transitioned to review after execution finished', { taskId, title: currentTask.title, taskType: currentTask.taskType });
               }
               // Also broadcast agent status update
               const agentState = agent.getState();
@@ -1100,13 +1184,12 @@ export class TaskService {
       throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint to change its status.`);
     }
 
-    // Standard tasks must go through the review pipeline: in_progress → review → accepted → completed.
-    // Only scheduled tasks or transitions from accepted/review states are allowed to reach completed directly.
-    if (status === 'completed' && task.taskType !== 'scheduled') {
+    // All tasks must go through the review pipeline: in_progress → review → accepted → completed.
+    if (status === 'completed') {
       const allowedPrevStatuses = ['accepted', 'completed', 'review'];
       if (!allowedPrevStatuses.includes(task.status)) {
-        log.warn(`Blocked direct completion of standard task (must go through review)`, { taskId: id, currentStatus: task.status });
-        throw new Error(`Task ${id} cannot be completed directly from "${task.status}". Standard tasks must go through review → accepted → completed.`);
+        log.warn(`Blocked direct completion of task (must go through review)`, { taskId: id, currentStatus: task.status, taskType: task.taskType });
+        throw new Error(`Task ${id} cannot be completed directly from "${task.status}". Tasks must go through review → accepted → completed.`);
       }
     }
 
@@ -1195,21 +1278,38 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
 
-    // Auto-transition accepted → completed
+    // Auto-transition after acceptance
     if (status === 'accepted') {
-      setImmediate(() => {
-        try {
-          this.updateTaskStatus(id, 'completed');
-          log.info(`Task auto-completed after acceptance: ${task.title}`, { id });
-        } catch (err) {
-          log.warn('Failed to auto-complete accepted task', { taskId: id, error: String(err) });
-        }
-      });
-    }
-
-    // Notify creator when agent-created task enters review
-    if (status === 'review') {
-      this.notifyCreatorOnReview(task);
+      if (task.taskType === 'scheduled') {
+        // Scheduled tasks return to pending to await the next scheduled run
+        setImmediate(() => {
+          try {
+            task.status = 'pending';
+            task.result = undefined;
+            task.startedAt = undefined;
+            task.completedAt = undefined;
+            task.updatedAt = new Date().toISOString();
+            if (this.taskRepo) {
+              this.taskRepo.updateStatus(id, 'pending')
+                .catch(err => log.warn('Failed to persist pending status to DB', { taskId: id, error: String(err) }));
+            }
+            this.ws?.broadcastTaskUpdate(id, 'pending', { title: task.title });
+            log.info(`Scheduled task returned to pending after acceptance: ${task.title}`, { id });
+          } catch (err) {
+            log.warn('Failed to reset scheduled task to pending', { taskId: id, error: String(err) });
+          }
+        });
+      } else {
+        // Standard tasks auto-complete after acceptance
+        setImmediate(() => {
+          try {
+            this.updateTaskStatus(id, 'completed');
+            log.info(`Task auto-completed after acceptance: ${task.title}`, { id });
+          } catch (err) {
+            log.warn('Failed to auto-complete accepted task', { taskId: id, error: String(err) });
+          }
+        });
+      }
     }
 
     log.info(`Task status updated: ${task.title}`, { id, status });
@@ -1271,13 +1371,14 @@ export class TaskService {
     return task;
   }
 
-  addTaskNote(id: string, note: string): void {
+  addTaskNote(id: string, note: string, author?: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
-    const ts = new Date().toISOString();
+    const now = new Date();
     if (!task.notes) task.notes = [];
-    task.notes.push(`[${ts}] ${note}`);
-    task.updatedAt = ts;
+    const authorTag = author ? ` by ${author}` : '';
+    task.notes.push(`[${formatLocalTimestamp(now)}${authorTag}] ${note}`);
+    task.updatedAt = now.toISOString();
 
     if (this.taskRepo) {
       this.taskRepo
@@ -1285,7 +1386,7 @@ export class TaskService {
         .catch(err => log.warn('Failed to persist task note to DB', { error: String(err) }));
     }
 
-    log.info(`Task note added`, { taskId: id, note: note.slice(0, 80) });
+    log.info(`Task note added`, { taskId: id, author, note: note.slice(0, 80) });
   }
 
   listTasks(filters?: {
@@ -1759,7 +1860,7 @@ export class TaskService {
 
   // ─── Governance: Submit for Review ─────────────────────────────────────────
 
-  async submitForReview(taskId: string, deliverables: TaskDeliverable[]): Promise<Task> {
+  async submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerAgentId?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'in_progress' && task.status !== 'revision') {
@@ -1810,6 +1911,9 @@ export class TaskService {
     task.updatedAt = new Date().toISOString();
 
     task.status = 'review';
+    if (reviewerAgentId) {
+      task.reviewerAgentId = reviewerAgentId;
+    }
 
     // Persist status + deliverables to DB
     if (this.taskRepo) {
@@ -1893,7 +1997,7 @@ export class TaskService {
 
     if (reviewReport) {
       task.notes = task.notes ?? [];
-      task.notes.push(`[${task.updatedAt}] Automated review: ${reviewReport.overallStatus} — ${reviewReport.summary}`);
+      task.notes.push(`[${formatLocalTimestamp()} by System] Automated review: ${reviewReport.overallStatus} — ${reviewReport.summary}`);
     }
 
     this.auditService?.record({
@@ -1908,41 +2012,95 @@ export class TaskService {
       metadata: { deliverableCount: deliverables.length, reviewReportStatus: reviewReport?.overallStatus },
     });
 
-    // Notify the task creator if the task was created by an agent
-    this.notifyCreatorOnReview(task);
+    // Notify the specified reviewer
+    if (reviewerAgentId) {
+      this.notifyReviewer(task, reviewerAgentId);
+    }
 
-    log.info(`Task submitted for review: ${task.title}`, { id: task.id });
+    log.info(`Task submitted for review: ${task.title}`, { id: task.id, reviewerAgentId });
     return task;
   }
 
   /**
-   * When an agent-created task enters review status, send a message to
-   * the creator agent so they can evaluate the deliverables.
+   * Send a review notification to the specified reviewer agent with full task context.
    */
-  private notifyCreatorOnReview(task: Task): void {
-    if (!task.createdBy || !this.agentManager) return;
-    if (!this.agentManager.hasAgent(task.createdBy)) return;
-    // Don't notify if the creator is also the assignee (they already know)
-    if (task.createdBy === task.assignedAgentId) return;
+  private notifyReviewer(task: Task, reviewerAgentId: string): void {
+    if (!this.agentManager || !this.agentManager.hasAgent(reviewerAgentId)) {
+      log.warn('Reviewer agent not found, cannot notify', { taskId: task.id, reviewerAgentId });
+      return;
+    }
+    if (reviewerAgentId === task.assignedAgentId) {
+      log.warn('Reviewer is the same as assignee, skipping notification', { taskId: task.id, reviewerAgentId });
+      return;
+    }
 
     try {
-      const creatorAgent = this.agentManager.getAgent(task.createdBy);
       const assigneeName = task.assignedAgentId
         ? (this.agentManager.hasAgent(task.assignedAgentId)
           ? this.agentManager.getAgent(task.assignedAgentId).config.name
           : task.assignedAgentId)
         : 'unknown';
-      const message = `Task "${task.title}" (ID: ${task.id}) that you created has been submitted for review by ${assigneeName}. Please review the deliverables and either accept (task_update with status "accepted") or request revisions (task_update with status "revision").`;
-      creatorAgent.handleMessage(
-        message,
+
+      // Build rich context for the reviewer
+      const parts: string[] = [];
+      parts.push(`[REVIEW REQUEST — ACTION REQUIRED] Task "${task.title}" (ID: ${task.id}) has been submitted for your review by ${assigneeName}.`);
+      parts.push('');
+      parts.push(`**Description:** ${task.description}`);
+
+      if (task.deliverables && task.deliverables.length > 0) {
+        const files = task.deliverables.filter(d => d.type !== 'branch');
+        if (files.length > 0) {
+          parts.push('');
+          parts.push('**Deliverables:**');
+          for (const d of files.slice(0, 10)) {
+            parts.push(`- [${d.type}] ${d.reference}${d.summary ? ` — ${d.summary}` : ''}`);
+          }
+          if (files.length > 10) parts.push(`  ... and ${files.length - 10} more`);
+        }
+        const branch = task.deliverables.find(d => d.type === 'branch');
+        if (branch) {
+          parts.push(`**Branch:** ${branch.reference}`);
+          if (branch.summary) parts.push(`**Summary:** ${branch.summary}`);
+        }
+      }
+
+      // Include subtask status if any
+      const subtasks = this.listSubtasks(task.id);
+      if (subtasks.length > 0) {
+        const done = subtasks.filter(s => s.status === 'completed').length;
+        parts.push('');
+        parts.push(`**Subtasks:** ${done}/${subtasks.length} completed`);
+        for (const sub of subtasks) {
+          parts.push(`- [${sub.status}] ${sub.title}`);
+        }
+      }
+
+      // Include recent notes
+      if (task.notes && task.notes.length > 0) {
+        parts.push('');
+        parts.push('**Recent Notes:**');
+        for (const note of task.notes.slice(-3)) {
+          parts.push(`> ${note}`);
+        }
+      }
+
+      parts.push('');
+      parts.push('Please review immediately. Use `task_get` to inspect deliverable files, then either:');
+      parts.push('- `task_update` with status "accepted" if the work meets requirements');
+      parts.push('- `task_update` with status "revision" and a note explaining what needs to change');
+
+      const reviewMessage = parts.join('\n');
+      const reviewerAgent = this.agentManager.getAgent(reviewerAgentId);
+      reviewerAgent.handleMessage(
+        reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
       ).catch(err => {
-        log.warn('Failed to notify task creator about review', { taskId: task.id, createdBy: task.createdBy, error: String(err) });
+        log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerAgentId, error: String(err) });
       });
-      log.info('Notified task creator about review', { taskId: task.id, createdBy: task.createdBy });
+      log.info('Notified reviewer about review', { taskId: task.id, reviewerAgentId });
     } catch (err) {
-      log.warn('Failed to notify task creator about review', { taskId: task.id, createdBy: task.createdBy, error: String(err) });
+      log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerAgentId, error: String(err) });
     }
   }
 
@@ -2147,22 +2305,35 @@ export class TaskService {
       timestamp: task.updatedAt,
     });
 
-    // Scheduled tasks skip branch merge (they keep running across iterations)
-    // and transition to assigned instead of completed, so the scheduler can fire the next run.
+    // Scheduled tasks: transition to pending to await the next scheduled run.
+    // Skip branch merge (they keep running across iterations).
     if (task.taskType === 'scheduled') {
+      task.status = 'pending';
+      task.result = undefined;
+      task.startedAt = undefined;
+      task.completedAt = undefined;
+      task.updatedAt = new Date().toISOString();
+
+      if (this.taskRepo) {
+        this.taskRepo.updateStatus(task.id, 'pending')
+          .catch(err => log.warn('Failed to persist pending status to DB', { taskId: task.id, error: String(err) }));
+      }
+
+      this.ws?.broadcastTaskUpdate(task.id, 'pending', { title: task.title });
+
       this.auditService?.record({
         orgId: task.orgId,
         agentId: reviewerAgentId,
         type: 'task_review_accepted',
         action: 'accept_task',
-        detail: `Scheduled task "${task.title}" accepted by reviewer`,
+        detail: `Scheduled task "${task.title}" accepted → pending (awaiting next run)`,
         taskId: task.id,
         projectId: task.projectId,
         success: true,
         metadata: { workerAgentId: task.assignedAgentId },
       });
 
-      log.info(`Scheduled task accepted (waiting for next run): ${task.title}`, { id: task.id });
+      log.info(`Scheduled task accepted and returned to pending: ${task.title}`, { id: task.id });
       return task;
     }
 
@@ -2217,17 +2388,19 @@ export class TaskService {
     return task;
   }
 
-  requestRevision(taskId: string, reason: string): Task {
+  requestRevision(taskId: string, reason: string, author?: string): Task {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
     }
 
+    const by = author || 'Reviewer';
+    const now = new Date();
     task.status = 'revision';
     task.notes = task.notes ?? [];
-    task.notes.push(`[${new Date().toISOString()}] Revision requested: ${reason}`);
-    task.updatedAt = new Date().toISOString();
+    task.notes.push(`[${formatLocalTimestamp(now)} by ${by}] Revision requested: ${reason}`);
+    task.updatedAt = now.toISOString();
 
     if (this.taskRepo) {
       this.taskRepo.updateStatus(task.id, 'revision')
@@ -2394,7 +2567,7 @@ export class TaskService {
       for (let i = 1; i < sorted.length; i++) {
         const dup = sorted[i];
         try {
-          this.addTaskNote(dup.id, `[System] Auto-cancelled: duplicate of task ${keeper.id} ("${keeper.title}")`);
+          this.addTaskNote(dup.id, `Auto-cancelled: duplicate of task ${keeper.id} ("${keeper.title}")`, 'System');
           this.updateTaskStatus(dup.id, 'cancelled');
           cancelledIds.push(dup.id);
           log.info(`Auto-cancelled duplicate task`, { cancelledId: dup.id, keeperId: keeper.id });
