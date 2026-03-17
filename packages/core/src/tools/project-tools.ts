@@ -198,17 +198,12 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 return JSON.stringify({
                   status: 'success',
                   count: projects.length,
-                  projects: projects.map(p => {
-                    const activeIteration = ctx.projectService!.getActiveIteration(p.id);
-                    return {
-                      id: p.id, name: p.name, description: p.description,
-                      status: p.status, iterationModel: p.iterationModel,
-                      activeIteration: activeIteration
-                        ? { id: activeIteration.id, name: activeIteration.name, goal: activeIteration.goal, status: activeIteration.status }
-                        : null,
-                    };
-                  }),
-                  hint: 'Use requirement_list with project_id to see requirements, then task_list with requirement_id for tasks.',
+                  projects: projects.map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    status: p.status,
+                    iterationModel: p.iterationModel,
+                  })),
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -236,7 +231,27 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
                 const activeIteration = ctx.projectService!.getActiveIteration(projectId);
                 const iterations = ctx.projectService!.listIterations(projectId);
-                return JSON.stringify({ status: 'success', project, activeIteration: activeIteration ?? null, iterations });
+                return JSON.stringify({
+                  status: 'success',
+                  project: {
+                    id: project.id,
+                    name: project.name,
+                    description: project.description,
+                    status: project.status,
+                    iterationModel: project.iterationModel,
+                    repoCount: project.repositories?.length ?? 0,
+                    teamCount: project.teamIds?.length ?? 0,
+                    governance: project.governancePolicy?.enabled ? project.governancePolicy.defaultTier : 'none',
+                  },
+                  activeIteration: activeIteration ? {
+                    id: activeIteration.id,
+                    name: activeIteration.name,
+                    status: activeIteration.status,
+                    goal: activeIteration.goal,
+                    endDate: activeIteration.endDate,
+                  } : null,
+                  iterationCount: iterations.length,
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -263,7 +278,26 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               try {
                 const info = await ctx.getProjectInfo!(args['project_id'] as string | undefined);
                 if (!info) return JSON.stringify({ status: 'error', error: 'No project found' });
-                return JSON.stringify({ status: 'success', project: info });
+                return JSON.stringify({
+                  status: 'success',
+                  project: {
+                    id: info.id,
+                    name: info.name,
+                    description: info.description,
+                    status: info.status,
+                    iterationModel: info.iterationModel,
+                    repositories: info.repositories?.map(r => ({ path: r.localPath, branch: r.defaultBranch })),
+                    teamCount: info.teamIds?.length ?? 0,
+                    governance: info.governancePolicy?.enabled ? info.governancePolicy.defaultTier : 'none',
+                    activeIteration: info.activeIteration ? {
+                      id: info.activeIteration.id,
+                      name: info.activeIteration.name,
+                      status: info.activeIteration.status,
+                      goal: info.activeIteration.goal,
+                      endDate: info.activeIteration.endDate,
+                    } : null,
+                  },
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -383,7 +417,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   type: args['type'] as string | undefined,
                   limit: args['limit'] as number | undefined,
                 });
-                return JSON.stringify({ status: 'success', count: results.length, results });
+                return JSON.stringify({
+                  status: 'success',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    reference: d.reference, status: d.status,
+                  })),
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -425,7 +466,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   status: args['status'] as string | undefined,
                   limit: args['limit'] as number | undefined,
                 });
-                return JSON.stringify({ status: 'success', count: results.length, results });
+                return JSON.stringify({
+                  status: 'success',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    reference: d.reference, status: d.status,
+                  })),
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

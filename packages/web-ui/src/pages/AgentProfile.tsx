@@ -573,14 +573,16 @@ function FilesTab({ agentId }: { agentId: string }) {
 
 const TOOL_CATEGORIES: Record<string, string[]> = {
   'Files': ['file_read', 'file_write', 'file_edit', 'apply_patch'],
-  'Runtime': ['shell_execute', 'process'],
-  'Web': ['web_search', 'web_fetch'],
-  'Memory': ['memory_search', 'memory_get'],
-  'Communication': ['agent_send_message', 'agent_list_colleagues', 'message'],
-  'Browser & UI': ['browser_navigate', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_extract', 'browser_evaluate', 'gui_screenshot', 'gui_click', 'gui_type', 'gui_key_press', 'gui_scroll'],
-  'Tasks': ['task_list', 'task_create', 'task_update', 'task_assign'],
-  'Git': ['git_status', 'git_diff', 'git_log', 'git_branch'],
-  'Code': ['code_search', 'project_structure', 'code_stats'],
+  'Search': ['grep_search', 'glob_find', 'list_directory'],
+  'Runtime': ['shell_execute', 'background_exec', 'process'],
+  'Web': ['web_search', 'web_fetch', 'web_extract'],
+  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_submit_review'],
+  'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status'],
+  'Projects': ['list_projects', 'get_project', 'project_info', 'iteration_status'],
+  'Deliverables': ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
+  'Communication': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'],
+  'Memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
+  'Team (Manager)': ['team_list', 'team_status', 'delegate_message', 'create_task', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
 };
 
 function categorizeTools(tools: AgentToolInfo[]): Array<{ category: string; tools: AgentToolInfo[] }> {

@@ -39,17 +39,9 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['web_fetch', 'web_search', 'web_extract'],
   },
   {
-    name: 'gui',
-    keywords: ['gui', 'screen', 'mouse', 'keyboard', 'window', 'desktop', 'screenshot',
-      '桌面', '鼠标', '键盘', '窗口', '屏幕', '截图'],
-    toolNames: ['gui'],
-  },
-  {
     name: 'structured-a2a',
-    keywords: ['delegate', 'collaborate', 'resource', 'broadcast', 'capability', 'progress',
-      '委派', '协作', '资源', '广播', '能力', '进度'],
-    toolNames: ['agent_request_resource', 'agent_sync_progress', 'agent_discover_capabilities',
-      'agent_broadcast_status', 'agent_delegate_task', 'agent_request_collaboration'],
+    keywords: ['delegate', 'broadcast', '委派', '广播'],
+    toolNames: ['agent_broadcast_status', 'agent_delegate_task'],
   },
   {
     name: 'group-chat',

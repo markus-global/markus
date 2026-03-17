@@ -287,9 +287,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           });
           return JSON.stringify({
             status: 'success',
-            tasks,
             count: tasks.length,
-            summary: tasks.map(t => `[${t.status}] ${t.id}: ${t.title} (${t.priority})${t.requirementId ? ` req:${t.requirementId}` : ''}`).join('\n'),
+            tasks: tasks.map(t => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              priority: t.priority,
+              ...(t.assignedAgentId ? { assignedAgentId: t.assignedAgentId } : {}),
+              ...(t.requirementId ? { requirementId: t.requirementId } : {}),
+            })),
           });
         } catch (error) {
           return JSON.stringify({ status: 'error', error: String(error) });
@@ -678,14 +684,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 });
                 return JSON.stringify({
                   status: 'success',
-                  requirements: reqs,
                   count: reqs.length,
-                  summary: reqs
-                    .map(
-                      r =>
-                        `[${r.status}] ${r.id}: ${r.title} (${r.priority}, ${r.source}, ${r.taskIds.length} tasks)`
-                    )
-                    .join('\n'),
+                  requirements: reqs.map(r => ({
+                    id: r.id,
+                    title: r.title,
+                    status: r.status,
+                    priority: r.priority,
+                    source: r.source,
+                    taskCount: r.taskIds.length,
+                  })),
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

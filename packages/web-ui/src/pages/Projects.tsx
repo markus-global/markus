@@ -1625,6 +1625,9 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(null);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
+  const [projectFilter, setProjectFilter] = useState<Set<string>>(new Set());
+  const savedProjectFilterRef = useRef<Set<string>>(new Set());
+  const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>('backlog');
   const [showArchived, setShowArchived] = useState(false);
@@ -1643,6 +1646,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null;
+
+  useEffect(() => { projectFilterRef.current = projectFilter; }, [projectFilter]);
 
   // ── Data fetching ──
 
@@ -1769,6 +1774,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   // ── Actions ──
 
   const selectProject = (projectId: string) => {
+    if (projectFilterRef.current.size > 0) {
+      savedProjectFilterRef.current = new Set(projectFilterRef.current);
+    }
+    setProjectFilter(new Set());
     setSelectedProjectId(projectId);
     setSelectedIterationId(null);
     setViewMode('project');
@@ -1777,6 +1786,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   };
 
   const selectAllTasks = () => {
+    setProjectFilter(savedProjectFilterRef.current);
     setSelectedProjectId(null);
     setSelectedIterationId(null);
     setViewMode('all');
@@ -1943,6 +1953,14 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     });
   };
 
+  const toggleProjectFilter = (id: string) => {
+    setProjectFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   // ── Filter & display helpers ──
 
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -1958,6 +1976,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     if (viewMode === 'project' && selectedIterationId) {
       result = result.filter(t => t.iterationId === selectedIterationId);
     }
+    if (projectFilter.size > 0) result = result.filter(t => t.projectId && projectFilter.has(t.projectId));
     if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
     return result;
   };
@@ -1969,9 +1988,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     let list = allRequirements;
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (viewMode === 'project' && selectedIterationId) list = list.filter(r => r.iterationId === selectedIterationId);
+    if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
     if (agentFilter.size > 0) list = list.filter(r => agentFilter.has(r.createdBy));
     return list;
-  }, [allRequirements, viewMode, selectedProjectId, selectedIterationId, agentFilter]);
+  }, [allRequirements, viewMode, selectedProjectId, selectedIterationId, projectFilter, agentFilter]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS[number]) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -2004,6 +2024,22 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       return aActive - bActive;
     });
   }, [agents, board, selectedProjectId]);
+
+  const sortedProjects = useMemo(() => {
+    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
+    const allTasks = Object.values(board).flat();
+    const activeProjectIds = new Set<string>();
+    for (const t of allTasks) {
+      if (t.projectId && !terminal.has(t.status)) {
+        activeProjectIds.add(t.projectId);
+      }
+    }
+    return [...projects].sort((a, b) => {
+      const aActive = activeProjectIds.has(a.id) ? 0 : 1;
+      const bActive = activeProjectIds.has(b.id) ? 0 : 1;
+      return aActive - bActive;
+    });
+  }, [projects, board]);
 
   // Count tasks per project (from full unfiltered board for sidebar)
   const [allTaskCounts, setAllTaskCounts] = useState<Record<string, number>>({});
@@ -2107,6 +2143,28 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             </>
           )}
         </div>
+
+        {/* Project filter bar — visible when not in single-project view */}
+        {projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+          <div className="px-6 py-1.5 border-b border-gray-800/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
+            <button onClick={() => setProjectFilter(new Set())}
+              className={`text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-gray-800/60 hover:bg-gray-700 shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
+            {sortedProjects.map(p => {
+              const selected = projectFilter.has(p.id);
+              const count = allTaskCounts[p.id] ?? 0;
+              return (
+                <button key={p.id} onClick={() => toggleProjectFilter(p.id)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
+                    selected ? 'bg-violet-600/20 text-violet-300 ring-1 ring-violet-500/40' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                  }`}>
+                  <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-violet-600 text-white' : 'bg-gray-700 text-gray-400'}`}>{p.name[0]?.toUpperCase()}</span>
+                  {p.name}
+                  {count > 0 && <span className="text-[9px] text-gray-600 ml-0.5">{count}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Agent filter bar */}
         {agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (

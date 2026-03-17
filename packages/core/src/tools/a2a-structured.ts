@@ -1,15 +1,10 @@
 import type { AgentToolHandler } from '../agent.js';
 import { createLogger } from '@markus/shared';
 import type {
-  ResourceRequest,
-  ResourceResponse,
-  ProgressSync,
-  CapabilityDiscovery,
   StatusBroadcast,
   TaskDelegation,
   DelegationResult,
 } from '@markus/a2a';
-import crypto from 'crypto';
 
 const log = createLogger('a2a-structured-tools');
 
@@ -33,14 +28,6 @@ export interface A2AMessage {
     id: string;
     name: string;
   };
-}
-
-export interface CollaborationRequest {
-  collaborationType: 'pair_programming' | 'code_review' | 'design_discussion' | 'problem_solving' | 'research';
-  topic: string;
-  taskId?: string;
-  durationMs?: number;
-  resourcesNeeded?: string;
 }
 
 export interface StructuredA2AContext {
@@ -98,92 +85,6 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
   };
 
   return [
-    {
-      name: 'agent_request_resource',
-      description: 'Request a non-file resource (API access, compute, credentials) from another agent. Do NOT use this to read files — use file_read directly instead. This tool sends an async request to the target agent.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'The ID of the agent to request resource from' },
-          resource_type: { type: 'string', description: 'Type of resource (api, data, compute, etc.) — NOT for files, use file_read instead' },
-          resource_id: { type: 'string', description: 'Identifier for the specific resource' },
-          access_level: { type: 'string', description: 'Required access level (read, write, execute)', enum: ['read', 'write', 'execute'] },
-          purpose: { type: 'string', description: 'Purpose of the resource request' },
-          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (optional)' },
-        },
-        required: ['agent_id', 'resource_type', 'resource_id', 'access_level', 'purpose'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        const targetId = args['agent_id'] as string;
-        const resourceType = args['resource_type'] as string;
-        // 验证resourceType是否为有效值
-        const validResourceTypes = ['compute', 'storage', 'tool', 'data', 'network', 'other'];
-        const validatedResourceType = validResourceTypes.includes(resourceType) 
-          ? resourceType as 'compute' | 'storage' | 'tool' | 'data' | 'network' | 'other'
-          : 'other';
-          
-        const resourceRequest: ResourceRequest = {
-          requestId: crypto.randomUUID(),
-          resourceType: validatedResourceType,
-          resourceName: args['resource_id'] as string,
-          description: args['purpose'] as string,
-          requirements: args['timeout_ms'] ? { timeout: args['timeout_ms'] as number } : undefined,
-        };
-        
-        return sendStructuredMessage(targetId, 'resource_request', resourceRequest);
-      },
-    },
-    {
-      name: 'agent_sync_progress',
-      description: 'Synchronize task progress with another agent. Use this to keep collaborators updated on task status.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'The ID of the agent to sync progress with' },
-          task_id: { type: 'string', description: 'Task ID being worked on' },
-          progress_percent: { type: 'number', description: 'Progress percentage (0-100)' },
-          status: { type: 'string', description: 'Current status', enum: ['pending', 'in_progress', 'blocked', 'completed', 'failed'] },
-          details: { type: 'string', description: 'Progress details or notes (optional)' },
-          estimated_completion_ms: { type: 'number', description: 'Estimated time to completion in milliseconds (optional)' },
-        },
-        required: ['agent_id', 'task_id', 'progress_percent', 'status'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        const targetId = args['agent_id'] as string;
-        const progressSync: ProgressSync = {
-          taskId: args['task_id'] as string,
-          phase: args['phase'] as string || 'default',
-          progress: args['progress_percent'] as number,
-          status: args['status'] as 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed',
-          message: args['details'] as string || '',
-        };
-        
-        return sendStructuredMessage(targetId, 'progress_sync', progressSync);
-      },
-    },
-    {
-      name: 'agent_discover_capabilities',
-      description: 'Discover capabilities of another agent. Use this to find agents with specific skills or resources.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'The ID of the agent to discover capabilities from' },
-          capability_filter: { type: 'string', description: 'Filter for specific capabilities (optional, comma-separated)' },
-        },
-        required: ['agent_id'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        const targetId = args['agent_id'] as string;
-        const capabilityDiscovery: CapabilityDiscovery = {
-          discoveryId: crypto.randomUUID(),
-          query: args['capability_filter'] ? {
-            skills: [args['capability_filter'] as string]
-          } : undefined,
-        };
-        
-        return sendStructuredMessage(targetId, 'capability_discovery', capabilityDiscovery);
-      },
-    },
     {
       name: 'agent_broadcast_status',
       description: 'Broadcast your current status to all agents. Use this for status notifications — keeping the team informed of your availability, task completion, and current work. This is a notification tool, not a work request tool.',
@@ -268,34 +169,6 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
           });
         }
         return sendStructuredMessage(targetId, 'task_delegate', taskDelegation);
-      },
-    },
-    {
-      name: 'agent_request_collaboration',
-      description: 'Request collaboration with another agent on a specific task or topic.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent_id: { type: 'string', description: 'The ID of the agent to collaborate with' },
-          collaboration_type: { type: 'string', description: 'Type of collaboration', enum: ['pair_programming', 'code_review', 'design_discussion', 'problem_solving', 'research'] },
-          topic: { type: 'string', description: 'Collaboration topic' },
-          task_id: { type: 'string', description: 'Related task ID (optional)' },
-          duration_ms: { type: 'number', description: 'Expected duration in milliseconds (optional)' },
-          resources_needed: { type: 'string', description: 'Resources needed for collaboration (optional)' },
-        },
-        required: ['agent_id', 'collaboration_type', 'topic'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        const targetId = args['agent_id'] as string;
-        const collaborationRequest: CollaborationRequest = {
-          collaborationType: args['collaboration_type'] as 'pair_programming' | 'code_review' | 'design_discussion' | 'problem_solving' | 'research',
-          topic: args['topic'] as string,
-          taskId: args['task_id'] as string || undefined,
-          durationMs: args['duration_ms'] as number || undefined,
-          resourcesNeeded: args['resources_needed'] as string || undefined,
-        };
-        
-        return sendStructuredMessage(targetId, 'collaboration_request', collaborationRequest);
       },
     },
   ];

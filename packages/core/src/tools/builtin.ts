@@ -8,7 +8,6 @@ import { WebExtractTool } from './web-extract.js';
 import { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 import { createPatchTool } from './patch.js';
 import { createBackgroundExecTool, createProcessTool } from './process-manager.js';
-import { createGUITool } from './gui.js';
 import type { SecurityGuard } from '../security.js';
 
 export interface BuiltinToolsOptions {
@@ -18,13 +17,7 @@ export interface BuiltinToolsOptions {
   workspacePath?: string;
   /** Multi-tier access policy (takes precedence over workspacePath when set) */
   pathPolicy?: PathAccessPolicy;
-  enableGUI?: boolean;
   enableBackgroundExec?: boolean;
-  guiConfig?: {
-    containerId?: string;
-    display?: string;
-    debug?: boolean;
-  };
 }
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
@@ -48,11 +41,6 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
   if (opts?.enableBackgroundExec !== false) {
     tools.push(createBackgroundExecTool(wp));
     tools.push(createProcessTool());
-  }
-
-  if (opts?.enableGUI !== false) {
-    const guiTool = createGUITool(opts?.guiConfig);
-    tools.push(guiTool);
   }
 
   return tools;

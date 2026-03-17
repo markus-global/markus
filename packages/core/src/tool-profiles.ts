@@ -16,7 +16,6 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:web': ['web_search', 'web_fetch', 'web_extract'],
   'group:messaging': ['message', 'send_message'],
   'group:a2a': ['delegate_task', 'query_agent', 'team_broadcast'],
-  'group:ui': ['gui_screenshot', 'gui_analyze', 'gui_mouse', 'gui_keyboard', 'gui_find_element'],
 };
 
 /**
