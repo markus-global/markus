@@ -1207,6 +1207,11 @@ export class TaskService {
       });
     }
 
+    // Notify creator when agent-created task enters review
+    if (status === 'review') {
+      this.notifyCreatorOnReview(task);
+    }
+
     log.info(`Task status updated: ${task.title}`, { id, status });
     return task;
   }
@@ -1592,6 +1597,18 @@ export class TaskService {
           agentId: task.assignedAgentId,
           timestamp: task.updatedAt,
         });
+
+        // Auto-start: assigned tasks with all blockers satisfied should begin immediately
+        if (newStatus === 'assigned' && task.assignedAgentId) {
+          log.info(`Auto-starting unblocked task ${task.id} (all dependencies satisfied)`);
+          setImmediate(() => {
+            try {
+              this.updateTaskStatus(task.id, 'in_progress');
+            } catch (err) {
+              log.warn('Failed to auto-start unblocked task', { taskId: task.id, error: String(err) });
+            }
+          });
+        }
       }
     }
   }
@@ -1891,8 +1908,42 @@ export class TaskService {
       metadata: { deliverableCount: deliverables.length, reviewReportStatus: reviewReport?.overallStatus },
     });
 
+    // Notify the task creator if the task was created by an agent
+    this.notifyCreatorOnReview(task);
+
     log.info(`Task submitted for review: ${task.title}`, { id: task.id });
     return task;
+  }
+
+  /**
+   * When an agent-created task enters review status, send a message to
+   * the creator agent so they can evaluate the deliverables.
+   */
+  private notifyCreatorOnReview(task: Task): void {
+    if (!task.createdBy || !this.agentManager) return;
+    if (!this.agentManager.hasAgent(task.createdBy)) return;
+    // Don't notify if the creator is also the assignee (they already know)
+    if (task.createdBy === task.assignedAgentId) return;
+
+    try {
+      const creatorAgent = this.agentManager.getAgent(task.createdBy);
+      const assigneeName = task.assignedAgentId
+        ? (this.agentManager.hasAgent(task.assignedAgentId)
+          ? this.agentManager.getAgent(task.assignedAgentId).config.name
+          : task.assignedAgentId)
+        : 'unknown';
+      const message = `Task "${task.title}" (ID: ${task.id}) that you created has been submitted for review by ${assigneeName}. Please review the deliverables and either accept (task_update with status "accepted") or request revisions (task_update with status "revision").`;
+      creatorAgent.handleMessage(
+        message,
+        task.assignedAgentId ?? 'system',
+        { name: assigneeName, role: 'worker' },
+      ).catch(err => {
+        log.warn('Failed to notify task creator about review', { taskId: task.id, createdBy: task.createdBy, error: String(err) });
+      });
+      log.info('Notified task creator about review', { taskId: task.id, createdBy: task.createdBy });
+    } catch (err) {
+      log.warn('Failed to notify task creator about review', { taskId: task.id, createdBy: task.createdBy, error: String(err) });
+    }
   }
 
   /**

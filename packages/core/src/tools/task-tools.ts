@@ -109,8 +109,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Top-level tasks MUST reference an approved requirement_id.',
         'Subtasks (with parent_task_id) inherit the requirement from their parent.',
         'If you want to propose new work, use requirement_propose instead.',
-        'IMPORTANT: assigned_agent_id is required in almost all cases — call team_list first to find the right agent.',
-        'Only omit assigned_agent_id when it is genuinely unclear who should own the task, and provide reason_unassigned explaining why.',
+        'IMPORTANT: assigned_agent_id is REQUIRED — every task must have a responsible person. Call team_list first to find the right agent.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -131,11 +130,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           },
           assigned_agent_id: {
             type: 'string',
-            description: 'Agent ID to assign this task to. REQUIRED in almost all cases. Call team_list first to find the right agent by role/skills. Only omit if it is genuinely unclear who should own this — and then you MUST provide reason_unassigned.',
-          },
-          reason_unassigned: {
-            type: 'string',
-            description: 'Required when assigned_agent_id is omitted. Explain why no specific agent can be assigned at this time (e.g. "Waiting for new hire", "Requires cross-team decision"). Do not use vague reasons.',
+            description: 'Agent ID to assign this task to. REQUIRED — every task must have a responsible person. Call team_list first to find the right agent by role/skills.',
           },
           parent_task_id: {
             type: 'string',
@@ -171,18 +166,17 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
           },
         },
-        required: ['title', 'description'],
+        required: ['title', 'description', 'assigned_agent_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
           const assignedAgentId = args['assigned_agent_id'] as string | undefined;
-          const reasonUnassigned = args['reason_unassigned'] as string | undefined;
 
-          // Enforce: unassigned tasks must have an explicit reason
-          if (!assignedAgentId && !reasonUnassigned) {
+          // Enforce: agent-created tasks must always have an assignee
+          if (!assignedAgentId) {
             return JSON.stringify({
               status: 'error',
-              error: 'assigned_agent_id is required. If you genuinely cannot assign this task yet, provide reason_unassigned explaining why. Call team_list first to find the right agent.',
+              error: 'assigned_agent_id is required. Every task must have a responsible person. Call team_list first to find the right agent by role/skills, then set assigned_agent_id.',
             });
           }
 
@@ -216,7 +210,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             taskType,
             scheduleConfig,
           });
-          log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId, reasonUnassigned });
+          log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId });
           if (task.status === 'pending_approval') {
             return JSON.stringify({
               status: 'pending_approval',
