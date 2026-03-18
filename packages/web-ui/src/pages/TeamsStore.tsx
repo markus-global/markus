@@ -17,6 +17,28 @@ const TEAM_CATEGORY_COLORS: Record<string, string> = {
   general: 'bg-gray-500/15 text-gray-400 border-gray-500/20',
 };
 
+interface LocalArtifactInfo {
+  installed: boolean;
+  localVersion?: string;
+  localUpdatedAt?: string;
+}
+
+function toSlug(name: string): string {
+  return name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
+}
+
+function isNewerVersion(latest: string, current: string): boolean {
+  const a = latest.split('.').map(Number);
+  const b = current.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av > bv) return true;
+    if (av < bv) return false;
+  }
+  return false;
+}
+
 export function TeamsStore() {
   const [filter, setFilter] = useState<FilterId>('all');
   const [search, setSearch] = useState('');
@@ -26,12 +48,36 @@ export function TeamsStore() {
   const [loading, setLoading] = useState(true);
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+
+  const loadLocalStatus = useCallback(async () => {
+    try {
+      const [artRes, instRes] = await Promise.all([
+        api.builder.artifacts.list().catch(() => ({ artifacts: [] as Array<{ type: string; name: string; meta: Record<string, unknown>; updatedAt: string }> })),
+        api.builder.artifacts.installed().catch(() => ({ installed: {} as Record<string, unknown> })),
+      ]);
+      const map = new Map<string, LocalArtifactInfo>();
+      for (const art of artRes.artifacts) {
+        if (art.type !== 'team') continue;
+        const isInstalled = !!instRes.installed[`team/${art.name}`];
+        map.set(art.name, {
+          installed: isInstalled,
+          localVersion: (art.meta.version as string) || undefined,
+          localUpdatedAt: art.updatedAt,
+        });
+      }
+      setLocalArtifacts(map);
+    } catch { /* ignore */ }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       if (filter === 'hub') {
-        const res = await hubApi.search({ type: 'team', q: search || undefined, limit: 50 }).catch(() => ({ items: [] as HubItem[], total: 0 }));
+        const [res] = await Promise.all([
+          hubApi.search({ type: 'team', q: search || undefined, limit: 50 }).catch(() => ({ items: [] as HubItem[], total: 0 })),
+          loadLocalStatus(),
+        ]);
         setHubItems(res.items);
         setTemplates([]);
       } else {
@@ -45,7 +91,7 @@ export function TeamsStore() {
     } finally {
       setLoading(false);
     }
-  }, [filter, search]);
+  }, [filter, search, loadLocalStatus]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -160,7 +206,7 @@ export function TeamsStore() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {hubItems.map(item => (
-                <HubTeamCard key={item.id} item={item} />
+                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} />
               ))}
             </div>
           )
@@ -288,9 +334,12 @@ export function TeamsStore() {
   );
 }
 
-function HubTeamCard({ item }: { item: HubItem }) {
+function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void }) {
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
+
+  const isInstalled = localInfo?.installed ?? false;
+  const canUpgrade = isInstalled && item.version && localInfo?.localVersion && isNewerVersion(item.version, localInfo.localVersion);
 
   const handleInstall = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -299,11 +348,18 @@ function HubTeamCard({ item }: { item: HubItem }) {
     setStatus('');
     try {
       const data = await hubApi.download(item.id);
-      const artifact = { ...(data.config as Record<string, unknown>), name: data.name || item.name, description: item.description };
-      if (data.files) (artifact as Record<string, unknown>).files = data.files;
-      const saved = await api.builder.artifacts.save('team', artifact);
-      await api.builder.artifacts.install('team', saved.name);
-      setStatus('Installed!');
+      const name = data.name || item.name;
+      const slug = toSlug(name);
+      const hubSource = { type: 'hub', hubItemId: item.id };
+      if (data.files && Object.keys(data.files).length > 0) {
+        await api.builder.artifacts.import('team', slug, data.files, hubSource);
+      } else {
+        const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
+        await api.builder.artifacts.save('team', artifact);
+      }
+      await api.builder.artifacts.install('team', slug);
+      setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
+      onStatusChange();
     } catch {
       setStatus('Failed');
     } finally {
@@ -316,6 +372,7 @@ function HubTeamCard({ item }: { item: HubItem }) {
       <div className="flex items-center gap-2 mb-2">
         <span className="text-lg">{'\uD83D\uDC65'}</span>
         <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
+        {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-400 rounded">v{item.version}</span>}
         <span className="text-[10px] px-1.5 py-0.5 bg-teal-500/15 text-teal-400 rounded">Hub</span>
       </div>
       <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.description}</p>
@@ -325,14 +382,26 @@ function HubTeamCard({ item }: { item: HubItem }) {
         <span>{item.author?.displayName ?? item.author?.username}</span>
       </div>
       <div className="flex items-center gap-2 mt-3">
-        <button
-          onClick={e => void handleInstall(e)}
-          disabled={installing}
-          className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-50"
-        >
-          {installing ? 'Installing...' : 'Install'}
-        </button>
-        {status && <span className={`text-[10px] ${status === 'Installed!' ? 'text-emerald-400' : 'text-red-400'}`}>{status}</span>}
+        {canUpgrade ? (
+          <button
+            onClick={e => void handleInstall(e)}
+            disabled={installing}
+            className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
+          >
+            {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+          </button>
+        ) : isInstalled ? (
+          <span className="px-3 py-1 text-xs bg-gray-700 text-gray-400 rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+        ) : (
+          <button
+            onClick={e => void handleInstall(e)}
+            disabled={installing}
+            className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-50"
+          >
+            {installing ? 'Installing...' : 'Install'}
+          </button>
+        )}
+        {status && <span className={`text-[10px] ${status === 'Failed' ? 'text-red-400' : 'text-emerald-400'}`}>{status}</span>}
       </div>
     </div>
   );

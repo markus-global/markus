@@ -98,25 +98,62 @@ const TABS: Array<{ id: TabId; label: string }> = [
 
 // ─── Hub Skill Install Button ────────────────────────────────────────────────
 
-function HubSkillInstallButton({ item, onMsg }: { item: HubItem; onMsg: (text: string, type: 'success' | 'error') => void }) {
+function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
+  item: HubItem;
+  installedSkills: InstalledSkill[];
+  onMsg: (text: string, type: 'success' | 'error') => void;
+  onRefresh: () => void;
+}) {
   const [installing, setInstalling] = useState(false);
+
+  const slug = item.name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
+  const matchedSkill = installedSkills.find(s => s.name === item.name || s.name === slug);
+  const isInstalled = !!matchedSkill;
+  const canUpgrade = isInstalled && item.version && matchedSkill?.version && isNewerVersion(item.version, matchedSkill.version);
 
   const handleInstall = async () => {
     if (installing) return;
     setInstalling(true);
     try {
       const data = await hubApi.download(item.id);
-      const artifact = { ...(data.config as Record<string, unknown>), name: data.name || item.name, description: item.description };
-      if (data.files) (artifact as Record<string, unknown>).files = data.files;
-      const saved = await api.builder.artifacts.save('skill', artifact);
-      await api.builder.artifacts.install('skill', saved.name);
-      onMsg(`Installed ${item.name}`, 'success');
+      const name = data.name || item.name;
+      const s = name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
+      const hubSource = { type: 'hub', hubItemId: item.id };
+      if (data.files && Object.keys(data.files).length > 0) {
+        await api.builder.artifacts.import('skill', s, data.files, hubSource);
+      } else {
+        const artifact = { ...(data.config as Record<string, unknown>), name, description: item.description, source: hubSource };
+        await api.builder.artifacts.save('skill', artifact);
+      }
+      await api.builder.artifacts.install('skill', s);
+      onMsg(canUpgrade ? `Upgraded ${item.name}` : `Installed ${item.name}`, 'success');
+      onRefresh();
     } catch {
       onMsg('Install failed', 'error');
     } finally {
       setInstalling(false);
     }
   };
+
+  if (canUpgrade) {
+    return (
+      <button
+        onClick={() => void handleInstall()}
+        disabled={installing}
+        className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg disabled:opacity-50"
+      >
+        {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+      </button>
+    );
+  }
+
+  if (isInstalled) {
+    return (
+      <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">
+        Installed{matchedSkill?.version ? ` (v${matchedSkill.version})` : ''}
+      </span>
+    );
+  }
 
   return (
     <button
@@ -837,7 +874,7 @@ export function SkillStore() {
                     <span className="text-gray-500 ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
                   </div>
                   <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-end gap-2">
-                    <HubSkillInstallButton item={item} onMsg={msg} />
+                    <HubSkillInstallButton item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} />
                   </div>
                 </div>
               ))}

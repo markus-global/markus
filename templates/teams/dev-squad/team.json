@@ -1,10 +1,19 @@
 {
-  "id": "team-dev-squad",
-  "name": "Development Squad",
+  "type": "team",
+  "name": "dev-squad",
+  "displayName": "Development Squad",
+  "version": "1.0.0",
   "description": "A focused development team with a PM who coordinates, developers who build, a reviewer who ensures quality, and a QA engineer who validates. Suitable for feature development sprints and product iteration.",
+  "author": "Markus Team",
   "category": "development",
   "tags": ["development", "agile", "sprint", "feature", "software"],
-  "version": "2.0.0",
-  "author": "Markus Team",
-  "icon": "users"
+  "icon": "users",
+  "team": {
+    "members": [
+      { "name": "PM", "role": "manager", "roleName": "project-manager", "count": 1, "skills": [] },
+      { "name": "Developer", "role": "worker", "roleName": "developer", "count": 2, "skills": [] },
+      { "name": "Code Reviewer", "role": "worker", "roleName": "reviewer", "count": 1, "skills": [] },
+      { "name": "QA", "role": "worker", "roleName": "qa-engineer", "count": 1, "skills": [] }
+    ]
+  }
 }

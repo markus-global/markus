@@ -4,7 +4,15 @@ export { ToolHookRegistry, auditLogHook, generateIdempotencyKey } from './tool-h
 export type { ToolHook, ToolHookContext, BeforeToolResult, AfterToolResult } from './tool-hooks.js';
 export { startSpan, trace, setTracingProvider } from './tracing.js';
 export type { Span, SpanAttributes, TracingProvider } from './tracing.js';
-export { AgentManager, type CreateAgentRequest, type RequirementServiceBridge } from './agent-manager.js';
+export {
+  AgentManager,
+  type CreateAgentRequest,
+  type RequirementServiceBridge,
+  type RoleUpdateStatus,
+  type RoleFileStatus,
+  type RoleFileDiff,
+  type RoleSyncResult,
+} from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig } from './context-engine.js';

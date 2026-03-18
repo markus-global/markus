@@ -5,24 +5,33 @@ const log = createLogger('skill-registry');
 
 export class InMemorySkillRegistry implements SkillRegistry {
   private skills = new Map<string, SkillInstance>();
+  private aliases = new Map<string, string>();
+
+  private static normalize(s: string): string {
+    return s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  }
 
   register(skill: SkillInstance): void {
-    if (this.skills.has(skill.manifest.name)) {
-      log.warn(`Skill ${skill.manifest.name} already registered, overwriting`);
+    const name = skill.manifest.name;
+    if (this.skills.has(name)) {
+      log.warn(`Skill ${name} already registered, overwriting`);
     }
-    this.skills.set(skill.manifest.name, skill);
-    log.info(`Skill registered: ${skill.manifest.name} v${skill.manifest.version}`, {
+    this.skills.set(name, skill);
+    this.aliases.set(InMemorySkillRegistry.normalize(name), name);
+    log.info(`Skill registered: ${name} v${skill.manifest.version}`, {
       hasInstructions: !!skill.manifest.instructions,
     });
   }
 
   unregister(skillName: string): void {
     this.skills.delete(skillName);
+    this.aliases.delete(InMemorySkillRegistry.normalize(skillName));
     log.info(`Skill unregistered: ${skillName}`);
   }
 
   get(skillName: string): SkillInstance | undefined {
-    return this.skills.get(skillName);
+    return this.skills.get(skillName)
+      ?? this.skills.get(this.aliases.get(InMemorySkillRegistry.normalize(skillName)) ?? '');
   }
 
   list(): SkillManifest[] {
@@ -32,7 +41,7 @@ export class InMemorySkillRegistry implements SkillRegistry {
   getInstructionsForSkills(skillNames: string[]): Map<string, string> {
     const result = new Map<string, string>();
     for (const name of skillNames) {
-      const skill = this.skills.get(name);
+      const skill = this.get(name);
       if (skill?.manifest.instructions) {
         result.set(name, skill.manifest.instructions);
       }

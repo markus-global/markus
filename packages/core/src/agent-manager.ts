@@ -154,6 +154,33 @@ export interface CreateAgentRequest {
   llmProvider?: string;
 }
 
+export interface RoleFileStatus {
+  file: string;
+  status: 'identical' | 'modified' | 'added_in_template' | 'agent_only';
+}
+
+export interface RoleUpdateStatus {
+  agentId: string;
+  roleId: string;
+  templateId: string;
+  hasTemplate: boolean;
+  isUpToDate: boolean;
+  files: RoleFileStatus[];
+}
+
+export interface RoleFileDiff {
+  file: string;
+  agentContent: string | null;
+  templateContent: string | null;
+}
+
+export interface RoleSyncResult {
+  agentId: string;
+  success: boolean;
+  error?: string;
+  synced: string[];
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -1763,6 +1790,133 @@ export class AgentManager {
       } catch { /* best effort */ }
     }
     log.info('AgentManager shutdown complete — all metrics flushed');
+  }
+
+  // ─── Role Template Versioning & Sync ──────────────────────────────────────
+
+  private static readonly ROLE_FILES = ['ROLE.md', 'HEARTBEAT.md', 'POLICIES.md', 'CONTEXT.md'] as const;
+
+  checkRoleUpdate(agentId: string): RoleUpdateStatus {
+    const agent = this.getAgent(agentId);
+    const { roleId } = agent.config;
+    const agentRoleDir = join(this.dataDir, agentId, 'role');
+
+    // Skip comparison for agents with custom roles (e.g. installed from builder artifacts)
+    const originPath = join(agentRoleDir, '.role-origin.json');
+    if (existsSync(originPath)) {
+      try {
+        const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
+        if (origin.customRole) {
+          return { agentId, roleId, templateId: roleId, hasTemplate: false, isUpToDate: true, files: [] };
+        }
+      } catch { /* ignore malformed file */ }
+    }
+
+    const templateDir = this.roleLoader.resolveTemplateDir(roleId);
+
+    if (!templateDir) {
+      return { agentId, roleId, templateId: roleId, hasTemplate: false, isUpToDate: true, files: [] };
+    }
+
+    // Fallback heuristic: if the ROLE.md title (first # heading) differs from the
+    // template's, this is a custom-built agent — skip template comparison.
+    const agentRolePath = join(agentRoleDir, 'ROLE.md');
+    const templateRolePath = join(templateDir, 'ROLE.md');
+    if (existsSync(agentRolePath) && existsSync(templateRolePath)) {
+      const headingOf = (text: string) => text.match(/^#\s+(.+)/m)?.[1]?.trim();
+      const agentTitle = headingOf(readFileSync(agentRolePath, 'utf-8'));
+      const templateTitle = headingOf(readFileSync(templateRolePath, 'utf-8'));
+      if (agentTitle && templateTitle && agentTitle !== templateTitle) {
+        return { agentId, roleId, templateId: roleId, hasTemplate: false, isUpToDate: true, files: [] };
+      }
+    }
+
+    const files: RoleFileStatus[] = [];
+    let allIdentical = true;
+
+    for (const file of AgentManager.ROLE_FILES) {
+      const tPath = join(templateDir, file);
+      const aPath = join(agentRoleDir, file);
+      const tExists = existsSync(tPath);
+      const aExists = existsSync(aPath);
+
+      if (!tExists && !aExists) continue;
+
+      if (tExists && !aExists) {
+        files.push({ file, status: 'added_in_template' });
+        allIdentical = false;
+      } else if (!tExists && aExists) {
+        files.push({ file, status: 'agent_only' });
+      } else {
+        const tContent = readFileSync(tPath, 'utf-8');
+        const aContent = readFileSync(aPath, 'utf-8');
+        if (tContent === aContent) {
+          files.push({ file, status: 'identical' });
+        } else {
+          files.push({ file, status: 'modified' });
+          allIdentical = false;
+        }
+      }
+    }
+
+    return { agentId, roleId, templateId: roleId, hasTemplate: true, isUpToDate: allIdentical, files };
+  }
+
+  getRoleFileDiff(agentId: string, fileName: string): RoleFileDiff {
+    const agent = this.getAgent(agentId);
+    const { roleId } = agent.config;
+    const templateDir = this.roleLoader.resolveTemplateDir(roleId);
+    const agentRoleDir = join(this.dataDir, agentId, 'role');
+
+    const aPath = join(agentRoleDir, fileName);
+    const tPath = templateDir ? join(templateDir, fileName) : null;
+
+    return {
+      file: fileName,
+      agentContent: existsSync(aPath) ? readFileSync(aPath, 'utf-8') : null,
+      templateContent: tPath && existsSync(tPath) ? readFileSync(tPath, 'utf-8') : null,
+    };
+  }
+
+  syncRoleFromTemplate(agentId: string, fileNames?: string[]): RoleSyncResult {
+    const agent = this.getAgent(agentId);
+    const { roleId } = agent.config;
+    const templateDir = this.roleLoader.resolveTemplateDir(roleId);
+
+    if (!templateDir) {
+      return { agentId, success: false, error: `No template found for roleId: ${roleId}`, synced: [] };
+    }
+
+    const agentRoleDir = join(this.dataDir, agentId, 'role');
+    mkdirSync(agentRoleDir, { recursive: true });
+
+    const filesToSync = fileNames ?? [...AgentManager.ROLE_FILES];
+    const synced: string[] = [];
+
+    for (const file of filesToSync) {
+      const src = join(templateDir, file);
+      if (existsSync(src)) {
+        copyFileSync(src, join(agentRoleDir, file));
+        synced.push(file);
+      }
+    }
+
+    agent.reloadRole();
+
+    log.info('Synced agent role from template', { agentId, roleId, synced });
+    return { agentId, success: true, synced };
+  }
+
+  checkAllRoleUpdates(): RoleUpdateStatus[] {
+    const results: RoleUpdateStatus[] = [];
+    for (const [agentId] of this.agents) {
+      try {
+        results.push(this.checkRoleUpdate(agentId));
+      } catch {
+        /* skip agents that fail to check */
+      }
+    }
+    return results;
   }
 
   // ─── System Announcements ────────────────────────────────────────────────

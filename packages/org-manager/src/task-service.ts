@@ -10,6 +10,8 @@ import {
   type ApprovalTier,
   type TaskDeliverable,
   type BuilderArtifactType,
+  manifestFilename,
+  type PackageType,
 } from '@markus/shared';
 import type { AgentManager, WorkspaceManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -17,6 +19,7 @@ import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, T
 import type { HITLService } from './hitl-service.js';
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
+import type { OrganizationService } from './org-service.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -103,6 +106,7 @@ export class TaskService {
   private auditService?: AuditService;
   private deliverableService?: DeliverableService;
   private sharedDataDir?: string;
+  private orgService?: OrganizationService;
 
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
@@ -150,6 +154,10 @@ export class TaskService {
 
   setDeliverableService(ds: DeliverableService): void {
     this.deliverableService = ds;
+  }
+
+  setOrgService(os: OrganizationService): void {
+    this.orgService = os;
   }
 
   setSharedDataDir(dir: string): void {
@@ -315,8 +323,11 @@ export class TaskService {
 
     const totalRuns = runIndex;
 
-    // Determine the start of the last run in the timeline
-    const lastRunStart = runStarts.length > 0 ? runStarts[runStarts.length - 1]! : 0;
+    // Determine which runs to show (up to last 10)
+    const MAX_RUNS_TO_SHOW = 10;
+    const runsToShow = Math.min(MAX_RUNS_TO_SHOW, runStarts.length);
+    const firstShownRunIdx = runStarts.length - runsToShow;
+    const recentRunsStart = runStarts.length > 0 ? runStarts[firstShownRunIdx]! : 0;
 
     const lines: string[] = [];
     lines.push('## Previous Execution Context');
@@ -374,26 +385,37 @@ export class TaskService {
       lines.push('');
     }
 
-    // Last run details only
-    lines.push(`### Last Run (#${totalRuns}) Details`);
-    let lastRunActive = false;
-    for (let i = lastRunStart; i < timeline.length; i++) {
+    // Recent runs details (up to last 10)
+    if (runsToShow > 1) {
+      lines.push(`### Recent Runs (last ${runsToShow} of ${totalRuns}) Details`);
+    } else {
+      lines.push(`### Last Run (#${totalRuns}) Details`);
+    }
+    let currentRunInSection = 0;
+    let runActive = false;
+    for (let i = recentRunsStart; i < timeline.length; i++) {
       const item = timeline[i]!;
 
       if (item.kind === 'comment') continue; // already handled above
 
       const entry = item.entry as TaskLogRow;
       if (entry.type === 'status' && entry.content === 'started') {
-        lastRunActive = true;
+        currentRunInSection++;
+        const runNum = totalRuns - runsToShow + currentRunInSection;
+        if (runsToShow > 1) {
+          if (currentRunInSection > 1) lines.push('');
+          lines.push(`#### Run #${runNum}`);
+        }
+        runActive = true;
         continue;
       }
       if (entry.type === 'status') {
         lines.push(`[${entry.content}]`);
         lines.push('');
-        lastRunActive = false;
+        runActive = false;
         continue;
       }
-      if (!lastRunActive) continue;
+      if (!runActive) continue;
 
       if (entry.type === 'text') {
         const text = entry.content.length > 800 ? entry.content.slice(0, 800) + '…' : entry.content;
@@ -415,7 +437,7 @@ export class TaskService {
       }
     }
 
-    if (lastRunActive) {
+    if (runActive) {
       lines.push('[interrupted — work was not completed]');
       lines.push('');
     }
@@ -435,18 +457,16 @@ export class TaskService {
       }
     }
 
-    // Error analysis from ALL runs
-    if (collectedErrors.length > 0) {
-      lines.push('### ⚠ Errors from Previous Attempts — MUST READ');
-      lines.push(`The previous ${collectedErrors.length} attempt(s) failed with the following errors. You MUST use a different approach to avoid these exact failures.`);
-      lines.push('');
-      for (const err of collectedErrors) {
-        lines.push(`- **Run ${err.run}**: ${err.content}`);
-      }
-      lines.push('');
-      const guidance = TaskService.analyzeErrorPatterns(collectedErrors.map(e => e.content));
+    // Error guidance based on errors from the displayed runs
+    const firstShownRunNum = totalRuns - runsToShow + 1;
+    const displayedErrors = collectedErrors.filter(e => e.run >= firstShownRunNum).slice(-10);
+    if (displayedErrors.length > 0) {
+      const guidance = TaskService.analyzeErrorPatterns(displayedErrors.map(e => e.content));
       if (guidance.length > 0) {
-        lines.push('**Specific guidance to avoid these errors:**');
+        lines.push('### ⚠ Error Guidance — MUST READ');
+        lines.push('Based on the errors shown above, you MUST use a different approach to avoid these failures.');
+        lines.push('');
+        lines.push('**Specific guidance:**');
         for (const g of guidance) lines.push(`- ${g}`);
         lines.push('');
       }
@@ -525,17 +545,25 @@ export class TaskService {
           }
         }
         if (depTask.deliverables?.length) {
-          lines.push('**Deliverables:**');
+          lines.push('**Deliverables (review these for background context):**');
           for (const d of depTask.deliverables) {
-            lines.push(`- ${d.summary ?? '(no summary)'}${d.type === 'branch' ? ` [branch: ${d.reference}]` : ''}`);
+            const refInfo = d.type === 'file' ? ` — File: \`${d.reference}\` (use \`file_read\` to inspect)` :
+                            d.type === 'branch' ? ` [branch: ${d.reference}]` :
+                            d.reference ? ` — ref: \`${d.reference}\`` : '';
+            lines.push(`- ${d.summary ?? '(no summary)'}${refInfo}`);
           }
         }
         depSections.push(lines.join('\n'));
       }
       if (depSections.length > 0) {
         dependencyContext = [
-          '## Dependency Tasks (completed prerequisites)',
-          'This task depends on the following completed tasks. Review their outputs before starting — they contain context and artifacts you will need.',
+          '## ⚠ Dependency Tasks — READ THESE FIRST',
+          '',
+          '**This task depends on the output of the following tasks.** Before you begin any work:',
+          '1. Read through each dependency task\'s notes and deliverables below carefully.',
+          '2. If deliverables include file paths, use `file_read` to review their full content — these artifacts provide essential background knowledge and context for your current task.',
+          '3. Use `task_get` with each dependency task ID to check for any additional details or recent updates not shown here.',
+          '4. Only after you have reviewed all dependency outputs should you start working on your own task.',
           '',
           ...depSections,
           '',
@@ -1198,6 +1226,11 @@ export class TaskService {
       if (!this.areBlockersSatisfied(task)) {
         throw new Error(`Task ${id} is blocked by unfinished dependencies`);
       }
+    }
+
+    // Enforce: managers can only review tasks from their own team or tasks they created
+    if ((status === 'accepted' || status === 'revision') && updatedBy) {
+      this.assertReviewerAllowed(updatedBy, task);
     }
 
     const prevStatus = task.status;
@@ -1934,12 +1967,18 @@ export class TaskService {
         let artifactData: Record<string, unknown> | undefined;
         let reference = d.reference;
 
-        if (builderMode) {
-          const parsed = this.tryParseBuilderArtifact(d, builderMode);
-          if (parsed) {
-            artifactType = builderMode;
-            artifactData = parsed;
-            reference = this.saveBuilderArtifact(builderMode, parsed, task.id);
+        if (builderMode && d.reference) {
+          // Builder agents write files directly via file_write — check the artifact directory
+          const dirMap = { agent: 'agents', team: 'teams', skill: 'skills' } as const;
+          const artBase = join(homedir(), '.markus', 'builder-artifacts', dirMap[builderMode]);
+          const ref = d.reference;
+          if (ref.startsWith(artBase) && existsSync(ref)) {
+            const mfPath = join(ref, manifestFilename(builderMode as PackageType));
+            if (existsSync(mfPath)) {
+              artifactType = builderMode;
+              try { artifactData = JSON.parse(readFileSync(mfPath, 'utf-8')); } catch { /* ignore */ }
+              reference = ref;
+            }
           }
         }
 
@@ -2085,9 +2124,11 @@ export class TaskService {
       }
 
       parts.push('');
-      parts.push('Please review immediately. Use `task_get` to inspect deliverable files, then either:');
-      parts.push('- `task_update` with status "accepted" if the work meets requirements');
-      parts.push('- `task_update` with status "revision" and a note explaining what needs to change');
+      parts.push(`Please review immediately. Use \`task_get\` with task_id "${task.id}" to inspect deliverable files, then either:`);
+      parts.push(`- \`task_update\` with task_id "${task.id}" and status "accepted" if the work meets requirements`);
+      parts.push(`- \`task_update\` with task_id "${task.id}" and status "revision" and a note explaining what needs to change`);
+      parts.push('');
+      parts.push(`CRITICAL: You MUST ONLY review and update this specific task (ID: ${task.id}). Do NOT change the status of any other task. Do NOT modify any other tasks. Focus exclusively on reviewing this one task.`);
 
       const reviewMessage = parts.join('\n');
       const reviewerAgent = this.agentManager.getAgent(reviewerAgentId);
@@ -2129,98 +2170,6 @@ export class TaskService {
     return undefined;
   }
 
-  private tryParseBuilderArtifact(
-    d: TaskDeliverable,
-    _mode: BuilderArtifactType,
-  ): Record<string, unknown> | undefined {
-    // Try parsing from the file reference (JSON file on disk)
-    if (d.reference && d.reference.endsWith('.json')) {
-      try {
-        if (existsSync(d.reference)) {
-          const raw = readFileSync(d.reference, 'utf-8');
-          const parsed = JSON.parse(raw);
-          if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
-        }
-      } catch { /* ignore */ }
-    }
-    // Try extracting JSON from the summary (agent may embed JSON in markdown)
-    const jsonMatch = d.summary?.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (jsonMatch?.[1]) {
-      try {
-        const parsed = JSON.parse(jsonMatch[1]);
-        if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
-      } catch { /* ignore */ }
-    }
-    // Try parsing the entire summary as JSON
-    try {
-      const parsed = JSON.parse(d.summary);
-      if (typeof parsed === 'object' && parsed !== null && parsed.name) return parsed;
-    } catch { /* ignore */ }
-    return undefined;
-  }
-
-  private saveBuilderArtifact(
-    mode: BuilderArtifactType,
-    artifact: Record<string, unknown>,
-    taskId: string,
-  ): string {
-    const dirMap = { agent: 'agents', team: 'teams', skill: 'skills' } as const;
-    const baseDir = join(homedir(), '.markus', 'builder-artifacts', dirMap[mode]);
-    const name = (artifact.name as string ?? `${mode}-${taskId}`)
-      .toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const artDir = join(baseDir, name);
-    mkdirSync(artDir, { recursive: true });
-
-    if (mode === 'agent') {
-      const meta = { name: artifact.name, description: artifact.description, roleName: artifact.roleName, tags: artifact.tags, llmProvider: artifact.llmProvider, llmModel: artifact.llmModel, requiredEnv: artifact.requiredEnv };
-      writeFileSync(join(artDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
-      const files = artifact.files as Record<string, string> | undefined;
-      if (files) {
-        for (const [filename, content] of Object.entries(files)) {
-          writeFileSync(join(artDir, filename), content, 'utf-8');
-        }
-      }
-    } else if (mode === 'team') {
-      const teamMeta = { name: artifact.name, description: artifact.description, category: artifact.category, tags: artifact.tags };
-      writeFileSync(join(artDir, 'team.json'), JSON.stringify(teamMeta, null, 2), 'utf-8');
-      const topFiles = artifact.files as Record<string, string> | undefined;
-      if (topFiles) {
-        for (const [filename, content] of Object.entries(topFiles)) {
-          writeFileSync(join(artDir, filename), content, 'utf-8');
-        }
-      }
-      const members = (artifact.members as Array<Record<string, unknown>>) ?? [];
-      writeFileSync(join(artDir, 'members.json'), JSON.stringify(
-        members.map(m => ({ name: m.name, role: m.role, roleName: m.roleName, count: m.count, skills: m.skills })),
-        null, 2,
-      ), 'utf-8');
-      for (const member of members) {
-        const memberSlug = ((member.name as string) ?? 'agent').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        const memberDir = join(artDir, 'members', memberSlug);
-        mkdirSync(memberDir, { recursive: true });
-        const memberFiles = member.files as Record<string, string> | undefined;
-        if (memberFiles) {
-          for (const [filename, content] of Object.entries(memberFiles)) {
-            writeFileSync(join(memberDir, filename), content, 'utf-8');
-          }
-        }
-      }
-    } else if (mode === 'skill') {
-      const files = artifact.files as Record<string, string> | undefined;
-      if (files) {
-        for (const [filename, content] of Object.entries(files)) {
-          writeFileSync(join(artDir, filename), content, 'utf-8');
-        }
-      }
-      if (!files?.['manifest.json']) {
-        const manifest = { name, version: '1.0.0', description: artifact.description, skillFile: 'SKILL.md' };
-        writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
-      }
-    }
-
-    log.info('Builder artifact saved as directory package', { mode, name, path: artDir });
-    return artDir;
-  }
 
   /**
    * Copy deliverable files/summaries to the shared workspace so reviewers
@@ -2271,6 +2220,40 @@ export class TaskService {
     log.info('Deliverables published to shared workspace', { taskId: task.id, dir: taskSharedDir });
   }
 
+  /**
+   * Managers can only review tasks from their own team members or tasks they created.
+   * Human reviewers are unrestricted.
+   */
+  private isReviewerAllowedForTask(reviewerId: string, task: Task): boolean {
+    if (!this.agentManager || !this.orgService) return true;
+    if (!this.agentManager.hasAgent(reviewerId)) return true;
+
+    if (task.createdBy === reviewerId) return true;
+
+    if (!task.assignedAgentId) return true;
+
+    const teams = this.orgService.listTeams(task.orgId);
+    for (const team of teams) {
+      if (team.managerId === reviewerId && team.memberAgentIds.includes(task.assignedAgentId)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private assertReviewerAllowed(reviewerId: string, task: Task): void {
+    if (!this.isReviewerAllowedForTask(reviewerId, task)) {
+      const reviewerName = this.agentManager?.hasAgent(reviewerId)
+        ? this.agentManager.getAgent(reviewerId).config.name
+        : reviewerId;
+      throw new Error(
+        `Agent "${reviewerName}" (${reviewerId}) is not allowed to review task "${task.title}". ` +
+        `Managers can only review tasks from their own team members or tasks they created/assigned.`
+      );
+    }
+  }
+
   async acceptTask(taskId: string, reviewerAgentId?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -2281,6 +2264,11 @@ export class TaskService {
     // Enforce: reviewer must be different from the assigned worker
     if (reviewerAgentId && task.assignedAgentId && reviewerAgentId === task.assignedAgentId) {
       throw new Error(`Agent ${reviewerAgentId} cannot accept their own task. A different reviewer or human must approve the work.`);
+    }
+
+    // Enforce: managers can only review tasks from their own team or tasks they created
+    if (reviewerAgentId) {
+      this.assertReviewerAllowed(reviewerAgentId, task);
     }
 
     task.status = 'accepted';
@@ -2393,6 +2381,11 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
+    }
+
+    // Enforce: managers can only review tasks from their own team or tasks they created
+    if (author) {
+      this.assertReviewerAllowed(author, task);
     }
 
     const by = author || 'Reviewer';

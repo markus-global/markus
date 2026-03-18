@@ -171,6 +171,8 @@ export class Agent {
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
+  private static readonly NETWORK_RETRY_MAX = 3;
+  private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
   constructor(options: AgentOptions) {
@@ -1027,11 +1029,14 @@ export class Agent {
 
     try {
       const llmStart = Date.now();
-      let response = await this.llmRouter.chat({
-        messages,
-        tools: llmTools.length > 0 ? llmTools : undefined,
-        metadata: this.getLLMMetadata(sessionId),
-      }, this.getEffectiveProvider());
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chat({
+          messages,
+          tools: llmTools.length > 0 ? llmTools : undefined,
+          metadata: this.getLLMMetadata(sessionId),
+        }, this.getEffectiveProvider()),
+        'Chat LLM call',
+      );
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
@@ -1097,7 +1102,7 @@ export class Agent {
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               if (currentActId) {
-                this.emitActivityLog(currentActId, 'tool_start', tc.name, { args: JSON.stringify(tc.arguments) });
+                this.emitActivityLog(currentActId, 'tool_start', tc.name, { arguments: tc.arguments });
               }
               try {
                 let result = await this.executeTool(tc);
@@ -1116,6 +1121,7 @@ export class Agent {
                   this.emitActivityLog(currentActId, 'tool_end', tc.name, {
                     durationMs: Date.now() - toolStart,
                     success: !isToolError,
+                    arguments: tc.arguments,
                     result,
                   });
                 }
@@ -1207,11 +1213,14 @@ export class Agent {
         }
 
         const llmStart2 = Date.now();
-        response = await this.llmRouter.chat({
-          messages: updatedMessages,
-          tools: llmTools.length > 0 ? llmTools : undefined,
-          metadata: this.getLLMMetadata(sessionId),
-        }, this.getEffectiveProvider());
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chat({
+            messages: updatedMessages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(sessionId),
+          }, this.getEffectiveProvider()),
+          'Chat LLM continuation',
+        );
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
@@ -1368,11 +1377,14 @@ export class Agent {
     let lastResponseContent = '';
     try {
       const llmStart = Date.now();
-      let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
-        onEvent,
-        this.getEffectiveProvider(),
-        abortController.signal,
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chatStream(
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
+          onEvent,
+          this.getEffectiveProvider(),
+          abortController.signal,
+        ),
+        'Stream LLM call',
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
@@ -1489,11 +1501,14 @@ export class Agent {
         }
 
         const llmStart2 = Date.now();
-        response = await this.llmRouter.chatStream(
-          { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
-          onEvent,
-          this.getEffectiveProvider(),
-          abortController.signal,
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
+            onEvent,
+            this.getEffectiveProvider(),
+            abortController.signal,
+          ),
+          'Stream LLM continuation',
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
@@ -1738,7 +1753,7 @@ export class Agent {
       isResume
         ? [
             'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).',
-            'If this task has dependency tasks listed, review their notes and deliverables — they contain context and artifacts essential for your work.',
+            '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section, you MUST review all dependency task outputs before continuing. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details. These outputs provide essential background knowledge that your work should build upon.',
             ...(hasErrors ? [
               '',
               '⚠ CRITICAL — LEARN FROM PREVIOUS FAILURES:',
@@ -1749,7 +1764,11 @@ export class Agent {
               'If the errors were caused by malformed output, simplify your output format and validate before submitting.',
             ] : []),
           ].join('\n')
-        : 'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.\nIf this task has dependency tasks listed above, review their notes and deliverables first — they contain context and artifacts essential for your work.',
+        : [
+            'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
+            '',
+            '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section above, you MUST review all dependency task outputs BEFORE starting your own work. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details of each dependency task. These dependency outputs provide essential background knowledge and artifacts that your work should build upon.',
+          ].join('\n'),
       '',
       '## Completion Requirements',
       'Before calling task_submit_review, you MUST update the task notes using task_update with a detailed note that includes:',
@@ -2399,6 +2418,41 @@ export class Agent {
     }
   }
 
+  private static isNetworkError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return msg.includes('enotfound') ||
+      msg.includes('getaddrinfo') ||
+      msg.includes('econnrefused') ||
+      msg.includes('econnreset') ||
+      msg.includes('etimedout') ||
+      msg.includes('fetch failed') ||
+      msg.includes('network') ||
+      msg.includes('socket hang up') ||
+      msg.includes('dns');
+  }
+
+  private async withNetworkRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < Agent.NETWORK_RETRY_MAX; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (!Agent.isNetworkError(error) || attempt >= Agent.NETWORK_RETRY_MAX - 1) {
+          throw error;
+        }
+        const delay = Agent.NETWORK_RETRY_BASE_MS * Math.pow(2, attempt);
+        log.warn(`${label} failed with network error, retrying (${attempt + 1}/${Agent.NETWORK_RETRY_MAX})`, {
+          agentId: this.id,
+          error: String(error).slice(0, 200),
+          delay,
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    throw lastError;
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
@@ -2444,17 +2498,20 @@ export class Agent {
       'memory_save', 'memory_search', 'discover_tools',
     ];
     if (this.config.agentRole === 'manager') {
-      baseTools.push('task_board_health', 'task_cleanup_duplicates', 'task_assign');
+      baseTools.push('task_board_health', 'task_cleanup_duplicates', 'task_assign', 'task_get', 'task_note', 'agent_send_message');
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);
 
     try {
-      const reply = await this.handleMessage(prompt, undefined, undefined, {
-        ephemeral: true,
-        maxHistory: 10,
-        allowedTools: HEARTBEAT_ALLOWED_TOOLS,
-        scenario: 'heartbeat',
-      });
+      const reply = await this.withNetworkRetry(
+        () => this.handleMessage(prompt, undefined, undefined, {
+          ephemeral: true,
+          maxHistory: 10,
+          allowedTools: HEARTBEAT_ALLOWED_TOOLS,
+          scenario: 'heartbeat',
+        }),
+        'Heartbeat',
+      );
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true);
 
@@ -2468,7 +2525,7 @@ export class Agent {
       this.emitActivityLog(activityId, 'error', String(error));
       this.endActivity(activityId);
       this.metricsCollector.recordHeartbeat(false);
-      log.error('Heartbeat failed', { error: String(error) });
+      log.error('Heartbeat failed after retries', { error: String(error) });
     }
   }
 

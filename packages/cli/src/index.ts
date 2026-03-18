@@ -359,6 +359,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   taskService.setAgentManager(agentManager);
 
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);
+  taskService.setOrgService(orgService);
 
   await orgService.createOrganization(config.org.name, 'default', 'default');
 
@@ -451,6 +452,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
+  if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
 
   // Wire storage for chat persistence and auth
   const firstOrgId = 'default';

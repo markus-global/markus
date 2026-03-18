@@ -3,6 +3,9 @@ import type { A2AEnvelope, A2AMessageType } from './protocol.js';
 
 const log = createLogger('a2a-bus');
 
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 1000;
+
 export type A2AHandler = (envelope: A2AEnvelope) => Promise<void>;
 
 /**
@@ -30,32 +33,45 @@ export class A2ABus {
     this.handlers.set(type, existing);
   }
 
+  private async deliverWithRetry(handler: A2AHandler, envelope: A2AEnvelope, label: string): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        await handler(envelope);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < MAX_RETRIES - 1) {
+          const delay = RETRY_BASE_MS * Math.pow(2, attempt);
+          log.warn(`${label} failed, retrying (${attempt + 1}/${MAX_RETRIES})`, {
+            error: String(error).slice(0, 200),
+            delay,
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    log.error(`${label} failed after ${MAX_RETRIES} retries`, { error: String(lastError) });
+  }
+
   async send(envelope: A2AEnvelope): Promise<void> {
     log.debug(`A2A message: ${envelope.type} from=${envelope.from} to=${envelope.to}`, {
       id: envelope.id,
       correlationId: envelope.correlationId,
     });
 
-    // Deliver to specific agent
+    // Deliver to specific agent with retry
     const agentHandler = this.agentEndpoints.get(envelope.to);
     if (agentHandler) {
-      try {
-        await agentHandler(envelope);
-      } catch (error) {
-        log.error(`A2A delivery failed to ${envelope.to}`, { error: String(error) });
-      }
+      await this.deliverWithRetry(agentHandler, envelope, `A2A delivery to ${envelope.to}`);
     } else {
       log.warn(`A2A target agent not found: ${envelope.to}`);
     }
 
-    // Notify type subscribers
+    // Notify type subscribers with retry
     const typeHandlers = this.handlers.get(envelope.type) ?? [];
     for (const handler of typeHandlers) {
-      try {
-        await handler(envelope);
-      } catch (error) {
-        log.error('A2A type handler failed', { type: envelope.type, error: String(error) });
-      }
+      await this.deliverWithRetry(handler, envelope, `A2A type handler (${envelope.type})`);
     }
   }
 

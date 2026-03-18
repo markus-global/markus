@@ -428,6 +428,7 @@ export class ContextEngine {
 
       case 'task_execution':
         lines.push('You are in **task execution** mode. Follow these behavioral rules:');
+        lines.push('- **Check dependencies first**: If your task has dependency tasks, review their deliverables and notes BEFORE starting work. Use `file_read` on deliverable file paths and `task_get` to retrieve full context. Dependency outputs are your essential background knowledge.');
         lines.push('- Be thorough and methodical — this is your dedicated work time.');
         lines.push('- Complete all steps of the task before submitting for review.');
         lines.push('- Update task notes with progress after each significant step using `task_note`.');
@@ -442,6 +443,7 @@ export class ContextEngine {
         lines.push('- Be concise. This is monitoring, not a work session.');
         lines.push('- Compare current state against your last heartbeat summary. Skip unchanged items.');
         lines.push('- NEVER execute actual work, create tasks, or start tasks during heartbeat.');
+        lines.push('- **Review duty**: If you are a manager/reviewer and there are tasks in `review` status where you are the reviewer, inspect and approve/reject them promptly. Only review tasks that are in `review` status — do not review tasks in other statuses.');
         lines.push('- If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
 

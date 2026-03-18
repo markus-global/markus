@@ -1,10 +1,18 @@
 {
-  "id": "team-content",
-  "name": "Content Creation Team",
+  "type": "team",
+  "name": "content-team",
+  "displayName": "Content Creation Team",
+  "version": "1.0.0",
   "description": "A content-focused team with a content strategist who plans, writers who create, and a researcher who provides insights. Ideal for marketing campaigns, documentation projects, and content operations.",
+  "author": "Markus Team",
   "category": "productivity",
   "tags": ["content", "writing", "marketing", "documentation", "creative"],
-  "version": "2.0.0",
-  "author": "Markus Team",
-  "icon": "edit"
+  "icon": "edit",
+  "team": {
+    "members": [
+      { "name": "Content Director", "role": "manager", "roleName": "project-manager", "count": 1, "skills": [] },
+      { "name": "Writer", "role": "worker", "roleName": "content-writer", "count": 2, "skills": [] },
+      { "name": "Researcher", "role": "worker", "roleName": "research-assistant", "count": 1, "skills": [] }
+    ]
+  }
 }

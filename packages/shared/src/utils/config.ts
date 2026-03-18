@@ -18,6 +18,9 @@ export interface MarkusConfig {
     apiPort: number;
     webPort: number;
   };
+  hub?: {
+    url: string;
+  };
   mcpServers?: Record<string, {
     command: string;
     args?: string[];
@@ -39,6 +42,7 @@ const DEFAULT_CONFIG: MarkusConfig = {
     providers: {},
   },
   server: { apiPort: 3001, webPort: 3000 },
+  hub: { url: 'http://localhost:3003' },
 };
 
 export function getDefaultConfigPath(): string {

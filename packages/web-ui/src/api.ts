@@ -470,6 +470,20 @@ export interface AgentHeartbeatInfo {
   intervalMs: number;
 }
 
+export interface RoleFileStatus {
+  file: string;
+  status: 'identical' | 'modified' | 'added_in_template' | 'agent_only';
+}
+
+export interface RoleUpdateStatus {
+  agentId: string;
+  roleId: string;
+  templateId: string;
+  hasTemplate: boolean;
+  isUpToDate: boolean;
+  files: RoleFileStatus[];
+}
+
 export interface AgentConfigInfo {
   llmConfig: { modelMode?: 'default' | 'custom'; primary: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
   computeConfig: { type: string; image?: string; cpu?: number; memoryMb?: number };
@@ -609,6 +623,14 @@ export const api = {
       request<{ ok: boolean }>(`/agents/${id}/files/${encodeURIComponent(filename)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
     updateSystemPrompt: (id: string, systemPrompt: string) =>
       request<{ ok: boolean }>(`/agents/${id}/system-prompt`, { method: 'PUT', body: JSON.stringify({ systemPrompt }) }),
+    roleStatus: (id: string) =>
+      request<RoleUpdateStatus>(`/agents/${id}/role-status`),
+    roleDiff: (id: string, file = 'ROLE.md') =>
+      request<{ file: string; agentContent: string | null; templateContent: string | null }>(`/agents/${id}/role-diff?file=${encodeURIComponent(file)}`),
+    roleSync: (id: string, files?: string[]) =>
+      request<{ agentId: string; success: boolean; error?: string; synced: string[] }>(`/agents/${id}/role-sync`, { method: 'POST', body: JSON.stringify(files ? { files } : {}) }),
+    roleUpdates: () =>
+      request<{ total: number; staleCount: number; stale: RoleUpdateStatus[] }>('/agents/role-updates'),
     addSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills`, { method: 'POST', body: JSON.stringify({ skillName }) }),
     removeSkill: (id: string, skillName: string) =>
@@ -902,6 +924,10 @@ export const api = {
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
   },
   health: () => request<{ status: string; version: string; agents: number }>('/health'),
+  system: {
+    openPath: (path: string) =>
+      request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),
+  },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
   },
@@ -932,10 +958,6 @@ export const api = {
   },
   // marketplace object removed — publishing now goes through Markus Hub
   builder: {
-    chat: (mode: 'agent' | 'team' | 'skill', messages: Array<{ role: string; content: string }>) =>
-      request<{ reply: string; artifact: Record<string, unknown> | null; mode: string }>('/builder/chat', { method: 'POST', body: JSON.stringify({ mode, messages }) }),
-    create: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
-      request('/builder/create', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
     artifacts: {
       list: () =>
         request<{ artifacts: Array<{ type: string; name: string; meta: Record<string, unknown>; path: string; updatedAt: string }> }>('/builder/artifacts'),
@@ -943,10 +965,16 @@ export const api = {
         request<{ type: string; name: string; path: string; files: Record<string, string> }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`),
       save: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
         request<{ type: string; name: string; path: string }>('/builder/artifacts/save', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
+      import: (type: 'agent' | 'team' | 'skill', name: string, files: Record<string, string>, source?: { type: string; hubItemId?: string; url?: string }) =>
+        request<{ type: string; name: string; path: string }>('/builder/artifacts/import', { method: 'POST', body: JSON.stringify({ type, name, files, source }) }),
       install: (type: string, name: string) =>
         request<Record<string, unknown>>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/install`, { method: 'POST' }),
+      uninstall: (type: string, name: string) =>
+        request<{ uninstalled: boolean; removedAgents?: string[]; removedTeamId?: string }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/uninstall`, { method: 'POST' }),
       delete: (type: string, name: string) =>
         request<{ deleted: boolean }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+      installed: () =>
+        request<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>('/builder/artifacts/installed'),
     },
   },
   auth: {
@@ -1213,7 +1241,21 @@ export const wsClient = new WSClient();
 
 // ── Markus Hub API Client ────────────────────────────────────────────────────
 
-const HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'http://localhost:3003';
+let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus-hub.vercel.app';
+
+// Fetch hub URL from server config (overrides default if available)
+request<{ hubUrl: string }>('/settings/hub')
+  .then(r => { if (r.hubUrl) HUB_URL = r.hubUrl; })
+  .catch(() => {});
+
+const HUB_TOKEN_KEY = 'markus_hub_token';
+const HUB_USER_KEY = 'markus_hub_user';
+
+export interface HubUser {
+  id: string;
+  username: string;
+  displayName?: string;
+}
 
 export interface HubItem {
   id: string;
@@ -1233,18 +1275,121 @@ export interface HubItem {
   readme?: string;
 }
 
+export function getHubToken(): string | null {
+  return localStorage.getItem(HUB_TOKEN_KEY);
+}
+
+export function getHubUser(): HubUser | null {
+  try {
+    const raw = localStorage.getItem(HUB_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+export function clearHubAuth(): void {
+  localStorage.removeItem(HUB_TOKEN_KEY);
+  localStorage.removeItem(HUB_USER_KEY);
+}
+
+function saveHubAuth(token: string, user: HubUser): void {
+  localStorage.setItem(HUB_TOKEN_KEY, token);
+  localStorage.setItem(HUB_USER_KEY, JSON.stringify(user));
+}
+
+/**
+ * Open Hub login/register page as a popup window.
+ * Uses a session-based polling mechanism:
+ * 1. Generate a random sessionId, open Hub /auth/connect?session=xxx
+ * 2. User logs in on the Hub page → Hub stores result for this session
+ * 3. Markus polls /api/auth/connect-status?session=xxx until token arrives
+ * Resolves once the token is received and saved; rejects if popup is closed without auth.
+ */
+let _hubAuthPromise: Promise<void> | null = null;
+export function ensureHubAuth(): Promise<void> {
+  if (getHubToken()) return Promise.resolve();
+  if (_hubAuthPromise) return _hubAuthPromise;
+
+  const sessionId = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+  _hubAuthPromise = new Promise<void>((resolve, reject) => {
+    const url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}`;
+    const w = 460, h = 580;
+    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+    const popup = window.open(url, 'markus_hub_auth', `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+
+    let settled = false;
+    const cleanup = () => {
+      clearInterval(pollTimer);
+      clearInterval(closedTimer);
+      _hubAuthPromise = null;
+    };
+
+    const pollTimer = setInterval(async () => {
+      if (settled) return;
+      try {
+        const res = await fetch(`${HUB_URL}/api/auth/connect-status?session=${encodeURIComponent(sessionId)}`);
+        const data = await res.json() as { ready?: boolean; token?: string; user?: HubUser };
+        if (data.ready && data.token && data.user) {
+          settled = true;
+          saveHubAuth(data.token, data.user);
+          cleanup();
+          popup?.close();
+          resolve();
+        }
+      } catch { /* Hub might be offline, keep polling */ }
+    }, 1500);
+
+    const closedTimer = setInterval(() => {
+      if (settled) return;
+      if (popup?.closed) {
+        settled = true;
+        cleanup();
+        if (getHubToken()) { resolve(); } else { reject(new Error('Hub login cancelled')); }
+      }
+    }, 500);
+  });
+
+  return _hubAuthPromise;
+}
+
 async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getHubToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers as Record<string, string> };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${HUB_URL}/api${path}`, {
     ...init,
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers,
   });
   const data = await res.json();
+  if (res.status === 401 && token) {
+    clearHubAuth();
+  }
   if (!res.ok) throw new Error(data.error ?? `Hub HTTP ${res.status}`);
   return data as T;
 }
 
 export const hubApi = {
+  getUrl: () => HUB_URL,
+  isAuthenticated: () => !!getHubToken(),
+  getUser: getHubUser,
+  logout: () => { clearHubAuth(); },
+  /** Open Hub popup for login/register. Resolves when auth is complete. */
+  ensureAuth: ensureHubAuth,
+  login: async (email: string, password: string) => {
+    const data = await hubRequest<{ user: HubUser; token: string }>('/auth/login', {
+      method: 'POST', body: JSON.stringify({ email, password }),
+    });
+    saveHubAuth(data.token, data.user);
+    return data;
+  },
+  register: async (username: string, email: string, password: string) => {
+    const data = await hubRequest<{ user: HubUser; token: string }>('/auth/register', {
+      method: 'POST', body: JSON.stringify({ username, email, password }),
+    });
+    saveHubAuth(data.token, data.user);
+    return data;
+  },
   search: (opts?: { type?: string; q?: string; category?: string; sort?: string; page?: number; limit?: number }) => {
     const params = new URLSearchParams();
     if (opts?.type) params.set('type', opts.type);
@@ -1257,17 +1402,39 @@ export const hubApi = {
     return hubRequest<{ items: HubItem[]; total: number }>(`/items${qs ? `?${qs}` : ''}`);
   },
   getItem: (id: string) => hubRequest<{ item: HubItem }>(`/items/${id}`),
-  download: (id: string) =>
-    hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' }),
-  publish: (data: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config: unknown; readme?: string }) =>
-    hubRequest<{ id: string; name: string }>('/items', { method: 'POST', body: JSON.stringify(data) }),
-  login: (email: string, password: string) =>
-    hubRequest<{ user: { id: string; username: string } }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-  register: (username: string, email: string, password: string) =>
-    hubRequest<{ user: { id: string; username: string } }>('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
-  publishViaProxy: (payload: { itemType: string; name: string; description: string; category?: string; tags?: string[]; config?: unknown; files?: Record<string, string>; readme?: string }) =>
-    request<{ id?: string; name?: string; error?: string }>('/hub/publish', {
-      method: 'POST',
-      body: JSON.stringify({ hubUrl: HUB_URL, payload }),
-    }),
+  download: async (id: string) => {
+    await ensureHubAuth();
+    try {
+      return await hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' });
+    } catch (e) {
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest(`/items/${id}/download`, { method: 'POST' }); }
+      throw e;
+    }
+  },
+  publish: async (data: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; config: unknown; files?: Record<string, string>; readme?: string }) => {
+    await ensureHubAuth();
+    try {
+      return await hubRequest<{ id: string; name: string; slug: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(data) });
+    } catch (e) {
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(data) }); }
+      throw e;
+    }
+  },
+  publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; config?: unknown; files?: Record<string, string>; readme?: string }) => {
+    await ensureHubAuth();
+    try {
+      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
+    } catch (e) {
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      throw e;
+    }
+  },
+  myItems: async () => {
+    if (!getHubToken()) return { items: [] as Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; updatedAt: string }> };
+    return hubRequest<{ items: Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; updatedAt: string }> }>('/items/mine');
+  },
+  deleteItem: async (id: string) => {
+    await ensureHubAuth();
+    return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
+  },
 };

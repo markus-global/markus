@@ -1,9 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, type TaskStatus, type TaskPriority } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type PackageType } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -19,7 +19,6 @@ import {
   type LLMRouter,
   type ReviewService,
   type SkillRegistry,
-  type SkillCategory,
   type TemplateRegistry,
   type WorkflowExecutor,
   type WorkflowDefinition,
@@ -179,6 +178,7 @@ export class APIServer {
   private storage?: StorageBridge;
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
+  private hubUrl = 'https://markus-hub.vercel.app';
   private gateway?: ExternalAgentGateway;
   private gatewaySecret?: string;
   private syncHandler?: GatewaySyncHandler;
@@ -198,7 +198,6 @@ export class APIServer {
     memberIds: string[];
     createdAt: string;
   }> = [];
-
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
@@ -424,6 +423,10 @@ export class APIServer {
 
   setConfigPath(configPath: string): void {
     this.markusConfigPath = configPath;
+  }
+
+  setHubUrl(url: string): void {
+    this.hubUrl = url;
   }
 
   initWorkflowEngine(): WorkflowEngine {
@@ -2047,6 +2050,25 @@ export class APIServer {
             } catch { /* skip */ }
           }
         }
+
+        // Include member agent role files under members/{slug}/
+        const agentManager = this.orgService.getAgentManager();
+        const roleFileNames = ['ROLE.md', 'POLICIES.md', 'CONTEXT.md', 'HEARTBEAT.md'];
+        for (const agentId of team.memberAgentIds ?? []) {
+          try {
+            const agent = agentManager.getAgent(agentId);
+            const roleDir = this.resolveAgentRoleDir(agent);
+            if (!roleDir) continue;
+            const slug = agent.config.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || agentId;
+            for (const fname of roleFileNames) {
+              const fpath = join(roleDir, fname);
+              if (existsSync(fpath)) {
+                try { files[`members/${slug}/${fname}`] = readFileSync(fpath, 'utf-8'); } catch { /* skip */ }
+              }
+            }
+          } catch { /* agent may not exist */ }
+        }
+
         this.json(res, 200, { files, team: { id: team.id, name: team.name, description: team.description } });
       } catch {
         this.json(res, 404, { error: `Team not found: ${teamId}` });
@@ -2301,6 +2323,56 @@ export class APIServer {
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
+      return;
+    }
+
+    // ─── Role Template Versioning & Sync ──────────────────────────────────
+
+    // Check role update status for a single agent
+    if (path.match(/^\/api\/agents\/[^/]+\/role-status$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const status = this.orgService.getAgentManager().checkRoleUpdate(agentId);
+        this.json(res, 200, status);
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Get file-level diff between agent's role and template
+    if (path.match(/^\/api\/agents\/[^/]+\/role-diff$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      const fileName = url.searchParams.get('file') || 'ROLE.md';
+      try {
+        const diff = this.orgService.getAgentManager().getRoleFileDiff(agentId, fileName);
+        this.json(res, 200, diff);
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Sync agent's role files from template
+    if (path.match(/^\/api\/agents\/[^/]+\/role-sync$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const body = await this.readBody(req);
+        const files = Array.isArray(body['files']) ? (body['files'] as string[]) : undefined;
+        const result = this.orgService.getAgentManager().syncRoleFromTemplate(agentId, files);
+        this.json(res, result.success ? 200 : 400, result);
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Batch check: all agents' role update status
+    if (path === '/api/agents/role-updates' && req.method === 'GET') {
+      const results = this.orgService.getAgentManager().checkAllRoleUpdates();
+      const stale = results.filter(r => r.hasTemplate && !r.isUpToDate);
+      this.json(res, 200, { total: results.length, staleCount: stale.length, stale });
       return;
     }
 
@@ -3442,20 +3514,24 @@ export class APIServer {
           return;
         }
 
-        // Supplement manifest.json from metadata if download didn't include one
-        if (!existsSync(join(targetDir, 'manifest.json'))) {
-          const manifestData: Record<string, unknown> = {
+        // Supplement skill.json from metadata if download didn't include one
+        const skillMfPath = join(targetDir, manifestFilename('skill'));
+        const skillSource = { type: (source as 'skillhub' | 'skillssh' | 'local') ?? 'local', url: sourceUrl ?? '' };
+        if (!existsSync(skillMfPath)) {
+          const raw: Record<string, unknown> = {
             name: skillName,
             version: version ?? '1.0.0',
             description: description ?? `Skill: ${skillName}`,
             category: category ?? 'custom',
-            source: source ?? 'unknown',
-            sourceUrl: sourceUrl ?? '',
           };
-          // Read SKILL.md for instructions
-          const instructions = readSkillInstructions(targetDir);
-          if (instructions) manifestData.instructions = instructions;
-          writeFileSync(join(targetDir, 'manifest.json'), JSON.stringify(manifestData, null, 2), 'utf-8');
+          const manifest = buildManifest('skill', raw);
+          manifest.source = skillSource;
+          writeFileSync(skillMfPath, JSON.stringify(manifest, null, 2), 'utf-8');
+        } else {
+          try {
+            const mf = JSON.parse(readFileSync(skillMfPath, 'utf-8'));
+            if (!mf.source) { mf.source = skillSource; writeFileSync(skillMfPath, JSON.stringify(mf, null, 2), 'utf-8'); }
+          } catch { /* skip */ }
         }
 
         // Register into runtime SkillRegistry so the skill is immediately available
@@ -3540,466 +3616,6 @@ export class APIServer {
       return;
     }
 
-    // Builder: Unified AI chat endpoint for agent/team/skill creation
-    if (path === '/api/builder/chat' && req.method === 'POST') {
-      if (!this.llmRouter) {
-        this.json(res, 503, { error: 'LLM router not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const mode = body['mode'] as string;
-      const userMessages = body['messages'] as Array<{ role: string; content: string }>;
-      if (!mode || !['agent', 'team', 'skill'].includes(mode)) {
-        this.json(res, 400, { error: 'mode must be one of: agent, team, skill' });
-        return;
-      }
-      if (!Array.isArray(userMessages) || userMessages.length === 0) {
-        this.json(res, 400, { error: 'messages array is required' });
-        return;
-      }
-
-      // Build dynamic skills/roles context
-      const skillEntries: Array<{ name: string; desc: string; type: string }> = [];
-      const seenSkills = new Set<string>();
-      if (this.skillRegistry) {
-        for (const s of this.skillRegistry.list()) {
-          seenSkills.add(s.name);
-          skillEntries.push({ name: s.name, desc: s.description ?? '', type: s.sourcePath ? 'installed' : 'builtin' });
-        }
-      }
-      for (const dir of WELL_KNOWN_SKILL_DIRS) {
-        for (const { manifest } of discoverSkillsInDir(dir)) {
-          if (seenSkills.has(manifest.name)) continue;
-          seenSkills.add(manifest.name);
-          skillEntries.push({ name: manifest.name, desc: manifest.description ?? '', type: 'installed' });
-        }
-      }
-      const skillTable = skillEntries.map(s => `| \`${s.name}\` | ${s.desc.slice(0, 80)} | ${s.type} |`).join('\n');
-      const availableRoles = this.orgService.listAvailableRoles();
-      const roleList = availableRoles.map(r => `\`${r}\``).join(', ');
-
-      const SYSTEM_PROMPTS: Record<string, string> = {
-        agent: `You are Agent Father — an expert AI agent architect. You help users design and create powerful AI agents through natural conversation.
-
-Your job:
-1. Understand what the user needs — ask clarifying questions about the agent's purpose, expertise, and tools
-2. Design the agent — suggest optimal configuration, system prompt, tools, and environment
-3. When the user is satisfied, output the final configuration as a JSON block
-
-Throughout the conversation, be helpful, proactive, and suggest best practices. When you have enough information, generate the configuration.
-
-When outputting the final configuration, wrap it in a JSON code block with these fields:
-\`\`\`json
-{
-  "name": "Agent Name",
-  "description": "What this agent does",
-  "roleName": "developer",
-  "agentRole": "manager" | "worker",
-  "category": "development" | "devops" | "management" | "productivity" | "general",
-  "skills": "skill-id-1,skill-id-2",
-  "tags": "comma-separated tags",
-  "systemPrompt": "Detailed system prompt...",
-  "llmProvider": "anthropic" | "openai" | "google" | "",
-  "llmModel": "model name or empty",
-  "temperature": 0.7,
-  "toolWhitelist": ["shell_execute", "file_read", "file_write", "file_edit", "web_fetch", "web_search", "git_status", "git_diff", "git_commit", "git_log", "a2a_send", "a2a_list_colleagues", "task_create", "task_update", "task_list", "memory_save", "memory_search", "memory_list", "mcp_call"],
-  "requiredEnv": ["git", "node", "python3", "docker", "pnpm", "java", "go"]
-}
-\`\`\`
-
-## Available Skills (from system)
-| Skill ID | Description | Type |
-|----------|-------------|------|
-${skillTable}
-
-CRITICAL: The \`skills\` field must ONLY contain skill IDs from the table above. Do NOT invent skill names or use generic concepts.
-
-## Available Role Templates
-${roleList}
-
-The \`roleName\` field must be one of the role templates listed above.
-
-Always be conversational first. Only output the JSON when you have enough context. If the user's first message is already very detailed, you may output the JSON right away along with your explanation.`,
-
-        team: `You are Team Factory — an expert AI team composition architect. You design optimal agent teams by creating **specialized, purpose-built agents** through natural conversation.
-
-## Core Philosophy
-Every agent in a team must be a specialist. Do NOT simply pick generic templates and give them names. Instead, design each agent with a unique identity, detailed system prompt, and tailored capabilities.
-
-Your job:
-1. Understand the team's purpose — ask about goals, domain, scale, and coordination needs
-2. Design specialized agents — for each member, craft a detailed systemPrompt that defines their unique expertise, workflow, and behavioral guidelines
-3. Compose the team — define collaboration patterns and output the final configuration
-
-When outputting the final configuration, wrap it in a JSON code block:
-\`\`\`json
-{
-  "name": "Team Name",
-  "description": "Team purpose",
-  "category": "development" | "devops" | "management" | "productivity" | "general",
-  "tags": "comma-separated tags",
-  "announcements": "Initial team announcement (Markdown). Introduce the team mission, current priorities, and important notices.",
-  "norms": "Team working norms (Markdown). Communication patterns, quality standards, collaboration protocols, review expectations.",
-  "members": [
-    {
-      "name": "Agent Display Name",
-      "role": "manager" | "worker",
-      "count": 1,
-      "roleName": "base-role-template",
-      "description": "What this agent does in the team",
-      "skills": "skill-id-1,skill-id-2",
-      "systemPrompt": "Comprehensive system prompt defining this agent's unique personality, expertise, domain knowledge, workflow, output standards, and collaboration guidelines...",
-      "temperature": 0.7
-    }
-  ]
-}
-\`\`\`
-
-IMPORTANT: The \`announcements\` and \`norms\` fields are REQUIRED. They are stored as Markdown files and injected into every team member's context. Write substantive content — not placeholders.
-
-## Available Role Templates
-${roleList}
-
-The \`roleName\` field must be one of the role templates listed above.
-
-## Available Skills (from system)
-| Skill ID | Description | Type |
-|----------|-------------|------|
-${skillTable}
-
-CRITICAL: The \`skills\` field must ONLY contain skill IDs from the table above. Do NOT invent skill names.
-
-CRITICAL: Do NOT use \`templateId\`. Always use \`roleName\` + \`systemPrompt\`. Every member MUST have a detailed \`systemPrompt\` (at least 3-5 paragraphs). A team of generic agents with different names is useless — each agent must have deep, specialized expertise in its systemPrompt.
-
-Every team needs exactly one manager and at least one worker. Be conversational and proactive.`,
-
-        skill: `You are Skill Architect — an expert at creating agent skills following the Agent Skills open standard.
-
-A skill is a SKILL.md file that teaches agents how to accomplish specific tasks using their existing tools (shell_execute, file_read, file_write, web_fetch, web_search, gui, etc.). Skills contain step-by-step instructions, not executable code.
-
-Your job:
-1. Understand what capability the user wants to create — ask about use cases, workflows, and expected behavior
-2. Design the skill — plan the step-by-step instructions that guide an agent to accomplish the task using existing tools
-3. When ready, output the final SKILL.md content in a markdown code block
-
-When outputting the final skill, wrap it in a markdown code block with the \`skill\` language tag:
-\`\`\`skill
----
-name: skill-name-kebab-case
-description: When and why an agent should use this skill
----
-
-# Skill Name
-
-## Overview
-Brief description of what this skill helps agents accomplish.
-
-## Instructions
-Step-by-step instructions for the agent to follow, including:
-- CLI commands to run via shell_execute
-- Files to read or create
-- Web resources to fetch
-- Patterns, tips, and error handling guidance
-
-## Examples
-Example workflows or command sequences.
-\`\`\`
-
-Be conversational. Help the user think through the workflow, edge cases, and what existing tools the agent will use. If the user's request is clear, generate the SKILL.md immediately along with your explanation.`,
-      };
-
-      try {
-        const llmMessages = [
-          { role: 'system' as const, content: SYSTEM_PROMPTS[mode]! },
-          ...userMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-        ];
-
-        const response = await this.llmRouter.chat({
-          messages: llmMessages,
-          maxTokens: 4000,
-          temperature: 0.7,
-        });
-
-        const reply = response.content?.trim() ?? '';
-
-        // Try to extract artifact from the reply
-        let artifact: Record<string, unknown> | null = null;
-
-        if (mode === 'skill') {
-          // Extract SKILL.md content from ```skill code block
-          const skillMatch = reply.match(/```skill\s*\n([\s\S]*?)\n```/);
-          if (skillMatch?.[1]) {
-            const skillMd = skillMatch[1].trim();
-            const nameMatch = skillMd.match(/^---\s*\n[\s\S]*?name:\s*(.+)[\s\S]*?\n---/m);
-            const descMatch = skillMd.match(/^---\s*\n[\s\S]*?description:\s*(.+)[\s\S]*?\n---/m);
-            artifact = {
-              name: nameMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? 'unnamed-skill',
-              description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, '') ?? '',
-              skillMd,
-            };
-          }
-        } else {
-          // JSON artifact for team/prompt modes
-          const jsonMatch = reply.match(/```json\s*\n([\s\S]*?)\n```/);
-          if (jsonMatch?.[1]) {
-            try { artifact = JSON.parse(jsonMatch[1]); } catch { /* no valid JSON */ }
-          }
-        }
-
-        this.json(res, 200, { reply, artifact, mode });
-      } catch (err) {
-        this.json(res, 500, { error: `Chat failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // Builder: Create artifact from chat — actually creates real, usable resources
-    if (path === '/api/builder/create' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const mode = body['mode'] as string;
-      const artifact = body['artifact'] as Record<string, unknown>;
-      if (!mode || !artifact) {
-        this.json(res, 400, { error: 'mode and artifact are required' });
-        return;
-      }
-
-      try {
-        if (mode === 'agent') {
-          // Hire a real agent with the custom systemPrompt written as ROLE.md
-          const agentManager = this.orgService.getAgentManager();
-          const agentName = (artifact.name as string) ?? 'New Agent';
-          const skills = typeof artifact.skills === 'string'
-            ? (artifact.skills as string).split(',').map(s => s.trim()).filter(Boolean)
-            : [];
-
-          const requestedRole = (artifact.roleName as string) ?? 'developer';
-          const knownRoles = this.orgService.listAvailableRoles();
-          const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
-
-          const agent = await this.orgService.hireAgent({
-            name: agentName,
-            roleName,
-            orgId: 'default',
-            teamId: body['teamId'] as string | undefined,
-            agentRole: (artifact.agentRole as 'manager' | 'worker') ?? 'worker',
-            skills,
-          });
-
-          const artifactFiles = artifact.files as Record<string, string> | undefined;
-          const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
-          if (artifactFiles && Object.keys(artifactFiles).length > 0) {
-            mkdirSync(agentRoleDir, { recursive: true });
-            for (const [filename, content] of Object.entries(artifactFiles)) {
-              writeFileSync(join(agentRoleDir, filename), content);
-            }
-            agent.reloadRole();
-          } else {
-            const customPrompt = (artifact.systemPrompt as string) ?? '';
-            if (customPrompt) {
-              mkdirSync(agentRoleDir, { recursive: true });
-              writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${agentName}\n\n${customPrompt}`);
-              agent.reloadRole();
-            }
-          }
-
-          await agentManager.startAgent(agent.id);
-
-          // Record as a deliverable so it appears in the Deliverables/Knowledge page
-          if (this.deliverableService) {
-            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'agents');
-            mkdirSync(artifactPath, { recursive: true });
-            const safeName = agentName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-            const filePath = join(artifactPath, `${safeName}.json`);
-            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
-            this.deliverableService.create({
-              type: 'document',
-              title: `Agent: ${agentName}`,
-              summary: (artifact.description as string) ?? `Agent "${agentName}" created via Builder`,
-              reference: filePath,
-              artifactType: 'agent',
-              artifactData: artifact,
-              tags: ['builder', 'agent'],
-            }).catch(err => log.warn('Failed to create deliverable for builder agent', { error: String(err) }));
-          }
-
-          this.json(res, 201, {
-            agent: { id: agent.id, name: agent.config.name, role: agent.role.name, status: agent.getState().status },
-          });
-
-        } else if (mode === 'team') {
-          // Create a real team and deploy specialized agents for each member
-          const agentManager = this.orgService.getAgentManager();
-          const teamName = (artifact.name as string) ?? 'New Team';
-          const team = await this.orgService.createTeam('default', teamName, (artifact.description as string) ?? '');
-          this.ws?.broadcast({
-            type: 'chat:group_created',
-            payload: { chatId: `group:${team.id}`, name: teamName, creatorId: '', creatorName: '' },
-            timestamp: new Date().toISOString(),
-          });
-
-          const teamFiles = artifact.files as Record<string, string> | undefined;
-          const teamAnnouncements = teamFiles?.['ANNOUNCEMENT.md'] ?? (artifact.announcements as string) ?? '';
-          const teamNorms = teamFiles?.['NORMS.md'] ?? (artifact.norms as string) ?? '';
-          this.orgService.ensureTeamDataDir(team.id, teamAnnouncements, teamNorms);
-
-          const members = Array.isArray(artifact.members) ? artifact.members as Array<Record<string, unknown>> : [];
-          const createdAgents: Array<{ id: string; name: string; role: string }> = [];
-
-          for (const member of members) {
-            const count = (member.count as number) ?? 1;
-            const memberRole = (member.role as 'manager' | 'worker') ?? 'worker';
-            const memberName = (member.name as string) ?? 'Agent';
-
-            // New format: roleName directly specified; fallback to templateId for backward compat
-            const knownRoles = this.orgService.listAvailableRoles();
-            let roleName = 'developer';
-            const directRoleName = member.roleName as string | undefined;
-            const templateId = member.templateId as string | undefined;
-            if (directRoleName && knownRoles.includes(directRoleName)) {
-              roleName = directRoleName;
-            } else if (templateId) {
-              const registryHit = this.templateRegistry?.get(templateId);
-              if (registryHit) {
-                roleName = registryHit.roleId;
-              } else if (knownRoles.includes(templateId)) {
-                roleName = templateId;
-              }
-            }
-
-            const memberSkills = typeof member.skills === 'string'
-              ? (member.skills as string).split(',').map(s => s.trim()).filter(Boolean)
-              : [];
-            const memberFiles = member.files as Record<string, string> | undefined;
-            const customPrompt = (member.systemPrompt as string) ?? '';
-
-            for (let i = 0; i < count; i++) {
-              const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
-
-              const agent = await this.orgService.hireAgent({
-                name: displayName,
-                roleName,
-                orgId: 'default',
-                teamId: team.id,
-                agentRole: memberRole,
-                skills: memberSkills.length > 0 ? memberSkills : undefined,
-              });
-
-              const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
-              if (memberFiles && Object.keys(memberFiles).length > 0) {
-                mkdirSync(agentRoleDir, { recursive: true });
-                for (const [filename, content] of Object.entries(memberFiles)) {
-                  writeFileSync(join(agentRoleDir, filename), content);
-                }
-                agent.reloadRole();
-              } else if (customPrompt) {
-                mkdirSync(agentRoleDir, { recursive: true });
-                writeFileSync(join(agentRoleDir, 'ROLE.md'), `# ${displayName}\n\n${customPrompt}`);
-                agent.reloadRole();
-              }
-
-              if (memberRole === 'manager') {
-                await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });
-              }
-
-              await agentManager.startAgent(agent.id);
-              createdAgents.push({ id: agent.id, name: agent.config.name, role: agent.role.name });
-            }
-          }
-
-          // Record as a deliverable so it appears in the Deliverables/Knowledge page
-          if (this.deliverableService) {
-            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'teams');
-            mkdirSync(artifactPath, { recursive: true });
-            const safeName = teamName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-            const filePath = join(artifactPath, `${safeName}.json`);
-            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
-            this.deliverableService.create({
-              type: 'document',
-              title: `Team: ${teamName}`,
-              summary: (artifact.description as string) ?? `Team "${teamName}" created via Builder`,
-              reference: filePath,
-              artifactType: 'team',
-              artifactData: artifact,
-              tags: ['builder', 'team'],
-            }).catch(err => log.warn('Failed to create deliverable for builder team', { error: String(err) }));
-          }
-
-          this.json(res, 201, { team: { id: team.id, name: teamName }, agents: createdAgents });
-
-        } else if (mode === 'skill') {
-          const skillName = (artifact.name as string) ?? 'unnamed-skill';
-          const description = (artifact.description as string) ?? `Skill: ${skillName}`;
-          const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-');
-          const skillDir = join(homedir(), '.markus', 'skills', safeName);
-          mkdirSync(skillDir, { recursive: true });
-
-          const skillFiles = artifact.files as Record<string, string> | undefined;
-          let skillMd = '';
-
-          if (skillFiles && Object.keys(skillFiles).length > 0) {
-            for (const [filename, content] of Object.entries(skillFiles)) {
-              writeFileSync(join(skillDir, filename), content, 'utf-8');
-            }
-            skillMd = skillFiles['SKILL.md'] ?? '';
-          } else {
-            skillMd = (artifact.skillMd as string) ?? '';
-            writeFileSync(join(skillDir, 'SKILL.md'), skillMd, 'utf-8');
-          }
-
-          const instructions = skillMd.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
-
-          if (!skillFiles?.['manifest.json']) {
-            const manifest = {
-              name: skillName,
-              version: '1.0.0',
-              description,
-              author: 'AI Generated',
-              category: 'custom' as SkillCategory,
-              source: 'builder',
-              instructions: instructions || undefined,
-              sourcePath: skillDir,
-            };
-            writeFileSync(join(skillDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-          }
-
-          if (this.skillRegistry) {
-            try {
-              const manifestPath = join(skillDir, 'manifest.json');
-              const manifestData = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-              this.skillRegistry.register({ manifest: manifestData });
-            } catch (regErr) {
-              log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
-            }
-          }
-
-          // Record as a deliverable so it appears in the Deliverables/Knowledge page
-          if (this.deliverableService) {
-            const artifactPath = join(homedir(), '.markus', 'builder-artifacts', 'skills');
-            mkdirSync(artifactPath, { recursive: true });
-            const filePath = join(artifactPath, `${safeName}.json`);
-            writeFileSync(filePath, JSON.stringify(artifact, null, 2), 'utf-8');
-            this.deliverableService.create({
-              type: 'document',
-              title: `Skill: ${skillName}`,
-              summary: (artifact.description as string) ?? `Skill "${skillName}" created via Builder`,
-              reference: filePath,
-              artifactType: 'skill',
-              artifactData: artifact,
-              tags: ['builder', 'skill'],
-            }).catch(err => log.warn('Failed to create deliverable for builder skill', { error: String(err) }));
-          }
-
-          this.json(res, 201, { skill: { name: skillName, path: skillDir, status: 'registered' } });
-
-        } else {
-          this.json(res, 400, { error: `Unknown mode: ${mode}` });
-        }
-      } catch (err) {
-        this.json(res, 500, { error: `Create failed: ${String(err)}` });
-      }
-      return;
-    }
-
     // ── Builder Artifacts: directory-based package management ──────────────
 
     // GET /api/builder/artifacts — scan all builder artifacts
@@ -4008,6 +3624,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         const baseDir = join(homedir(), '.markus', 'builder-artifacts');
         const types = ['agents', 'teams', 'skills'] as const;
         const artifacts: Array<{ type: string; name: string; meta: Record<string, unknown>; path: string; updatedAt: string }> = [];
+        const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
 
         for (const typeDir of types) {
           const dir = join(baseDir, typeDir);
@@ -4015,13 +3632,9 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           for (const entry of readdirSync(dir, { withFileTypes: true })) {
             if (!entry.isDirectory()) continue;
             const artDir = join(dir, entry.name);
-            const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
-            let meta: Record<string, unknown> = { name: entry.name };
-            const metaFile = type === 'team' ? 'team.json' : type === 'skill' ? 'manifest.json' : 'meta.json';
-            const metaPath = join(artDir, metaFile);
-            if (existsSync(metaPath)) {
-              try { meta = JSON.parse(readFileSync(metaPath, 'utf-8')); } catch { /* ignore */ }
-            }
+            const type = (typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill') as PackageType;
+            const manifest = readManifest(artDir, type, fsHelper);
+            const meta: Record<string, unknown> = manifest ? { ...manifest } : { name: entry.name };
             let updatedAt = new Date().toISOString();
             try { updatedAt = statSync(artDir).mtime.toISOString(); } catch { /* ignore */ }
             artifacts.push({ type, name: entry.name, meta, path: artDir, updatedAt });
@@ -4038,10 +3651,10 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
 
     // GET /api/builder/artifacts/:type/:name — read one artifact (all files)
     {
-      const artMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([\w-]+)$/);
+      const artMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/);
       if (artMatch && req.method === 'GET') {
         const rawType = artMatch[1]!;
-        const name = artMatch[2]!;
+        const name = decodeURIComponent(artMatch[2]!);
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
         if (!existsSync(artDir)) {
@@ -4070,91 +3683,163 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       }
     }
 
+    // GET /api/builder/artifacts/installed — detect which artifacts have been installed
+    if (path === '/api/builder/artifacts/installed' && req.method === 'GET') {
+      try {
+        const installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> = {};
+        const agentManager = this.orgService.getAgentManager();
+        const dataDir = agentManager.getDataDir();
+
+        // Scan agents for .role-origin.json markers
+        for (const agentInfo of agentManager.listAgents()) {
+          const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
+          if (existsSync(originPath)) {
+            try {
+              const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
+              if (origin.source === 'builder-artifact' && origin.artifact) {
+                const artName = origin.artifact as string;
+                let artType = origin.artifactType as string | undefined;
+                if (!artType) {
+                  try {
+                    const agentObj = agentManager.getAgent(agentInfo.id);
+                    artType = agentObj.config.teamId ? 'team' : 'agent';
+                  } catch { artType = 'agent'; }
+                }
+                if (artType === 'team') {
+                  const teamKey = `team/${artName}`;
+                  if (!installed[teamKey]) installed[teamKey] = { agentIds: [] };
+                  installed[teamKey].agentIds!.push(agentInfo.id);
+                  if (!installed[teamKey].teamId) {
+                    try {
+                      const agentObj = agentManager.getAgent(agentInfo.id);
+                      if (agentObj.config.teamId) installed[teamKey].teamId = agentObj.config.teamId;
+                    } catch { /* skip */ }
+                  }
+                } else {
+                  installed[`agent/${artName}`] = { agentId: agentInfo.id };
+                }
+              }
+            } catch { /* skip invalid */ }
+          }
+        }
+
+        // Scan skills: check builder-artifacts paired with installed skills
+        const skillArtDir = join(homedir(), '.markus', 'builder-artifacts', 'skills');
+        const skillsDir = join(homedir(), '.markus', 'skills');
+        if (existsSync(skillArtDir)) {
+          try {
+            for (const entry of readdirSync(skillArtDir, { withFileTypes: true })) {
+              if (entry.isDirectory() && existsSync(join(skillsDir, entry.name))) {
+                installed[`skill/${entry.name}`] = {};
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        // Also detect skills installed directly (skillhub/skillssh/builtin) without builder-artifacts
+        if (existsSync(skillsDir)) {
+          try {
+            for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+              const key = `skill/${entry.name}`;
+              if (entry.isDirectory() && !installed[key]) {
+                installed[key] = {};
+              }
+            }
+          } catch { /* ignore */ }
+        }
+
+        this.json(res, 200, { installed });
+      } catch (err) {
+        this.json(res, 500, { error: `Scan failed: ${String(err)}` });
+      }
+      return;
+    }
+
     // POST /api/builder/artifacts/save — save JSON artifact as directory-based package
     if (path === '/api/builder/artifacts/save' && req.method === 'POST') {
       const body = await this.readBody(req);
       const mode = body['mode'] as string;
       const artifact = body['artifact'] as Record<string, unknown>;
-      if (!mode || !artifact) {
-        this.json(res, 400, { error: 'mode and artifact are required' });
+      if (!mode || !['agent', 'team', 'skill'].includes(mode) || !artifact) {
+        this.json(res, 400, { error: 'mode must be agent|team|skill and artifact is required' });
         return;
       }
 
       try {
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
-        const rawName = (artifact.name as string) ?? `${mode}-unnamed`;
-        const safeName = rawName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, safeName);
+        const pkgType = mode as PackageType;
+        const manifest = buildManifest(pkgType, artifact);
+        if (!manifest.source) manifest.source = { type: 'local' };
+        const mfName = manifestFilename(pkgType);
+        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, manifest.name);
         mkdirSync(artDir, { recursive: true });
+        writeFileSync(join(artDir, mfName), JSON.stringify(manifest, null, 2), 'utf-8');
 
-        if (mode === 'agent') {
-          const meta = {
-            name: artifact.name,
-            description: artifact.description,
-            roleName: artifact.roleName,
-            tags: artifact.tags,
-            llmProvider: artifact.llmProvider,
-            llmModel: artifact.llmModel,
-            requiredEnv: artifact.requiredEnv,
-          };
-          writeFileSync(join(artDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
-          const files = artifact.files as Record<string, string> | undefined;
-          if (files) {
-            for (const [filename, content] of Object.entries(files)) {
-              writeFileSync(join(artDir, filename), content, 'utf-8');
+        // Write content files from `files` map
+        const artFiles = artifact.files as Record<string, string> | undefined;
+        if (artFiles) {
+          for (const [fn, c] of Object.entries(artFiles)) {
+            if (fn === mfName) continue;
+            const filePath = join(artDir, fn);
+            mkdirSync(dirname(filePath), { recursive: true });
+            writeFileSync(filePath, c, 'utf-8');
+          }
+        }
+
+        // Team: extract announcement, norms, and member role files from config
+        if (mode === 'team') {
+          const fileSet = new Set(artFiles ? Object.keys(artFiles) : []);
+
+          // Write ANNOUNCEMENT.md / NORMS.md from config fields if not already in files
+          const announcement = artifact.announcement as string | undefined;
+          if (announcement && !fileSet.has('ANNOUNCEMENT.md')) {
+            writeFileSync(join(artDir, 'ANNOUNCEMENT.md'), announcement, 'utf-8');
+          }
+          const norms = artifact.norms as string | undefined;
+          if (norms && !fileSet.has('NORMS.md')) {
+            writeFileSync(join(artDir, 'NORMS.md'), norms, 'utf-8');
+          }
+
+          // Write member role files from config if not already written via files map
+          const rawMembers = (Array.isArray((artifact.team as Record<string, unknown>)?.members)
+            ? (artifact.team as Record<string, unknown>).members
+            : Array.isArray(artifact.members) ? artifact.members : []) as Array<Record<string, unknown>>;
+          for (const m of rawMembers) {
+            const mName = (m.name as string) ?? 'Agent';
+            const slug = mName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'agent';
+            const memberDir = join(artDir, 'members', slug);
+            const roleContent = (m.roleContent as string) || (m.role_md as string);
+            const policiesContent = (m.policiesContent as string) || (m.policies_md as string);
+            const contextContent = (m.contextContent as string) || (m.context_md as string);
+            if (roleContent && !fileSet.has(`members/${slug}/ROLE.md`)) {
+              mkdirSync(memberDir, { recursive: true });
+              writeFileSync(join(memberDir, 'ROLE.md'), roleContent, 'utf-8');
+            }
+            if (policiesContent && !fileSet.has(`members/${slug}/POLICIES.md`)) {
+              mkdirSync(memberDir, { recursive: true });
+              writeFileSync(join(memberDir, 'POLICIES.md'), policiesContent, 'utf-8');
+            }
+            if (contextContent && !fileSet.has(`members/${slug}/CONTEXT.md`)) {
+              mkdirSync(memberDir, { recursive: true });
+              writeFileSync(join(memberDir, 'CONTEXT.md'), contextContent, 'utf-8');
             }
           }
-        } else if (mode === 'team') {
-          const teamMeta = {
-            name: artifact.name,
-            description: artifact.description,
-            category: artifact.category,
-            tags: artifact.tags,
-          };
-          writeFileSync(join(artDir, 'team.json'), JSON.stringify(teamMeta, null, 2), 'utf-8');
-          const topFiles = artifact.files as Record<string, string> | undefined;
-          if (topFiles) {
-            for (const [filename, content] of Object.entries(topFiles)) {
-              writeFileSync(join(artDir, filename), content, 'utf-8');
+
+          // Legacy: write explicit memberFiles if provided in JSON
+          const memberFiles = artifact.memberFiles as Record<string, Record<string, string>> | undefined;
+          if (memberFiles) {
+            for (const [slug, files] of Object.entries(memberFiles)) {
+              const memberDir = join(artDir, 'members', slug);
+              mkdirSync(memberDir, { recursive: true });
+              for (const [fn, c] of Object.entries(files)) writeFileSync(join(memberDir, fn), c, 'utf-8');
             }
           }
-          const members = (artifact.members as Array<Record<string, unknown>>) ?? [];
-          writeFileSync(join(artDir, 'members.json'), JSON.stringify(
-            members.map(m => ({ name: m.name, role: m.role, roleName: m.roleName, count: m.count, skills: m.skills })),
-            null, 2,
-          ), 'utf-8');
-          for (const member of members) {
-            const memberName = ((member.name as string) ?? 'agent').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-            const memberDir = join(artDir, 'members', memberName);
-            mkdirSync(memberDir, { recursive: true });
-            const memberFiles = member.files as Record<string, string> | undefined;
-            if (memberFiles) {
-              for (const [filename, content] of Object.entries(memberFiles)) {
-                writeFileSync(join(memberDir, filename), content, 'utf-8');
-              }
-            }
-          }
-        } else if (mode === 'skill') {
-          const files = artifact.files as Record<string, string> | undefined;
-          if (files) {
-            for (const [filename, content] of Object.entries(files)) {
-              writeFileSync(join(artDir, filename), content, 'utf-8');
-            }
-          }
-          if (!files?.['manifest.json']) {
-            const manifest = { name: safeName, version: '1.0.0', description: artifact.description, skillFile: 'SKILL.md' };
-            writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
-          }
-        } else {
-          this.json(res, 400, { error: `Unknown mode: ${mode}` });
-          return;
         }
 
         if (this.deliverableService) {
           this.deliverableService.create({
             type: 'document',
-            title: `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${rawName}`,
-            summary: (artifact.description as string) ?? `${mode} "${rawName}" saved via Builder`,
+            title: `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${manifest.displayName}`,
+            summary: (artifact.description as string) ?? manifest.description ?? `${mode} saved via Builder`,
             reference: artDir,
             artifactType: mode as 'agent' | 'team' | 'skill',
             artifactData: artifact,
@@ -4162,19 +3847,60 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
           }).catch(err => log.warn('Failed to create deliverable for builder artifact', { error: String(err) }));
         }
 
-        this.json(res, 201, { type: mode, name: safeName, path: artDir });
+        this.json(res, 201, { type: mode, name: manifest.name, path: artDir });
       } catch (err) {
         this.json(res, 500, { error: `Save failed: ${String(err)}` });
       }
       return;
     }
 
+    // POST /api/builder/artifacts/import — write a bundle of files directly to artifact directory
+    if (path === '/api/builder/artifacts/import' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const type = body['type'] as string;
+      const name = body['name'] as string;
+      const files = body['files'] as Record<string, string> | undefined;
+      const source = body['source'] as { type: string; hubItemId?: string; url?: string } | undefined;
+      if (!type || !['agent', 'team', 'skill'].includes(type) || !name || !files) {
+        this.json(res, 400, { error: 'type (agent|team|skill), name, and files are required' });
+        return;
+      }
+      try {
+        const typeDir = type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills';
+        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
+        mkdirSync(artDir, { recursive: true });
+        for (const [fn, content] of Object.entries(files)) {
+          const filePath = join(artDir, fn);
+          mkdirSync(dirname(filePath), { recursive: true });
+          writeFileSync(filePath, content, 'utf-8');
+        }
+
+        // Write source tracking into manifest if source provided
+        if (source) {
+          const mfName = manifestFilename(type as PackageType);
+          const mfPath = join(artDir, mfName);
+          if (existsSync(mfPath)) {
+            try {
+              const mf = JSON.parse(readFileSync(mfPath, 'utf-8'));
+              mf.source = source;
+              writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
+            } catch { /* skip if manifest invalid */ }
+          }
+        }
+
+        this.json(res, 201, { type, name, path: artDir });
+      } catch (err) {
+        this.json(res, 500, { error: `Import failed: ${String(err)}` });
+      }
+      return;
+    }
+
     // POST /api/builder/artifacts/:type/:name/install — deploy from package to runtime
     {
-      const installMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([\w-]+)\/install$/);
+      const installMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/install$/);
       if (installMatch && req.method === 'POST') {
         const rawType = installMatch[1]!;
-        const name = installMatch[2]!;
+        const name = decodeURIComponent(installMatch[2]!);
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
         const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
@@ -4185,38 +3911,49 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
         }
 
         try {
+          const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
+          const installType = type as PackageType;
+          const manifest = readManifest(artDir, installType, fsHelper);
+          if (!manifest) {
+            this.json(res, 400, { error: `No ${manifestFilename(installType)} found in artifact package` });
+            return;
+          }
+
+          const validationErrors = validateManifest(manifest);
+          if (validationErrors.length > 0) {
+            this.json(res, 400, { error: `Invalid manifest: ${validationErrors.join('; ')}` });
+            return;
+          }
+
+          const mfName = manifestFilename(installType);
+
           if (type === 'agent') {
             const agentManager = this.orgService.getAgentManager();
-            const metaPath = join(artDir, 'meta.json');
-            let meta: Record<string, unknown> = {};
-            if (existsSync(metaPath)) {
-              try { meta = JSON.parse(readFileSync(metaPath, 'utf-8')); } catch { /* */ }
-            }
-            const agentName = (meta.name as string) ?? name;
-            const requestedRole = (meta.roleName as string) ?? 'developer';
+            const agentName = manifest.displayName ?? manifest.name ?? name;
             const knownRoles = this.orgService.listAvailableRoles();
+            const requestedRole = manifest.agent?.roleName ?? 'developer';
             const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
-            const skills = typeof meta.skills === 'string'
-              ? (meta.skills as string).split(',').map(s => s.trim()).filter(Boolean)
-              : [];
+            const skills = manifest.dependencies?.skills ?? [];
+            const agentRole = manifest.agent?.agentRole ?? 'worker';
 
             const agent = await this.orgService.hireAgent({
               name: agentName,
               roleName,
               orgId: 'default',
-              agentRole: 'worker',
+              agentRole,
               skills,
             });
 
             const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
             mkdirSync(agentRoleDir, { recursive: true });
             for (const fname of readdirSync(artDir)) {
-              if (fname === 'meta.json') continue;
+              if (fname === mfName) continue;
               const srcFile = join(artDir, fname);
               if (statSync(srcFile).isFile()) {
                 copyFileSync(srcFile, join(agentRoleDir, fname));
               }
             }
+            writeFileSync(join(agentRoleDir, '.role-origin.json'), JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: name, artifactType: 'agent' }));
             agent.reloadRole();
             await agentManager.startAgent(agent.id);
 
@@ -4224,13 +3961,8 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
 
           } else if (type === 'team') {
             const agentManager = this.orgService.getAgentManager();
-            const teamMetaPath = join(artDir, 'team.json');
-            let teamMeta: Record<string, unknown> = {};
-            if (existsSync(teamMetaPath)) {
-              try { teamMeta = JSON.parse(readFileSync(teamMetaPath, 'utf-8')); } catch { /* */ }
-            }
-            const teamName = (teamMeta.name as string) ?? name;
-            const team = await this.orgService.createTeam('default', teamName, (teamMeta.description as string) ?? '');
+            const teamName = manifest.displayName ?? manifest.name ?? name;
+            const team = await this.orgService.createTeam('default', teamName, manifest.description ?? '');
             this.ws?.broadcast({
               type: 'chat:group_created',
               payload: { chatId: `group:${team.id}`, name: teamName, creatorId: '', creatorName: '' },
@@ -4243,27 +3975,16 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
             const norms = existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : '';
             this.orgService.ensureTeamDataDir(team.id, announcements, norms);
 
-            const membersPath = join(artDir, 'members.json');
-            let members: Array<Record<string, unknown>> = [];
-            if (existsSync(membersPath)) {
-              try {
-                const parsed = JSON.parse(readFileSync(membersPath, 'utf-8'));
-                members = Array.isArray(parsed) ? parsed : Array.isArray(parsed.members) ? parsed.members : [];
-              } catch { /* */ }
-            }
-
+            const members = manifest.team?.members ?? [];
+            const knownRoles = this.orgService.listAvailableRoles();
             const createdAgents: Array<{ id: string; name: string; role: string }> = [];
-            for (const member of members) {
-              const count = (member.count as number) ?? 1;
-              const memberRole = (member.role as 'manager' | 'worker') ?? 'worker';
-              const memberName = (member.name as string) ?? 'Agent';
-              const knownRoles = this.orgService.listAvailableRoles();
-              const requestedRole = (member.roleName as string) ?? 'developer';
-              const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
-              const memberSkills = typeof member.skills === 'string'
-                ? (member.skills as string).split(',').map(s => s.trim()).filter(Boolean)
-                : [];
 
+            for (const member of members) {
+              const count = member.count ?? 1;
+              const memberRole = member.role ?? 'worker';
+              const memberName = member.name ?? 'Agent';
+              const roleName = knownRoles.includes(member.roleName) ? member.roleName : 'developer';
+              const memberSkills = member.skills ?? [];
               const memberSlug = memberName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
               const memberFilesDir = join(artDir, 'members', memberSlug);
 
@@ -4279,8 +4000,8 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
                 });
 
                 const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
+                mkdirSync(agentRoleDir, { recursive: true });
                 if (existsSync(memberFilesDir)) {
-                  mkdirSync(agentRoleDir, { recursive: true });
                   for (const fname of readdirSync(memberFilesDir)) {
                     const srcFile = join(memberFilesDir, fname);
                     if (statSync(srcFile).isFile()) {
@@ -4289,6 +4010,7 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
                   }
                   agent.reloadRole();
                 }
+                writeFileSync(join(agentRoleDir, '.role-origin.json'), JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: name, artifactType: 'team' }));
 
                 if (memberRole === 'manager') {
                   await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });
@@ -4312,9 +4034,24 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
 
             if (this.skillRegistry) {
               try {
-                const manifestPath = join(skillDir, 'manifest.json');
-                const manifestData = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-                this.skillRegistry.register({ manifest: manifestData });
+                const skillFile = manifest.skill?.skillFile ?? 'SKILL.md';
+                const instrPath = join(skillDir, skillFile);
+                const instructions = existsSync(instrPath) ? readFileSync(instrPath, 'utf-8').replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim() : undefined;
+                this.skillRegistry.register({
+                  manifest: {
+                    name: manifest.name,
+                    version: manifest.version,
+                    description: manifest.description,
+                    author: manifest.author ?? '',
+                    category: (manifest.category ?? 'custom') as import('@markus/core').SkillCategory,
+                    tags: manifest.tags,
+                    instructions,
+                    requiredPermissions: manifest.skill?.requiredPermissions,
+                    mcpServers: manifest.skill?.mcpServers,
+                    sourcePath: skillDir,
+                    source: 'builder',
+                  },
+                });
               } catch (regErr) {
                 log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
               }
@@ -4329,12 +4066,97 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       }
     }
 
+    // POST /api/builder/artifacts/:type/:name/uninstall — remove deployed artifact from runtime
+    {
+      const uninstallMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/uninstall$/);
+      if (uninstallMatch && req.method === 'POST') {
+        const rawType = uninstallMatch[1]!;
+        const name = decodeURIComponent(uninstallMatch[2]!);
+        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
+        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
+
+        try {
+          const agentManager = this.orgService.getAgentManager();
+          const dataDir = agentManager.getDataDir();
+          const removedAgents: string[] = [];
+          let removedTeamId: string | undefined;
+
+          if (type === 'agent') {
+            for (const agentInfo of agentManager.listAgents()) {
+              const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
+              if (existsSync(originPath)) {
+                try {
+                  const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
+                  if (origin.artifact === name && (!origin.artifactType || origin.artifactType === 'agent')) {
+                    await this.orgService.fireAgent(agentInfo.id);
+                    removedAgents.push(agentInfo.id);
+                  }
+                } catch { /* skip */ }
+              }
+            }
+          } else if (type === 'team') {
+            const teamAgentIds: string[] = [];
+            let teamId: string | undefined;
+            for (const agentInfo of agentManager.listAgents()) {
+              const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
+              if (existsSync(originPath)) {
+                try {
+                  const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
+                  if (origin.artifact === name && origin.artifactType === 'team') {
+                    teamAgentIds.push(agentInfo.id);
+                    if (!teamId) {
+                      try {
+                        const agentObj = agentManager.getAgent(agentInfo.id);
+                        teamId = agentObj.config.teamId;
+                      } catch { /* skip */ }
+                    }
+                  }
+                } catch { /* skip */ }
+              }
+            }
+            // Fallback: find team by matching member agent IDs
+            if (!teamId && teamAgentIds.length > 0) {
+              const teams = this.orgService.listTeams('default');
+              for (const t of teams) {
+                if (teamAgentIds.some(aid => t.memberAgentIds.includes(aid))) {
+                  teamId = t.id;
+                  break;
+                }
+              }
+            }
+            if (teamId) {
+              await this.orgService.deleteTeam(teamId, true);
+              removedTeamId = teamId;
+            } else {
+              for (const aid of teamAgentIds) {
+                await this.orgService.fireAgent(aid);
+              }
+            }
+            removedAgents.push(...teamAgentIds);
+          } else if (type === 'skill') {
+            const skillDir = join(homedir(), '.markus', 'skills', name);
+            if (existsSync(skillDir)) {
+              rmSync(skillDir, { recursive: true, force: true });
+              if (this.skillRegistry) {
+                try { this.skillRegistry.unregister(name); } catch { /* skip */ }
+              }
+            }
+          }
+
+          this.json(res, 200, { uninstalled: true, type, name, removedAgents, removedTeamId });
+        } catch (err) {
+          this.json(res, 500, { error: `Uninstall failed: ${String(err)}` });
+        }
+        return;
+      }
+    }
+
     // DELETE /api/builder/artifacts/:type/:name — remove artifact
     {
-      const delMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([\w-]+)$/);
+      const delMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/);
       if (delMatch && req.method === 'DELETE') {
         const rawType = delMatch[1]!;
-        const name = delMatch[2]!;
+        const name = decodeURIComponent(delMatch[2]!);
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
         if (!existsSync(artDir)) {
@@ -5024,12 +4846,17 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const body = await this.readBody(req);
-      const hubUrl = (body['hubUrl'] as string) ?? 'http://localhost:3001';
+      const hubUrl = (body['hubUrl'] as string) ?? this.hubUrl;
       const hubToken = body['hubToken'] as string | undefined;
+      if (!hubToken) {
+        this.json(res, 401, { error: 'Hub token required. Please login to Markus Hub first.' });
+        return;
+      }
       try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (hubToken) headers['Authorization'] = `Bearer ${hubToken}`;
-        if (body['hubCookie']) headers['Cookie'] = body['hubCookie'] as string;
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${hubToken}`,
+        };
         const hubRes = await fetch(`${hubUrl}/api/items`, {
           method: 'POST',
           headers,
@@ -5040,6 +4867,12 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       } catch (err) {
         this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
       }
+      return;
+    }
+
+    // Settings — Hub URL (for web-ui to discover hub address)
+    if (path === '/api/settings/hub' && req.method === 'GET') {
+      this.json(res, 200, { hubUrl: this.hubUrl });
       return;
     }
 
@@ -5707,6 +5540,26 @@ Be conversational. Help the user think through the workflow, edge cases, and wha
       }
       const summary = this.promptStudio.getEvaluationSummary(promptId, version);
       this.json(res, 200, { summary });
+      return;
+    }
+
+    // System: open a directory in the native file manager
+    if (path === '/api/system/open-path' && req.method === 'POST') {
+      try {
+        const body = await this.readBody(req);
+        const dirPath = body['path'] as string;
+        if (!dirPath || !existsSync(dirPath)) {
+          this.json(res, 400, { error: 'Invalid or non-existent path' });
+          return;
+        }
+        const platform = process.platform;
+        if (platform === 'darwin') execSync(`open ${JSON.stringify(dirPath)}`);
+        else if (platform === 'win32') execSync(`explorer ${JSON.stringify(dirPath)}`);
+        else execSync(`xdg-open ${JSON.stringify(dirPath)}`);
+        this.json(res, 200, { ok: true });
+      } catch {
+        this.json(res, 500, { error: 'Failed to open path' });
+      }
       return;
     }
 

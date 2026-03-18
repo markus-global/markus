@@ -17,7 +17,6 @@ import { navBus } from '../navBus.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
 import { TeamProfile } from './TeamProfile.tsx';
-import { BuilderArtifactPanel, getBuilderMode } from '../components/BuilderArtifact.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -437,16 +436,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     minWidth: 160,
     maxWidth: 360,
     storageKey: 'markus_chat_sidebar',
-  });
-
-  // Resizable right sidebar (builder artifact panel)
-  const rightPanel = useResizablePanel({
-    side: 'right',
-    defaultWidth: 320,
-    minWidth: 240,
-    maxWidth: 520,
-    collapsedWidth: 40,
-    storageKey: 'markus_right_panel',
   });
 
   // Avatar popover in chat messages
@@ -1901,18 +1890,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         </div>
       </div>
 
-      {/* Builder artifact sidebar — shown when chatting with a builder agent */}
-      {chatMode === 'direct' && currentAgent && getBuilderMode(currentAgent.role) && (
-        <BuilderArtifactPanel
-          mode={getBuilderMode(currentAgent.role)!}
-          messages={messages.map(m => ({ sender: m.sender, text: m.text }))}
-          authorName={authUser?.name ?? 'Anonymous'}
-          collapsed={rightPanel.collapsed}
-          onToggleCollapse={rightPanel.toggle}
-          width={rightPanel.collapsed ? undefined : rightPanel.width}
-          onResizeStart={rightPanel.collapsed ? undefined : rightPanel.onResizeStart}
-        />
-      )}
     </div>
   );
 }

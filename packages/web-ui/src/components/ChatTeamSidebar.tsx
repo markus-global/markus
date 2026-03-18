@@ -322,7 +322,7 @@ export function ChatTeamSidebar({
     const showRole = roleNorm && roleNorm !== nameNorm;
 
     const statusText = isError
-      ? (a.lastError?.slice(0, 50) ?? 'Error')
+      ? 'Error'
       : a.currentActivity?.description
         ? a.currentActivity.description.slice(0, 60)
         : a.status === 'working' ? 'Working...' : a.status === 'idle' ? 'Online' : a.status === 'paused' ? 'Paused' : a.status === 'offline' ? 'Offline' : '';

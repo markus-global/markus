@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, RoleUpdateStatus } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -76,8 +76,19 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
               if (!agent) return;
               try {
                 const { filesMap } = await api.agents.getFilesMap(agentId);
-                const config = { name: agent.name, role: agent.role, agentRole: agent.agentRole, skills: agent.skills };
-                await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: agent.roleDescription ?? agent.role, category: 'general', config, files: filesMap });
+                const config = {
+                  type: 'agent' as const,
+                  name: agent.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || agent.name,
+                  displayName: agent.name,
+                  version: '1.0.0',
+                  description: agent.roleDescription ?? agent.role,
+                  author: '',
+                  category: 'general',
+                  tags: [] as string[],
+                  agent: { roleName: agent.role, agentRole: agent.agentRole as 'manager' | 'worker' },
+                  dependencies: { skills: agent.skills ?? [] },
+                };
+                await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: config.description, category: 'general', config, files: filesMap });
                 alert(`Published "${agent.name}" to Markus Hub`);
               } catch (e) { alert(`Failed to publish: ${e}`); }
             }} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
@@ -485,11 +496,18 @@ function FilesTab({ agentId }: { agentId: string }) {
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [roleStatus, setRoleStatus] = useState<RoleUpdateStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [diffView, setDiffView] = useState<{ file: string; agent: string; template: string } | null>(null);
 
-  useEffect(() => {
+  const loadFiles = useCallback(() => {
     setLoading(true);
-    api.agents.getFiles(agentId).then(d => {
+    Promise.all([
+      api.agents.getFiles(agentId),
+      api.agents.roleStatus(agentId).catch(() => null),
+    ]).then(([d, status]) => {
       setFiles(d.files);
+      setRoleStatus(status);
       if (d.files.length > 0 && !selected) {
         setSelected(d.files[0].name);
         setEditContent(d.files[0].content);
@@ -497,9 +515,11 @@ function FilesTab({ agentId }: { agentId: string }) {
     }).catch(() => {}).finally(() => setLoading(false));
   }, [agentId]);
 
+  useEffect(() => { loadFiles(); }, [loadFiles]);
+
   const selectFile = (name: string) => {
     const f = files.find(f => f.name === name);
-    if (f) { setSelected(name); setEditContent(f.content); setDirty(false); }
+    if (f) { setSelected(name); setEditContent(f.content); setDirty(false); setDiffView(null); }
   };
 
   const saveFile = async () => {
@@ -516,6 +536,27 @@ function FilesTab({ agentId }: { agentId: string }) {
     setSaving(false);
   };
 
+  const syncFromTemplate = async (fileName?: string) => {
+    setSyncing(true);
+    try {
+      await api.agents.roleSync(agentId, fileName ? [fileName] : undefined);
+      setDiffView(null);
+      setDirty(false);
+      loadFiles();
+    } catch { /* */ }
+    setSyncing(false);
+  };
+
+  const showDiff = async (fileName: string) => {
+    if (diffView?.file === fileName) { setDiffView(null); return; }
+    try {
+      const d = await api.agents.roleDiff(agentId, fileName);
+      if (d.agentContent != null && d.templateContent != null) {
+        setDiffView({ file: fileName, agent: d.agentContent, template: d.templateContent });
+      }
+    } catch { /* */ }
+  };
+
   if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading files...</div>;
 
   const FILE_LABELS: Record<string, string> = {
@@ -525,32 +566,90 @@ function FilesTab({ agentId }: { agentId: string }) {
     'CONTEXT.md': 'Context & Instructions',
   };
 
+  const staleFiles = roleStatus?.files.filter(f => f.status === 'modified' || f.status === 'added_in_template') ?? [];
+  const hasUpdates = roleStatus?.hasTemplate && !roleStatus.isUpToDate;
+  const selectedFileStale = selected ? staleFiles.some(f => f.file === selected) : false;
+
   return (
     <div className="space-y-4">
+      {hasUpdates && (
+        <div className="bg-amber-500/8 border border-amber-500/25 rounded-xl p-4 flex items-start gap-3">
+          <span className="text-amber-400 text-sm mt-0.5">↻</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-amber-300 font-medium">Template Update Available</div>
+            <div className="text-[11px] text-amber-400/70 mt-0.5">
+              {staleFiles.length} file{staleFiles.length > 1 ? 's' : ''} differ from the <code className="px-1 py-0.5 bg-amber-500/10 rounded text-amber-300">{roleStatus!.templateId}</code> template:
+              {' '}{staleFiles.map(f => f.file).join(', ')}
+            </div>
+          </div>
+          <button onClick={() => syncFromTemplate()} disabled={syncing}
+            className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors shrink-0 disabled:opacity-50"
+          >{syncing ? 'Syncing...' : 'Sync All'}</button>
+        </div>
+      )}
+
       <Card title="Agent Configuration Files" action={
-        <div className="text-[10px] text-gray-600">Edit system prompts and role definitions</div>
+        roleStatus?.hasTemplate
+          ? <div className="flex items-center gap-2">
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${roleStatus.isUpToDate ? 'bg-green-400' : 'bg-amber-400'}`} />
+              <span className="text-[10px] text-gray-500">
+                Template: <span className="text-gray-400">{roleStatus.templateId}</span>
+                {roleStatus.isUpToDate ? ' (up to date)' : ' (updates available)'}
+              </span>
+            </div>
+          : <div className="text-[10px] text-gray-600">Custom agent — no linked template</div>
       }>
         <div className="flex gap-2 mb-4 flex-wrap">
-          {files.map(f => (
-            <button key={f.name} onClick={() => selectFile(f.name)}
-              className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                selected === f.name ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'
-              }`}
-            >{f.name}</button>
-          ))}
+          {files.map(f => {
+            const fStale = staleFiles.some(s => s.file === f.name);
+            return (
+              <button key={f.name} onClick={() => selectFile(f.name)}
+                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors relative ${
+                  selected === f.name ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {f.name}
+                {fStale && <span className="absolute -top-1 -right-1 w-2 h-2 bg-amber-400 rounded-full" />}
+              </button>
+            );
+          })}
         </div>
 
         {selected && (
           <div>
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs text-gray-400">{FILE_LABELS[selected] ?? selected}</div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
+                {selectedFileStale && (
+                  <>
+                    <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
+                      {diffView?.file === selected ? 'Hide Diff' : 'View Diff'}
+                    </button>
+                    <button onClick={() => syncFromTemplate(selected)} disabled={syncing}
+                      className="px-2.5 py-1 text-[11px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                    >{syncing ? 'Syncing...' : 'Sync This File'}</button>
+                  </>
+                )}
                 {dirty && <span className="text-[10px] text-amber-400">unsaved</span>}
                 <button onClick={saveFile} disabled={saving || !dirty}
                   className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-gray-800 text-gray-600 cursor-default'}`}
                 >{saving ? 'Saving...' : 'Save'}</button>
               </div>
             </div>
+
+            {diffView?.file === selected && (
+              <div className="mb-3 border border-gray-700 rounded-lg overflow-hidden">
+                <div className="grid grid-cols-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/80">
+                  <div className="px-3 py-2 border-r border-gray-700">Current (Agent)</div>
+                  <div className="px-3 py-2">Template ({roleStatus?.templateId})</div>
+                </div>
+                <div className="grid grid-cols-2 max-h-60 overflow-y-auto">
+                  <pre className="px-3 py-2 text-[11px] font-mono text-red-300/70 bg-red-500/5 border-r border-gray-700 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-green-300/70 bg-green-500/5 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.template}</pre>
+                </div>
+              </div>
+            )}
+
             <textarea
               value={editContent}
               onChange={e => { setEditContent(e.target.value); setDirty(true); }}

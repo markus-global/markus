@@ -1,10 +1,20 @@
 {
-  "id": "team-startup",
-  "name": "Startup All-in-One",
+  "type": "team",
+  "name": "startup-team",
+  "displayName": "Startup All-in-One",
+  "version": "1.0.0",
   "description": "A lean startup team covering product strategy, development, marketing, and operations. Each member wears multiple hats and moves fast.",
+  "author": "Markus Team",
   "category": "startup",
   "tags": ["startup", "lean", "mvp", "product", "growth"],
-  "version": "2.0.0",
-  "author": "Markus Team",
-  "icon": "zap"
+  "icon": "zap",
+  "team": {
+    "members": [
+      { "name": "COO", "role": "manager", "roleName": "org-manager", "count": 1, "skills": [] },
+      { "name": "Product Manager", "role": "worker", "roleName": "product-manager", "count": 1, "skills": [] },
+      { "name": "Full-Stack Dev", "role": "worker", "roleName": "developer", "count": 1, "skills": [] },
+      { "name": "Marketing Lead", "role": "worker", "roleName": "marketing", "count": 1, "skills": [] },
+      { "name": "Ops Manager", "role": "worker", "roleName": "operations", "count": 1, "skills": [] }
+    ]
+  }
 }

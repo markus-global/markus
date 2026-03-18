@@ -121,7 +121,26 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
             if (!team) return;
             try {
               const { files } = await api.teams.getFilesMap(team.id);
-              const config = { name: team.name, description: team.description, members: team.members.map(m => ({ name: m.name, role: m.role, type: m.type })) };
+              const agentMembers = team.members.filter(m => m.type === 'agent');
+              const config = {
+                type: 'team' as const,
+                name: team.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || team.name,
+                displayName: team.name,
+                version: '1.0.0',
+                description: team.description ?? '',
+                author: '',
+                category: 'general',
+                tags: [] as string[],
+                team: {
+                  members: agentMembers.map(m => ({
+                    name: m.name,
+                    roleName: m.role,
+                    role: (m.agentRole ?? 'worker') as 'manager' | 'worker',
+                    count: 1,
+                    skills: [] as string[],
+                  })),
+                },
+              };
               await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config, files });
               alert(`Published "${team.name}" to Markus Hub`);
             } catch (e) { alert(`Failed to publish: ${e}`); }

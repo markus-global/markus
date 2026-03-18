@@ -1,4 +1,4 @@
-import { createLogger, generateId } from '@markus/shared';
+import { createLogger, generateId, readManifest } from '@markus/shared';
 import type { AgentTemplate } from '../templates/types.js';
 import type { WorkflowDefinition } from './types.js';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
@@ -82,39 +82,31 @@ export class TeamTemplateRegistry {
 }
 
 function loadTeamTemplateFromDir(dirPath: string): TeamTemplate | null {
-  const teamJsonPath = join(dirPath, 'team.json');
-  const membersJsonPath = join(dirPath, 'members.json');
+  const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
+  const manifest = readManifest(dirPath, 'team', fsHelper);
 
-  if (!existsSync(teamJsonPath)) return null;
+  if (!manifest || manifest.type !== 'team') return null;
 
   try {
-    const meta = JSON.parse(readFileSync(teamJsonPath, 'utf-8'));
-    const membersData = existsSync(membersJsonPath)
-      ? JSON.parse(readFileSync(membersJsonPath, 'utf-8'))
-      : { members: [] };
-
     const annPath = join(dirPath, 'ANNOUNCEMENT.md');
     const normsPath = join(dirPath, 'NORMS.md');
 
     return {
-      id: meta.id ?? dirPath.split('/').pop() ?? generateId('tpl'),
-      name: meta.name ?? 'Unnamed Team',
-      description: meta.description ?? '',
-      version: meta.version ?? '1.0.0',
-      author: meta.author ?? 'Unknown',
-      members: (membersData.members ?? []).map((m: Record<string, unknown>) => ({
-        templateId: m.templateId as string | undefined,
-        roleName: m.roleName as string | undefined,
-        name: m.name as string | undefined,
-        count: m.count as number | undefined,
-        role: m.role as 'manager' | 'worker' | undefined,
-        description: m.description as string | undefined,
-        systemPrompt: m.systemPrompt as string | undefined,
-        skills: Array.isArray(m.skills) ? m.skills as string[] : typeof m.skills === 'string' ? (m.skills as string).split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+      id: manifest.name ?? dirPath.split('/').pop() ?? generateId('tpl'),
+      name: manifest.displayName ?? manifest.name ?? 'Unnamed Team',
+      description: manifest.description ?? '',
+      version: manifest.version ?? '1.0.0',
+      author: manifest.author ?? 'Unknown',
+      members: (manifest.team?.members ?? []).map(m => ({
+        roleName: m.roleName,
+        name: m.name,
+        count: m.count,
+        role: m.role,
+        skills: m.skills ?? [],
       })),
-      tags: Array.isArray(meta.tags) ? meta.tags : [],
-      category: meta.category,
-      icon: meta.icon,
+      tags: manifest.tags ?? [],
+      category: manifest.category,
+      icon: manifest.icon,
       announcements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
       norms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
     };

@@ -252,7 +252,12 @@ export class SSEHandlerEnhanced {
       errorStr.includes('network') ||
       errorStr.includes('socket') ||
       errorStr.includes('econnreset') ||
-      errorStr.includes('econnrefused');
+      errorStr.includes('econnrefused') ||
+      errorStr.includes('enotfound') ||
+      errorStr.includes('getaddrinfo') ||
+      errorStr.includes('fetch failed') ||
+      errorStr.includes('dns') ||
+      errorStr.includes('etimedout');
     
     if (!isRetryable) {
       return false;

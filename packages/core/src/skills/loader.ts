@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, readManifest } from '@markus/shared';
 import type { SkillManifest, SkillInstance, SkillCategory } from './types.js';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -62,16 +62,26 @@ export class SkillLoader {
       }
 
       const entries = readdirSync(dir, { withFileTypes: true });
+      const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const skillDir = join(dir, entry.name);
-        const manifestPath = join(skillDir, 'manifest.json');
-
-        if (!existsSync(manifestPath)) continue;
+        const pkg_ = readManifest(skillDir, 'skill', fsHelper);
+        if (!pkg_ || pkg_.type !== 'skill') continue;
 
         try {
-          const raw = readFileSync(manifestPath, 'utf-8');
-          const manifest = JSON.parse(raw) as SkillManifest;
+          const manifest: SkillManifest = {
+            name: pkg_.name,
+            version: pkg_.version,
+            description: pkg_.description,
+            author: pkg_.author ?? '',
+            category: (pkg_.category ?? 'custom') as SkillCategory,
+            tags: pkg_.tags,
+            requiredPermissions: pkg_.skill?.requiredPermissions,
+            mcpServers: pkg_.skill?.mcpServers,
+            sourcePath: skillDir,
+          };
+
           const validation = this.validateManifest(manifest);
 
           if (!validation.valid) {
@@ -88,9 +98,9 @@ export class SkillLoader {
             readme = readFileSync(readmePath, 'utf-8');
           }
 
-          const pkg: SkillPackage = { manifest, readme, path: skillDir };
-          packages.push(pkg);
-          this.loadedPackages.set(manifest.name, pkg);
+          const skillPkg: SkillPackage = { manifest, readme, path: skillDir };
+          packages.push(skillPkg);
+          this.loadedPackages.set(manifest.name, skillPkg);
 
           log.info(`Discovered skill: ${manifest.name} v${manifest.version}`, {
             category: manifest.category,

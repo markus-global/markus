@@ -915,7 +915,8 @@ export class OrganizationService {
     if (skillEntries.length > 0) {
       parts.push('## Available Skills (live from system)');
       parts.push('');
-      parts.push('The `skills` field must ONLY use skill IDs from this table:');
+      parts.push('**IMPORTANT**: Actively assign relevant skills to each agent. Do NOT default to empty `skills: []`.');
+      parts.push('Review this table and assign skills that match the agent\'s purpose:');
       parts.push('');
       parts.push('| Skill ID | Description | Type |');
       parts.push('|----------|-------------|------|');
@@ -923,7 +924,7 @@ export class OrganizationService {
         parts.push(`| \`${s.name}\` | ${s.description.slice(0, 80)} | ${s.type} |`);
       }
       parts.push('');
-      parts.push('Do NOT invent skill names. Only use IDs listed above.');
+      parts.push('Only use skill IDs from this table. Assign at least one skill to each agent when a match exists.');
     }
 
     // Available roles

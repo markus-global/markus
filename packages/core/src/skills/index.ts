@@ -4,7 +4,7 @@ export { InMemorySkillRegistry } from './registry.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { createLogger } from '@markus/shared';
+import { createLogger, readManifest } from '@markus/shared';
 import { InMemorySkillRegistry } from './registry.js';
 import { readSkillInstructions } from './loader.js';
 import type { SkillManifest, SkillCategory } from './types.js';
@@ -85,21 +85,23 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
     const skillDir = join(dir, name);
     try { if (!statSync(skillDir).isDirectory()) continue; } catch { continue; }
 
-    // Markus / OpenClaw format: manifest.json
-    const manifestPath = join(skillDir, 'manifest.json');
-    if (existsSync(manifestPath)) {
-      try {
-        const raw = readFileSync(manifestPath, 'utf-8');
-        const manifest = JSON.parse(raw) as SkillManifest;
-        // Also read SKILL.md for instructions if not already present
-        if (!manifest.instructions) {
-          const instructions = readSkillInstructions(skillDir);
-          if (instructions) manifest.instructions = instructions;
-        }
-        results.push({ manifest, path: skillDir, source: dir });
-      } catch (err) {
-        log.warn(`Invalid manifest.json in ${skillDir}: ${err}`);
-      }
+    const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
+    const pkg = readManifest(skillDir, 'skill', fsHelper);
+    if (pkg && pkg.type === 'skill') {
+      const instructions = readSkillInstructions(skillDir);
+      const manifest: SkillManifest = {
+        name: pkg.name,
+        version: pkg.version,
+        description: pkg.description,
+        author: pkg.author ?? '',
+        category: (pkg.category ?? 'custom') as SkillCategory,
+        tags: pkg.tags,
+        instructions: instructions ?? undefined,
+        requiredPermissions: pkg.skill?.requiredPermissions,
+        mcpServers: pkg.skill?.mcpServers,
+        sourcePath: skillDir,
+      };
+      results.push({ manifest, path: skillDir, source: dir });
       continue;
     }
 

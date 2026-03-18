@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api, type AgentInfo } from '../api.ts';
+import { api, hubApi, type AgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+
+function shortenPath(p: string): string {
+  const home = '~/.markus/builder-artifacts/';
+  const idx = p.indexOf('.markus/builder-artifacts/');
+  return idx >= 0 ? '~/' + p.slice(idx) : p;
+}
 
 const BUILDERS = [
   {
@@ -64,26 +70,101 @@ const TYPE_STYLES: Record<string, { icon: string; color: string; bg: string }> =
   skill: { icon: '⬡', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
 };
 
+interface InstalledInfo {
+  agentId?: string;
+  teamId?: string;
+  agentIds?: string[];
+}
+
+function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sm font-medium text-gray-200">Confirm Delete</div>
+            <div className="text-xs text-gray-400 mt-0.5">{message}</div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
+          <button onClick={onConfirm} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors">Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AgentBuilder() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [artifacts, setArtifacts] = useState<BuilderArtifact[]>([]);
   const [loading, setLoading] = useState(false);
   const [filterType, setFilterType] = useState<string>('all');
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
-  const [installedSet, setInstalledSet] = useState<Set<string>>(new Set());
+  const [installedMap, setInstalledMap] = useState<Map<string, InstalledInfo>>(new Map());
+  const [deleteTarget, setDeleteTarget] = useState<BuilderArtifact | null>(null);
+  const [sharedMap, setSharedMap] = useState<Map<string, { id: string; name: string; slug: string }>>(new Map());
+  const [hubDeleteTarget, setHubDeleteTarget] = useState<{ key: string; name: string } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const loadArtifacts = useCallback(() => {
+  const builderNames = new Set(BUILDERS.map(b => b.roleName));
+
+  const loadAll = useCallback(() => {
     setLoading(true);
-    api.builder.artifacts.list()
-      .then(d => setArtifacts(d.artifacts))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.builder.artifacts.list().then(d => d.artifacts).catch(() => [] as BuilderArtifact[]),
+      api.agents.list().then(d => d.agents).catch(() => [] as AgentInfo[]),
+      hubApi.myItems().then(d => d.items).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string }>),
+      api.builder.artifacts.installed().then(d => d.installed).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
+    ]).then(([arts, agentList, hubItems, installedData]) => {
+      setArtifacts(arts);
+      setAgents(agentList);
+
+      // Populate shared status from Hub published items (key → { id, name, slug })
+      if (hubItems.length > 0) {
+        const shared = new Map<string, { id: string; name: string; slug: string }>();
+        for (const hi of hubItems) {
+          const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
+          for (const art of arts) {
+            if (art.type === typeDir && (hi.slug === art.name || hi.name === ((art.meta.displayName as string) || (art.meta.name as string) || art.name))) {
+              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name });
+            }
+          }
+        }
+        if (shared.size > 0) setSharedMap(prev => { const m = new Map(prev); for (const [k, v] of shared) m.set(k, v); return m; });
+      }
+
+      // Detect installed artifacts from backend scan (uses .role-origin.json markers + skill dirs)
+      const detected = new Map<string, InstalledInfo>();
+      for (const art of arts) {
+        const key = `${art.type}/${art.name}`;
+        const backendEntry = installedData[key];
+        if (backendEntry) {
+          detected.set(key, {
+            agentId: backendEntry.agentId,
+            agentIds: backendEntry.agentIds,
+            teamId: backendEntry.teamId,
+          });
+        }
+      }
+      setInstalledMap(detected);
+    }).finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
-    loadArtifacts();
-  }, [loadArtifacts]);
+    loadAll();
+    const onNav = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { page?: string } | undefined;
+      if (detail?.page === 'builder') loadAll();
+    };
+    window.addEventListener('markus:navigate', onNav);
+    return () => window.removeEventListener('markus:navigate', onNav);
+  }, [loadAll]);
 
   const navigateToBuilder = (_roleId: string, roleName: string) => {
     const builderAgent = agents.find(a => a.role === roleName || a.name === roleName);
@@ -96,11 +177,15 @@ export function AgentBuilder() {
 
   const handleInstall = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
-    if (installedSet.has(key)) return;
+    if (installedMap.has(key)) return;
     setActionInProgress(key);
     try {
-      await api.builder.artifacts.install(art.type, art.name);
-      setInstalledSet(prev => new Set(prev).add(key));
+      const result = await api.builder.artifacts.install(art.type, art.name);
+      const info: InstalledInfo = {};
+      if (result.agent && typeof result.agent === 'object') info.agentId = (result.agent as Record<string, string>).id;
+      if (result.team && typeof result.team === 'object') info.teamId = (result.team as Record<string, string>).id;
+      if (Array.isArray(result.agents)) info.agentIds = (result.agents as Array<Record<string, string>>).map(a => a.id);
+      setInstalledMap(prev => new Map(prev).set(key, info));
     } catch (err) {
       console.error('Install failed:', err);
       alert(`Install failed: ${err}`);
@@ -109,13 +194,80 @@ export function AgentBuilder() {
     }
   };
 
-  const handleDelete = async (art: BuilderArtifact) => {
-    if (!confirm(`Delete "${(art.meta.name as string) || art.name}"? This cannot be undone.`)) return;
+  const handleUninstall = async (art: BuilderArtifact) => {
     const key = `${art.type}/${art.name}`;
+    if (!installedMap.has(key)) return;
+    setActionInProgress(key);
+    try {
+      await api.builder.artifacts.uninstall(art.type, art.name);
+      setInstalledMap(prev => { const m = new Map(prev); m.delete(key); return m; });
+    } catch (err) {
+      console.error('Uninstall failed:', err);
+      alert(`Uninstall failed: ${err}`);
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleShare = async (art: BuilderArtifact) => {
+    const key = `${art.type}/${art.name}`;
+    if (sharedMap.has(key)) return;
+    setActionInProgress(key);
+    try {
+      const detail = await api.builder.artifacts.get(art.type, art.name);
+      const name = (art.meta.displayName as string) || (art.meta.name as string) || art.name;
+      const description = (art.meta.description as string) || '';
+      const category = (art.meta.category as string) || 'general';
+      const tags = Array.isArray(art.meta.tags) ? (art.meta.tags as string[]) : [];
+      const slug = art.name;
+      const result = await hubApi.publishViaProxy({
+        itemType: art.type === 'team' ? 'team' : art.type === 'skill' ? 'skill' : 'agent',
+        name,
+        slug,
+        description,
+        category,
+        tags,
+        config: art.meta,
+        files: detail.files && Object.keys(detail.files).length > 0 ? detail.files : undefined,
+      });
+      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug }); return m; });
+    } catch (err) {
+      console.error('Share failed:', err);
+      alert(`Share failed: ${err}`);
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const confirmHubDelete = async () => {
+    if (!hubDeleteTarget) return;
+    const { key } = hubDeleteTarget;
+    const hubItem = sharedMap.get(key);
+    setHubDeleteTarget(null);
+    if (!hubItem) return;
+    const hubItemId = hubItem.id;
+    setActionInProgress(key);
+    try {
+      await hubApi.deleteItem(hubItemId);
+      setSharedMap(prev => { const m = new Map(prev); m.delete(key); return m; });
+    } catch (err) {
+      console.error('Hub delete failed:', err);
+      alert(`Failed to remove from Hub: ${err}`);
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const art = deleteTarget;
+    const key = `${art.type}/${art.name}`;
+    setDeleteTarget(null);
     setActionInProgress(key);
     try {
       await api.builder.artifacts.delete(art.type, art.name);
       setArtifacts(prev => prev.filter(a => !(a.type === art.type && a.name === art.name)));
+      setInstalledMap(prev => { const m = new Map(prev); m.delete(key); return m; });
     } catch (err) {
       console.error('Delete failed:', err);
     } finally {
@@ -189,7 +341,7 @@ export function AgentBuilder() {
               <p className="text-xs text-gray-500 mt-1">Saved builder artifacts — install to deploy, or share to Markus Hub.</p>
             </div>
             <button
-              onClick={loadArtifacts}
+              onClick={loadAll}
               className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-1.5 rounded-lg border border-gray-800 hover:border-gray-700"
             >
               Refresh
@@ -224,7 +376,7 @@ export function AgentBuilder() {
           <div className="grid gap-3">
             {filtered.map(art => {
               const style = TYPE_STYLES[art.type] ?? TYPE_STYLES.agent!;
-              const displayName = (art.meta.name as string) || art.name;
+              const displayName = (art.meta.displayName as string) || (art.meta.name as string) || art.name;
               const description = (art.meta.description as string) || '';
               const key = `${art.type}/${art.name}`;
               const busy = actionInProgress === key;
@@ -245,15 +397,23 @@ export function AgentBuilder() {
                       </div>
                       {description && <p className="text-xs text-gray-500 line-clamp-2">{description}</p>}
                       <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
-                        <span title={art.path}>{art.path}</span>
-                        <span>{new Date(art.updatedAt).toLocaleDateString()}</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); api.system.openPath(art.path).catch(() => {}); }}
+                          className="hover:text-gray-400 transition-colors truncate max-w-[280px]"
+                          title={art.path}
+                        >{shortenPath(art.path)}</button>
+                        <span className="shrink-0">{new Date(art.updatedAt).toLocaleDateString()}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {installedSet.has(key) ? (
-                        <span className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600/20 text-emerald-400 border border-emerald-600/30">
-                          Installed
-                        </span>
+                      {installedMap.has(key) ? (
+                        <button
+                          onClick={() => handleUninstall(art)}
+                          disabled={busy}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-emerald-600/30 text-emerald-400 hover:bg-red-900/20 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
+                        >
+                          {busy ? 'Uninstalling...' : 'Uninstall'}
+                        </button>
                       ) : (
                         <button
                           onClick={() => handleInstall(art)}
@@ -263,8 +423,53 @@ export function AgentBuilder() {
                           {busy ? 'Installing...' : 'Install'}
                         </button>
                       )}
+                      {sharedMap.has(key) ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })}
+                            disabled={busy}
+                            className="text-xs px-3 py-1.5 rounded-lg border border-teal-600/30 text-teal-400 hover:text-red-400 hover:border-red-500/30 hover:bg-red-900/10 transition-colors disabled:opacity-50"
+                            title="Remove from Markus Hub"
+                          >
+                            Shared
+                          </button>
+                          <button
+                            onClick={() => {
+                              const hubItem = sharedMap.get(key);
+                              const hubUser = hubApi.getUser();
+                              if (!hubItem || !hubUser) return;
+                              const link = `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
+                              navigator.clipboard.writeText(link).then(() => {
+                                setCopiedKey(key);
+                                setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000);
+                              }).catch(() => {});
+                            }}
+                            className="text-xs px-2 py-1.5 rounded-lg border border-teal-600/20 text-teal-500 hover:text-teal-300 hover:border-teal-500/40 transition-colors"
+                            title="Copy Hub link"
+                          >
+                            {copiedKey === key ? (
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            ) : (
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleShare(art)}
+                          disabled={busy}
+                          className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-teal-400 hover:border-teal-500/30 transition-colors disabled:opacity-50"
+                        >
+                          {busy ? 'Sharing...' : 'Share'}
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleDelete(art)}
+                        onClick={() => setDeleteTarget(art)}
                         disabled={busy}
                         className="text-xs px-2 py-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-900/20 transition-colors disabled:opacity-50"
                         title="Delete"
@@ -280,6 +485,21 @@ export function AgentBuilder() {
               );
             })}
           </div>
+        )}
+
+        {deleteTarget && (
+          <ConfirmDialog
+            message={`Delete "${(deleteTarget.meta.displayName as string) || (deleteTarget.meta.name as string) || deleteTarget.name}"? This cannot be undone.`}
+            onConfirm={confirmDelete}
+            onCancel={() => setDeleteTarget(null)}
+          />
+        )}
+        {hubDeleteTarget && (
+          <ConfirmDialog
+            message={`Remove "${hubDeleteTarget.name}" from Markus Hub? It will no longer be available for others to download.`}
+            onConfirm={() => void confirmHubDelete()}
+            onCancel={() => setHubDeleteTarget(null)}
+          />
         )}
       </div>
     </div>
