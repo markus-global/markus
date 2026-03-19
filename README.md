@@ -2,6 +2,7 @@
 
 **AI Native Digital Employee Platform** -- Build and manage autonomous AI teams that truly work, not just chat.
 
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha%20·%20Under%20Active%20Development-orange.svg)](#)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](https://www.typescriptlang.org/)
@@ -46,7 +47,7 @@ Existing AI assistants are **personal tools** -- one person, one chatbot. Markus
 ### Install & Run
 
 ```bash
-git clone https://github.com/anthropic/markus.git
+git clone https://github.com/markus-global/markus.git
 cd markus
 pnpm install
 pnpm build
@@ -146,5 +147,5 @@ Agent templates and skills shared through the marketplace may use their own lice
 
 ## Community
 
-- [GitHub Issues](https://github.com/anthropic/markus/issues) -- Bug reports and feature requests
-- [GitHub Discussions](https://github.com/anthropic/markus/discussions) -- Questions and ideas
+- [GitHub Issues](https://github.com/markus-global/markus/issues) -- Bug reports and feature requests
+- [GitHub Discussions](https://github.com/markus-global/markus/discussions) -- Questions and ideas

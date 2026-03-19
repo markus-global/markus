@@ -1241,7 +1241,7 @@ export const wsClient = new WSClient();
 
 // ── Markus Hub API Client ────────────────────────────────────────────────────
 
-let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus-hub.vercel.app';
+let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global';
 
 // Fetch hub URL from server config (overrides default if available)
 request<{ hubUrl: string }>('/settings/hub')

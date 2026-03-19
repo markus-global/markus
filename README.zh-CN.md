@@ -2,6 +2,7 @@
 
 **AI 原生数字员工平台** -- 构建和管理真正能工作的自主 AI 团队，而不仅仅是聊天。
 
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha%20·%20Under%20Active%20Development-orange.svg)](#)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](https://www.typescriptlang.org/)
@@ -46,7 +47,7 @@
 ### 安装与运行
 
 ```bash
-git clone https://github.com/anthropic/markus.git
+git clone https://github.com/markus-global/markus.git
 cd markus
 pnpm install
 pnpm build
@@ -146,5 +147,5 @@ Markus 采用双重许可：
 
 ## 社区
 
-- [GitHub Issues](https://github.com/anthropic/markus/issues) -- Bug 报告和功能请求
-- [GitHub Discussions](https://github.com/anthropic/markus/discussions) -- 提问和讨论
+- [GitHub Issues](https://github.com/markus-global/markus/issues) -- Bug 报告和功能请求
+- [GitHub Discussions](https://github.com/markus-global/markus/discussions) -- 提问和讨论

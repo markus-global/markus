@@ -178,7 +178,7 @@ export class APIServer {
   private storage?: StorageBridge;
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
-  private hubUrl = 'https://markus-hub.vercel.app';
+  private hubUrl = 'https://markus.global';
   private gateway?: ExternalAgentGateway;
   private gatewaySecret?: string;
   private syncHandler?: GatewaySyncHandler;
