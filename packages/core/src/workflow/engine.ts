@@ -513,7 +513,7 @@ export class WorkflowEngine {
 
       let current: unknown = stepExec;
       for (let i = 2; i < parts.length; i++) {
-        if (current == null || typeof current !== 'object') return undefined;
+        if (current === null || current === undefined || typeof current !== 'object') return undefined;
         current = (current as Record<string, unknown>)[parts[i]!];
       }
       return current;
@@ -557,7 +557,7 @@ export class WorkflowEngine {
       const parts = trimmed.split('.');
       let current: unknown = input;
       for (const part of parts) {
-        if (current == null || typeof current !== 'object') return '';
+        if (current === null || current === undefined || typeof current !== 'object') return '';
         current = (current as Record<string, unknown>)[part];
       }
       return String(current ?? '');

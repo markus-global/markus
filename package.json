@@ -27,8 +27,6 @@
   },
   "dependencies": {
     "@types/node": "^25.3.0",
-    "drizzle-orm": "^0.45.1",
-    "postgres": "^3.4.8",
     "typescript": "^5.9.3"
   },
   "devDependencies": {
@@ -36,7 +34,6 @@
     "@typescript-eslint/eslint-plugin": "^8.56.1",
     "@typescript-eslint/parser": "^8.56.1",
     "concurrently": "^9.2.1",
-    "drizzle-kit": "^0.31.9",
     "eslint": "^10.0.2",
     "prettier": "^3.8.1",
     "tsx": "^4.21.0",

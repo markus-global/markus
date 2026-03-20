@@ -1,5 +1,5 @@
 import { createLogger } from '@markus/shared';
-import { EventBus } from './events.js';
+import type { EventBus } from './events.js';
 
 const log = createLogger('heartbeat');
 

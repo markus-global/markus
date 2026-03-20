@@ -57,7 +57,7 @@ function Badge({ label, value, color }: { label: string; value?: string; color: 
   const colors: Record<string, string> = {
     purple: 'bg-purple-500/15 text-purple-400',
     cyan: 'bg-cyan-500/15 text-cyan-400',
-    indigo: 'bg-indigo-500/15 text-indigo-400',
+    indigo: 'bg-brand-500/15 text-brand-400',
     gray: 'bg-gray-500/15 text-gray-400',
     emerald: 'bg-emerald-500/15 text-emerald-400',
   };
@@ -76,11 +76,11 @@ function FilesPreview({ files }: { files: Record<string, string> }) {
   return (
     <div>
       <span className="text-[10px] text-gray-500 uppercase tracking-wider">Files ({names.length})</span>
-      <div className="mt-1 bg-gray-800/50 rounded-lg border border-gray-700/30 overflow-hidden">
-        <div className="flex gap-0.5 px-1.5 py-1 border-b border-gray-700/30 overflow-x-auto">
+      <div className="mt-1 bg-surface-elevated/50 rounded-lg border border-border-default/30 overflow-hidden">
+        <div className="flex gap-0.5 px-1.5 py-1 border-b border-border-default/30 overflow-x-auto">
           {names.map(fn => (
             <button key={fn} onClick={() => setActive(fn)}
-              className={`px-2 py-0.5 text-[10px] rounded whitespace-nowrap transition-colors ${active === fn ? 'bg-indigo-600/30 text-indigo-300' : 'text-gray-500 hover:text-gray-300'}`}>
+              className={`px-2 py-0.5 text-[10px] rounded whitespace-nowrap transition-colors ${active === fn ? 'bg-brand-600/30 text-brand-300' : 'text-gray-500 hover:text-gray-300'}`}>
               {fn}
             </button>
           ))}
@@ -119,7 +119,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
             {toStringArray(artifact.tags).map(t => (
-              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
             ))}
           </div>
         )}
@@ -158,7 +158,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
             {toStringArray(artifact.tags).map(t => (
-              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
             ))}
           </div>
         )}
@@ -167,7 +167,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
           <span className="text-[10px] text-gray-500 uppercase tracking-wider">Members ({members.length})</span>
           <div className="mt-1.5 space-y-1.5">
             {members.map((m, i) => (
-              <div key={i} className="bg-gray-800/30 rounded-lg px-2 py-1.5 border border-gray-700/20">
+              <div key={i} className="bg-surface-elevated/30 rounded-lg px-2 py-1.5 border border-border-default/20">
                 <div className="flex items-center gap-2">
                   <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
                     m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
@@ -175,7 +175,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
                     {m.role === 'manager' ? '\u2605' : (i + 1)}
                   </span>
                   <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
-                  {typeof m.roleName === 'string' && m.roleName && <span className="text-[10px] text-indigo-400/70 font-mono">{m.roleName}</span>}
+                  {typeof m.roleName === 'string' && m.roleName && <span className="text-[10px] text-brand-400/70 font-mono">{m.roleName}</span>}
                   <span className="text-[10px] text-gray-500">x{String(m.count ?? 1)}</span>
                 </div>
                 {toStringArray(m.skills).length > 0 && (
@@ -205,7 +205,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
       {toStringArray(artifact.tags).length > 0 && (
         <div className="flex flex-wrap gap-1">
           {toStringArray(artifact.tags).map(t => (
-            <span key={t} className="px-1.5 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded">{t}</span>
+            <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
           ))}
         </div>
       )}

@@ -24,16 +24,16 @@ export function Agents() {
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="px-7 h-14 flex items-center border-b border-gray-800 bg-gray-900 shrink-0">
+      <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary shrink-0">
         <h2 className="text-lg font-semibold">Digital Employees</h2>
         <span className="ml-3 text-xs text-gray-500">{agents.length} agents</span>
       </div>
 
       <div className="flex-1 overflow-hidden flex">
         {/* Agent list */}
-        <div className={`overflow-y-auto border-r border-gray-800 ${selectedId ? 'w-80 shrink-0' : 'flex-1'}`}>
+        <div className={`overflow-y-auto border-r border-border-default ${selectedId ? 'w-80 shrink-0' : 'flex-1'}`}>
           <table className="w-full text-sm">
-            <thead className="bg-gray-900/80 text-gray-400 text-left sticky top-0 z-10">
+            <thead className="bg-surface-secondary/80 text-gray-400 text-left sticky top-0 z-10">
               <tr>
                 <th className="px-5 py-3 font-medium">Name</th>
                 {!selectedId && <th className="px-5 py-3 font-medium">Role</th>}
@@ -46,12 +46,12 @@ export function Agents() {
               {agents.map((a) => (
                 <tr
                   key={a.id}
-                  className={`hover:bg-gray-900/50 cursor-pointer transition-colors ${selectedId === a.id ? 'bg-indigo-900/20 border-l-2 border-indigo-500' : ''}`}
+                  className={`hover:bg-surface-secondary/50 cursor-pointer transition-colors ${selectedId === a.id ? 'bg-brand-900/20 border-l-2 border-brand-500' : ''}`}
                   onClick={() => setSelectedId(selectedId === a.id ? null : a.id)}
                 >
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-full bg-indigo-700 flex items-center justify-center text-xs font-bold shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-brand-700 flex items-center justify-center text-xs font-bold shrink-0">
                         {a.name[0]}
                       </div>
                       <div>
@@ -68,7 +68,7 @@ export function Agents() {
                   <td className="px-5 py-3">
                     <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${
                       a.status === 'idle' ? 'bg-green-400' :
-                      a.status === 'working' ? 'bg-indigo-400 animate-pulse' :
+                      a.status === 'working' ? 'bg-brand-400 animate-pulse' :
                       'bg-gray-500'
                     }`} />
                     <span className="text-xs text-gray-400">{a.status}</span>

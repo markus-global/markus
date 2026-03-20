@@ -42,7 +42,7 @@ function formatBytes(b: number): string {
 }
 
 const colorMap: Record<string, string> = {
-  indigo: 'bg-indigo-500',
+  indigo: 'bg-brand-500',
   blue: 'bg-blue-500',
   emerald: 'bg-emerald-500',
   amber: 'bg-amber-500',
@@ -54,9 +54,9 @@ const colorMap: Record<string, string> = {
 function ProgressBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   const isUnlimited = max < 0;
-  const barColor = isUnlimited ? 'bg-gray-600' : pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : (colorMap[color] ?? 'bg-indigo-500');
+  const barColor = isUnlimited ? 'bg-gray-600' : pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : (colorMap[color] ?? 'bg-brand-500');
   return (
-    <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+    <div className="w-full bg-surface-elevated rounded-full h-2 overflow-hidden">
       <div
         className={`h-full rounded-full transition-all duration-500 ${barColor}`}
         style={{ width: isUnlimited ? '5%' : `${pct}%` }}
@@ -71,7 +71,7 @@ function UsageGauge({ label, value, max, unit, color }: {
   const isUnlimited = max < 0;
   const pct = isUnlimited ? 0 : max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm text-gray-400">{label}</span>
         {!isUnlimited && (
@@ -99,21 +99,21 @@ function AgentUsageRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens:
     agent.status === 'error' ? 'bg-red-500' : 'bg-gray-600';
 
   return (
-    <tr className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer"
+    <tr className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors cursor-pointer"
         onClick={() => navBus.navigate('team', { selectAgent: agent.agentId })}>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
           <div>
-            <div className="text-sm font-medium text-gray-200 hover:text-indigo-300 transition-colors">{agent.agentName}</div>
+            <div className="text-sm font-medium text-gray-200 hover:text-brand-300 transition-colors">{agent.agentName}</div>
             <div className="text-xs text-gray-500">{agent.role}</div>
           </div>
         </div>
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="flex-1 bg-gray-800 rounded-full h-1.5 overflow-hidden max-w-[120px]">
-            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${barWidth}%` }} />
+          <div className="flex-1 bg-surface-elevated rounded-full h-1.5 overflow-hidden max-w-[120px]">
+            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${barWidth}%` }} />
           </div>
           <span className="text-sm text-gray-300 tabular-nums">{formatNumber(agent.totalTokens)}</span>
         </div>
@@ -166,7 +166,7 @@ export function Usage() {
   };
 
   const SortIcon = ({ col }: { col: typeof sortBy }) => (
-    <span className={`ml-1 ${sortBy === col ? 'text-indigo-400' : 'text-gray-700'}`}>
+    <span className={`ml-1 ${sortBy === col ? 'text-brand-400' : 'text-gray-700'}`}>
       {sortBy === col ? (sortDesc ? '↓' : '↑') : '↕'}
     </span>
   );
@@ -174,20 +174,20 @@ export function Usage() {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center justify-between px-7 h-15 border-b border-gray-800 bg-gray-900">
+      <div className="flex items-center justify-between px-6 h-14 border-b border-border-default bg-surface-secondary">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold">Usage & Costs</h2>
           {plan && (
             <span className={`px-2.5 py-0.5 text-xs rounded-full font-medium ${
               plan.tier === 'enterprise' ? 'bg-purple-900/50 text-purple-300 border border-purple-700' :
               plan.tier === 'pro' ? 'bg-blue-900/50 text-blue-300 border border-blue-700' :
-              'bg-gray-800 text-gray-400 border border-gray-700'
+              'bg-surface-elevated text-gray-400 border border-border-default'
             }`}>
               {plan.tier.charAt(0).toUpperCase() + plan.tier.slice(1)} Plan
             </span>
           )}
         </div>
-        <button onClick={refresh} className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-400 transition-colors">
+        <button onClick={refresh} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-gray-400 transition-colors">
           Refresh
         </button>
       </div>
@@ -226,15 +226,15 @@ export function Usage() {
 
         {/* Cost Summary Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="text-sm text-gray-400 mb-1">Estimated Cost (this month)</div>
             <div className="text-3xl font-bold text-white">{formatCost(totalCost)}</div>
           </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="text-sm text-gray-400 mb-1">Tokens Today</div>
             <div className="text-3xl font-bold text-white">{formatNumber(totalTokensToday)}</div>
           </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="text-sm text-gray-400 mb-1">Active Agents</div>
             <div className="text-3xl font-bold text-white">
               {agents.filter(a => a.status === 'idle' || a.status === 'working').length}
@@ -244,8 +244,8 @@ export function Usage() {
         </div>
 
         {/* Per-Agent Usage Table */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-800">
+        <div className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-border-default">
             <h3 className="text-sm font-semibold text-gray-300">Per-Agent Breakdown</h3>
           </div>
           {agents.length === 0 ? (
@@ -256,7 +256,7 @@ export function Usage() {
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
+                  <tr className="border-b border-border-default text-xs text-gray-500 uppercase tracking-wider">
                     <th className="px-4 py-3 text-left font-medium">Agent</th>
                     <th className="px-4 py-3 text-left font-medium cursor-pointer select-none hover:text-gray-300" onClick={() => handleSort('totalTokens')}>
                       Total Tokens<SortIcon col="totalTokens" />
@@ -281,7 +281,7 @@ export function Usage() {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t border-gray-700 bg-gray-800/30">
+                  <tr className="border-t border-border-default bg-surface-elevated/30">
                     <td className="px-4 py-3 text-sm font-medium text-gray-300">Total ({agents.length} agents)</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(totalTokensToday)}</td>
@@ -297,7 +297,7 @@ export function Usage() {
 
         {/* Plan Limits Info */}
         {plan && (
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <h3 className="text-sm font-semibold text-gray-300 mb-3">Plan Limits — {plan.tier.charAt(0).toUpperCase() + plan.tier.slice(1)}</h3>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-xs">
               <div>

@@ -26,7 +26,7 @@ export {
   type MarketplaceRatingRow,
 } from './repos/marketplace-rating-repo.js';
 
-// SQLite storage: zero-dependency alternative to PostgreSQL
+// SQLite storage (primary backend)
 export {
   openSqlite,
   closeSqlite,

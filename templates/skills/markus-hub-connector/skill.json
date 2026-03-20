@@ -1,0 +1,20 @@
+{
+  "type": "skill",
+  "name": "markus-hub-connector",
+  "displayName": "Markus Hub Connector",
+  "version": "1.0.0",
+  "description": "Search, download, and publish agents/teams/skills on Markus Hub community marketplace",
+  "author": "markus",
+  "category": "productivity",
+  "tags": ["hub", "marketplace", "community", "share"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "requiredPermissions": ["network"],
+    "mcpServers": {
+      "markus-hub": {
+        "command": "node",
+        "args": ["${SKILL_DIR}/server.mjs"]
+      }
+    }
+  }
+}

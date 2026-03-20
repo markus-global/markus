@@ -1,7 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { RoleTemplate, Policy, RoleCategory } from '@markus/shared';
-import { generateId } from '@markus/shared';
+import { generateId, type RoleTemplate, type Policy, type RoleCategory } from '@markus/shared';
 
 interface RoleFiles {
   role: string;

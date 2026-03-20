@@ -33,7 +33,7 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────▼──────────────┐
-              │   PostgreSQL (Drizzle ORM) │
+              │      SQLite (better-sqlite3)     │
               │  tasks · projects · iters  │
               │  knowledge · reports       │
               │  users · chat · audit_logs │
@@ -438,7 +438,7 @@ Agents understand the workflow and governance rules through three layers:
 
 ```bash
 pnpm install && pnpm build
-cp .env.example .env   # Add API keys
+cp markus.json.example ~/.markus/markus.json   # Add API keys
 node packages/cli/dist/index.js start
 ```
 
@@ -447,7 +447,7 @@ Visit: `http://localhost:3000` (Web UI) / `http://localhost:3001` (API)
 ### Docker Compose
 
 ```bash
-cd deploy && cp ../.env.example .env
+cd deploy
 docker compose up -d
 ```
 
@@ -458,6 +458,6 @@ docker compose up -d
 | `OPENAI_API_KEY` | OpenAI API key (primary LLM) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (optional) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key (fallback) |
-| `DATABASE_URL` | PostgreSQL connection string (optional, in-memory if unset) |
+| `DATABASE_URL` | SQLite path override (default: `~/.markus/data.db`, format: `sqlite:/path/to/db`) |
 | `JWT_SECRET` | JWT signing key (recommended for production) |
 | `AUTH_ENABLED` | Enable login auth (default true) |

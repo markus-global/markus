@@ -15,9 +15,10 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
-import { api, type AuthUser, wsClient } from './api.ts';
+import { api, hubApi, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
+import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 
 const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'deliverables', 'reports'];
 
@@ -61,7 +62,16 @@ export function App() {
 
   useEffect(() => {
     api.auth.me()
-      .then(({ user }) => setAuthUser(user))
+      .then(({ user }) => {
+        setAuthUser(user);
+        prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
+        prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
+        prefetch(PREFETCH_KEYS.builderHubMyItems, () => hubApi.myItems());
+        prefetch(PREFETCH_KEYS.builderInstalled, () => api.builder.artifacts.installed());
+        prefetch(PREFETCH_KEYS.hubAgents, () => hubApi.search({ type: 'agent', limit: 50 }));
+        prefetch(PREFETCH_KEYS.hubTeams, () => hubApi.search({ type: 'team', limit: 50 }));
+        prefetch(PREFETCH_KEYS.hubSkills, () => hubApi.search({ type: 'skill', limit: 50 }));
+      })
       .catch(() => setAuthUser(null));
 
     wsClient.connect();
@@ -92,7 +102,7 @@ export function App() {
 
   if (authUser === 'loading') {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+      <div className="min-h-screen bg-surface-primary flex items-center justify-center">
         <div className="text-gray-600 text-sm animate-pulse">Loading…</div>
       </div>
     );
@@ -117,10 +127,10 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex h-screen bg-surface-primary text-gray-100">
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="md:hidden fixed top-3 left-3 z-50 p-2 bg-gray-800 rounded-lg text-gray-300"
+        className="md:hidden fixed top-3 left-3 z-50 p-2 bg-surface-elevated rounded-lg text-gray-300"
       >
         {sidebarOpen ? '✕' : '☰'}
       </button>
@@ -149,7 +159,7 @@ export function App() {
           className="hidden md:block w-1 cursor-col-resize shrink-0 group relative z-10"
           onMouseDown={sidebar.onResizeStart}
         >
-          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-indigo-500/30 group-active:bg-indigo-500/50 transition-colors" />
+          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
         </div>
       )}
 

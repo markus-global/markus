@@ -1,11 +1,32 @@
-# Markus
+<p align="center">
+  <img src="logo.png" width="200" alt="Markus Logo" />
+</p>
 
-**AI Native Digital Employee Platform** -- Build and manage autonomous AI teams that truly work, not just chat.
+<h1 align="center">Markus</h1>
 
-[![Status: Alpha](https://img.shields.io/badge/Status-Alpha%20·%20Under%20Active%20Development-orange.svg)](#)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](https://www.typescriptlang.org/)
+<p align="center"><strong>Build AI Teams That Actually Work</strong></p>
+
+<p align="center">
+  An open-source platform for building AI Agent teams with role assignment, task delegation, and visual tracking.
+</p>
+
+<p align="center">
+  <a href="https://github.com/markus-global/markus/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/markus-global/markus/ci.yml?branch=main&label=CI" alt="CI Status">
+  </a>
+  <a href="https://github.com/markus-global/markus/releases">
+    <img src="https://img.shields.io/github/v/release/markus-global/markus?include_prereleases&label=Version" alt="Version">
+  </a>
+  <a href="https://github.com/markus-global/markus/stargazers">
+    <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="Stars">
+  </a>
+  <a href="https://github.com/markus-global/markus/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
+  </a>
+  <a href="https://github.com/markus-global/markus/issues">
+    <img src="https://img.shields.io/github/issues/markus-global/markus" alt="Issues">
+  </a>
+</p>
 
 [English](README.md) | [中文](README.zh-CN.md)
 
@@ -13,139 +34,192 @@
 
 ## What is Markus?
 
-Existing AI assistants are **personal tools** -- one person, one chatbot. Markus is an **organizational platform** -- one organization, N digital employees working together.
+> **Stop building isolated AI agents. Start building AI teams.**
 
-|  | Personal AI Assistants | Markus |
+Most AI agents work in isolation — they don't know what other agents are doing, can't delegate tasks, and you can't easily track what's happening.
+
+Markus is an **open-source platform for building AI Agent teams that actually work together**. Unlike single-agent solutions, Markus is designed from the ground up for collaboration.
+
+### The Difference
+
+|  | Single AI Agent | Markus |
 |---|---|---|
-| **Scope** | Individual productivity | Organization-wide |
-| **Behavior** | Reactive (you ask, it answers) | Proactive (heartbeat-driven autonomous work) |
-| **Environment** | Shared host machine | Isolated workspace per agent |
-| **Management** | Edit config files | Hire / onboard / review lifecycle |
-| **Tasks** | CLI/API only | CLI + API + Web UI + kanban boards |
-| **Collaboration** | Single agent | Multi-agent teams with governance |
+| **Scope** | Individual productivity | Organization-wide AI teams |
+| **Collaboration** | Work in silos | Role assignment, task delegation, dependency management |
+| **Visibility** | Black box, hard to track | Visual dashboard, real-time status |
+| **Enterprise Features** | Build it yourself | Built-in: code review, permissions, sprint management |
+| **Deployment** | Locked to one provider | Open source, any LLM, self-hostable |
+
+---
 
 ## Key Features
 
-- **Autonomous AI Agents** -- Digital employees with roles, skills, memory, and proactive heartbeat behaviors
-- **Multi-Agent Teams** -- Organize agents into teams with managers, workers, and human members
-- **Task Governance** -- Approval workflows, progressive trust levels, workspace isolation, formal delivery review
-- **Project Management** -- Projects with iterations, kanban boards, and automated reporting
-- **Knowledge System** -- Three-tier memory (session / daily log / long-term) plus shared knowledge base
-- **Communication Hub** -- Web UI chat, Smart Route, channels, plus Feishu/Slack/WhatsApp adapters
-- **Agent-to-Agent Protocol** -- Agents collaborate via structured A2A messaging
-- **Tool Ecosystem** -- Shell, files, git, web search, code search, MCP integration, GUI automation
-- **Skill Marketplace** -- Install and share agent skills and templates
+### 🤝 Team Collaboration First
+- **Role-based architecture**: Define clear roles (researcher, writer, reviewer) for each agent
+- **Task delegation**: Agents assign subtasks to other agents based on capabilities
+- **Dependency management**: Tasks wait for prerequisites to complete
+- **Team-level state sync**: Agents share context and progress
+
+### 🏢 Enterprise-Ready from Day One
+- **Code & deliverable review**: Every change goes through formal review
+- **Permission controls**: Define who can create, modify, or delete agents
+- **Iteration management**: Sprint and Kanban boards for AI team progress
+- **Full audit trail**: Know exactly what each agent did and when
+
+### 👁️ Visual + Open Source
+- **Hub interface**: Browse and manage all agents and teams
+- **Task board**: Visual kanban for tracking team progress
+- **100% open source**: AGPL-3.0 licensed, deploy on your infrastructure
+- **No vendor lock-in**: Use any LLM provider
+
+---
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js >= 20
-- pnpm >= 9
-- An LLM API key (OpenAI, Anthropic, or DeepSeek)
-
-### Install & Run
+### 5-Minute Setup
 
 ```bash
 git clone https://github.com/markus-global/markus.git
 cd markus
-pnpm install
-pnpm build
 
-# Configure your API key
-cp .env.example .env
-# Edit .env and set at least one LLM API key
+# Install dependencies
+pnpm install && pnpm build
 
-# Start everything (API + Web UI)
+# Configure — copy example config to ~/.markus/markus.json
+cp markus.json.example ~/.markus/markus.json
+# Edit ~/.markus/markus.json and add your LLM API key
+
+# Start everything
 pnpm dev
 ```
 
-Open **http://localhost:3000** in your browser. Login with `admin@markus.local` / `markus123` (you'll be prompted to change the password on first login).
+**Open your browser:**
+- Web UI: [http://localhost:3000](http://localhost:3000)
+- API: [http://localhost:3001](http://localhost:3001)
 
-The API server runs on `http://localhost:3001`.
+**Default login:** `admin@markus.local` / `markus123`
 
-<details>
-<summary>Docker Compose</summary>
+### Docker Deployment
 
 ```bash
 cd deploy
-cp ../.env.example .env
-# Edit .env with your API keys
+# Mount your ~/.markus/markus.json into the container (see docker-compose.yml)
 docker compose up -d
 ```
 
-</details>
+---
 
 ## Architecture
 
-Markus is a TypeScript monorepo with the following packages:
+Markus is a TypeScript monorepo with modular packages:
 
 ```
 packages/
-  shared/        Shared types, constants, utilities
-  core/          Agent runtime engine
-  storage/       Database schema + repository layer (SQLite / PostgreSQL)
-  org-manager/   Organization management + REST API + governance
-  comms/         Communication adapters (Feishu, Slack, WhatsApp)
-  a2a/           Agent-to-Agent protocol
-  gui/           GUI automation (VNC + OmniParser)
-  web-ui/        Web management interface (React + Vite + Tailwind)
-  cli/           CLI entry point + service assembly
+├── core/          Agent runtime engine — the heart of autonomous behavior
+├── storage/       SQLite/PostgreSQL persistence layer
+├── org-manager/   REST API + governance services
+├── web-ui/        React + Vite + Tailwind management interface
+├── cli/           CLI entry point for local development
+├── a2a/           Agent-to-Agent communication protocol
+├── comms/         External integrations (Feishu, Slack, WhatsApp)
+├── gui/           GUI automation (VNC + OmniParser)
+└── shared/        Shared types, constants, utilities
 ```
 
-```mermaid
-graph TB
-  WebUI["Web UI (React)"] --> API["API Server (Node.js)"]
-  CLI["CLI"] --> API
-  Comms["Feishu / Slack / WhatsApp"] --> API
-  API --> OrgSvc["Organization Service"]
-  API --> TaskSvc["Task Service"]
-  API --> AgentMgr["Agent Manager"]
-  API --> Governance["Governance Layer"]
-  OrgSvc --> Core["Agent Runtime (@markus/core)"]
-  TaskSvc --> Core
-  AgentMgr --> Core
-  Governance --> Core
-  Core --> Storage["Storage (SQLite / PostgreSQL)"]
-```
+---
 
-For the full architecture documentation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Why Markus?
+
+### vs AutoGen
+- ✅ Simpler onboarding — no complex configuration
+- ✅ Built for team collaboration, not just multi-agent chat
+- ✅ Enterprise features included, not add-ons
+
+### vs CrewAI
+- ✅ Enterprise-grade features out of the box
+- ✅ Visual management interface
+- ✅ Requirement-driven task system
+
+### vs Dify
+- ✅ More flexible multi-agent orchestration
+- ✅ Complete development lifecycle
+- ✅ Fully open source — no paid enterprise tier
+
+### vs LangGraph
+- ✅ Zero learning curve with visual UI
+- ✅ Team collaboration first
+- ✅ Built-in task management
+
+---
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | System design, package structure, core concepts |
-| [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI usage, FAQ |
-| [API Reference](docs/API.md) | REST API endpoints and WebSocket events |
-| [Contributing](CONTRIBUTING.md) | Development setup, code style, PR process |
+| Guide | Description |
+|-------|-------------|
+| [User Guide](docs/GUIDE.md) | Setup, configuration, Web UI usage |
+| [Architecture](docs/ARCHITECTURE.md) | System design, package structure |
+| [API Reference](docs/API.md) | REST API endpoints |
+| [Contributing](CONTRIBUTING.md) | Development setup, PR process |
 
-All docs are available in [English](docs/ARCHITECTURE.md) and [Chinese](docs/ARCHITECTURE.zh-CN.md).
+All docs available in [English](docs/ARCHITECTURE.md) and [Chinese](docs/ARCHITECTURE.zh-CN.md).
+
+---
 
 ## Contributing
 
-We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code conventions, and PR guidelines.
+We welcome contributions! Here's how to get started:
+
+### Development Setup
 
 ```bash
-# Development workflow
-pnpm install
-pnpm build
-pnpm dev        # Start dev server
+pnpm install && pnpm build
+pnpm dev        # Start API + Web UI
 pnpm test       # Run tests
-pnpm typecheck  # Type check
-pnpm lint       # Lint
+pnpm typecheck  # TypeScript check
+pnpm lint       # ESLint
 ```
+
+### Good First Issues
+
+Looking for a way to contribute? Check out:
+- [Good first issues](https://github.com/markus-global/markus/labels/good%20first%20issue) — Beginner-friendly tasks
+- [Help wanted](https://github.com/markus-global/markus/labels/help%20wanted) — Features we need help with
+- [Bug reports](https://github.com/markus-global/markus/issues) — Help us fix issues
+
+### Pull Request Process
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feat/your-feature`
+3. Make changes and add tests
+4. Ensure all checks pass: `pnpm typecheck && pnpm lint && pnpm test`
+5. Commit using [Conventional Commits](https://www.conventionalcommits.org/)
+6. Open a PR with a clear description
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+
+---
+
+## Community & Support
+
+- 📖 [Documentation](docs/GUIDE.md) — Getting started guides
+- 🐛 [GitHub Issues](https://github.com/markus-global/markus/issues) — Bug reports & feature requests
+- 💬 [GitHub Discussions](https://github.com/markus-global/markus/discussions) — Questions & ideas
+- 🌐 [Website](https://www.markus.global) — Official website
+
+---
 
 ## License
 
 Markus is dual-licensed:
 
-- **Open Source**: [AGPL-3.0](LICENSE) -- free for self-hosting, personal use, and community contributions
-- **Commercial**: [Available](LICENSE-COMMERCIAL.md) for SaaS deployments and proprietary modifications
+- **Open Source**: [AGPL-3.0](LICENSE) — Free for self-hosting and community contributions
+- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — For SaaS deployments and proprietary modifications
 
 Agent templates and skills shared through the marketplace may use their own licenses (typically MIT).
 
-## Community
+---
 
-- [GitHub Issues](https://github.com/markus-global/markus/issues) -- Bug reports and feature requests
-- [GitHub Discussions](https://github.com/markus-global/markus/discussions) -- Questions and ideas
+<p align="center">
+  <strong>Built with ❤️ by developers, for developers</strong><br>
+  <sub>Markus — Where AI Agents Work Together</sub>
+</p>

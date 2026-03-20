@@ -1,37 +1,19 @@
-import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
-import * as schema from './schema.js';
-import { createLogger } from '@markus/shared';
+/**
+ * PostgreSQL support has been removed — Markus uses SQLite exclusively.
+ * This module is kept as a stub so existing repo type definitions still compile.
+ */
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type * as schema from './schema.js';
 
-const log = createLogger('database');
+export type Database = PostgresJsDatabase<typeof schema>;
 
-let dbInstance: ReturnType<typeof drizzle> | null = null;
-let sqlClient: ReturnType<typeof postgres> | null = null;
-
-export function getDb(url?: string) {
-  if (dbInstance) return dbInstance;
-
-  const connectionUrl = url ?? process.env['DATABASE_URL'];
-  if (!connectionUrl) {
-    throw new Error(
-      'No PostgreSQL connection URL provided. Set DATABASE_URL or pass a URL explicitly. ' +
-        'If you want zero-setup mode, leave DATABASE_URL empty and the system will use SQLite.'
-    );
-  }
-  sqlClient = postgres(connectionUrl, { max: 10 });
-  dbInstance = drizzle(sqlClient, { schema });
-
-  log.info('Database connection established');
-  return dbInstance;
+export function getDb(_url?: string): Database {
+  throw new Error(
+    'PostgreSQL support has been removed. Markus now uses SQLite exclusively. ' +
+      'Do not set DATABASE_URL to a postgresql:// URL.'
+  );
 }
 
 export async function closeDb(): Promise<void> {
-  if (sqlClient) {
-    await sqlClient.end();
-    sqlClient = null;
-    dbInstance = null;
-    log.info('Database connection closed');
-  }
+  // no-op
 }
-
-export type Database = ReturnType<typeof getDb>;

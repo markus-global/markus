@@ -1,6 +1,10 @@
-# Markus
+<p align="center">
+  <img src="logo.png" width="200" alt="Markus Logo" />
+</p>
 
-**AI 原生数字员工平台** -- 构建和管理真正能工作的自主 AI 团队，而不仅仅是聊天。
+<h1 align="center">Markus</h1>
+
+<p align="center"><strong>AI 原生数字员工平台</strong> -- 构建和管理真正能工作的自主 AI 团队，而不仅仅是聊天。</p>
 
 [![Status: Alpha](https://img.shields.io/badge/Status-Alpha%20·%20Under%20Active%20Development-orange.svg)](#)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
@@ -42,7 +46,7 @@
 
 - Node.js >= 20
 - pnpm >= 9
-- LLM API Key（OpenAI、Anthropic 或 DeepSeek）
+- LLM API Key（Anthropic、OpenAI 或 Google）
 
 ### 安装与运行
 
@@ -52,9 +56,9 @@ cd markus
 pnpm install
 pnpm build
 
-# 配置 API Key
-cp .env.example .env
-# 编辑 .env，至少设置一个 LLM API Key
+# 配置 — 复制示例配置到 ~/.markus/markus.json
+cp markus.json.example ~/.markus/markus.json
+# 编辑 ~/.markus/markus.json，至少设置一个 LLM API Key
 
 # 启动所有服务（API + Web UI）
 pnpm dev
@@ -69,8 +73,6 @@ API 服务运行在 `http://localhost:3001`。
 
 ```bash
 cd deploy
-cp ../.env.example .env
-# 编辑 .env 填入 API Key
 docker compose up -d
 ```
 
@@ -84,7 +86,7 @@ Markus 是一个 TypeScript monorepo，包含以下包：
 packages/
   shared/        共享类型、常量、工具函数
   core/          Agent 运行时引擎
-  storage/       数据库模式 + 仓储层（SQLite / PostgreSQL）
+  storage/       数据库模式 + 仓储层（SQLite）
   org-manager/   组织管理 + REST API + 治理服务
   comms/         通信适配器（飞书、Slack、WhatsApp）
   a2a/           Agent 间协议
@@ -106,7 +108,7 @@ graph TB
   TaskSvc --> Core
   AgentMgr --> Core
   Governance --> Core
-  Core --> Storage["存储（SQLite / PostgreSQL）"]
+  Core --> Storage["存储（SQLite）"]
 ```
 
 完整架构文档请参考 [docs/ARCHITECTURE.zh-CN.md](docs/ARCHITECTURE.zh-CN.md)。

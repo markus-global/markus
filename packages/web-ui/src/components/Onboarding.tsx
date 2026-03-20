@@ -21,7 +21,7 @@ export function Onboarding({ onComplete }: Props) {
               ['Smart Routing', 'Messages auto-route to the right agent'],
               ['Tool Capable', 'Shell, files, web, git, browser tools'],
             ].map(([title, desc]) => (
-              <div key={title} className="bg-gray-800/50 rounded-lg p-3">
+              <div key={title} className="bg-surface-elevated/50 rounded-lg p-3">
                 <div className="font-medium text-white text-xs">{title}</div>
                 <div className="text-gray-400 text-xs mt-1">{desc}</div>
               </div>
@@ -43,8 +43,8 @@ export function Onboarding({ onComplete }: Props) {
             ['Deliverables', 'Manage your team\'s shared deliverables'],
             ['Agents & Skills', 'Browse and install agent templates and skill packages'],
           ].map(([title, desc]) => (
-            <div key={title} className="flex gap-3 bg-gray-800/50 rounded-lg p-3">
-              <div className="text-indigo-400 mt-0.5 shrink-0">&#x2192;</div>
+            <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
+              <div className="text-brand-400 mt-0.5 shrink-0">&#x2192;</div>
               <div>
                 <div className="font-medium text-white text-xs">{title}</div>
                 <div className="text-gray-400 text-xs">{desc}</div>
@@ -68,12 +68,12 @@ export function Onboarding({ onComplete }: Props) {
   const current = steps[step]!;
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-surface-primary flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
-        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8">
+        <div className="bg-surface-secondary border border-border-default rounded-2xl p-8">
           <div className="flex gap-1.5 mb-8">
             {steps.map((_, i) => (
-              <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= step ? 'bg-indigo-500' : 'bg-gray-800'}`} />
+              <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= step ? 'bg-brand-500' : 'bg-surface-elevated'}`} />
             ))}
           </div>
 
@@ -94,7 +94,7 @@ export function Onboarding({ onComplete }: Props) {
             )}
             <button
               onClick={handleNext}
-              className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl transition-colors"
+              className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-xl transition-colors"
             >
               {step === steps.length - 1 ? 'Get Started' : 'Next'}
             </button>

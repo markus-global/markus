@@ -1,6 +1,5 @@
-import type { Message } from '@markus/shared';
-import { createLogger } from '@markus/shared';
-import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler } from './adapter.js';
+import { createLogger, type Message } from '@markus/shared';
+import type { CommAdapter, CommAdapterConfig } from './adapter.js';
 
 const log = createLogger('message-router');
 
@@ -65,7 +64,7 @@ export class MessageRouter {
 
   private async routeIncomingMessage(message: Message): Promise<void> {
     const key = `${message.platform}:${message.channelId}`;
-    let agentId = message.agentId || this.agentChannelMap.get(key);
+    const agentId = message.agentId || this.agentChannelMap.get(key);
 
     if (!agentId) {
       log.debug('No agent bound to channel, skipping message', { key });

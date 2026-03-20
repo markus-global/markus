@@ -136,13 +136,13 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
 
   return (
     <span ref={ref} className="relative inline-block">
-      <button onClick={() => setOpen(!open)} className="text-gray-500 hover:text-indigo-400 cursor-pointer transition-colors">
+      <button onClick={() => setOpen(!open)} className="text-gray-500 hover:text-brand-400 cursor-pointer transition-colors">
         {name}
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
+        <div className="absolute left-0 top-full mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-indigo-600/30 flex items-center justify-center text-[10px] font-bold text-indigo-300">
+            <div className="w-7 h-7 rounded-full bg-brand-600/30 flex items-center justify-center text-[10px] font-bold text-brand-300">
               {agentInitials(agent.name)}
             </div>
             <div className="flex-1 min-w-0">
@@ -153,7 +153,7 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
           </div>
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
-            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+            className="w-full text-center text-[10px] text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
           </button>
@@ -185,11 +185,11 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   return (
     <div
       ref={ref}
-      className="fixed z-50 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 space-y-3"
+      className="fixed z-50 w-64 bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
       style={{ top: anchorRect.top + 40, left: anchorRect.left }}
     >
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-indigo-600/30 flex items-center justify-center text-sm font-bold text-indigo-300">
+        <div className="w-10 h-10 rounded-full bg-brand-600/30 flex items-center justify-center text-sm font-bold text-brand-300">
           {agentInitials(agent.name)}
         </div>
         <div className="flex-1 min-w-0">
@@ -204,7 +204,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
       </div>
       <button
         onClick={() => { onClose(); onViewProfile(agent.id); }}
-        className="w-full py-1.5 text-xs text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg transition-colors text-center"
+        className="w-full py-1.5 text-xs text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
       >
         View Profile →
       </button>
@@ -266,7 +266,7 @@ function MessageActions({
       {/* Copy */}
       <button
         onClick={() => onCopy(msg)}
-        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-200 hover:bg-gray-700/60 transition-colors"
+        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-200 hover:bg-surface-overlay/60 transition-colors"
         title="Copy"
       >
         {isCopied ? (
@@ -280,7 +280,7 @@ function MessageActions({
       {isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-indigo-400 hover:text-indigo-300 hover:bg-indigo-900/30 transition-colors"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-400 hover:text-brand-300 hover:bg-brand-900/30 transition-colors"
           title="Re-ask"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
@@ -350,7 +350,7 @@ function AgentMessageBody({
               <span>思考过程 ({allThinking.length} 字符)</span>
             </button>
             {expandedThinking && (
-              <div className="mt-1 pl-3 border-l-2 border-indigo-500/50 text-xs text-gray-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
+              <div className="mt-1 pl-3 border-l-2 border-brand-500/50 text-xs text-gray-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
                 {allThinking}
               </div>
             )}
@@ -367,7 +367,7 @@ function AgentMessageBody({
             <div key={i} className={seg.content ? '' : 'hidden'}>
               <MarkdownMessage content={seg.content} />
               {isStreaming && isLastSeg && (
-                <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-text-bottom" />
+                <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-text-bottom" />
               )}
             </div>
           );
@@ -378,8 +378,8 @@ function AgentMessageBody({
           <div className="flex items-center gap-2 pl-0.5 pt-0.5">
             {/* Connector line from last tool down to dots */}
             <div className="flex flex-col items-center" style={{ width: 14 }}>
-              <div className="w-px flex-1 bg-gray-700" style={{ minHeight: 6 }} />
-              <div className="w-2 h-2 rounded-full border border-gray-600 bg-gray-800 shrink-0" />
+              <div className="w-px flex-1 bg-surface-overlay" style={{ minHeight: 6 }} />
+              <div className="w-2 h-2 rounded-full border border-gray-600 bg-surface-elevated shrink-0" />
             </div>
             <ThinkingDots label="Processing" />
           </div>
@@ -489,6 +489,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [showSessions, setShowSessions] = useState(false);
   const [openSessionTabs, setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
   const sessionTabsBuffer = useRef<Map<string, ChatSessionInfo[]>>(new Map());
+  const activeSessionBuffer = useRef<Map<string, string | null>>(new Map());
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const oldestMsgId = useRef<string | null>(null);
@@ -518,6 +519,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const messagesEnd = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const sendRef = useRef<(text?: string) => Promise<void>>(undefined);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
 
@@ -722,9 +724,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const prevKey = currentConvKeyRef.current;
     currentConvKeyRef.current = newKey;
 
-    // Save current session tabs before switching away
+    // Save current session tabs & active session before switching away
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.current.set(prevKey, openSessionTabs);
+      activeSessionBuffer.current.set(prevKey, activeSessionId);
     }
 
     // Restore displayed state from this conv's buffer
@@ -741,6 +744,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     }
     // Restore or reset session tabs for the new agent
     const savedTabs = sessionTabsBuffer.current.get(newKey);
+    const savedActiveSession = activeSessionBuffer.current.get(newKey);
     if (savedTabs && savedTabs.length > 0) {
       setOpenSessionTabs(savedTabs);
     }
@@ -750,8 +754,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     if (bufferedMsgs !== undefined) {
       // Already have content (possibly mid-stream) — show immediately, no DB load
       setMessages(bufferedMsgs);
-      setHasMore(false); // pagination state will be restored when needed
-      // Keep existing tabs when we have buffered messages
+      setHasMore(false);
+      // Restore the active session that was viewing these messages
+      if (savedActiveSession !== undefined) {
+        setActiveSessionId(savedActiveSession);
+      }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
     } else {
       // First visit for this conversation — load from DB
@@ -773,12 +780,28 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           if (currentConvKeyRef.current !== newKey) return;
           if (s.length > 0) {
             const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : s.slice(0, 5);
-            setActiveSessionId(initialTabs[0]!.id);
+            const restoreId = savedActiveSession !== undefined ? savedActiveSession : initialTabs[0]!.id;
+            const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
+            setActiveSessionId(validId);
             setOpenSessionTabs(initialTabs);
-            loadSessionMessages(initialTabs[0]!.id, newKey);
+            loadSessionMessages(validId!, newKey);
           } else {
             setActiveSessionId(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
+            // First-time conversation: auto-send intro request
+            const introMsg = (() => {
+              const lang = (navigator.language || '').toLowerCase();
+              if (lang.startsWith('zh')) return '介绍一下你自己';
+              if (lang.startsWith('ja')) return '自己紹介をしてください';
+              if (lang.startsWith('ko')) return '자기소개를 해주세요';
+              if (lang.startsWith('fr')) return 'Présentez-vous';
+              if (lang.startsWith('de')) return 'Stell dich vor';
+              if (lang.startsWith('es')) return 'Preséntate';
+              if (lang.startsWith('pt')) return 'Apresente-se';
+              if (lang.startsWith('ru')) return 'Представьтесь';
+              return 'Introduce yourself';
+            })();
+            setTimeout(() => sendRef.current?.(introMsg), 150);
           }
         });
       }
@@ -1271,6 +1294,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       setActivities([]);
     }
   };
+  sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
 
@@ -1470,9 +1494,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       {/* ── Main area ── */}
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
-        <div className="border-b border-gray-800 bg-gray-900 shrink-0 relative">
+        <div className="border-b border-border-default bg-surface-secondary shrink-0 relative">
           {/* Top row: tabs left + actions right */}
-          <div className="flex items-center px-5 h-10 gap-3">
+          <div className="flex items-center px-6 h-14 gap-3">
             {/* Left: agent title + status + main tabs */}
             <span className="font-semibold text-sm">{modeTitle}</span>
             {chatMode === 'direct' && currentAgent && (
@@ -1493,7 +1517,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   onClick={() => setMainTab('chat')}
                   className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                     mainTab === 'chat'
-                      ? 'border-indigo-500 text-indigo-300'
+                      ? 'border-brand-500 text-brand-300'
                       : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
@@ -1503,7 +1527,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   onClick={() => setMainTab('profile')}
                   className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                     mainTab === 'profile'
-                      ? 'border-indigo-500 text-indigo-300'
+                      ? 'border-brand-500 text-brand-300'
                       : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
@@ -1517,14 +1541,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <div className="ml-auto flex items-center gap-1.5">
                 <button
                   onClick={newConversation}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 px-2.5 py-1 rounded-md hover:bg-indigo-500/10 border border-indigo-500/20 transition-colors flex items-center gap-1"
+                  className="text-xs text-brand-400 hover:text-brand-300 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
                 >
                   + New Chat
                 </button>
                 <button
                   ref={historyBtnRef}
                   onClick={() => setShowSessions(!showSessions)}
-                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-gray-700 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-surface-elevated'}`}
                   title="History"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -1537,14 +1561,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
           {/* Session tab bar (direct mode, chat tab) */}
           {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 0 && (
-            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide border-t border-gray-800/50">
+            <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide border-t border-border-default/50">
               {openSessionTabs.map(s => (
                 <div
                   key={s.id}
                   className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
-                      ? 'border-indigo-500 text-indigo-300 bg-indigo-500/5'
-                      : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                      ? 'border-brand-500 text-brand-300 bg-brand-500/5'
+                      : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-surface-elevated/50'
                   }`}
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
@@ -1573,9 +1597,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           {chatMode === 'direct' && selectedAgent && showSessions && (
             <div
               ref={historyPanelRef}
-              className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
+              className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
             >
-              <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">History</span>
                 <button onClick={() => setShowSessions(false)} className="text-gray-600 hover:text-gray-300 text-xs">✕</button>
               </div>
@@ -1612,7 +1636,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                           key={s.id}
                           onClick={() => void switchSession(s)}
                           className={`w-full text-left px-3 py-2.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                            s.id === activeSessionId ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
+                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-300' : 'text-gray-400 hover:bg-surface-elevated'
                           }`}
                         >
                           <div className="truncate font-medium">{s.title || 'Conversation'}</div>
@@ -1654,7 +1678,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <button
                 onClick={() => void loadMore()}
                 disabled={loadingMore}
-                className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50 px-4 py-1.5 border border-indigo-800/50 rounded-lg"
+                className="text-xs text-brand-400 hover:text-brand-300 disabled:opacity-50 px-4 py-1.5 border border-brand-800/50 rounded-lg"
               >
                 {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
               </button>
@@ -1682,7 +1706,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 <div key={msg.id} className="group/msg flex gap-3">
                   <div
                     className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer ${
-                      msg.sender === 'user' ? 'bg-indigo-600' : 'bg-gray-700 hover:ring-1 hover:ring-indigo-500/40'
+                      msg.sender === 'user' ? 'bg-brand-600' : 'bg-surface-overlay hover:ring-1 hover:ring-brand-500/40'
                     }`}
                     onClick={(e) => {
                       if (msg.sender === 'agent' && msg.agentId) {
@@ -1701,11 +1725,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       <span className="text-xs text-gray-600">{msg.time}</span>
                     </div>
                     <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                      ? 'mt-0.5 px-3 py-2 rounded-lg bg-amber-900/15 border border-amber-700/25'
+                      ? 'mt-0.5 px-3 py-2 rounded-lg border-b-2 border-red-500/60'
                       : 'mt-0.5'
                     }>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className={`text-sm ${msg.isError || msg.text.startsWith('⚠') ? 'text-amber-200/90' : 'text-gray-300'}`} />
+                        ? <MarkdownMessage content={msg.text} className="text-sm text-gray-300" />
                         : <div className="text-sm text-gray-300 whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
@@ -1745,10 +1769,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       </div>
                       <div className={`px-4 py-3 rounded-2xl text-sm ${
                         msg.sender === 'user'
-                          ? 'bg-indigo-600 text-white rounded-br-sm'
+                          ? 'bg-brand-600 text-white rounded-br-sm'
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                            ? 'bg-amber-900/20 border border-amber-700/30 text-amber-200/90 rounded-bl-sm'
-                            : 'bg-gray-800 text-gray-200 rounded-bl-sm'
+                            ? 'bg-surface-elevated text-gray-200 rounded-bl-sm border-b-2 border-red-500/60'
+                            : 'bg-surface-elevated text-gray-200 rounded-bl-sm'
                       }`}>
                         {msg.sender === 'user'
                           ? <>
@@ -1799,16 +1823,16 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         })()}
 
         {/* Input (only in chat tab) */}
-        <div className={`p-4 border-t border-gray-800 bg-gray-900 relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+        <div className={`p-4 border-t border-border-default bg-surface-secondary relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           {mentionDropdown && filteredAgents.length > 0 && (
-            <div className="absolute bottom-full left-4 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-10">
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10">
               {filteredAgents.map(a => (
                 <button
                   key={a.id}
                   onClick={() => insertMention(a.name)}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-surface-overlay flex items-center gap-2"
                 >
-                  <span className="text-indigo-400">@</span>
+                  <span className="text-brand-400">@</span>
                   {a.name}
                   <span className="text-xs text-gray-500 ml-auto">{a.role}</span>
                 </button>
@@ -1819,10 +1843,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <div className="flex items-center gap-2 mb-2 overflow-x-auto pb-1">
               {pendingImages.map(img => (
                 <div key={img.id} className="relative group/img shrink-0">
-                  <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-gray-700" />
+                  <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-border-default" />
                   <button
                     onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-gray-900 border border-gray-600 rounded-full flex items-center justify-center text-gray-400 hover:text-red-400 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-surface-secondary border border-gray-600 rounded-full flex items-center justify-center text-gray-400 hover:text-red-400 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
                   >
                     ×
                   </button>
@@ -1844,7 +1868,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && !selectedAgent}
-              className="px-2.5 py-2.5 text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors rounded-xl hover:bg-gray-800"
+              className="px-2.5 py-2.5 text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
               title="Attach images"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -1865,7 +1889,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
               rows={1}
-              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-y-auto leading-5"
+              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-y-auto leading-5"
               style={{ maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
@@ -1882,7 +1906,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <button
               onClick={() => void send()}
               disabled={(chatMode === 'direct' && !selectedAgent) || (!input.trim() && pendingImages.length === 0)}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
             >
               Send
             </button>
@@ -1937,7 +1961,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       </button>
 
       {open && isError && (
-        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
           <p className="text-[10px] text-red-400 uppercase font-semibold">Error Details</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
@@ -1955,22 +1979,22 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       )}
 
       {open && isWorking && (
-        <div className="absolute top-full left-0 mt-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
           <p className="text-[10px] text-gray-500 uppercase font-semibold">Current Activity</p>
           {currentTask ? (
             <div
-              className="flex items-center gap-2 p-2 rounded-lg bg-indigo-900/20 border border-indigo-700/30 cursor-pointer hover:bg-indigo-900/30 transition-colors"
+              className="flex items-center gap-2 p-2 rounded-lg bg-brand-900/20 border border-brand-700/30 cursor-pointer hover:bg-brand-900/30 transition-colors"
               onClick={() => { setOpen(false); navBus.navigate('tasks', { openTask: currentTask.id }); }}
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-indigo-300 truncate">{currentTask.title}</div>
+                <div className="text-xs text-brand-300 truncate">{currentTask.title}</div>
                 <div className="text-[10px] text-gray-500">Working on task · Click to view</div>
               </div>
               <span className="text-[10px] text-gray-600">→</span>
             </div>
           ) : (
-            <div className="flex items-center gap-2 p-2 rounded-lg bg-gray-800/50">
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-surface-elevated/50">
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                 activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
                 : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
@@ -1988,7 +2012,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           )}
           <button
             onClick={() => { setOpen(false); setShowActivityModal(true); }}
-            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1.5 transition-colors"
+            className="w-full text-center text-[10px] text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
             View Execution Log →
           </button>
@@ -2085,18 +2109,18 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
 
   const activityTypeColor = activity?.type === 'heartbeat' ? 'text-cyan-400'
     : activity?.type === 'chat' ? 'text-blue-400'
-    : 'text-indigo-400';
+    : 'text-brand-400';
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[780px] max-w-[95vw] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl w-[780px] max-w-[95vw] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border-default">
           <div className="flex items-center gap-3 min-w-0">
             <span className={`w-2 h-2 rounded-full shrink-0 ${
               activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
               : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
-              : 'bg-indigo-400 animate-pulse'
+              : 'bg-brand-400 animate-pulse'
             }`} />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -2117,7 +2141,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {onGoToTask && (
-              <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
+              <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">
                 Go to Task →
               </button>
             )}

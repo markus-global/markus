@@ -10,7 +10,7 @@ const TYPE_META: Record<string, { icon: string; color: string }> = {
   report:    { icon: '\u{1F4CA}', color: 'bg-amber-900/40 text-amber-400' },
   directory: { icon: '\u{1F4C1}', color: 'bg-cyan-900/40 text-cyan-400' },
   url:       { icon: '\u{1F517}', color: 'bg-pink-900/40 text-pink-400' },
-  text:      { icon: '\u{1F4AC}', color: 'bg-gray-700 text-gray-400' },
+  text:      { icon: '\u{1F4AC}', color: 'bg-surface-overlay text-gray-400' },
 };
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -247,7 +247,7 @@ export function DeliverablesPage() {
       >
         <button
           onClick={() => setCopyMenuOpen(o => !o)}
-          className="p-1.5 rounded-lg bg-gray-800/80 hover:bg-gray-700 text-gray-400 hover:text-gray-200 backdrop-blur-sm border border-gray-700/50 transition-all"
+          className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-gray-400 hover:text-gray-200 backdrop-blur-sm border border-border-default/50 transition-all"
           title="复制内容"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -255,24 +255,24 @@ export function DeliverablesPage() {
           </svg>
         </button>
         {copyMenuOpen && (
-          <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[180px]">
+          <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
             <button
               onClick={() => { navigator.clipboard.writeText(content); flashMsg('success', 'Markdown 原文已复制'); setCopyMenuOpen(false); }}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center text-gray-500 shrink-0 font-mono text-[10px]">Md</span>
               复制 Markdown 原文
             </button>
             <button
               onClick={() => copyAsHtml('light', content)}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">☀️</span>
               复制 HTML（亮色）
             </button>
             <button
               onClick={() => copyAsHtml('dark', content)}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-gray-700 hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">🌙</span>
               复制 HTML（暗色）
@@ -313,17 +313,17 @@ export function DeliverablesPage() {
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar */}
-      <div className="w-96 border-r border-gray-800 flex flex-col bg-gray-950 shrink-0">
-        <div className="p-4 border-b border-gray-800 space-y-3">
+      <div className="w-96 border-r border-border-default flex flex-col bg-surface-primary shrink-0">
+        <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-300">Deliverables</h2>
-            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Create</button>
+            <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create</button>
           </div>
           <input
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search deliverables..."
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors"
+            className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors"
           />
           {/* Type filter */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide">
@@ -357,14 +357,14 @@ export function DeliverablesPage() {
             <span className="text-[10px] text-gray-500">Group:</span>
             {(['date', 'project', 'agent', 'type'] as const).map(g => (
               <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
-                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-gray-400 hover:bg-surface-overlay'}`}>
                 {g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
             {grouped.length > 1 && (
               <button
                 onClick={toggleAllGroups}
-                className="ml-auto px-1.5 py-1 rounded text-[10px] text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+                className="ml-auto px-1.5 py-1 rounded text-[10px] text-gray-500 hover:text-gray-300 hover:bg-surface-elevated transition-colors"
                 title={collapsedGroups.size === grouped.length ? 'Expand all' : 'Collapse all'}
               >
                 {collapsedGroups.size === grouped.length ? '▶ Expand' : '▼ Collapse'}
@@ -382,8 +382,8 @@ export function DeliverablesPage() {
             <div className="p-4 space-y-3">
               {[1, 2, 3].map(i => (
                 <div key={i} className="animate-pulse space-y-2">
-                  <div className="h-4 bg-gray-800 rounded w-3/4" />
-                  <div className="h-3 bg-gray-800 rounded w-1/2" />
+                  <div className="h-4 bg-surface-elevated rounded w-3/4" />
+                  <div className="h-3 bg-surface-elevated rounded w-1/2" />
                 </div>
               ))}
             </div>
@@ -394,7 +394,7 @@ export function DeliverablesPage() {
               </svg>
               <p className="text-sm text-gray-400">No deliverables yet</p>
               <p className="text-xs text-gray-600 mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
-              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">+ Create first</button>
+              <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create first</button>
             </div>
           ) : grouped.map(([key, group]) => {
             const isCollapsed = collapsedGroups.has(key);
@@ -402,7 +402,7 @@ export function DeliverablesPage() {
               <div key={key}>
                 <button
                   onClick={() => toggleGroup(key)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-gray-800/50 transition-colors group/header"
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-surface-elevated/50 transition-colors group/header"
                 >
                   <svg
                     className={`w-3 h-3 text-gray-600 transition-transform duration-200 shrink-0 ${isCollapsed ? '' : 'rotate-90'}`}
@@ -415,7 +415,7 @@ export function DeliverablesPage() {
                 </button>
                 {!isCollapsed && group.items.map(item => (
                   <button key={item.id} onClick={() => setSelected(item)}
-                    className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-indigo-600/20 border border-indigo-500/30' : 'hover:bg-gray-800/60 border border-transparent'}`}>
+                    className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
                     <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
                     <div className="flex items-center gap-2 mt-1">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
@@ -423,9 +423,9 @@ export function DeliverablesPage() {
                           {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
                         </span>
                       ) : (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{item.type}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-gray-400'}`}>{item.type}</span>
                       )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{item.status}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-gray-500'}`}>{item.status}</span>
                       {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
                     </div>
                   </button>
@@ -474,8 +474,8 @@ export function DeliverablesPage() {
                 </button>
               </div>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-gray-700 text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-gray-800 text-gray-500'}`}>{selected.status}</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
+                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-gray-500'}`}>{selected.status}</span>
                 {selected.artifactType && ARTIFACT_META[selected.artifactType] && (
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${ARTIFACT_META[selected.artifactType].color}`}>
                     {ARTIFACT_META[selected.artifactType].icon} Builder {ARTIFACT_META[selected.artifactType].label}
@@ -483,27 +483,27 @@ export function DeliverablesPage() {
                 )}
               </div>
               {selected.reference && (selected.type === 'file' || selected.type === 'directory') && (
-                <div className="flex items-center gap-2 mt-2 bg-gray-900/60 border border-gray-800 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
-                    className="text-xs font-mono text-indigo-400 hover:text-indigo-300 hover:underline truncate flex-1 text-left cursor-pointer"
+                    className="text-xs font-mono text-brand-400 hover:text-brand-300 hover:underline truncate flex-1 text-left cursor-pointer"
                     title="Open in file browser"
                   >{selected.reference}</button>
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
-                    className="px-2 py-1 text-[10px] rounded bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0"
+                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-400 hover:bg-brand-600/30 transition-colors shrink-0"
                     title="Reveal in Finder"
                   >Open</button>
                   <button
                     onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
-                    className="px-2 py-1 text-[10px] rounded bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0"
+                    className="px-2 py-1 text-[10px] rounded bg-surface-overlay/50 text-gray-400 hover:bg-surface-overlay transition-colors shrink-0"
                     title="Copy path to clipboard"
                   >Copy</button>
                 </div>
               )}
               {selected.reference && selected.type === 'url' && (
                 <div className="mt-2">
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-400 hover:underline break-all">{selected.reference}</a>
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-400 hover:underline break-all">{selected.reference}</a>
                 </div>
               )}
               {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && selected.type !== 'url' && (
@@ -516,11 +516,11 @@ export function DeliverablesPage() {
             {/* Preview area */}
             {selected.artifactType && selected.artifactData ? (
               <div className="space-y-4">
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                   <ArtifactPreview artifact={selected.artifactData} mode={selected.artifactType as BuilderMode} />
                 </div>
                 {selected.reference && (
-                  <div className="px-3 py-2 bg-gray-900/50 border border-gray-800 rounded-lg">
+                  <div className="px-3 py-2 bg-surface-secondary/50 border border-border-default rounded-lg">
                     <span className="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Artifact Directory</span>
                     <span className="text-xs text-gray-400 font-mono break-all">{selected.reference}</span>
                   </div>
@@ -528,21 +528,21 @@ export function DeliverablesPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={handleOpenInBuilder}
-                    className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
+                    className="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
                   >
                     Open in Builder
                   </button>
                 </div>
                 {selected.summary && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                     <MarkdownMessage content={selected.summary} className="text-gray-300 text-sm" />
                   </div>
                 )}
               </div>
             ) : (
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 {selected.type === 'url' && selected.reference ? (
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline text-sm break-all">{selected.reference}</a>
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline text-sm break-all">{selected.reference}</a>
                 ) : previewLoading ? (
                   <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
                 ) : previewContent ? (
@@ -553,13 +553,13 @@ export function DeliverablesPage() {
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                        className="text-xs bg-gray-800 px-3 py-2 rounded text-indigo-400 hover:text-indigo-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-400 hover:text-brand-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
                         title="Open in file browser"
                       >{selected.reference}</button>
                       <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 transition-colors shrink-0">Open</button>
+                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-400 hover:bg-brand-600/30 transition-colors shrink-0">Open</button>
                       <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-gray-700/50 text-gray-400 hover:bg-gray-700 transition-colors shrink-0">Copy</button>
+                        className="px-3 py-2 text-xs rounded-lg bg-surface-overlay/50 text-gray-400 hover:bg-surface-overlay transition-colors shrink-0">Copy</button>
                     </div>
                   </div>
                 ) : selected.summary ? (
@@ -574,7 +574,7 @@ export function DeliverablesPage() {
             {(selected.diffStats || selected.testResults) && (
               <div className="flex gap-4 flex-wrap">
                 {selected.diffStats && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-xs space-y-1">
+                  <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
                     <div className="text-gray-500 font-medium">Diff Stats</div>
                     <div className="flex gap-3">
                       <span className="text-gray-400">{selected.diffStats.filesChanged} files</span>
@@ -584,7 +584,7 @@ export function DeliverablesPage() {
                   </div>
                 )}
                 {selected.testResults && (
-                  <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 text-xs space-y-1">
+                  <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
                     <div className="text-gray-500 font-medium">Tests</div>
                     <div className="flex gap-3">
                       <span className="text-emerald-400">{selected.testResults.passed} passed</span>
@@ -600,18 +600,18 @@ export function DeliverablesPage() {
             {selected.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {selected.tags.map(tag => (
-                  <span key={tag} className="px-2 py-0.5 text-xs bg-gray-800 text-gray-400 rounded">{tag}</span>
+                  <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-gray-400 rounded">{tag}</span>
                 ))}
               </div>
             )}
 
             {/* Association links */}
-            <div className="border-t border-gray-800 pt-4 space-y-2">
+            <div className="border-t border-border-default pt-4 space-y-2">
               <div className="text-xs text-gray-500 font-medium">Links</div>
               <div className="flex gap-3 flex-wrap">
                 {selected.taskId && (
                   <button onClick={() => navBus.navigate('projects', { openTask: selected.taskId! })}
-                    className="text-xs text-indigo-400 hover:underline bg-indigo-900/20 px-2.5 py-1 rounded">
+                    className="text-xs text-brand-400 hover:underline bg-brand-900/20 px-2.5 py-1 rounded">
                     Task: {selected.taskId.slice(0, 12)}...
                   </button>
                 )}
@@ -631,7 +631,7 @@ export function DeliverablesPage() {
             </div>
 
             {/* Metadata */}
-            <div className="text-xs text-gray-600 space-y-1 border-t border-gray-800 pt-4">
+            <div className="text-xs text-gray-600 space-y-1 border-t border-border-default pt-4">
               <div className="flex gap-6 flex-wrap">
                 <span>Created: <span className="text-gray-400">{new Date(selected.createdAt).toLocaleString()}</span></span>
                 <span>Updated: <span className="text-gray-400">{new Date(selected.updatedAt).toLocaleString()}</span></span>
@@ -646,13 +646,13 @@ export function DeliverablesPage() {
       {/* Create Modal */}
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !creating && setShowCreate(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">Create Deliverable</h3>
 
             <div>
               <label className="text-xs text-gray-500 block mb-1">Type</label>
               <select value={newType} onChange={e => setNewType(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200">
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200">
                 {ALL_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t]?.icon ?? ''} {t}</option>)}
               </select>
             </div>
@@ -660,44 +660,44 @@ export function DeliverablesPage() {
             <div>
               <label className="text-xs text-gray-500 block mb-1">Title <span className="text-red-400">*</span></label>
               <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Clear, searchable title"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors" />
             </div>
 
             <div>
               <label className="text-xs text-gray-500 block mb-1">Reference <span className="text-gray-600">(file path, URL, branch name)</span></label>
               <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder="/path/to/file or https://..."
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors font-mono" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div>
               <label className="text-xs text-gray-500 block mb-1">Summary <span className="text-red-400">*</span> <span className="text-gray-600">(Markdown)</span></label>
               <textarea value={newSummary} onChange={e => setNewSummary(e.target.value)}
                 placeholder="Describe the deliverable..."
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 h-36 resize-none focus:border-indigo-500 focus:outline-none transition-colors font-mono" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 h-36 resize-none focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div className="flex gap-4">
               <div className="flex-1">
                 <label className="text-xs text-gray-500 block mb-1">Tags <span className="text-gray-600">(comma separated)</span></label>
                 <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder="react, api, docs"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none transition-colors" />
+                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors" />
               </div>
               <div className="flex-1">
                 <label className="text-xs text-gray-500 block mb-1">Project</label>
                 <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200">
+                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200">
                   <option value="">None</option>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-1 border-t border-gray-800">
+            <div className="flex justify-end gap-3 pt-1 border-t border-border-default">
               <button onClick={() => setShowCreate(false)} disabled={creating}
                 className="text-sm text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors py-2">Cancel</button>
               <button onClick={handleCreate}
                 disabled={creating || !newTitle.trim() || !newSummary.trim()}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
+                className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
                 {creating && <Spinner />}
                 {creating ? 'Creating...' : 'Create'}
               </button>
@@ -784,7 +784,7 @@ function FilterPill({ label, value, current, onClick }: { label: string; value: 
     <button
       onClick={() => onClick(current === value ? '' : value)}
       className={`px-2 py-1 rounded text-xs whitespace-nowrap shrink-0 transition-colors ${
-        current === value ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+        current === value ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-gray-400 hover:bg-surface-overlay'
       }`}
     >
       {label}

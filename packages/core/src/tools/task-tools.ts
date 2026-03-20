@@ -58,8 +58,10 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
-  /** Update task fields (description, etc.) — works even for pending_approval tasks */
-  updateTaskFields?: (taskId: string, fields: { description?: string }) => Promise<{ id: string; title: string; status: string }>;
+  /** Update task fields (description, blockedBy, etc.) — works even for pending_approval tasks */
+  updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[] }) => Promise<{ id: string; title: string; status: string }>;
+  /** Cancel a pending_approval task (calls rejectTask under the hood) */
+  cancelPendingTask?: (taskId: string) => Promise<{ id: string; title: string; status: string }>;
   /** List subtasks of a parent task */
   listSubtasks?: (parentId: string) => Promise<Array<{ id: string; title: string; status: string; priority: string; assignedAgentId?: string }>>;
   /** Submit task deliverables for review */
@@ -309,7 +311,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update a task — add a progress note, change status, update description, or a combination.',
+        'Update a task — add a progress note, change status, update description, modify blocked_by dependencies, or a combination.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'You can update the description of any task including those awaiting approval (pending_approval).',
         'Worker lifecycle: assigned → in_progress → (submit via task_submit_review when done).',
@@ -336,6 +338,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Updated task description (optional). Can be used on any task including pending_approval tasks.',
           },
+          blocked_by: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Update the list of task IDs that block this task. Only the task creator can modify this field. Pass an empty array to clear all blockers.',
+          },
         },
         required: ['task_id'],
       },
@@ -345,10 +352,26 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const newStatus = args['status'] as string | undefined;
           const note = args['note'] as string | undefined;
           const description = args['description'] as string | undefined;
+          const blockedBy = args['blocked_by'] as string[] | undefined;
 
-          // Handle description update first — works for any status including pending_approval
-          if (description !== undefined && ctx.updateTaskFields) {
-            await ctx.updateTaskFields(taskId, { description });
+          // Permission check: only task creator can modify blocked_by
+          if (blockedBy !== undefined) {
+            const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+            const createdBy = (existing as Record<string, unknown> | null)?.['createdBy'] as string | undefined;
+            if (createdBy && createdBy !== ctx.agentId) {
+              return JSON.stringify({
+                status: 'denied',
+                error: 'Only the task creator can modify blocked_by. You are not the creator of this task.',
+              });
+            }
+          }
+
+          // Handle field updates first — works for any status including pending_approval
+          if ((description !== undefined || blockedBy !== undefined) && ctx.updateTaskFields) {
+            await ctx.updateTaskFields(taskId, {
+              ...(description !== undefined ? { description } : {}),
+              ...(blockedBy !== undefined ? { blockedBy } : {}),
+            });
           }
 
           if (newStatus) {
@@ -363,9 +386,31 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               }
             }
 
-            // Prevent workers from accidentally cancelling/failing their own running task
+            // Handle cancel/fail with pending_approval support for creators
             if (newStatus === 'cancelled' || newStatus === 'failed') {
               const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+
+              if (existing?.status === 'pending_approval') {
+                const createdBy = (existing as Record<string, unknown>)['createdBy'] as string | undefined;
+                if (newStatus === 'cancelled' && createdBy === ctx.agentId && ctx.cancelPendingTask) {
+                  const task = await ctx.cancelPendingTask(taskId);
+                  if (note && ctx.addTaskNote) {
+                    await ctx.addTaskNote(task.id, note, ctx.agentName).catch(() => {});
+                  }
+                  log.info(`Pending task cancelled by creator ${ctx.agentId}`, { taskId: task.id });
+                  return JSON.stringify({
+                    status: 'success',
+                    task,
+                    message: `Task "${task.title}" cancelled (was pending approval)${note ? ' — note recorded' : ''}`,
+                  });
+                }
+                return JSON.stringify({
+                  status: 'denied',
+                  error: 'Only the task creator can cancel a pending_approval task.',
+                });
+              }
+
+              // Prevent workers from accidentally cancelling/failing their own running task
               if (existing?.assignedAgentId === ctx.agentId && existing?.status === 'in_progress') {
                 log.warn(`Agent ${ctx.agentId} attempted to set own running task to "${newStatus}"`, { taskId });
                 return JSON.stringify({
@@ -386,22 +431,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}`,
             });
           } else {
-            // No status change — note and/or description update
-            if (!note && description === undefined) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, or a description.' });
+            // No status change — note, description, and/or blocked_by update
+            if (!note && description === undefined && blockedBy === undefined) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a description, or blocked_by.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
             }
             const task = ctx.getTask ? await ctx.getTask(taskId) : null;
-            log.info(`Task updated by agent ${ctx.agentId}`, { taskId, hasNote: !!note, hasDescription: description !== undefined });
+            log.info(`Task updated by agent ${ctx.agentId}`, { taskId, hasNote: !!note, hasDescription: description !== undefined, hasBlockedBy: blockedBy !== undefined });
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}`,
             });
           }
         } catch (error) {
@@ -666,7 +711,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 if (Array.isArray(rawDel)) {
                   parsedDeliverables = rawDel
                     .filter((d): d is Record<string, unknown> =>
-                      d != null && typeof d === 'object' && !Array.isArray(d)
+                      d !== null && d !== undefined && typeof d === 'object' && !Array.isArray(d)
                       && typeof (d as Record<string, unknown>).path === 'string'
                       && ((d as Record<string, unknown>).path as string).length > 0
                     )

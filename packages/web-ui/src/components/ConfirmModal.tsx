@@ -25,7 +25,7 @@ export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkbo
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={onCancel}>
       <div
-        className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-[360px] shadow-2xl"
+        className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[360px] shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         <h3 className="font-semibold text-base mb-2">{title}</h3>
@@ -38,7 +38,7 @@ export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkbo
                   type="checkbox"
                   checked={checks[cb.id] ?? false}
                   onChange={e => setChecks(prev => ({ ...prev, [cb.id]: e.target.checked }))}
-                  className="rounded bg-gray-800 border-gray-700"
+                  className="rounded bg-surface-elevated border-border-default"
                 />
                 {cb.label}
               </label>
@@ -48,7 +48,7 @@ export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkbo
         <div className="flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="px-4 py-1.5 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 transition-colors"
+            className="px-4 py-1.5 text-sm border border-border-default rounded-lg hover:bg-surface-elevated transition-colors"
           >
             Cancel
           </button>

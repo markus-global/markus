@@ -120,6 +120,42 @@ export function ChatTeamSidebar({
     }
   }, []);
 
+  // ── Last messages per agent ──────────────────────────────────────────────
+  const [agentLastMsg, setAgentLastMsg] = useState<Map<string, string>>(new Map());
+  const agentIdsKey = useMemo(() => agents.map(a => a.id).sort().join(','), [agents]);
+
+  useEffect(() => {
+    if (!agents.length) return;
+    let cancelled = false;
+    const fetchAll = async () => {
+      const entries: [string, string][] = [];
+      await Promise.allSettled(
+        agents.map(async (a) => {
+          try {
+            const { sessions: ss } = await api.sessions.listByAgent(a.id, 1);
+            if (!ss.length) return;
+            const { messages } = await api.sessions.getMessages(ss[0].id, 1);
+            if (messages.length) {
+              const msg = messages[0];
+              const segs = msg.metadata?.segments;
+              let raw = msg.content;
+              if (segs && segs.length > 0) {
+                const last = [...segs].reverse().find(s => s.type === 'text');
+                if (last && last.type === 'text') raw = last.content;
+              }
+              const txt = raw.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/\n+/g, ' ').trim().slice(0, 80);
+              if (txt) entries.push([a.id, txt]);
+            }
+          } catch { /* ignore */ }
+        }),
+      );
+      if (!cancelled) setAgentLastMsg(new Map(entries));
+    };
+    fetchAll();
+    const timer = setInterval(fetchAll, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [agentIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Data loading ──────────────────────────────────────────────────────────
   const refreshUngrouped = useCallback(() => {
     api.teams.list().then(d => setUngrouped(d.ungrouped)).catch(() => {});
@@ -321,11 +357,10 @@ export function ChatTeamSidebar({
     const nameNorm = a.name.toLowerCase().trim();
     const showRole = roleNorm && roleNorm !== nameNorm;
 
-    const statusText = isError
-      ? 'Error'
-      : a.currentActivity?.description
-        ? a.currentActivity.description.slice(0, 60)
-        : a.status === 'working' ? 'Working...' : a.status === 'idle' ? 'Online' : a.status === 'paused' ? 'Paused' : a.status === 'offline' ? 'Offline' : '';
+    const subtitle = agentLastMsg.get(a.id)
+      || (isError ? 'Error' : a.currentActivity?.description?.slice(0, 60) || '');
+
+    const statusTitle = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
 
     return (
       <div
@@ -345,11 +380,11 @@ export function ChatTeamSidebar({
             setAgentMenu({ agentId: a.id, teamId, x: e.clientX, y: e.clientY });
           }}
           className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors touch-none select-none ${
-            selected ? 'bg-indigo-600/20 text-indigo-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-gray-800'
+            selected ? 'bg-brand-600/20 text-brand-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-surface-elevated'
           }`}
         >
           <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-            isError ? 'bg-red-900/60 text-red-300' : selected ? 'bg-indigo-600' : 'bg-gray-700'
+            isError ? 'bg-red-900/60 text-red-300' : selected ? 'bg-brand-600' : 'bg-surface-overlay'
           }`}>
             {agentInitials(a.name)}
           </div>
@@ -360,11 +395,15 @@ export function ChatTeamSidebar({
               {isManager && <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" className="text-amber-400 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
               {isExt && <span className="text-[8px] px-1 py-0 rounded bg-purple-500/20 text-purple-400 font-medium shrink-0 leading-relaxed">EXT</span>}
             </div>
-            <div className={`truncate text-[10px] leading-tight mt-0.5 ${isError ? 'text-red-400/60' : 'text-gray-600'}`}>
-              {statusText}
+            <div className={`truncate text-[10px] leading-tight mt-0.5 ${isError && !agentLastMsg.has(a.id) ? 'text-red-400/60' : 'text-gray-500'}`}>
+              {subtitle || '\u00A0'}
             </div>
           </div>
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
+          <span
+            title={statusTitle}
+            onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}
+            className={`w-2 h-2 rounded-full shrink-0 cursor-pointer transition-transform duration-150 hover:scale-[2] ${statusColor}`}
+          />
         </button>
       </div>
     );
@@ -381,7 +420,7 @@ export function ChatTeamSidebar({
     return (
       <div
         key={tid}
-        className={`mb-1 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-indigo-500/50 bg-indigo-500/5' : ''}`}
+        className={`mb-1 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''}`}
         onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
         onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
       >
@@ -399,19 +438,19 @@ export function ChatTeamSidebar({
             }}
             className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors min-w-0 ${
               isGcActive
-                ? 'bg-indigo-600/20 text-indigo-300'
-                : 'text-gray-400 hover:bg-gray-800'
+                ? 'bg-brand-600/20 text-brand-300'
+                : 'text-gray-400 hover:bg-surface-elevated'
             }`}
           >
             <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-              isGcActive ? 'bg-indigo-600' : 'bg-gray-700'
+              isGcActive ? 'bg-brand-600' : 'bg-surface-overlay'
             }`}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
             </div>
             <div className="flex-1 min-w-0 text-left">
               {editingTeam === tid ? (
                 <input
-                  className="bg-transparent border-b border-indigo-500 text-gray-300 text-[11px] font-medium outline-none w-full"
+                  className="bg-transparent border-b border-brand-500 text-gray-300 text-[11px] font-medium outline-none w-full"
                   value={editTeamName}
                   onChange={e => setEditTeamName(e.target.value)}
                   onBlur={() => handleRenameTeam(tid)}
@@ -453,7 +492,7 @@ export function ChatTeamSidebar({
         </div>
 
         {isDropTarget && isDragging && (
-          <div className="text-[9px] text-indigo-400 px-4 py-0.5 animate-pulse">Drop here</div>
+          <div className="text-[9px] text-brand-400 px-4 py-0.5 animate-pulse">Drop here</div>
         )}
         {!isCollapsed && (
           <div className="ml-1">
@@ -491,24 +530,24 @@ export function ChatTeamSidebar({
 
   return (
     <>
-      <div className="bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0" style={{ width: width ?? 224 }}>
+      <div className="bg-surface-secondary/60 border-r border-border-default flex flex-col shrink-0" style={{ width: width ?? 224 }}>
         {/* Action bar */}
         {isAdmin && (
-          <div className="px-3 py-2 border-b border-gray-800 flex items-center gap-1.5" ref={actionMenuRef}>
+          <div className="px-3 h-14 flex items-center gap-1.5" ref={actionMenuRef}>
             <div className="relative flex-1">
               <button
                 onClick={() => setActionMenu(!actionMenu)}
-                className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium text-gray-400 hover:text-gray-200 bg-gray-800/60 hover:bg-gray-800 rounded-lg transition-colors"
+                className="w-full flex items-center justify-center gap-1 px-2 py-1.5 text-[10px] font-medium text-gray-400 hover:text-gray-200 bg-surface-elevated/60 hover:bg-surface-elevated rounded-lg transition-colors"
               >
-                <span className="text-indigo-400">+</span> Manage
+                <span className="text-brand-400">+</span> Manage
                 <svg className={`w-2.5 h-2.5 ml-auto transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>
               </button>
               {actionMenu && (
-                <div className="absolute left-0 top-full mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
+                <div className="absolute left-0 top-full mt-1 w-48 bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
                   <button onClick={() => { setActionMenu(false); setShowNewTeam(true); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-gray-300 hover:bg-gray-800 transition-colors">
+                    className="w-full text-left px-4 py-2.5 text-xs text-gray-300 hover:bg-surface-elevated transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                       New Team
@@ -516,7 +555,7 @@ export function ChatTeamSidebar({
                     <div className="text-[10px] text-gray-500 mt-0.5 pl-[18px]">Create an empty team</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); navBus.navigate('agents'); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-gray-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
+                    className="w-full text-left px-4 py-2.5 text-xs text-gray-300 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
                       Add Agent
@@ -524,7 +563,7 @@ export function ChatTeamSidebar({
                     <div className="text-[10px] text-gray-500 mt-0.5 pl-[18px]">Create from templates</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); setShowOpenClaw(true); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-purple-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
+                    className="w-full text-left px-4 py-2.5 text-xs text-purple-300 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9" /></svg>
                       Import OpenClaw
@@ -532,7 +571,7 @@ export function ChatTeamSidebar({
                     <div className="text-[10px] text-gray-500 mt-0.5 pl-[18px]">Connect an external agent</div>
                   </button>
                   <button onClick={() => { setActionMenu(false); setShowAddHuman({}); }}
-                    className="w-full text-left px-4 py-2.5 text-xs text-emerald-300 hover:bg-gray-800 border-t border-gray-800 transition-colors">
+                    className="w-full text-left px-4 py-2.5 text-xs text-emerald-300 hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
                       Add Human
@@ -558,12 +597,12 @@ export function ChatTeamSidebar({
               onClick={() => onSelectChannel(gc.channelKey)}
               className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
                 chatMode === 'channel' && activeChannel === gc.channelKey
-                  ? 'bg-indigo-600/20 text-indigo-300'
-                  : 'text-gray-400 hover:bg-gray-800'
+                  ? 'bg-brand-600/20 text-brand-300'
+                  : 'text-gray-400 hover:bg-surface-elevated'
               }`}
             >
               <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-indigo-600' : 'bg-gray-700'
+                chatMode === 'channel' && activeChannel === gc.channelKey ? 'bg-brand-600' : 'bg-surface-overlay'
               }`}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
               </div>
@@ -597,7 +636,7 @@ export function ChatTeamSidebar({
           {teams.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
 
           {/* People */}
-          <div className="mt-3 pt-2 border-t border-gray-800/60">
+          <div className="mt-3 pt-2 border-t border-border-default/60">
             <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-2">People</p>
 
             {authUser && (
@@ -605,12 +644,12 @@ export function ChatTeamSidebar({
                 onClick={() => onSelectDm(authUser.id)}
                 className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
                   chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-indigo-600/20 text-indigo-300'
-                    : 'text-gray-400 hover:bg-gray-800'
+                    ? 'bg-brand-600/20 text-brand-300'
+                    : 'text-gray-400 hover:bg-surface-elevated'
                 }`}
               >
                 <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-indigo-600' : 'bg-indigo-900'
+                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId) ? 'bg-brand-600' : 'bg-brand-900'
                 }`}>
                   {authUser.name[0]?.toUpperCase()}
                 </div>
@@ -629,7 +668,7 @@ export function ChatTeamSidebar({
                 className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-colors ${
                   chatMode === 'dm' && activeDmUserId === h.id
                     ? 'bg-emerald-900/30 text-emerald-300'
-                    : 'text-gray-400 hover:bg-gray-800'
+                    : 'text-gray-400 hover:bg-surface-elevated'
                 }`}
               >
                 <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
@@ -654,7 +693,7 @@ export function ChatTeamSidebar({
           className="w-1 cursor-col-resize shrink-0 group relative"
           onMouseDown={onResizeStart}
         >
-          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-indigo-500/30 group-active:bg-indigo-500/50 transition-colors" />
+          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
         </div>
       )}
 
@@ -668,7 +707,7 @@ export function ChatTeamSidebar({
         return (
           <div
             ref={adjustMenuPosition}
-            className="fixed bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-50 w-44"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44"
             style={{ left: teamMenu.x, top: teamMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -676,62 +715,62 @@ export function ChatTeamSidebar({
               const t = teamMap.get(teamMenu.teamId);
               if (t) { setEditingTeam(teamMenu.teamId); setEditTeamName(t.name); }
               setTeamMenu(null);
-            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-300 flex items-center gap-2">
+            }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-gray-300 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
               Rename Team
             </button>
             {hasOffline && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'start'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-emerald-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-emerald-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                 Start All
               </button>
             )}
             {hasActive && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'stop'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
                 Stop All
               </button>
             )}
             {hasRunning && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'pause'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-amber-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
                 Pause All
               </button>
             )}
             {hasPaused && (
               <button onClick={() => { handleBatchAction(teamMenu.teamId, 'resume'); setTeamMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-blue-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-blue-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                 Resume All
               </button>
             )}
-            <div className="border-t border-gray-700/50 my-1" />
+            <div className="border-t border-border-default/50 my-1" />
             <button onClick={() => { setTeamMenu(null); navBus.navigate('agents'); }}
-              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-indigo-300 flex items-center gap-2">
+              className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-300 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               Add Agent
             </button>
             <button onClick={() => { setTeamMenu(null); setShowAddHuman({ teamId: teamMenu.teamId }); }}
-              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-emerald-300 flex items-center gap-2">
+              className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-emerald-300 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
               Add Human
             </button>
             {ungrouped.length > 0 && (
               <button onClick={() => { setTeamMenu(null); setShowAddExisting(teamMenu.teamId); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-gray-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><polyline points="17 11 19 13 23 9" /></svg>
                 Add Existing
               </button>
             )}
-            <div className="border-t border-gray-700/50 my-1" />
+            <div className="border-t border-border-default/50 my-1" />
             <button onClick={() => {
               const t = teamMap.get(teamMenu.teamId);
               if (t) handleDeleteTeam(teamMenu.teamId, t.name);
               setTeamMenu(null);
-            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-400 flex items-center gap-2">
+            }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-400 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
               Delete Team
             </button>
@@ -749,45 +788,45 @@ export function ChatTeamSidebar({
         return (
           <div
             ref={adjustMenuPosition}
-            className="fixed bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 z-50 w-44"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44"
             style={{ left: agentMenu.x, top: agentMenu.y }}
             onClick={e => e.stopPropagation()}
           >
             <button onClick={() => { setAgentMenu(null); onViewProfile(a.id); }}
-              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-indigo-300 flex items-center gap-2">
+              className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-300 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
               View Profile
             </button>
             {a.status === 'offline' ? (
               <button onClick={() => { handleStartStop(a.id, 'offline'); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-emerald-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-emerald-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                 Start
               </button>
             ) : (
               <button onClick={() => { handleStartStop(a.id, a.status ?? 'idle'); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
                 Stop
               </button>
             )}
             {agentMenu.teamId && !isManager && (
               <button onClick={() => { handleSetManager(agentMenu.teamId!, a.id, 'agent'); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-amber-300 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-300 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
                 Set as Manager
               </button>
             )}
             {agentMenu.teamId && (
               <button onClick={() => { handleRemoveFromTeam(agentMenu.teamId!, a.id); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-400 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-gray-400 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></svg>
                 Remove from team
               </button>
             )}
             {teams.length > 0 && (
               <>
-                <div className="border-t border-gray-700/50 my-1" />
+                <div className="border-t border-border-default/50 my-1" />
                 <div className="px-3 py-1 text-[10px] text-gray-500 uppercase flex items-center gap-1.5">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
                   Move to
@@ -798,16 +837,16 @@ export function ChatTeamSidebar({
                     await api.teams.addMember(t.id, a.id, 'agent');
                     onRefreshTeams(); onRefreshAgents(); refreshUngrouped();
                     setAgentMenu(null);
-                  }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-gray-300 pl-7">
+                  }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-gray-300 pl-7">
                     {t.name}
                   </button>
                 ))}
               </>
             )}
-            <div className="border-t border-gray-700/50 my-1" />
+            <div className="border-t border-border-default/50 my-1" />
             {!isSelf && (
               <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent'); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-gray-700 text-red-400 flex items-center gap-2">
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-400 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                 Remove from org
               </button>
@@ -893,7 +932,7 @@ export function ChatTeamSidebar({
         <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg shadow-xl text-sm font-medium ${
           toast.type === 'error'
             ? 'bg-red-900/90 text-red-200 border border-red-700/50'
-            : 'bg-gray-800/95 text-gray-200 border border-gray-700/50'
+            : 'bg-surface-elevated/95 text-gray-200 border border-border-default/50'
         }`}>
           {toast.message}
         </div>

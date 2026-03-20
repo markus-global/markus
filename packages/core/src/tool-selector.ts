@@ -1,5 +1,4 @@
-import { createLogger } from '@markus/shared';
-import type { LLMTool } from '@markus/shared';
+import { createLogger, type LLMTool } from '@markus/shared';
 import type { SkillManifest } from './skills/types.js';
 
 const log = createLogger('tool-selector');

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, hubApi, type TeamTemplateInfo, type HubItem } from '../api.ts';
+import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 
 type FilterId = 'all' | 'hub';
 
@@ -74,8 +75,11 @@ export function TeamsStore() {
     setLoading(true);
     try {
       if (filter === 'hub') {
+        const hubPromise = !search
+          ? (consume<{ items: HubItem[]; total: number }>(PREFETCH_KEYS.hubTeams) ?? hubApi.search({ type: 'team', limit: 50 }))
+          : hubApi.search({ type: 'team', q: search, limit: 50 });
         const [res] = await Promise.all([
-          hubApi.search({ type: 'team', q: search || undefined, limit: 50 }).catch(() => ({ items: [] as HubItem[], total: 0 })),
+          hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
           loadLocalStatus(),
         ]);
         setHubItems(res.items);
@@ -154,12 +158,12 @@ export function TeamsStore() {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="flex items-center gap-4 px-7 h-15 border-b border-gray-800 bg-gray-900 shrink-0">
+      <div className="flex items-center gap-4 px-6 h-14 border-b border-border-default bg-surface-secondary shrink-0">
         <h2 className="text-lg font-semibold">Team Store</h2>
       </div>
 
       {/* Filter Bar */}
-      <div className="flex items-center gap-3 px-7 py-2.5 border-b border-gray-800/50 bg-gray-900/50 shrink-0">
+      <div className="flex items-center gap-3 px-6 py-2 border-b border-border-default/50 bg-surface-secondary/50 shrink-0">
         <div className="flex gap-1">
           {([
             { id: 'all' as const, label: 'Built-in' },
@@ -169,7 +173,7 @@ export function TeamsStore() {
               key={f.id}
               onClick={() => { setFilter(f.id); setSelected(null); setDeployResult(null); }}
               className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                filter === f.id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                filter === f.id ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated'
               }`}
             >
               {f.label}
@@ -187,7 +191,7 @@ export function TeamsStore() {
             placeholder="Search teams..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm w-52 focus:border-indigo-500 focus:outline-none"
+            className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-52 focus:border-brand-500 focus:outline-none"
           />
         </div>
       </div>
@@ -236,7 +240,7 @@ export function TeamsStore() {
 
       {/* Detail Panel */}
       {selected && filter === 'all' && (
-        <div className="border-t border-gray-800 bg-gray-900 shrink-0 max-h-80 overflow-y-auto">
+        <div className="border-t border-border-default bg-surface-secondary shrink-0 max-h-80 overflow-y-auto">
           <div className="p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -254,7 +258,7 @@ export function TeamsStore() {
                 <button
                   onClick={() => handleDeploy(selected)}
                   disabled={deploying}
-                  className="px-5 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 transition-colors font-medium disabled:opacity-50"
+                  className="px-5 py-2 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-500 transition-colors font-medium disabled:opacity-50"
                 >
                   {deploying ? 'Deploying...' : 'Deploy Team'}
                 </button>
@@ -275,7 +279,7 @@ export function TeamsStore() {
                 <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Team Composition</div>
                 <div className="space-y-2">
                   {selected.members.map((m, i) => (
-                    <div key={i} className="flex items-center gap-3 bg-gray-800/50 rounded-lg p-3">
+                    <div key={i} className="flex items-center gap-3 bg-surface-elevated/50 rounded-lg p-3">
                       <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
                         m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
                       }`}>
@@ -319,7 +323,7 @@ export function TeamsStore() {
                       <span className="text-gray-500 w-20 pt-0.5">Tags:</span>
                       <div className="flex flex-wrap gap-1.5">
                         {selected.tags.map(t => (
-                          <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-400 rounded-full border border-gray-700">{t}</span>
+                          <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-gray-400 rounded-full border border-border-default">{t}</span>
                         ))}
                       </div>
                     </div>
@@ -368,11 +372,11 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
   };
 
   return (
-    <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-indigo-600/50 cursor-pointer transition-all">
+    <div className="p-4 bg-surface-secondary rounded-xl border border-border-default hover:border-brand-600/50 cursor-pointer transition-all">
       <div className="flex items-center gap-2 mb-2">
         <span className="text-lg">{'\uD83D\uDC65'}</span>
         <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
-        {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-400 rounded">v{item.version}</span>}
+        {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded">v{item.version}</span>}
         <span className="text-[10px] px-1.5 py-0.5 bg-teal-500/15 text-teal-400 rounded">Hub</span>
       </div>
       <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.description}</p>
@@ -391,12 +395,12 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
             {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
           </button>
         ) : isInstalled ? (
-          <span className="px-3 py-1 text-xs bg-gray-700 text-gray-400 rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+          <span className="px-3 py-1 text-xs bg-surface-overlay text-gray-400 rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
         ) : (
           <button
             onClick={e => void handleInstall(e)}
             disabled={installing}
-            className="px-3 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
           >
             {installing ? 'Installing...' : 'Install'}
           </button>
@@ -419,8 +423,8 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
   return (
     <div
       onClick={onSelect}
-      className={`bg-gray-900 border rounded-xl p-5 cursor-pointer transition-all hover:shadow-lg hover:shadow-black/20 ${
-        isSelected ? 'border-indigo-500 ring-1 ring-indigo-500/30' : 'border-gray-800 hover:border-gray-700'
+      className={`bg-surface-secondary border rounded-xl p-5 cursor-pointer transition-all hover:shadow-lg hover:shadow-black/20 ${
+        isSelected ? 'border-brand-500 ring-1 ring-brand-500/30' : 'border-border-default hover:border-gray-600'
       }`}
     >
       <div className="flex items-start gap-3">
@@ -432,7 +436,7 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <div className="font-semibold text-white truncate">{tpl.name}</div>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 bg-indigo-500/20 text-indigo-400">
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 bg-brand-500/20 text-brand-400">
               v{tpl.version}
             </span>
           </div>
@@ -453,7 +457,7 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
         ))}
       </div>
 
-      <div className="mt-3 pt-3 border-t border-gray-800 flex items-center gap-3 text-xs text-gray-500">
+      <div className="mt-3 pt-3 border-t border-border-default flex items-center gap-3 text-xs text-gray-500">
         <span>{totalAgents} agent{totalAgents !== 1 ? 's' : ''}</span>
         {hasManager && <span className="text-purple-400/60">has manager</span>}
         {tpl.tags && tpl.tags.length > 0 && (

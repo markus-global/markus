@@ -16,48 +16,15 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
-      - DATABASE_URL=postgresql://markus:markus@postgres:5432/markus
-      - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       - markus-data:/app/.markus
       - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - markus-net
-
-  postgres:
-    image: postgres:16-alpine
-    container_name: markus-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: markus
-      POSTGRES_PASSWORD: markus
-      POSTGRES_DB: markus
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    ports:
-      - "${PG_PORT:-5432}:5432"
-    networks:
-      - markus-net
-
-  redis:
-    image: redis:7-alpine
-    container_name: markus-redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     networks:
       - markus-net
 
 volumes:
   markus-data:
-  pg-data:
-  redis-data:
 
 networks:
   markus-net:
