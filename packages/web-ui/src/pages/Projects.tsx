@@ -1600,7 +1600,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
-  onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: () => void;
+  onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: (e: React.DragEvent) => void;
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
 }) {
@@ -1664,7 +1664,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         {proj?.name ?? <span className="text-gray-700">—</span>}
       </div>
       <div className="w-[90px] shrink-0 text-[10px] text-gray-600 text-right">
-        {relativeTime(row.data.updatedAt)}
+        {relativeTime(row.data.updatedAt ?? '')}
       </div>
     </div>
   );
@@ -1698,8 +1698,8 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     if (sortMode === 'status') {
       result.sort((a, b) => {
         if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
-        const aT = new Date(a.data.updatedAt).getTime();
-        const bT = new Date(b.data.updatedAt).getTime();
+        const aT = new Date(a.data.updatedAt ?? 0).getTime();
+        const bT = new Date(b.data.updatedAt ?? 0).getTime();
         return bT - aT;
       });
     } else {
@@ -1707,7 +1707,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
       result.sort((a, b) => {
         const pa = pA(a), pb = pA(b);
         if (pa !== pb) return pa - pb;
-        return new Date(b.data.updatedAt).getTime() - new Date(a.data.updatedAt).getTime();
+        return new Date(b.data.updatedAt ?? 0).getTime() - new Date(a.data.updatedAt ?? 0).getTime();
       });
     }
     return result;
@@ -1735,13 +1735,13 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     } catch { /* */ }
   };
 
-  const onRowDragStart = (e: DragEvent<HTMLDivElement>, idx: number) => {
+  const onRowDragStart = (e: React.DragEvent, idx: number) => {
     setDragIdx(idx);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(idx));
     (e.currentTarget as HTMLElement).style.opacity = '0.4';
   };
-  const onRowDragEnd = (e: DragEvent<HTMLDivElement>) => {
+  const onRowDragEnd = (e: React.DragEvent) => {
     (e.currentTarget as HTMLElement).style.opacity = '1';
     setDragIdx(null);
     setDragOverGroup(null);
@@ -2531,7 +2531,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         type CardItem = { kind: 'req'; data: RequirementInfo; time: number } | { kind: 'task'; data: TaskInfo; time: number };
                         const items: CardItem[] = [
                           ...colReqs.map(r => ({ kind: 'req' as const, data: r, time: new Date(r.updatedAt ?? r.createdAt).getTime() })),
-                          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt).getTime() })),
+                          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt ?? 0).getTime() })),
                         ];
                         items.sort((a, b) => b.time - a.time);
                         return items.map(item => {

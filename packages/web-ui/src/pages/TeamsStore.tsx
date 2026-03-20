@@ -82,12 +82,12 @@ export function TeamsStore() {
           hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
           loadLocalStatus(),
         ]);
-        setHubItems(res.items);
+        setHubItems(res?.items ?? []);
         setTemplates([]);
       } else {
         setHubItems([]);
         const res = await api.teamTemplates.list(search || undefined);
-        setTemplates(res.templates ?? []);
+        setTemplates(res?.templates ?? []);
       }
     } catch {
       setTemplates([]);

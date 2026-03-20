@@ -303,7 +303,7 @@ export function ChatTeamSidebar({
         }
         if (targetTeamId && targetTeamId !== dragAgent.fromTeamId) {
           const a = agents.find(ag => ag.id === dragAgent.agentId);
-          await api.teams.addMember(targetTeamId, dragAgent.agentId, a?.type === 'human' ? 'human' : 'agent');
+          await api.teams.addMember(targetTeamId, dragAgent.agentId, 'agent');
         }
         onRefreshTeams();
         onRefreshAgents();
@@ -358,7 +358,7 @@ export function ChatTeamSidebar({
     const showRole = roleNorm && roleNorm !== nameNorm;
 
     const subtitle = agentLastMsg.get(a.id)
-      || (isError ? 'Error' : a.currentActivity?.description?.slice(0, 60) || '');
+      || (isError ? 'Error' : a.currentActivity?.label?.slice(0, 60) || '');
 
     const statusTitle = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
 

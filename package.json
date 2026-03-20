@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc -b --noEmit",
+    "typecheck": "tsc -b --noEmit && tsc --noEmit -p packages/web-ui",
     "quality": "npm run typecheck && npm run test",
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",

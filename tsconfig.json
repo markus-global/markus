@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/storage" },
+    { "path": "packages/core" },
+    { "path": "packages/a2a" },
+    { "path": "packages/comms" },
+    { "path": "packages/gui" },
+    { "path": "packages/org-manager" },
+    { "path": "packages/cli" }
+  ]
+}

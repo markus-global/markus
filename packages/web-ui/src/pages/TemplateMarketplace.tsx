@@ -104,7 +104,7 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
           hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
           loadLocalStatus(),
         ]);
-        setHubItems(res.items);
+        setHubItems(res?.items ?? []);
         setTemplates([]);
       } else {
         setHubItems([]);

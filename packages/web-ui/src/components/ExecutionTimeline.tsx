@@ -396,7 +396,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isDone = info.status !== 'running';
   const isStopped = info.status === 'stopped';
 

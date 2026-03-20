@@ -392,6 +392,7 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  result?: string;
   taskType?: string;
   scheduleConfig?: {
     cron?: string;
@@ -837,6 +838,8 @@ export const api = {
       }),
     sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal; images?: string[] }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
       return new Promise(async (resolve, reject) => {
+        let fullContent = '';
+        let routedAgentId = '';
         try {
           const { signal, ...restOpts } = opts ?? {};
           const res = await fetch(`${BASE}/message`, {
@@ -850,8 +853,6 @@ export const api = {
           const reader = res.body?.getReader();
           if (!reader) { reject(new Error('No reader')); return; }
           const decoder = new TextDecoder();
-          let fullContent = '';
-          let routedAgentId = '';
           let buffer = '';
           while (true) {
             const { done, value } = await reader.read();
@@ -1420,7 +1421,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest(`/items/${id}/download`, { method: 'POST' }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' }); }
       throw e;
     }
   },
@@ -1429,7 +1430,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ id: string; name: string; slug: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(data) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(data) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id: string; name: string; slug: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(data) }); }
       throw e;
     }
   },
@@ -1438,7 +1439,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
       throw e;
     }
   },
