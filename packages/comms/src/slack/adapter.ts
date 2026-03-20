@@ -1,5 +1,4 @@
-import { createLogger, msgId } from '@markus/shared';
-import type { Message } from '@markus/shared';
+import { createLogger, type Message } from '@markus/shared';
 import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
 import { SlackClient, type SlackClientConfig } from './client.js';
 

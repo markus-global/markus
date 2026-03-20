@@ -10,13 +10,21 @@ export interface MarkusConfig {
   llm: {
     defaultProvider: string;
     defaultModel: string;
-    providers: Record<string, { apiKey?: string; baseUrl?: string }>;
+    providers: Record<string, {
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+    }>;
     /** Request timeout in ms for all LLM providers (default: 90s) */
     timeoutMs?: number;
   };
   server: {
     apiPort: number;
     webPort: number;
+  };
+  security?: {
+    adminPassword?: string;
+    gatewaySecret?: string;
   };
   hub?: {
     url: string;
@@ -26,8 +34,10 @@ export interface MarkusConfig {
     args?: string[];
     env?: Record<string, string>;
   }>;
-  redis?: {
-    url: string;
+  integrations?: {
+    feishu?: { appId?: string; appSecret?: string };
+    search?: { serperApiKey?: string; braveApiKey?: string };
+    embedding?: { apiKey?: string };
   };
   database?: {
     url: string;
@@ -38,10 +48,11 @@ const DEFAULT_CONFIG: MarkusConfig = {
   org: { id: 'default', name: 'My Organization' },
   llm: {
     defaultProvider: 'anthropic',
-    defaultModel: 'claude-sonnet-4-20250514',
+    defaultModel: 'claude-opus-4-6',
     providers: {},
   },
   server: { apiPort: 3001, webPort: 3000 },
+  security: { adminPassword: 'markus123', gatewaySecret: 'markus-gateway-default-secret-change-me' },
   hub: { url: 'http://localhost:3003' },
 };
 

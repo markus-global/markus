@@ -3,7 +3,7 @@
  * 负责任务执行、状态管理和进度跟踪
  */
 
-import { TaskQueue, TaskPriority, TaskType, TaskStatus, TaskOptions, QueuedTask } from './task-queue.js';
+import { TaskQueue, TaskPriority, TaskType, TaskStatus, type TaskOptions, type QueuedTask } from './task-queue.js';
 
 export interface TaskExecutorOptions {
   agentId: string;

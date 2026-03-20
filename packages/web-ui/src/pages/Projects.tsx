@@ -21,13 +21,13 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
 
   return (
     <span ref={ref} className="relative inline-block">
-      <button onClick={() => setOpen(!open)} className="text-indigo-400 hover:text-indigo-300 hover:underline cursor-pointer">
+      <button onClick={() => setOpen(!open)} className="text-brand-400 hover:text-brand-300 hover:underline cursor-pointer">
         {displayName}
       </button>
       {open && agent && (
-        <div className="absolute left-0 bottom-full mb-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
+        <div className="absolute left-0 bottom-full mb-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-indigo-600/30 flex items-center justify-center text-[10px] font-bold text-indigo-300">
+            <div className="w-7 h-7 rounded-full bg-brand-600/30 flex items-center justify-center text-[10px] font-bold text-brand-300">
               {agent.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
@@ -38,14 +38,14 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
           </div>
           <button
             onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
-            className="w-full text-center text-[10px] text-indigo-400 hover:text-indigo-300 border border-gray-700 hover:border-gray-600 rounded-lg py-1 transition-colors"
+            className="w-full text-center text-[10px] text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
           </button>
         </div>
       )}
       {open && !agent && (
-        <div className="absolute left-0 bottom-full mb-1.5 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl z-40 w-40 p-2">
+        <div className="absolute left-0 bottom-full mb-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-40 p-2">
           <div className="text-[10px] text-gray-500">Agent not found: {agentId.slice(0, 12)}…</div>
         </div>
       )}
@@ -86,7 +86,7 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
         onChange={e => setDraft(e.target.value)}
         onBlur={() => void commit()}
         onKeyDown={e => { if (e.key === 'Enter') void commit(); if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
-        className={`bg-transparent border-b border-indigo-500/50 outline-none ${className ?? ''}`}
+        className={`bg-transparent border-b border-brand-500/50 outline-none ${className ?? ''}`}
         placeholder={placeholder}
       />
     );
@@ -132,7 +132,7 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
         onChange={e => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
         onBlur={() => void commit()}
         onKeyDown={e => { if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
-        className={`bg-transparent border border-indigo-500/30 rounded-lg p-2 outline-none resize-none w-full ${className ?? ''}`}
+        className={`bg-transparent border border-brand-500/30 rounded-lg p-2 outline-none resize-none w-full ${className ?? ''}`}
         placeholder={placeholder}
         rows={2}
       />
@@ -142,7 +142,7 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   return (
     <p
       onClick={() => setEditing(true)}
-      className={`cursor-pointer hover:bg-gray-800/50 rounded-lg transition-colors px-2 py-1 -mx-2 -my-1 ${className ?? ''}`}
+      className={`cursor-pointer hover:bg-surface-elevated/50 rounded-lg transition-colors px-2 py-1 -mx-2 -my-1 ${className ?? ''}`}
       title="Click to edit"
     >{value || <span className="text-gray-600 italic">{placeholder ?? 'Add a description…'}</span>}</p>
   );
@@ -154,7 +154,7 @@ const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 
 
 const BOARD_COLUMNS = [
   { id: 'todo',        label: 'To Do',       statuses: ['pending_approval', 'pending', 'assigned'], accent: 'border-t-blue-500',   dropStatus: 'pending' },
-  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],                  accent: 'border-t-indigo-500', dropStatus: 'in_progress' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],                  accent: 'border-t-brand-500', dropStatus: 'in_progress' },
   { id: 'review',      label: 'In Review',   statuses: ['review', 'revision', 'accepted'],          accent: 'border-t-purple-500', dropStatus: 'review' },
   { id: 'done',        label: 'Done',        statuses: ['completed'],                               accent: 'border-t-green-500',  dropStatus: 'completed' },
   { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],                     accent: 'border-t-red-500',    dropStatus: 'cancelled' },
@@ -179,9 +179,9 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 const STATUS_DOT: Record<string, string> = {
   pending: 'bg-gray-400', pending_approval: 'bg-yellow-400', assigned: 'bg-blue-400',
-  in_progress: 'bg-indigo-400', blocked: 'bg-amber-400',
+  in_progress: 'bg-brand-400', blocked: 'bg-amber-400',
   review: 'bg-purple-400', revision: 'bg-orange-400', accepted: 'bg-teal-400', completed: 'bg-green-400',
-  failed: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-gray-700',
+  failed: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-surface-overlay',
 };
 
 type ViewMode = 'all' | 'project';
@@ -207,7 +207,7 @@ const MemoCommentBubble = memo(function CommentBubble({ comment }: { comment: Ta
       <MarkdownMessage content={comment.content} className="text-sm text-gray-300" />
       {comment.attachments?.map((att, i) => (
         att.type === 'image' ? (
-          <img key={i} src={att.url} alt={att.name} className="mt-2 max-w-full max-h-48 rounded-lg border border-gray-700" />
+          <img key={i} src={att.url} alt={att.name} className="mt-2 max-w-full max-h-48 rounded-lg border border-border-default" />
         ) : null
       ))}
     </div>
@@ -310,7 +310,7 @@ const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, s
   const errorCount = run.items.filter(i => i.kind === 'log' && i.entry.type === 'error').length;
 
   return (
-    <div className="border-b border-gray-800/60 last:border-b-0">
+    <div className="border-b border-border-default/60 last:border-b-0">
       {/* Pre-comments (between runs) */}
       {run.preComments.length > 0 && (
         <div className="px-4 py-2">
@@ -322,7 +322,7 @@ const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, s
       {/* Run header */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-gray-800/40 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left"
       >
         <svg className={`w-3 h-3 text-gray-500 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 12 12" fill="currentColor">
           <path d="M4 2l5 4-5 4V2z" />
@@ -485,12 +485,12 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   };
 
   const commentInput = (
-    <div className="border-t border-gray-800 px-4 py-3">
+    <div className="border-t border-border-default px-4 py-3">
       {imageAttachments.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {imageAttachments.map((att, i) => (
             <div key={i} className="relative group">
-              <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-gray-700" />
+              <img src={att.url} alt={att.name} className="w-16 h-16 object-cover rounded-lg border border-border-default" />
               <button onClick={() => setImageAttachments(prev => prev.filter((_, j) => j !== i))}
                 className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100">×</button>
             </div>
@@ -501,9 +501,9 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
         <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
           placeholder="Add a comment or instruction…"
-          className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
+          className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-blue-500 outline-none text-gray-200 placeholder-gray-600" />
         <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
-        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
+        <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-gray-400 hover:text-gray-200 text-sm" title="Attach image">📎</button>
         <button onClick={() => void submitComment()} disabled={submitting || (!commentText.trim() && imageAttachments.length === 0)}
           className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-xs disabled:opacity-50">Send</button>
       </div>
@@ -533,12 +533,12 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   return (
     <div>
       {totalRunPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border-default">
           <span className="text-[10px] text-gray-500">{runs.length} runs total</span>
           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-            <button disabled={runsPage >= totalRunPages} onClick={() => setRunsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">← Older</button>
+            <button disabled={runsPage >= totalRunPages} onClick={() => setRunsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Older</button>
             <span>{runsPage}/{totalRunPages}</span>
-            <button disabled={runsPage <= 1} onClick={() => setRunsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">Newer →</button>
+            <button disabled={runsPage <= 1} onClick={() => setRunsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Newer →</button>
           </div>
         </div>
       )}
@@ -581,15 +581,15 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[720px] max-w-[92vw] max-h-[85vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 shrink-0">
+      <div className="bg-surface-secondary border border-border-default rounded-xl w-[720px] max-w-[92vw] max-h-[85vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border-default shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <svg className="w-4 h-4 text-gray-500 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h7l4 4v10H3V1zm7 1H4v12h10V5.5L10 2z"/><path d="M10 1v4h4" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
             <span className="text-sm font-medium text-gray-200 truncate">{fileName}</span>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg shrink-0 ml-3">×</button>
         </div>
-        <div className="px-4 py-1 border-b border-gray-800/60">
+        <div className="px-4 py-1 border-b border-border-default/60">
           <p className="text-[10px] text-gray-600 font-mono truncate">{filePath}</p>
         </div>
         <div className="flex-1 overflow-auto min-h-0 p-5">
@@ -604,7 +604,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
             <MarkdownMessage content={data.content} className="text-sm text-gray-300 leading-relaxed" />
           )}
           {data && data.type === 'text' && (
-            <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words bg-gray-950/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
+            <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap break-words bg-surface-primary/50 rounded-lg p-4 leading-relaxed">{data.content}</pre>
           )}
         </div>
       </div>
@@ -756,9 +756,9 @@ function TaskDetailModal({
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[780px] max-w-[95vw] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl w-[780px] max-w-[95vw] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header – title & close only */}
-        <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
           <h3 className="text-base font-semibold leading-snug flex-1 min-w-0 pr-4">{task.title}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg shrink-0">×</button>
         </div>
@@ -766,22 +766,22 @@ function TaskDetailModal({
         {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {/* Description */}
-          <div className="px-6 pt-4 pb-3 border-b border-gray-800">
+          <div className="px-6 pt-4 pb-3 border-b border-border-default">
             {editingDesc ? (
               <div className="space-y-2">
                 <textarea
                   value={descDraft}
                   onChange={e => setDescDraft(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-y min-h-[80px]"
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none resize-y min-h-[80px]"
                   rows={4}
                   placeholder="Add a description…"
                 />
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+                  <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
                   <button
                     onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
                     disabled={busy}
-                    className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50"
+                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
                   >Save</button>
                 </div>
               </div>
@@ -793,7 +793,7 @@ function TaskDetailModal({
                 }
                 <button
                   onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
-                  className="absolute top-0 right-0 text-[10px] text-gray-600 hover:text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute top-0 right-0 text-[10px] text-gray-600 hover:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity"
                 >Edit</button>
               </div>
             )}
@@ -801,10 +801,10 @@ function TaskDetailModal({
 
           {/* Context badges — project, requirement */}
           {(taskProject || taskRequirement || task.parentTaskId) && (
-            <div className="px-6 py-2.5 border-b border-gray-800 flex flex-wrap items-center gap-2">
+            <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
               {taskProject && (
-                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-500/10 text-indigo-300 rounded-full">
-                  <span className="text-[9px] text-indigo-400/60">Project</span>
+                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-300 rounded-full">
+                  <span className="text-[9px] text-brand-400/60">Project</span>
                   {taskProject.name}
                 </span>
               )}
@@ -815,7 +815,7 @@ function TaskDetailModal({
                 </span>
               )}
               {task.parentTaskId && (
-                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-gray-700/60 text-gray-400 rounded-full">
+                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-surface-overlay/60 text-gray-400 rounded-full">
                   <span className="text-[9px] text-gray-500">Subtask of</span>
                   <span className="font-mono">{task.parentTaskId.slice(-8)}</span>
                 </span>
@@ -824,7 +824,7 @@ function TaskDetailModal({
           )}
 
           {/* Dependencies — editable */}
-          <div className="px-6 py-2.5 border-b border-gray-800">
+          <div className="px-6 py-2.5 border-b border-border-default">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Dependencies</span>
             </div>
@@ -865,7 +865,7 @@ function TaskDetailModal({
                   await api.tasks.update(task.id, { blockedBy: newBlockedBy });
                   onRefresh();
                 }}
-                className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-[11px] text-gray-400 focus:border-indigo-500 outline-none"
+                className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-gray-400 focus:border-brand-500 outline-none"
               >
                 <option value="">+ Add dependency…</option>
                 {allTasks
@@ -876,17 +876,17 @@ function TaskDetailModal({
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 px-6 pt-3 border-b border-gray-800 sticky top-0 z-10 bg-gray-900">
-            <button onClick={() => setActiveTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>Details</button>
-            <button onClick={() => setActiveTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+          <div className="flex gap-1 px-6 pt-3 border-b border-border-default sticky top-0 z-10 bg-surface-secondary">
+            <button onClick={() => setActiveTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>Details</button>
+            <button onClick={() => setActiveTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
               Execution Log
-              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />}
+              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
             </button>
-            <button onClick={() => setActiveTab('notes')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'notes' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+            <button onClick={() => setActiveTab('notes')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'notes' ? 'bg-surface-elevated text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
               Notes
               {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-500 font-normal">{task.notes.length}</span>}
             </button>
-            <button onClick={() => setActiveTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-gray-800 text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
+            <button onClick={() => setActiveTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-gray-100 font-medium' : 'text-gray-500 hover:text-gray-300'}`}>
               Deliverables
               {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-gray-500 font-normal">{c}</span> : null; })()}
             </button>
@@ -907,12 +907,12 @@ function TaskDetailModal({
           {activeTab === 'details' && (
             <>
               {/* Editable fields */}
-              <div className="px-6 py-4 border-b border-gray-800/60 space-y-3">
+              <div className="px-6 py-4 border-b border-border-default/60 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Project</label>
                     <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
-                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">No Project</option>
                       {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
@@ -920,7 +920,7 @@ function TaskDetailModal({
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Requirement</label>
                     <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={busy}
-                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">No Requirement</option>
                       {requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
                     </select>
@@ -930,7 +930,7 @@ function TaskDetailModal({
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
                     <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
-                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">Unassigned</option>
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
                     </select>
@@ -938,7 +938,7 @@ function TaskDetailModal({
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Priority</label>
                     <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={busy}
-                      className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-200 focus:border-indigo-500 outline-none disabled:opacity-50 cursor-pointer">
+                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                     </select>
                   </div>
@@ -946,7 +946,7 @@ function TaskDetailModal({
               </div>
 
               {/* Read-only metadata */}
-              <div className="px-6 py-3 border-b border-gray-800/60 grid grid-cols-3 gap-x-4 gap-y-2.5">
+              <div className="px-6 py-3 border-b border-border-default/60 grid grid-cols-3 gap-x-4 gap-y-2.5">
                 <div>
                   <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Created by</p>
                   <p className="text-xs text-gray-400">{task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : <span className="text-gray-600">—</span>}</p>
@@ -981,7 +981,7 @@ function TaskDetailModal({
 
               {/* Workspace isolation & review info */}
               {(task.projectId || task.reviewerAgentId) && (
-                <div className="px-6 py-2.5 border-b border-gray-800/60 grid grid-cols-2 gap-x-4 gap-y-2">
+                <div className="px-6 py-2.5 border-b border-border-default/60 grid grid-cols-2 gap-x-4 gap-y-2">
                   {task.projectId && (
                     <div>
                       <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Task Branch</p>
@@ -1000,13 +1000,13 @@ function TaskDetailModal({
                   <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
                     Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-gray-500 font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
                   </span>
-                  <button onClick={() => setAddingSubtask(true)} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">+ Add subtask</button>
+                  <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">+ Add subtask</button>
                 </div>
                 {subtasks.length > 0 && (
                   <div className="space-y-1.5 mb-3">
                     {subtasks.map(sub => (
-                      <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-gray-800/50 transition-colors">
-                        <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-indigo-500'}`}>
+                      <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/50 transition-colors">
+                        <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-brand-500'}`}>
                           {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
                         </button>
                         <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-gray-500' : 'text-gray-300'}`}>{sub.title}</span>
@@ -1020,9 +1020,9 @@ function TaskDetailModal({
                   <div className="flex gap-2 mt-2">
                     <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
-                      placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none" />
-                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg">Add</button>
-                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-gray-700 text-xs rounded-lg hover:bg-gray-800">Cancel</button>
+                      placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
+                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">Add</button>
+                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">Cancel</button>
                   </div>
                 )}
                 {/* Deliverables preview — latest 3 */}
@@ -1042,19 +1042,19 @@ function TaskDetailModal({
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Deliverables <span className="text-gray-600 font-normal">({validDeliverables.length})</span></p>
                         {validDeliverables.length > 3 && (
-                          <button onClick={() => setActiveTab('deliverables')} className="text-[10px] text-indigo-400 hover:text-indigo-300">View all →</button>
+                          <button onClick={() => setActiveTab('deliverables')} className="text-[10px] text-brand-400 hover:text-brand-300">View all →</button>
                         )}
                       </div>
                       <div className="space-y-1.5">
                         {latest3.map((d, i) => {
                           const fileName = d.reference.split('/').pop() ?? d.reference;
                           return (
-                            <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group hover:bg-gray-800/80 transition-colors">
+                            <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
                               <div className="flex-1 min-w-0">
                                 <button
                                   onClick={() => setPreviewFile(d.reference)}
-                                  className="text-sm text-indigo-400 hover:text-indigo-300 font-medium truncate block max-w-full text-left hover:underline"
+                                  className="text-sm text-brand-400 hover:text-brand-300 font-medium truncate block max-w-full text-left hover:underline"
                                   title={d.reference}
                                 >
                                   {fileName}
@@ -1077,11 +1077,11 @@ function TaskDetailModal({
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress Notes <span className="text-gray-600 font-normal">({task.notes.length})</span></p>
                         {task.notes.length > 3 && (
-                          <button onClick={() => setActiveTab('notes')} className="text-[10px] text-indigo-400 hover:text-indigo-300">View all →</button>
+                          <button onClick={() => setActiveTab('notes')} className="text-[10px] text-brand-400 hover:text-brand-300">View all →</button>
                         )}
                       </div>
                       <div className="space-y-1.5">
-                        {latest3.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                        {latest3.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-surface-elevated/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
                       </div>
                     </div>
                   );
@@ -1103,14 +1103,14 @@ function TaskDetailModal({
                       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress Notes <span className="text-gray-600 font-normal">({task.notes.length})</span></p>
                       {totalPages > 1 && (
                         <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                          <button disabled={notesPage <= 1} onClick={() => setNotesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">‹</button>
+                          <button disabled={notesPage <= 1} onClick={() => setNotesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">‹</button>
                           <span>{notesPage}/{totalPages}</span>
-                          <button disabled={notesPage >= totalPages} onClick={() => setNotesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">›</button>
+                          <button disabled={notesPage >= totalPages} onClick={() => setNotesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">›</button>
                         </div>
                       )}
                     </div>
                     <div className="space-y-1.5">
-                      {paged.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-gray-800/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
+                      {paged.map((note, i) => <div key={i} className="text-xs text-gray-400 bg-surface-elevated/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-gray-400" /></div>)}
                     </div>
                   </>
                 );
@@ -1141,9 +1141,9 @@ function TaskDetailModal({
                       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Deliverables <span className="text-gray-600 font-normal">({validDeliverables.length})</span></p>
                       {totalPages > 1 && (
                         <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                          <button disabled={deliverablesPage <= 1} onClick={() => setDeliverablesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">‹</button>
+                          <button disabled={deliverablesPage <= 1} onClick={() => setDeliverablesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">‹</button>
                           <span>{deliverablesPage}/{totalPages}</span>
-                          <button disabled={deliverablesPage >= totalPages} onClick={() => setDeliverablesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30">›</button>
+                          <button disabled={deliverablesPage >= totalPages} onClick={() => setDeliverablesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">›</button>
                         </div>
                       )}
                     </div>
@@ -1151,12 +1151,12 @@ function TaskDetailModal({
                       {paged.map((d, i) => {
                         const fileName = d.reference.split('/').pop() ?? d.reference;
                         return (
-                          <div key={i} className="flex items-start gap-2.5 bg-gray-800/60 rounded-lg px-3 py-2 group hover:bg-gray-800/80 transition-colors">
+                          <div key={i} className="flex items-start gap-2.5 bg-surface-elevated/60 rounded-lg px-3 py-2 group hover:bg-surface-elevated/80 transition-colors">
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 mt-0.5 ${typeColors[d.type] ?? 'bg-gray-500/15 text-gray-400'}`}>{d.type}</span>
                             <div className="flex-1 min-w-0">
                               <button
                                 onClick={() => setPreviewFile(d.reference)}
-                                className="text-sm text-indigo-400 hover:text-indigo-300 font-medium truncate block max-w-full text-left hover:underline"
+                                className="text-sm text-brand-400 hover:text-brand-300 font-medium truncate block max-w-full text-left hover:underline"
                                 title={d.reference}
                               >
                                 {fileName}
@@ -1177,9 +1177,9 @@ function TaskDetailModal({
 
         {/* Schedule info banner */}
         {isScheduled && task.scheduleConfig && (
-          <div className={`mx-6 mt-3 mb-0 px-4 py-2.5 rounded-lg border text-xs ${schedPaused ? 'bg-amber-500/5 border-amber-500/20' : 'bg-indigo-500/5 border-indigo-500/20'}`}>
+          <div className={`mx-6 mt-3 mb-0 px-4 py-2.5 rounded-lg border text-xs ${schedPaused ? 'bg-amber-500/5 border-amber-500/20' : 'bg-brand-500/5 border-brand-500/20'}`}>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={schedPaused ? 'text-amber-400' : 'text-indigo-400'}>
+              <span className={schedPaused ? 'text-amber-400' : 'text-brand-400'}>
                 {schedPaused ? '⏸ Schedule Paused' : <><svg className="w-3.5 h-3.5 inline -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg> Scheduled</>}
               </span>
               <span className="text-gray-500">·</span>
@@ -1220,7 +1220,7 @@ function TaskDetailModal({
         )}
 
         {/* Actions */}
-        <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between gap-2">
+        <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
             {isScheduled ? (<>
               {/* ── Scheduled task buttons ── */}
@@ -1231,17 +1231,17 @@ function TaskDetailModal({
                 </>
               )}
               {(task.status === 'pending' || task.status === 'assigned' || task.status === 'accepted' || isCompleted || isFailed) && task.assignedAgentId && (
-                <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                   {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
                 </button>
               )}
               {task.status === 'revision' && task.assignedAgentId && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                   {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run / Resume</>}
                 </button>
               )}
               {isRunning && <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Pause</button>}
-              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
+              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
               {task.status === 'review' && (
                 <>
                   <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 rounded-lg text-white disabled:opacity-50">✓ Accept</button>
@@ -1252,7 +1252,7 @@ function TaskDetailModal({
                       <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
                         placeholder="Revision reason…" autoFocus
-                        className="px-2 py-1 text-xs bg-gray-800 border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
+                        className="px-2 py-1 text-xs bg-surface-elevated border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
                       <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
                         disabled={busy} className="px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">Send</button>
                       <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
@@ -1281,18 +1281,18 @@ function TaskDetailModal({
                 </>
               )}
               {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && task.status !== 'review' && task.status !== 'accepted' && task.status !== 'blocked' && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
                   {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run / Resume</>}
                 </button>
               )}
               {isRunning && <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Pause</button>}
               {isRunning && <button onClick={() => void updateStatus(task.id, 'blocked')} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Block</button>}
-              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
+              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
               {(task.status === 'pending' || task.status === 'assigned') && (
-                <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Mark In Progress</button>
+                <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Mark In Progress</button>
               )}
               {(isCompleted || isFailed) && task.assignedAgentId && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50">Run Again</button>
+                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">Run Again</button>
               )}
               {task.status === 'review' && (
                 <>
@@ -1304,7 +1304,7 @@ function TaskDetailModal({
                       <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
                         placeholder="Revision reason…" autoFocus
-                        className="px-2 py-1 text-xs bg-gray-800 border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
+                        className="px-2 py-1 text-xs bg-surface-elevated border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
                       <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
                         disabled={busy} className="px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">Send</button>
                       <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
@@ -1319,7 +1319,7 @@ function TaskDetailModal({
               {(task.status === 'in_progress' || task.status === 'revision') && (
                 <button onClick={() => void updateStatus(task.id, 'review')} disabled={busy} className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50">Submit for Review</button>
               )}
-              {isTerminal && <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>}
+              {isTerminal && <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>}
               {task.status === 'accepted' && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
               {!isTerminal && task.status !== 'pending_approval' && task.status !== 'accepted' && <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>}
             </>)}
@@ -1400,20 +1400,20 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
       </div>
 
       {/* Task Statistics */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
         <h4 className="text-xs font-semibold text-gray-400 mb-3">Task Overview</h4>
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <StatCard label="Total" value={stats.total} color="text-gray-200" />
           <StatCard label="Completed" value={stats.completed} color="text-emerald-400" />
-          <StatCard label="In Progress" value={stats.inProgress} color="text-indigo-400" />
+          <StatCard label="In Progress" value={stats.inProgress} color="text-brand-400" />
           <StatCard label="In Review" value={stats.inReview} color="text-purple-400" />
           <StatCard label="Blocked" value={stats.blocked} color="text-amber-400" />
           <StatCard label="Failed" value={stats.failed} color="text-red-400" />
         </div>
         {stats.total > 0 && (
-          <div className="mt-3 flex h-2 rounded-full overflow-hidden bg-gray-800">
+          <div className="mt-3 flex h-2 rounded-full overflow-hidden bg-surface-elevated">
             {stats.completed > 0 && <div className="bg-emerald-500" style={{ width: `${(stats.completed / stats.total) * 100}%` }} />}
-            {stats.inProgress > 0 && <div className="bg-indigo-500" style={{ width: `${(stats.inProgress / stats.total) * 100}%` }} />}
+            {stats.inProgress > 0 && <div className="bg-brand-500" style={{ width: `${(stats.inProgress / stats.total) * 100}%` }} />}
             {stats.inReview > 0 && <div className="bg-purple-500" style={{ width: `${(stats.inReview / stats.total) * 100}%` }} />}
             {stats.blocked > 0 && <div className="bg-amber-500" style={{ width: `${(stats.blocked / stats.total) * 100}%` }} />}
             {stats.pending > 0 && <div className="bg-blue-500/40" style={{ width: `${(stats.pending / stats.total) * 100}%` }} />}
@@ -1423,25 +1423,25 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
       </div>
 
       {/* Requirement Stats */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
         <h4 className="text-xs font-semibold text-gray-400 mb-3">Requirements</h4>
         <div className="grid grid-cols-3 gap-3">
           <StatCard label="Total" value={stats.reqs} color="text-gray-200" />
           <StatCard label="Completed" value={stats.reqsDone} color="text-emerald-400" />
-          <StatCard label="Active" value={stats.reqs - stats.reqsDone} color="text-indigo-400" />
+          <StatCard label="Active" value={stats.reqs - stats.reqsDone} color="text-brand-400" />
         </div>
       </div>
 
       {/* Agents working on this project */}
       {projAgents.length > 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
           <h4 className="text-xs font-semibold text-gray-400 mb-3">Agents ({projAgents.length})</h4>
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
               const agentTasks = projTasks.filter(t => t.assignedAgentId === a.id);
               const activeTasks = agentTasks.filter(t => !['completed', 'failed', 'cancelled', 'archived'].includes(t.status));
               return (
-                <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-gray-800/60 rounded-lg">
+                <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-surface-elevated/60 rounded-lg">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'working' ? 'bg-blue-500' : a.status === 'idle' ? 'bg-green-500' : 'bg-gray-500'}`} />
                   <span className="text-xs text-gray-300">{a.name}</span>
                   <span className="text-[10px] text-gray-600">{activeTasks.length} active / {agentTasks.length} total</span>
@@ -1454,7 +1454,7 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
 
       {/* Repositories */}
       {project.repositories && project.repositories.length > 0 && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
           <h4 className="text-xs font-semibold text-gray-400 mb-2">Repositories</h4>
           {project.repositories.map((r, i) => (
             <div key={i} className="text-sm text-gray-300 flex items-center gap-2">
@@ -1467,22 +1467,22 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
       )}
 
       {/* Iterations */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h4 className="text-xs font-semibold text-gray-400">Iterations</h4>
-          <button onClick={() => setShowIterForm(true)} className="text-xs px-2.5 py-1 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300">+ Add</button>
+          <button onClick={() => setShowIterForm(true)} className="text-xs px-2.5 py-1 rounded-lg bg-surface-overlay hover:bg-gray-600 text-gray-300">+ Add</button>
         </div>
 
         {showIterForm && (
-          <div className="mb-3 p-3 bg-gray-800 rounded-lg space-y-2">
-            <input value={iterName} onChange={e => setIterName(e.target.value)} placeholder="Iteration name" className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
-            <input value={iterGoal} onChange={e => setIterGoal(e.target.value)} placeholder="Goal" className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
+          <div className="mb-3 p-3 bg-surface-elevated rounded-lg space-y-2">
+            <input value={iterName} onChange={e => setIterName(e.target.value)} placeholder="Iteration name" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
+            <input value={iterGoal} onChange={e => setIterGoal(e.target.value)} placeholder="Goal" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
             <div className="flex gap-2">
-              <input type="date" value={iterStart} onChange={e => setIterStart(e.target.value)} className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
-              <input type="date" value={iterEnd} onChange={e => setIterEnd(e.target.value)} className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
+              <input type="date" value={iterStart} onChange={e => setIterStart(e.target.value)} className="bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
+              <input type="date" value={iterEnd} onChange={e => setIterEnd(e.target.value)} className="bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-gray-200" />
             </div>
             <div className="flex gap-2">
-              <button onClick={handleCreate} className="text-sm px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white">Create</button>
+              <button onClick={handleCreate} className="text-sm px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white">Create</button>
               <button onClick={() => setShowIterForm(false)} className="text-sm text-gray-500">Cancel</button>
             </div>
           </div>
@@ -1493,7 +1493,7 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
         ) : (
           <div className="space-y-1.5">
             {iterations.map(it => (
-              <div key={it.id} className="p-2.5 bg-gray-800/50 rounded-lg flex items-center justify-between">
+              <div key={it.id} className="p-2.5 bg-surface-elevated/50 rounded-lg flex items-center justify-between">
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-gray-200">{it.name}</div>
                   {it.goal && <div className="text-xs text-gray-400 mt-0.5">{it.goal}</div>}
@@ -1504,7 +1504,7 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
                 </div>
                 <div className="flex gap-1.5 ml-3">
                   {it.status === 'planning' && <button onClick={() => onIterationAction(it.id, 'active')} className="text-xs px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white">Start</button>}
-                  {it.status === 'active' && <button onClick={() => onIterationAction(it.id, 'review')} className="text-xs px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white">Review</button>}
+                  {it.status === 'active' && <button onClick={() => onIterationAction(it.id, 'review')} className="text-xs px-2 py-1 rounded bg-brand-700 hover:bg-brand-600 text-white">Review</button>}
                   {it.status === 'review' && <button onClick={() => onIterationAction(it.id, 'completed')} className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-white">Complete</button>}
                 </div>
               </div>
@@ -1531,7 +1531,7 @@ const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   draft:          { label: 'Draft',     cls: 'bg-gray-500/15 text-gray-400' },
   pending_review: { label: 'Pending',   cls: 'bg-yellow-500/15 text-yellow-400' },
   approved:       { label: 'Approved',  cls: 'bg-green-500/15 text-green-400' },
-  in_progress:    { label: 'Active',    cls: 'bg-indigo-500/15 text-indigo-400' },
+  in_progress:    { label: 'Active',    cls: 'bg-brand-500/15 text-brand-400' },
   completed:      { label: 'Done',      cls: 'bg-emerald-500/15 text-emerald-400' },
   rejected:       { label: 'Rejected',  cls: 'bg-red-500/15 text-red-400' },
   cancelled:      { label: 'Cancelled', cls: 'bg-gray-600/15 text-gray-500' },
@@ -1559,14 +1559,14 @@ const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, 
 const GROUP_ORDER: Record<string, number> = { todo: 0, in_progress: 1, review: 2, done: 3, closed: 4 };
 const GROUP_ACCENT: Record<string, string> = {
   todo: 'border-l-blue-500 bg-blue-500/5',
-  in_progress: 'border-l-indigo-500 bg-indigo-500/5',
+  in_progress: 'border-l-brand-500 bg-brand-500/5',
   review: 'border-l-purple-500 bg-purple-500/5',
   done: 'border-l-green-500 bg-green-500/5',
   closed: 'border-l-red-500 bg-red-500/5',
 };
 const GROUP_HEADER_CLS: Record<string, string> = {
   todo: 'border-l-blue-500 text-blue-400',
-  in_progress: 'border-l-indigo-500 text-indigo-400',
+  in_progress: 'border-l-brand-500 text-brand-400',
   review: 'border-l-purple-500 text-purple-400',
   done: 'border-l-green-500 text-green-400',
   closed: 'border-l-red-500 text-red-400',
@@ -1600,7 +1600,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
-  onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: () => void;
+  onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: (e: React.DragEvent) => void;
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
 }) {
@@ -1614,7 +1614,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       onDragStart={e => onRowDragStart(e, idx)}
       onDragEnd={onRowDragEnd}
       onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
-      className={`flex items-center gap-2 px-6 py-2 border-b border-gray-800/40 cursor-pointer hover:bg-gray-800/50 transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''}`}
+      className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer hover:bg-surface-elevated/50 transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''}`}
     >
       <div className="w-12 shrink-0">
         {row.kind === 'req' ? (
@@ -1630,7 +1630,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         <select
           value={status}
           onChange={e => void handleStatusChange(row, e.target.value)}
-          className="w-full px-1.5 py-1 bg-gray-800/80 border border-gray-700/50 rounded text-[11px] text-gray-300 outline-none focus:border-indigo-500 cursor-pointer"
+          className="w-full px-1.5 py-1 bg-surface-elevated/80 border border-border-default/50 rounded text-[11px] text-gray-300 outline-none focus:border-brand-500 cursor-pointer"
         >
           {row.kind === 'task'
             ? ALL_STATUSES.map(s => <option key={s} value={s}>{COLUMN_LABELS[s] ?? s}</option>)
@@ -1642,7 +1642,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         <select
           value={priority}
           onChange={e => void handlePriorityChange(row, e.target.value)}
-          className="w-full px-1.5 py-1 bg-gray-800/80 border border-gray-700/50 rounded text-[11px] text-gray-300 outline-none focus:border-indigo-500 cursor-pointer"
+          className="w-full px-1.5 py-1 bg-surface-elevated/80 border border-border-default/50 rounded text-[11px] text-gray-300 outline-none focus:border-brand-500 cursor-pointer"
         >
           <option value="low">Low</option>
           <option value="medium">Medium</option>
@@ -1664,7 +1664,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         {proj?.name ?? <span className="text-gray-700">—</span>}
       </div>
       <div className="w-[90px] shrink-0 text-[10px] text-gray-600 text-right">
-        {relativeTime(row.data.updatedAt)}
+        {relativeTime(row.data.updatedAt ?? '')}
       </div>
     </div>
   );
@@ -1698,8 +1698,8 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     if (sortMode === 'status') {
       result.sort((a, b) => {
         if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
-        const aT = new Date(a.data.updatedAt).getTime();
-        const bT = new Date(b.data.updatedAt).getTime();
+        const aT = new Date(a.data.updatedAt ?? 0).getTime();
+        const bT = new Date(b.data.updatedAt ?? 0).getTime();
         return bT - aT;
       });
     } else {
@@ -1707,7 +1707,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
       result.sort((a, b) => {
         const pa = pA(a), pb = pA(b);
         if (pa !== pb) return pa - pb;
-        return new Date(b.data.updatedAt).getTime() - new Date(a.data.updatedAt).getTime();
+        return new Date(b.data.updatedAt ?? 0).getTime() - new Date(a.data.updatedAt ?? 0).getTime();
       });
     }
     return result;
@@ -1735,13 +1735,13 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     } catch { /* */ }
   };
 
-  const onRowDragStart = (e: DragEvent<HTMLDivElement>, idx: number) => {
+  const onRowDragStart = (e: React.DragEvent, idx: number) => {
     setDragIdx(idx);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(idx));
     (e.currentTarget as HTMLElement).style.opacity = '0.4';
   };
-  const onRowDragEnd = (e: DragEvent<HTMLDivElement>) => {
+  const onRowDragEnd = (e: React.DragEvent) => {
     (e.currentTarget as HTMLElement).style.opacity = '1';
     setDragIdx(null);
     setDragOverGroup(null);
@@ -1806,13 +1806,13 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     <div className="flex-1 min-h-0 overflow-auto">
       <div className="min-w-[850px] h-full flex flex-col">
       {/* Table header with integrated sort */}
-      <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-800 text-[10px] font-semibold text-gray-600 uppercase tracking-wider shrink-0 bg-gray-900/80">
+      <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-gray-600 uppercase tracking-wider shrink-0 bg-surface-secondary/80">
         <div className="w-12 shrink-0 text-gray-700 normal-case font-normal">{rows.length}</div>
         <div className="flex-1 min-w-[200px]">Title</div>
-        <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-indigo-400' : 'hover:text-gray-400'}`}>
+        <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-brand-400' : 'hover:text-gray-400'}`}>
           Status {sortMode === 'status' && <span className="text-[8px]">▼</span>}
         </button>
-        <button onClick={() => setSortMode('priority')} className={`w-[100px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'priority' ? 'text-indigo-400' : 'hover:text-gray-400'}`}>
+        <button onClick={() => setSortMode('priority')} className={`w-[100px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'priority' ? 'text-brand-400' : 'hover:text-gray-400'}`}>
           Priority {sortMode === 'priority' && <span className="text-[8px]">▼</span>}
         </button>
         <div className="w-[120px] shrink-0">Assignee</div>
@@ -1829,7 +1829,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
             return (
               <div key={groupId}>
                 <div
-                  className={`flex items-center gap-2 px-6 py-2 border-l-2 bg-gray-900/60 sticky top-0 z-10 ${GROUP_HEADER_CLS[groupId] ?? ''} ${dragOverGroup === groupId ? 'ring-1 ring-indigo-500/40' : ''}`}
+                  className={`flex items-center gap-2 px-6 py-2 border-l-2 bg-surface-secondary/60 sticky top-0 z-10 ${GROUP_HEADER_CLS[groupId] ?? ''} ${dragOverGroup === groupId ? 'ring-1 ring-brand-500/40' : ''}`}
                   onDragOver={e => onGroupDragOver(e, groupId)}
                   onDragLeave={() => setDragOverGroup(null)}
                   onDrop={e => void onGroupDrop(e, groupId)}
@@ -2346,7 +2346,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-emerald-900/50 text-emerald-300 text-xs rounded-lg">{flash}</div>}
 
         {/* Top bar */}
-        <div className="flex items-center gap-3 px-6 h-12 border-b border-gray-800 bg-gray-900/80 shrink-0">
+        <div className="flex items-center gap-3 px-6 h-14 border-b border-border-default bg-surface-secondary/80 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
             <div className="flex items-center gap-1 shrink-0">
@@ -2358,7 +2358,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               <button
                 onClick={() => setShowProjectSettings(!showProjectSettings)}
                 className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
-                  showProjectSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-600 hover:text-gray-300 hover:bg-gray-800'
+                  showProjectSettings ? 'bg-surface-overlay text-gray-200' : 'text-gray-600 hover:text-gray-300 hover:bg-surface-elevated'
                 }`}
                 title="Project settings"
               >
@@ -2371,24 +2371,24 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             </h2>
           )}
           {archivedCount > 0 && (
-            <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-gray-700 text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}>
+            <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-gray-300' : 'text-gray-600 hover:text-gray-400'}`}>
               {showArchived ? `Hide ${archivedCount} archived` : `${archivedCount} archived`}
             </button>
           )}
 
           {/* View toggle */}
-          <div className="flex items-center border border-gray-700/60 rounded-md overflow-hidden shrink-0">
+          <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
             {(['backlog', 'kanban', 'dag'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
-                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-indigo-600/25 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-300' : 'text-gray-500 hover:text-gray-300 hover:bg-surface-elevated'}`}
               >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
             ))}
           </div>
 
           {/* Actions */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={openCreateReq} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg font-medium transition-colors">+ Requirement</button>
-            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 bg-gray-700/80 hover:bg-gray-600 text-gray-200 text-xs rounded-lg font-medium transition-colors">+ Task</button>
+            <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">+ Requirement</button>
+            <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 bg-surface-overlay/80 hover:bg-gray-600 text-gray-200 text-xs rounded-lg font-medium transition-colors">+ Task</button>
           </div>
 
           <div className="flex-1" />
@@ -2399,7 +2399,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               <select
                 value={selectedIterationId ?? ''}
                 onChange={e => setSelectedIterationId(e.target.value || null)}
-                className="px-2 py-1 bg-gray-800/60 border border-gray-700/60 rounded-md text-[11px] text-gray-400 focus:border-indigo-500 outline-none shrink-0"
+                className="px-2 py-1 bg-surface-elevated/60 border border-border-default/60 rounded-md text-[11px] text-gray-400 focus:border-brand-500 outline-none shrink-0"
               >
                 <option value="">All iterations</option>
                 {iterations.map(it => (
@@ -2408,8 +2408,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               </select>
               {activeIteration && !selectedIterationId && (
                 <button onClick={() => setSelectedIterationId(activeIteration.id)}
-                  className="flex items-center gap-1 text-[10px] text-indigo-400/80 hover:text-indigo-300 transition-colors shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                  className="flex items-center gap-1 text-[10px] text-brand-400/80 hover:text-brand-300 transition-colors shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />
                   {activeIteration.name}
                 </button>
               )}
@@ -2419,18 +2419,18 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
         {/* Project filter bar — visible when not in single-project view */}
         {projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-1.5 border-b border-gray-800/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
+          <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
             <button onClick={() => setProjectFilter(new Set())}
-              className={`text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-gray-800/60 hover:bg-gray-700 shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
+              className={`text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
             {sortedProjects.map(p => {
               const selected = projectFilter.has(p.id);
               const count = allTaskCounts[p.id] ?? 0;
               return (
                 <button key={p.id} onClick={() => toggleProjectFilter(p.id)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
-                    selected ? 'bg-violet-600/20 text-violet-300 ring-1 ring-violet-500/40' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                    selected ? 'bg-violet-600/20 text-violet-300 ring-1 ring-violet-500/40' : 'text-gray-500 hover:bg-surface-elevated hover:text-gray-300'
                   }`}>
-                  <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-violet-600 text-white' : 'bg-gray-700 text-gray-400'}`}>{p.name[0]?.toUpperCase()}</span>
+                  <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-violet-600 text-white' : 'bg-surface-overlay text-gray-400'}`}>{p.name[0]?.toUpperCase()}</span>
                   {p.name}
                   {count > 0 && <span className="text-[9px] text-gray-600 ml-0.5">{count}</span>}
                 </button>
@@ -2441,17 +2441,17 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
         {/* Agent filter bar */}
         {agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-1.5 border-b border-gray-800/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
+          <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto shrink-0">
             <button onClick={() => setAgentFilter(new Set())}
-              className={`text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-gray-800/60 hover:bg-gray-700 shrink-0 transition-all ${agentFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
+              className={`text-[10px] text-gray-500 hover:text-gray-300 px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
             {sortedAgents.map(a => {
               const selected = agentFilter.has(a.id);
               return (
                 <button key={a.id} onClick={() => toggleAgentFilter(a.id)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
-                    selected ? 'bg-indigo-600/20 text-indigo-300 ring-1 ring-indigo-500/40' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                    selected ? 'bg-brand-600/20 text-brand-300 ring-1 ring-brand-500/40' : 'text-gray-500 hover:bg-surface-elevated hover:text-gray-300'
                   }`}>
-                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400'}`}>{a.name[0]?.toUpperCase()}</span>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-gray-400'}`}>{a.name[0]?.toUpperCase()}</span>
                   {a.name}
                 </button>
               );
@@ -2477,7 +2477,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         ) : totalTaskCount === 0 && filteredReqs.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-sm w-full text-center space-y-3">
-              <div className="w-10 h-10 mx-auto rounded-lg bg-gray-800 flex items-center justify-center">
+              <div className="w-10 h-10 mx-auto rounded-lg bg-surface-elevated flex items-center justify-center">
                 <span className="text-gray-500 text-lg">&#9744;</span>
               </div>
               <h3 className="text-sm font-medium text-gray-400">No items yet</h3>
@@ -2485,7 +2485,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 Create a requirement to tell agents what you need.<br />
                 Once approved, tasks will appear here automatically.
               </p>
-              <button onClick={openCreateReq} className="text-xs text-indigo-400 hover:text-indigo-300 font-medium">
+              <button onClick={openCreateReq} className="text-xs text-brand-400 hover:text-brand-300 font-medium">
                 + Create a requirement
               </button>
             </div>
@@ -2519,11 +2519,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 const isOver = dragOverCol === col.id;
                 return (
                   <div key={col.id}
-                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors flex flex-col h-full ${col.accent} ${isOver ? 'bg-gray-800/80 ring-1 ring-indigo-500/40' : 'bg-gray-900'}`}
+                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors flex flex-col h-full ${col.accent} ${isOver ? 'bg-surface-elevated/80 ring-1 ring-brand-500/40' : 'bg-surface-secondary'}`}
                     onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
                     <div className="flex justify-between items-center mb-3 shrink-0">
                       <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{col.label}</span>
-                      <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full">{itemCount}</span>
+                      <span className="text-xs bg-surface-elevated px-2 py-0.5 rounded-full">{itemCount}</span>
                     </div>
                     <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin">
                       {/* ── All cards merged & sorted by updatedAt ── */}
@@ -2531,7 +2531,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         type CardItem = { kind: 'req'; data: RequirementInfo; time: number } | { kind: 'task'; data: TaskInfo; time: number };
                         const items: CardItem[] = [
                           ...colReqs.map(r => ({ kind: 'req' as const, data: r, time: new Date(r.updatedAt ?? r.createdAt).getTime() })),
-                          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt).getTime() })),
+                          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt ?? 0).getTime() })),
                         ];
                         items.sort((a, b) => b.time - a.time);
                         return items.map(item => {
@@ -2557,7 +2557,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                             {req.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{req.description}</div>}
                             {reqProject && (
                               <div className="mt-1.5">
-                                <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[120px]" title={reqProject.name}>{reqProject.name}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-gray-400 rounded truncate max-w-[120px]" title={reqProject.name}>{reqProject.name}</span>
                               </div>
                             )}
                             <div className="flex items-center justify-between mt-2">
@@ -2598,7 +2598,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                                 ? 'bg-yellow-500/[0.04] border-yellow-500/30 border-l-yellow-500 cursor-pointer'
                                 : isSchedTask
                                   ? `bg-cyan-500/[0.03] border-cyan-500/20 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-cyan-500/40 cursor-pointer`
-                                  : `bg-gray-800 border-gray-700 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-indigo-500/50 cursor-grab active:cursor-grabbing`
+                                  : `bg-surface-elevated border-border-default ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-brand-500/50 cursor-grab active:cursor-grabbing`
                             }`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
@@ -2613,8 +2613,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                             {task.description && <div className="text-xs text-gray-500 mt-1 line-clamp-2">{task.description}</div>}
                             {(taskProjName || taskReqTitle) && (
                               <div className="mt-1.5 flex flex-wrap gap-1">
-                                {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/60 text-gray-400 rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
-                                {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>}
+                                {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-gray-400 rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
+                                {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/10 text-brand-400 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>}
                               </div>
                             )}
                             {task.blockedBy && task.blockedBy.length > 0 && (
@@ -2628,10 +2628,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                                 {taskCreatorName && <span className="text-[10px] text-gray-600" title={`Created by ${taskCreatorName}`}>by {taskCreatorName}</span>}
                               </div>
                               <div className="flex items-center gap-2">
-                                {subCount > 0 && <span className="text-[10px] text-gray-500 bg-gray-700/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
+                                {subCount > 0 && <span className="text-[10px] text-gray-500 bg-surface-overlay/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
                                 {task.notes && task.notes.length > 0 && <span className="text-[10px] text-gray-600">📝 {task.notes.length}</span>}
                                 {task.assignedAgentId && (
-                                  <span className="text-[10px] text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                  <span className="text-[10px] text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
                                     <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
                                     {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
                                   </span>
@@ -2645,8 +2645,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                       })()}
                     </div>
                     {isOver && (
-                      <div className="mt-2 border-2 border-dashed border-indigo-500/30 rounded-lg h-12 flex items-center justify-center shrink-0">
-                        <span className="text-xs text-indigo-400/60">Drop here</span>
+                      <div className="mt-2 border-2 border-dashed border-brand-500/30 rounded-lg h-12 flex items-center justify-center shrink-0">
+                        <span className="text-xs text-brand-400/60">Drop here</span>
                       </div>
                     )}
                   </div>
@@ -2660,26 +2660,26 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       {/* ── Create Project Modal ── */}
       {showCreateProject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateProject(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">New Project</h3>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Name</label>
               <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="e.g. My App"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 outline-none" autoFocus />
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Description</label>
               <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="What is this project about? (optional)"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none focus:border-indigo-500 outline-none" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none focus:border-brand-500 outline-none" />
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Repository URL</label>
               <input value={newProjRepo} onChange={e => setNewProjRepo(e.target.value)} placeholder="https://github.com/... (optional)"
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 outline-none" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 outline-none" />
             </div>
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => setShowCreateProject(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
-              <button onClick={() => void handleCreateProject()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
+              <button onClick={() => setShowCreateProject(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Cancel</button>
+              <button onClick={() => void handleCreateProject()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
             </div>
           </div>
         </div>
@@ -2688,12 +2688,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       {/* ── Create Task Modal ── */}
       {showCreateTask && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateTask(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">New Task</h3>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Project</label>
               <select value={taskProjectId} onChange={e => setTaskProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                 <option value="">No Project</option>
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -2701,7 +2701,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Requirement</label>
               <select value={taskRequirementId} onChange={e => setTaskRequirementId(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                 <option value="">Select a requirement…</option>
                 {allRequirements
                   .filter(r => r.status === 'approved' && (!taskProjectId || r.projectId === taskProjectId))
@@ -2712,18 +2712,18 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               <label className="block text-sm text-gray-400 mb-1.5">Title</label>
               <input autoFocus value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none" />
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Description</label>
               <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none resize-none" />
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none resize-none" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
                 <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                   <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                 </select>
               </div>
@@ -2731,7 +2731,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5">Assign to</label>
                   <select value={taskAssignTo} onChange={e => setTaskAssignTo(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                     <option value="">Unassigned</option>
                     {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
@@ -2742,7 +2742,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Task Type</label>
                 <select value={taskType} onChange={e => setTaskType(e.target.value as 'standard' | 'scheduled')}
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                   <option value="standard">Standard</option>
                   <option value="scheduled">Scheduled (recurring)</option>
                 </select>
@@ -2751,7 +2751,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 <div>
                   <label className="block text-sm text-gray-400 mb-1.5">Frequency</label>
                   <select value={taskScheduleEvery} onChange={e => setTaskScheduleEvery(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                     <option value="30m">Every 30 min</option>
                     <option value="1h">Every 1 hour</option>
                     <option value="2h">Every 2 hours</option>
@@ -2773,7 +2773,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                   const id = e.target.value;
                   if (id && !taskBlockedBy.includes(id)) setTaskBlockedBy([...taskBlockedBy, id]);
                 }}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:border-indigo-500 outline-none">
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                 <option value="">Select a task to depend on…</option>
                 {Object.values(board).flat()
                   .filter(t => !t.parentTaskId && t.status !== 'completed' && t.status !== 'cancelled' && !taskBlockedBy.includes(t.id))
@@ -2794,12 +2794,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               )}
             </div>
             <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-              <input type="checkbox" checked={taskAutoAssign} onChange={e => setTaskAutoAssign(e.target.checked)} className="rounded bg-gray-800 border-gray-700" />
+              <input type="checkbox" checked={taskAutoAssign} onChange={e => setTaskAutoAssign(e.target.checked)} className="rounded bg-surface-elevated border-border-default" />
               Auto-assign to best available agent
             </label>
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
-              <button onClick={() => void createTask()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
+              <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Cancel</button>
+              <button onClick={() => void createTask()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
             </div>
           </div>
         </div>
@@ -2822,13 +2822,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       {/* ── Create Requirement Modal ── */}
       {showCreateReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">New Requirement</h3>
             <p className="text-xs text-gray-500 -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Project</label>
               <select value={reqProjectId} onChange={e => setReqProjectId(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none">
                 <option value="">Select a project…</option>
                 {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -2836,24 +2836,24 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Title</label>
               <input value={reqTitle} onChange={e => setReqTitle(e.target.value)} placeholder="e.g. Add user authentication"
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none" autoFocus
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none" autoFocus
                 onKeyDown={e => { if (e.key === 'Enter' && reqTitle.trim()) void handleCreateReq(); }} />
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Description</label>
               <textarea value={reqDesc} onChange={e => setReqDesc(e.target.value)} placeholder="What is needed and why..."
-                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none resize-none" />
+                rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none resize-none" />
             </div>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
               <select value={reqPriority} onChange={e => setReqPriority(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none">
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none">
                 <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
               </select>
             </div>
             <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
-              <button onClick={() => void handleCreateReq()} className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white">Create</button>
+              <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Cancel</button>
+              <button onClick={() => void handleCreateReq()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
             </div>
           </div>
         </div>
@@ -2862,15 +2862,15 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       {/* ── Reject Requirement Modal ── */}
       {rejectReqId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectReqId(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-white">Reject Requirement</h3>
             <div>
               <label className="block text-sm text-gray-400 mb-1.5">Reason</label>
               <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Why is this being rejected..."
-                rows={3} className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none" autoFocus />
+                rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-red-500 outline-none resize-none" autoFocus />
             </div>
             <div className="flex justify-end gap-3">
-              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Cancel</button>
+              <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Cancel</button>
               <button onClick={() => void handleRejectReq()} className="px-4 py-2 text-sm bg-red-600 hover:bg-red-500 rounded-lg text-white">Reject</button>
             </div>
           </div>
@@ -2918,7 +2918,7 @@ function RequirementDetailModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-[36rem] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl w-[36rem] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-5 pb-0">
           <div className="flex-1 min-w-0">
@@ -2946,23 +2946,23 @@ function RequirementDetailModal({
           )}
 
           <div className="grid grid-cols-2 gap-3 text-xs">
-            <div className="bg-gray-800/60 rounded-lg p-2.5">
+            <div className="bg-surface-elevated/60 rounded-lg p-2.5">
               <span className="text-[10px] text-gray-500 block mb-1">Created by</span>
               <span className="text-gray-300">{creatorAgent?.name ?? req.createdBy.slice(0, 12)}</span>
               {isAgent && <span className="text-[10px] text-purple-400 ml-1.5">(Agent)</span>}
             </div>
-            <div className="bg-gray-800/60 rounded-lg p-2.5">
+            <div className="bg-surface-elevated/60 rounded-lg p-2.5">
               <span className="text-[10px] text-gray-500 block mb-1">Created</span>
               <span className="text-gray-300">{new Date(req.createdAt).toLocaleString()}</span>
             </div>
             {reqProject && (
-              <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <div className="bg-surface-elevated/60 rounded-lg p-2.5">
                 <span className="text-[10px] text-gray-500 block mb-1">Project</span>
                 <span className="text-gray-300">{reqProject.name}</span>
               </div>
             )}
             {req.approvedBy && (
-              <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <div className="bg-surface-elevated/60 rounded-lg p-2.5">
                 <span className="text-[10px] text-gray-500 block mb-1">Approved by</span>
                 <span className="text-gray-300"><AgentNameLink agentId={req.approvedBy} agents={agents} /></span>
                 {req.approvedAt && <span className="text-[10px] text-gray-500 ml-1">{new Date(req.approvedAt).toLocaleDateString()}</span>}
@@ -2979,7 +2979,7 @@ function RequirementDetailModal({
 
           {req.tags && req.tags.length > 0 && (
             <div className="flex flex-wrap gap-1">
-              {req.tags.map(tag => <span key={tag} className="text-[10px] bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">#{tag}</span>)}
+              {req.tags.map(tag => <span key={tag} className="text-[10px] bg-surface-elevated text-gray-400 px-2 py-0.5 rounded-full">#{tag}</span>)}
             </div>
           )}
 
@@ -2990,7 +2990,7 @@ function RequirementDetailModal({
                 {linkedTasks.map(t => {
                   const sb = SUB_STATUS_BADGE[t.status];
                   return (
-                    <div key={t.id} className="flex items-center gap-2 bg-gray-800/60 rounded-lg px-3 py-2">
+                    <div key={t.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
@@ -3004,7 +3004,7 @@ function RequirementDetailModal({
 
         {/* Actions */}
         {(needsReview || canCancel) && (
-          <div className="flex items-center gap-2 p-5 pt-3 border-t border-gray-800">
+          <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
             {needsReview && (
               <>
                 <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg font-medium transition-colors">Approve</button>
@@ -3015,7 +3015,7 @@ function RequirementDetailModal({
               <button onClick={() => onCancel(req.id)} className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors">Cancel Requirement</button>
             )}
             <div className="flex-1" />
-            <button onClick={onClose} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800 text-gray-300">Close</button>
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Close</button>
           </div>
         )}
       </div>
@@ -3028,7 +3028,7 @@ function RequirementDetailModal({
 function IterModelBadge({ model }: { model: string }) {
   return (
     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-      model === 'scrum' ? 'bg-indigo-900/40 text-indigo-300' : 'bg-gray-700 text-gray-400'
+      model === 'scrum' ? 'bg-brand-900/40 text-brand-300' : 'bg-surface-overlay text-gray-400'
     }`}>{model}</span>
   );
 }
@@ -3036,10 +3036,10 @@ function IterModelBadge({ model }: { model: string }) {
 function StatusPill({ status }: { status: string }) {
   const colors: Record<string, string> = {
     active: 'bg-emerald-900/40 text-emerald-400', planning: 'bg-blue-900/40 text-blue-400',
-    review: 'bg-amber-900/40 text-amber-400', completed: 'bg-gray-700 text-gray-400',
-    archived: 'bg-gray-800 text-gray-500', paused: 'bg-orange-900/40 text-orange-400',
+    review: 'bg-amber-900/40 text-amber-400', completed: 'bg-surface-overlay text-gray-400',
+    archived: 'bg-surface-elevated text-gray-500', paused: 'bg-orange-900/40 text-orange-400',
   };
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[status] ?? 'bg-gray-700 text-gray-400'}`}>{status}</span>
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[status] ?? 'bg-surface-overlay text-gray-400'}`}>{status}</span>
   );
 }

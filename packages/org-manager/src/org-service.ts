@@ -60,7 +60,7 @@ export class OrganizationService {
     if (this.storage && opts?.email) {
       this.storage.userRepo
         .upsert({ id: user.id, orgId, name, email: opts.email, role })
-        .catch(error => {
+        .catch((error: unknown) => {
           log.warn('Failed to persist user to DB', { error: String(error) });
         });
     }
@@ -84,7 +84,7 @@ export class OrganizationService {
       this.refreshIdentityContextsForOrg(user.orgId);
 
       if (this.storage) {
-        this.storage.userRepo.delete(userId).catch(error => {
+        this.storage.userRepo.delete(userId).catch((error: unknown) => {
           log.warn('Failed to delete user from DB', { error: String(error) });
         });
       }
@@ -299,7 +299,7 @@ export class OrganizationService {
         /* agent may not exist */
       }
       if (this.storage) {
-        this.storage.agentRepo.updateTeamId(memberId, teamId).catch(error => {
+        this.storage.agentRepo.updateTeamId(memberId, teamId).catch((error: unknown) => {
           log.warn('Failed to update agent teamId in DB', { error: String(error) });
         });
       }
@@ -310,7 +310,7 @@ export class OrganizationService {
       if (user) {
         user.teamId = teamId;
         if (this.storage) {
-          this.storage.userRepo.updateTeamId(memberId, teamId).catch(error => {
+          this.storage.userRepo.updateTeamId(memberId, teamId).catch((error: unknown) => {
             log.warn('Failed to update user teamId in DB', { error: String(error) });
           });
         }
@@ -335,7 +335,7 @@ export class OrganizationService {
       /* ok */
     }
     if (wasAgent && this.storage) {
-      this.storage.agentRepo.updateTeamId(memberId, null).catch(error => {
+      this.storage.agentRepo.updateTeamId(memberId, null).catch((error: unknown) => {
         log.warn('Failed to clear agent teamId in DB', { error: String(error) });
       });
     }
@@ -343,7 +343,7 @@ export class OrganizationService {
     if (user && user.teamId === teamId) {
       user.teamId = undefined;
       if (this.storage) {
-        this.storage.userRepo.updateTeamId(memberId, null).catch(error => {
+        this.storage.userRepo.updateTeamId(memberId, null).catch((error: unknown) => {
           log.warn('Failed to clear user teamId in DB', { error: String(error) });
         });
       }

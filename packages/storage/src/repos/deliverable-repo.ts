@@ -140,7 +140,7 @@ export class DeliverableRepo {
     const rows = await this.db.selectDistinct({ taskId: deliverables.taskId })
       .from(deliverables)
       .where(sql`${deliverables.taskId} IS NOT NULL`);
-    return new Set((rows as Array<{ taskId: string | null }>).filter(r => r.taskId != null).map(r => r.taskId!));
+    return new Set((rows as Array<{ taskId: string | null }>).filter(r => r.taskId !== null).map(r => r.taskId!));
   }
 
   async deleteByTask(taskId: string): Promise<void> {

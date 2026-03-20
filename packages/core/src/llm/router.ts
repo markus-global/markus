@@ -22,7 +22,7 @@ const ALL_COMPLEXITY: ComplexityLevel[] = ['simple', 'moderate', 'complex'];
  * - The default provider covers all complexity levels (highest priority).
  * - anthropic (when not default) covers complex only — suited for hard reasoning tasks.
  * - openai (when not default) covers complex + moderate.
- * - All other OpenAI-compatible providers (deepseek, siliconflow, openrouter, etc.)
+ * - All other OpenAI-compatible providers (siliconflow, minimax, etc.)
  *   cover simple + moderate when not default.
  */
 function buildTiers(providerNames: string[], defaultProvider: string): ProviderTier[] {
@@ -40,7 +40,7 @@ function buildTiers(providerNames: string[], defaultProvider: string): ProviderT
     } else if (name === 'openai') {
       tiers.push({ name, complexity: ['complex', 'moderate'] });
     } else {
-      // OpenAI-compatible providers (deepseek, siliconflow, openrouter, etc.)
+      // OpenAI-compatible providers (siliconflow, minimax, etc.)
       tiers.push({ name, complexity: ['simple', 'moderate'] });
     }
   }
@@ -437,7 +437,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'deepseek', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -463,7 +463,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'deepseek', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow']) {
       if (!providers[name]) {
         providers[name] = {
           name,
@@ -544,23 +544,22 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openai: 'OpenAI',
   google: 'Google Gemini',
   ollama: 'Ollama (Local)',
-  deepseek: 'DeepSeek',
   siliconflow: 'SiliconFlow',
-  // openrouter: 'OpenRouter',
   minimax: 'MiniMax',
 };
 
 const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
+  // Anthropic
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 32000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 32000, cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 8192, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
+  // OpenAI
+  { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0.15, output: 0.6 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'o3', name: 'o3', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 10, output: 40 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 1.25, output: 10 }, reasoning: true, inputTypes: ['text', 'image'] },
+  // Google
+  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 16384, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
-  { id: 'deepseek-chat', name: 'DeepSeek V3', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.27, output: 1.1, cacheRead: 0.07 }, reasoning: false, inputTypes: ['text'] },
-  { id: 'deepseek-reasoner', name: 'DeepSeek R1', provider: 'deepseek', contextWindow: 64000, maxOutputTokens: 8192, cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }, reasoning: true, inputTypes: ['text'] },
+  // MiniMax
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
 ];

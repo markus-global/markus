@@ -31,9 +31,9 @@ export function CommandBar({ onNavigate }: Props) {
   };
 
   return (
-    <div className="border-t border-gray-800 bg-gray-900 shrink-0">
+    <div className="border-t border-border-default bg-surface-secondary shrink-0">
       {expanded && result && (
-        <div className="px-5 py-3 border-b border-gray-800 max-h-40 overflow-y-auto">
+        <div className="px-5 py-3 border-b border-border-default max-h-40 overflow-y-auto">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">Response</span>
             <button onClick={() => { setExpanded(false); setResult(''); }} className="text-xs text-gray-600 hover:text-gray-400">&times;</button>

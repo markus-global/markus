@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, hubApi, type AgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 
 function shortenPath(p: string): string {
   const home = '~/.markus/builder-artifacts/';
@@ -13,9 +14,9 @@ const BUILDERS = [
     roleId: 'agent-father',
     roleName: 'Agent Father',
     icon: '✦',
-    color: 'from-indigo-500 to-purple-600',
-    borderColor: 'border-indigo-500/30 hover:border-indigo-400/50',
-    bgColor: 'bg-indigo-500/10',
+    color: 'from-brand-500 to-purple-600',
+    borderColor: 'border-brand-500/30 hover:border-brand-400/50',
+    bgColor: 'bg-brand-500/10',
     desc: 'AI Agent Architect',
     detail: 'Design and create powerful AI agents through natural conversation. Describe the agent you need and Agent Father will configure it with the right role, skills, tools, and system prompt.',
     examples: [
@@ -65,7 +66,7 @@ interface BuilderArtifact {
 }
 
 const TYPE_STYLES: Record<string, { icon: string; color: string; bg: string }> = {
-  agent: { icon: '✦', color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
+  agent: { icon: '✦', color: 'text-brand-400', bg: 'bg-brand-500/10' },
   team: { icon: '◈', color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
   skill: { icon: '⬡', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
 };
@@ -79,7 +80,7 @@ interface InstalledInfo {
 function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
             <svg className="w-5 h-5 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -92,7 +93,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
+          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-gray-400 hover:text-gray-200 border border-border-default hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
           <button onClick={onConfirm} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors">Delete</button>
         </div>
       </div>
@@ -117,10 +118,10 @@ export function AgentBuilder() {
   const loadAll = useCallback(() => {
     setLoading(true);
     Promise.all([
-      api.builder.artifacts.list().then(d => d.artifacts).catch(() => [] as BuilderArtifact[]),
-      api.agents.list().then(d => d.agents).catch(() => [] as AgentInfo[]),
-      hubApi.myItems().then(d => d.items).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string }>),
-      api.builder.artifacts.installed().then(d => d.installed).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
+      (consume<{ artifacts: BuilderArtifact[] }>(PREFETCH_KEYS.builderArtifacts) ?? api.builder.artifacts.list()).then(d => d?.artifacts ?? []).catch(() => [] as BuilderArtifact[]),
+      (consume<{ agents: AgentInfo[] }>(PREFETCH_KEYS.builderAgents) ?? api.agents.list()).then(d => d?.agents ?? []).catch(() => [] as AgentInfo[]),
+      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string }>),
+      (consume<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>(PREFETCH_KEYS.builderInstalled) ?? api.builder.artifacts.installed()).then(d => d?.installed ?? {}).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
     ]).then(([arts, agentList, hubItems, installedData]) => {
       setArtifacts(arts);
       setAgents(agentList);
@@ -279,7 +280,7 @@ export function AgentBuilder() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-10">
+      <div className="max-w-4xl px-6 py-10">
         {/* Builder cards */}
         <div className="mb-10">
           <h1 className="text-2xl font-bold text-gray-100">Builder</h1>
@@ -294,7 +295,7 @@ export function AgentBuilder() {
             <button
               key={b.roleId}
               onClick={() => navigateToBuilder(b.roleId, b.roleName)}
-              className={`group text-left w-full rounded-xl border ${b.borderColor} bg-gray-900/60 p-6 transition-all hover:bg-gray-900/80 hover:shadow-lg`}
+              className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 p-6 transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
             >
               <div className="flex items-start gap-5">
                 <div className={`w-14 h-14 rounded-xl ${b.bgColor} flex items-center justify-center text-2xl shrink-0`}>
@@ -313,7 +314,7 @@ export function AgentBuilder() {
                   <p className="text-sm text-gray-400 leading-relaxed">{b.detail}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {b.examples.map((ex, i) => (
-                      <span key={i} className="text-[11px] text-gray-600 bg-gray-800/60 rounded-full px-3 py-1 border border-gray-800">
+                      <span key={i} className="text-[11px] text-gray-600 bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default">
                         &ldquo;{ex}&rdquo;
                       </span>
                     ))}
@@ -342,7 +343,7 @@ export function AgentBuilder() {
             </div>
             <button
               onClick={loadAll}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-1.5 rounded-lg border border-gray-800 hover:border-gray-700"
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-1.5 rounded-lg border border-border-default hover:border-gray-600"
             >
               Refresh
             </button>
@@ -355,8 +356,8 @@ export function AgentBuilder() {
                 onClick={() => setFilterType(t)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
                   filterType === t
-                    ? 'border-gray-600 bg-gray-800 text-gray-200'
-                    : 'border-gray-800 text-gray-500 hover:text-gray-400 hover:border-gray-700'
+                    ? 'border-gray-600 bg-surface-elevated text-gray-200'
+                    : 'border-border-default text-gray-500 hover:text-gray-400 hover:border-gray-600'
                 }`}
               >
                 {t === 'all' ? 'All' : t.charAt(0).toUpperCase() + t.slice(1) + 's'}
@@ -384,7 +385,7 @@ export function AgentBuilder() {
               return (
                 <div
                   key={key}
-                  className="group rounded-lg border border-gray-800 bg-gray-900/60 p-4 hover:border-gray-700 transition-all"
+                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all"
                 >
                   <div className="flex items-start gap-3">
                     <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0`}>
@@ -418,7 +419,7 @@ export function AgentBuilder() {
                         <button
                           onClick={() => handleInstall(art)}
                           disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+                          className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50"
                         >
                           {busy ? 'Installing...' : 'Install'}
                         </button>
@@ -463,7 +464,7 @@ export function AgentBuilder() {
                         <button
                           onClick={() => handleShare(art)}
                           disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-teal-400 hover:border-teal-500/30 transition-colors disabled:opacity-50"
+                          className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-gray-400 hover:text-teal-400 hover:border-teal-500/30 transition-colors disabled:opacity-50"
                         >
                           {busy ? 'Sharing...' : 'Share'}
                         </button>

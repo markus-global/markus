@@ -1799,7 +1799,7 @@ export class TaskService {
     enabled: true,
     defaultTier: 'human',
     maxPendingTasksPerAgent: 10,
-    maxTotalActiveTasks: 20,
+    maxTotalActiveTasks: 0,
     requireApprovalForPriority: ['critical', 'high'],
     requireRequirement: true,
     rules: [],

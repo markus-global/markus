@@ -151,7 +151,7 @@ export class MCPClientManager {
       if (!trimmed) continue;
       try {
         const msg = JSON.parse(trimmed) as { id?: number; result?: unknown; error?: { code: number; message: string } };
-        if (msg.id == null) continue; // notification — ignore
+        if (msg.id === null || msg.id === undefined) continue; // notification — ignore
         const pending = this.pendingRequests.get(msg.id);
         if (!pending) continue;
         clearTimeout(pending.timer);

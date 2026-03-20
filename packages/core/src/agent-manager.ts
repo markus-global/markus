@@ -10,6 +10,7 @@ import {
   type SystemAnnouncement,
   type TaskDeliverable,
   type PathAccessPolicy,
+  type RoleTemplate,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -22,7 +23,7 @@ import { createManagerTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
-import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge } from './tools/project-tools.js';
+import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -33,7 +34,6 @@ import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import type { RoleTemplate } from '@markus/shared';
 
 const log = createLogger('agent-manager');
 
@@ -122,7 +122,8 @@ export interface TaskServiceBridge {
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string, author?: string): void;
-  updateTask(id: string, data: { description?: string }, updatedBy?: string): { id: string; title: string; status: string };
+  updateTask(id: string, data: { description?: string; blockedBy?: string[] }, updatedBy?: string): { id: string; title: string; status: string };
+  rejectTask(id: string): { id: string; title: string; status: string };
   listSubtasks(parentId: string): Array<{ id: string; title: string; status: string; priority: string; assignedAgentId?: string }>;
   submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerAgentId?: string): Promise<{ id: string; status: string }> | { id: string; status: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
@@ -240,7 +241,7 @@ export class AgentManager {
   };
 
   private buildKnowledgeCallbacks(agentId: string, orgId: string): Pick<
-    import('./tools/project-tools.js').ProjectToolsContext,
+    ProjectToolsContext,
     'knowledgeContribute' | 'knowledgeSearch' | 'knowledgeBrowse' | 'knowledgeFlagOutdated'
   > {
     if (!this.knowledgeService) return {};
@@ -283,7 +284,7 @@ export class AgentManager {
   }
 
   private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
-    import('./tools/project-tools.js').ProjectToolsContext,
+    ProjectToolsContext,
     'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate'
   > {
     if (!this.deliverableService) return {};
@@ -733,6 +734,10 @@ export class AgentManager {
         },
         updateTaskFields: async (taskId, fields) => {
           const task = ts.updateTask(taskId, fields, id);
+          return { id: task.id, title: task.title, status: task.status };
+        },
+        cancelPendingTask: async (taskId) => {
+          const task = ts.rejectTask(taskId);
           return { id: task.id, title: task.title, status: task.status };
         },
         listSubtasks: async (parentId) => {
@@ -1226,6 +1231,10 @@ export class AgentManager {
         },
         updateTaskFields: async (taskId, fields) => {
           const task = ts.updateTask(taskId, fields, id);
+          return { id: task.id, title: task.title, status: task.status };
+        },
+        cancelPendingTask: async (taskId) => {
+          const task = ts.rejectTask(taskId);
           return { id: task.id, title: task.title, status: task.status };
         },
         listSubtasks: async (parentId) => {

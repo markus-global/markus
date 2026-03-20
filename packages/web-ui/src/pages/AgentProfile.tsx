@@ -20,7 +20,7 @@ const TABS: Array<{ key: ProfileTab; label: string; icon: string }> = [
 ];
 
 const STATUS_DOT: Record<string, string> = {
-  idle: 'bg-green-400', working: 'bg-indigo-400 animate-pulse',
+  idle: 'bg-green-400', working: 'bg-brand-400 animate-pulse',
   paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
 };
 
@@ -56,10 +56,10 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
 
   return (
-    <div className="flex-1 overflow-y-auto bg-gray-950">
-      <div className="px-5 py-3.5 border-b border-gray-800 bg-gray-900 sticky top-0 z-10">
+    <div className="flex-1 overflow-y-auto bg-surface-primary">
+      <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-lg font-bold shrink-0">{agent.name.charAt(0)}</div>
+          <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-lg font-bold shrink-0">{agent.name.charAt(0)}</div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{agent.name}</h2>
@@ -71,7 +71,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
             <div className="text-xs text-gray-500 truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            <button onClick={() => navBus.navigate('chat', { agentId })} className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
+            <button onClick={() => navBus.navigate('chat', { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
             <button onClick={async () => {
               if (!agent) return;
               try {
@@ -99,7 +99,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
           {TABS.filter(t => !externalInfo || ['overview', 'tasks'].includes(t.key)).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
-                tab === t.key ? 'bg-gray-950 text-white border-gray-800' : 'text-gray-500 border-transparent hover:text-gray-300 hover:bg-gray-800/50'
+                tab === t.key ? 'bg-surface-primary text-white border-border-default' : 'text-gray-500 border-transparent hover:text-gray-300 hover:bg-surface-elevated/50'
               }`}
             ><span className="mr-1">{t.icon}</span>{t.label}</button>
           ))}
@@ -174,7 +174,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
     else api.agents.stop(agent.id).then(onUpdate);
   };
 
-  const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-indigo-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
+  const TASK_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-brand-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
 
   if (externalInfo) {
     const GATEWAY_ENDPOINTS = [
@@ -227,8 +227,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         <Card title="Sync Context (received every sync cycle)">
           <div className="space-y-1.5">
             {SYNC_CONTEXT_FIELDS.map(f => (
-              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-gray-800/30 border border-gray-700/30">
-                <span className="font-mono text-[10px] text-indigo-400 shrink-0 pt-0.5">{f.field}</span>
+              <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
+                <span className="font-mono text-[10px] text-brand-400 shrink-0 pt-0.5">{f.field}</span>
                 <span className="text-[10px] text-gray-500">{f.desc}</span>
               </div>
             ))}
@@ -238,7 +238,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         <Card title="Gateway API Endpoints">
           <div className="space-y-1.5">
             {GATEWAY_ENDPOINTS.map(ep => (
-              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-gray-800/30 border border-gray-700/30">
+              <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
                 <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-400' : 'text-green-400'}`}>{ep.method}</span>
                 <span className="font-mono text-[10px] text-gray-300 shrink-0 pt-0.5">{ep.path}</span>
                 <span className="text-[10px] text-gray-600 ml-auto">{ep.desc}</span>
@@ -270,7 +270,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         editing
           ? <div className="flex gap-2">
               <button onClick={() => setEditing(false)} className="text-xs text-gray-500 hover:text-gray-300">Cancel</button>
-              <button onClick={save} disabled={saving} className="text-xs text-indigo-400 hover:text-indigo-300">{saving ? 'Saving...' : 'Save'}</button>
+              <button onClick={save} disabled={saving} className="text-xs text-brand-400 hover:text-brand-300">{saving ? 'Saving...' : 'Save'}</button>
             </div>
           : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
       }>
@@ -279,7 +279,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <KV label="Agent Role">
             {editing
               ? <div className="flex gap-1.5">{(['worker', 'manager'] as const).map(r => (
-                  <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30') : 'bg-gray-800 text-gray-500 border-gray-700'}`}>{r}</button>
+                  <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30') : 'bg-surface-elevated text-gray-500 border-border-default'}`}>{r}</button>
                 ))}</div>
               : <span className={agent.agentRole === 'manager' ? 'text-amber-400' : 'text-cyan-400'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>}
           </KV>
@@ -312,16 +312,16 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         )}
 
         {agent.state.status === 'working' && (agent.state.activeTaskIds?.length ?? 0) > 0 && (
-          <div className="mt-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-3">
+          <div className="mt-3 bg-brand-500/10 border border-brand-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
-              <span className="text-xs font-medium text-indigo-400">Currently Working</span>
-              <span className="text-[10px] text-indigo-400/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
+              <span className="w-2 h-2 rounded-full bg-brand-400 animate-pulse" />
+              <span className="text-xs font-medium text-brand-400">Currently Working</span>
+              <span className="text-[10px] text-brand-400/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
             </div>
             <div className="space-y-1">
               {recentTasks.filter(t => agent.state.activeTaskIds?.includes(t.id)).map(t => (
                 <div key={t.id} className="flex items-center gap-2 text-[11px]">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
                   <span className="text-gray-300 truncate flex-1">{t.title}</span>
                   <span className="text-gray-500 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
                 </div>
@@ -330,8 +330,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           </div>
         )}
 
-        <div className="flex gap-2 mt-4 pt-3 border-t border-gray-800/50">
-          <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-gray-700 rounded-lg hover:border-indigo-500 transition-colors">
+        <div className="flex gap-2 mt-4 pt-3 border-t border-border-default/50">
+          <button onClick={toggleAgent} className="px-3 py-1.5 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors">
             {agent.state.status === 'offline' ? '▶ Start' : '⏹ Stop'}
           </button>
         </div>
@@ -359,13 +359,13 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                       <button key={m} onClick={() => setEditModelMode(m)}
                         className={`px-2.5 py-1 text-[10px] rounded border transition-colors capitalize ${
                           editModelMode === m
-                            ? (m === 'default' ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30')
-                            : 'bg-gray-800 text-gray-500 border-gray-700'
+                            ? (m === 'default' ? 'bg-brand-500/15 text-brand-400 border-brand-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30')
+                            : 'bg-surface-elevated text-gray-500 border-border-default'
                         }`}
                       >{m === 'default' ? 'System Default' : 'Custom'}</button>
                     ))}
                   </div>
-                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-400' : 'text-indigo-400'}`}>
+                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-400' : 'text-brand-400'}`}>
                     {currentModelMode === 'custom' ? '⚙ Custom' : '◎ System Default'}
                   </span>}
             </KV>
@@ -407,7 +407,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                 <div key={t.id}>
                   <button
                     onClick={() => hasLogs ? setExpandedTaskId(isExpanded ? null : t.id) : undefined}
-                    className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-gray-800/40 cursor-pointer' : 'cursor-default'}`}
+                    className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}
                   >
                     <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
                     <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
@@ -415,7 +415,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     {hasLogs && <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
                   </button>
                   {isExpanded && (
-                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                    <div className="border-t border-border-default/60 bg-surface-primary/40">
                       <TaskLog taskId={t.id} isLive={t.status === 'in_progress'} />
                     </div>
                   )}
@@ -436,7 +436,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                 <div key={act.id}>
                   <button
                     onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
                     <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
@@ -444,7 +444,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                   </button>
                   {isExpanded && (
-                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                    <div className="border-t border-border-default/60 bg-surface-primary/40">
                       <ActivityLog agentId={agent.id} activityId={act.id} />
                     </div>
                   )}
@@ -465,7 +465,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                 <div key={act.id}>
                   <button
                     onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
                     <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
@@ -473,7 +473,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                   </button>
                   {isExpanded && (
-                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                    <div className="border-t border-border-default/60 bg-surface-primary/40">
                       <ActivityLog agentId={agent.id} activityId={act.id} />
                     </div>
                   )}
@@ -605,7 +605,7 @@ function FilesTab({ agentId }: { agentId: string }) {
             return (
               <button key={f.name} onClick={() => selectFile(f.name)}
                 className={`px-3 py-1.5 text-xs rounded-lg border transition-colors relative ${
-                  selected === f.name ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'
+                  selected === f.name ? 'bg-brand-600/15 border-brand-500/40 text-brand-300' : 'border-border-default text-gray-500 hover:text-gray-300'
                 }`}
               >
                 {f.name}
@@ -632,19 +632,19 @@ function FilesTab({ agentId }: { agentId: string }) {
                 )}
                 {dirty && <span className="text-[10px] text-amber-400">unsaved</span>}
                 <button onClick={saveFile} disabled={saving || !dirty}
-                  className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-gray-800 text-gray-600 cursor-default'}`}
+                  className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-brand-600 hover:bg-brand-500 text-white' : 'bg-surface-elevated text-gray-600 cursor-default'}`}
                 >{saving ? 'Saving...' : 'Save'}</button>
               </div>
             </div>
 
             {diffView?.file === selected && (
-              <div className="mb-3 border border-gray-700 rounded-lg overflow-hidden">
-                <div className="grid grid-cols-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-gray-800/80">
-                  <div className="px-3 py-2 border-r border-gray-700">Current (Agent)</div>
+              <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
+                <div className="grid grid-cols-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-surface-elevated/80">
+                  <div className="px-3 py-2 border-r border-border-default">Current (Agent)</div>
                   <div className="px-3 py-2">Template ({roleStatus?.templateId})</div>
                 </div>
                 <div className="grid grid-cols-2 max-h-60 overflow-y-auto">
-                  <pre className="px-3 py-2 text-[11px] font-mono text-red-300/70 bg-red-500/5 border-r border-gray-700 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-red-300/70 bg-red-500/5 border-r border-border-default whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
                   <pre className="px-3 py-2 text-[11px] font-mono text-green-300/70 bg-green-500/5 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.template}</pre>
                 </div>
               </div>
@@ -653,7 +653,7 @@ function FilesTab({ agentId }: { agentId: string }) {
             <textarea
               value={editContent}
               onChange={e => { setEditContent(e.target.value); setDirty(true); }}
-              className="w-full h-80 bg-gray-800/60 border border-gray-700 rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-indigo-500 outline-none"
+              className="w-full h-80 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none"
               spellCheck={false}
             />
             {selected === 'ROLE.md' && (
@@ -705,7 +705,7 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
         <Card key={g.category} title={g.category}>
           <div className="grid grid-cols-2 gap-2">
             {g.tools.map(t => (
-              <div key={t.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800/30 border border-gray-700/30">
+              <div key={t.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
                 <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium font-mono">{t.name}</div>
@@ -782,18 +782,18 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
   return (
     <div className="space-y-4">
       <Card title={`Assigned Skills (${agent.skills.length})`} action={
-        <button onClick={() => setShowImport(!showImport)} className="text-xs text-indigo-400 hover:text-indigo-300">
+        <button onClick={() => setShowImport(!showImport)} className="text-xs text-brand-400 hover:text-brand-300">
           {showImport ? 'Close' : '+ Add Skill'}
         </button>
       }>
         {showImport && (
-          <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/40">
+          <div className="mb-4 p-3 bg-surface-elevated/40 rounded-lg border border-border-default/40">
             <input className="input-sm mb-2" placeholder="Search skills..." value={search} onChange={e => setSearch(e.target.value)} />
             <div className="space-y-1 max-h-40 overflow-y-auto">
               {importable.length === 0 ? <div className="text-[10px] text-gray-600 py-2 text-center">No additional skills available</div> : importable.map(s => (
-                <div key={s.name} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-gray-800/30 hover:bg-gray-700/40 transition-colors">
+                <div key={s.name} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-elevated/30 hover:bg-surface-overlay/40 transition-colors">
                   <span className="text-xs text-gray-300 flex-1">{s.name} <span className="text-gray-600">v{s.version}</span></span>
-                  <button onClick={() => addSkill(s.name)} className="px-2 py-0.5 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded">Add</button>
+                  <button onClick={() => addSkill(s.name)} className="px-2 py-0.5 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded">Add</button>
                 </div>
               ))}
             </div>
@@ -809,7 +809,7 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                 <div key={skill}>
                   <div
                     className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border cursor-pointer transition-all ${
-                      isExpanded ? 'bg-indigo-900/15 border-indigo-500/40' : 'bg-gray-800/30 border-gray-700/30 hover:border-gray-600/50'
+                      isExpanded ? 'bg-brand-900/15 border-brand-500/40' : 'bg-surface-elevated/30 border-border-default/30 hover:border-gray-600/50'
                     }`}
                     onClick={() => toggleDetail(skill)}
                   >
@@ -820,7 +820,7 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                     </div>
                     {rate !== null && (
                       <div className="flex items-center gap-2 shrink-0">
-                        <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="w-16 h-1.5 bg-surface-overlay rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
                         </div>
                         <span className="text-[10px] text-gray-500 w-8 text-right">{rate}%</span>
@@ -830,7 +830,7 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                   </div>
 
                   {isExpanded && (
-                    <div className="ml-6 mt-1 mb-2 p-4 bg-gray-800/30 rounded-lg border border-gray-700/20 space-y-3">
+                    <div className="ml-6 mt-1 mb-2 p-4 bg-surface-elevated/30 rounded-lg border border-border-default/20 space-y-3">
                       {detailLoading ? (
                         <div className="text-[10px] text-gray-600 py-3 text-center">Loading skill details…</div>
                       ) : skillDetail ? (
@@ -851,7 +851,7 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                           {skillDetail.tags && skillDetail.tags.length > 0 && (
                             <div className="flex gap-1 flex-wrap">
                               {skillDetail.tags.map(tag => (
-                                <span key={tag} className="px-1.5 py-0.5 bg-gray-700/40 text-gray-500 text-[10px] rounded">#{tag}</span>
+                                <span key={tag} className="px-1.5 py-0.5 bg-surface-overlay/40 text-gray-500 text-[10px] rounded">#{tag}</span>
                               ))}
                             </div>
                           )}
@@ -862,8 +862,8 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                               </div>
                               <div className="space-y-1.5">
                                 {(skillDetail.toolDetails ?? skillDetail.tools).map(tool => (
-                                  <div key={tool.name} className="px-3 py-2 bg-gray-900/50 rounded border border-gray-700/20">
-                                    <div className="text-xs font-medium text-indigo-300">{tool.name}</div>
+                                  <div key={tool.name} className="px-3 py-2 bg-surface-secondary/50 rounded border border-border-default/20">
+                                    <div className="text-xs font-medium text-brand-300">{tool.name}</div>
                                     {tool.description && <div className="text-[10px] text-gray-500 mt-0.5">{tool.description}</div>}
                                   </div>
                                 ))}
@@ -946,7 +946,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
       <div className="flex gap-2">
         {sectionTabs.map(s => (
           <button key={s.key} onClick={() => setSection(s.key)}
-            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${section === s.key ? 'bg-indigo-600/15 border-indigo-500/40 text-indigo-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}
+            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${section === s.key ? 'bg-brand-600/15 border-brand-500/40 text-brand-300' : 'border-border-default text-gray-500 hover:text-gray-300'}`}
           >{s.label}</button>
         ))}
       </div>
@@ -961,13 +961,13 @@ function MemoryTab({ agentId }: { agentId: string }) {
                   <div key={i}>
                     <button
                       onClick={() => setExpandedEntryIdx(isExpanded ? null : i)}
-                      className="w-full flex gap-2 px-3 py-2 rounded-lg bg-gray-800/20 text-xs text-left hover:bg-gray-800/40 transition-colors cursor-pointer"
+                      className="w-full flex gap-2 px-3 py-2 rounded-lg bg-surface-elevated/20 text-xs text-left hover:bg-surface-elevated/40 transition-colors cursor-pointer"
                     >
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-400' : e.type === 'task' ? 'bg-green-500/15 text-green-400' : e.type === 'note' ? 'bg-purple-500/15 text-purple-400' : 'bg-gray-700 text-gray-400'}`}>{e.type}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-400' : e.type === 'task' ? 'bg-green-500/15 text-green-400' : e.type === 'note' ? 'bg-purple-500/15 text-purple-400' : 'bg-surface-overlay text-gray-400'}`}>{e.type}</span>
                       <span className={`text-gray-300 flex-1 min-w-0 ${isExpanded ? '' : 'line-clamp-2'}`}>{e.content}</span>
                       <div className="flex items-center gap-2 shrink-0">
                         {e.importance != null && (
-                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${e.importance >= 7 ? 'bg-red-500/15 text-red-400' : e.importance >= 4 ? 'bg-amber-500/15 text-amber-400' : 'bg-gray-700 text-gray-500'}`}>
+                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${e.importance >= 7 ? 'bg-red-500/15 text-red-400' : e.importance >= 4 ? 'bg-amber-500/15 text-amber-400' : 'bg-surface-overlay text-gray-500'}`}>
                             P{e.importance}
                           </span>
                         )}
@@ -976,9 +976,9 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       </div>
                     </button>
                     {isExpanded && (
-                      <div className="mx-3 mt-1 mb-2 p-3 bg-gray-800/30 rounded-lg border border-gray-700/20">
+                      <div className="mx-3 mt-1 mb-2 p-3 bg-surface-elevated/30 rounded-lg border border-border-default/20">
                         <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed break-words">{e.content}</pre>
-                        <div className="flex gap-3 mt-2 pt-2 border-t border-gray-700/30 text-[10px] text-gray-600">
+                        <div className="flex gap-3 mt-2 pt-2 border-t border-border-default/30 text-[10px] text-gray-600">
                           <span>Type: {e.type}</span>
                           {e.importance != null && <span>Importance: {e.importance}</span>}
                           <span>{new Date(e.timestamp).toLocaleString()}</span>
@@ -1013,7 +1013,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                   <div key={s.id}>
                     <button
                       onClick={toggleSession}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-800/20 hover:bg-gray-800/40 transition-colors cursor-pointer text-left"
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface-elevated/20 hover:bg-surface-elevated/40 transition-colors cursor-pointer text-left"
                     >
                       <div className="text-xs text-gray-400 font-mono flex-1 truncate">{s.id}</div>
                       <span className="text-[10px] text-gray-500">{s.messageCount} msgs</span>
@@ -1021,7 +1021,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                     </button>
                     {isExpanded && (
-                      <div className="mx-3 mt-1 mb-2 bg-gray-800/30 rounded-lg border border-gray-700/20 max-h-96 overflow-y-auto">
+                      <div className="mx-3 mt-1 mb-2 bg-surface-elevated/30 rounded-lg border border-border-default/20 max-h-96 overflow-y-auto">
                         {sessionLoading ? (
                           <div className="text-[10px] text-gray-600 py-3 text-center">Loading messages...</div>
                         ) : sessionMessages.length === 0 ? (
@@ -1037,7 +1037,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                                 <div key={i} className="px-3 py-2">
                                   {(m.role === 'user' || m.role === 'system') && (
                                     <div>
-                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-400' : 'bg-gray-700 text-gray-400'}`}>{m.role}</span>
+                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-400' : 'bg-surface-overlay text-gray-400'}`}>{m.role}</span>
                                       <div className="text-xs text-gray-300"><MarkdownMessage content={m.content} className="text-xs text-gray-300" /></div>
                                     </div>
                                   )}
@@ -1086,15 +1086,15 @@ function MemoryTab({ agentId }: { agentId: string }) {
           editingDaily
             ? <div className="flex gap-2">
                 <button onClick={() => setEditingDaily(false)} className="text-xs text-gray-500">Cancel</button>
-                <button onClick={saveDaily} disabled={saving} className="text-xs text-indigo-400">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-400">{saving ? 'Saving...' : 'Save'}</button>
               </div>
             : <button onClick={() => setEditingDaily(true)} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
         }>
           {editingDaily ? (
             <textarea value={dailyContent} onChange={e => setDailyContent(e.target.value)}
-              className="w-full h-64 bg-gray-800/60 border border-gray-700 rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-indigo-500 outline-none" />
+              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.recentDailyLogs ? (
-            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-gray-800/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
+            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
           ) : <Empty text="No daily logs" />}
         </Card>
       )}
@@ -1104,15 +1104,15 @@ function MemoryTab({ agentId }: { agentId: string }) {
           editingLong
             ? <div className="flex gap-2">
                 <button onClick={() => setEditingLong(false)} className="text-xs text-gray-500">Cancel</button>
-                <button onClick={saveLong} disabled={saving} className="text-xs text-indigo-400">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={saveLong} disabled={saving} className="text-xs text-brand-400">{saving ? 'Saving...' : 'Save'}</button>
               </div>
             : <button onClick={() => setEditingLong(true)} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
         }>
           {editingLong ? (
             <textarea value={longContent} onChange={e => setLongContent(e.target.value)}
-              className="w-full h-64 bg-gray-800/60 border border-gray-700 rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-indigo-500 outline-none" />
+              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.longTermMemory ? (
-            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-gray-800/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
+            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
           ) : <Empty text="No long-term memory stored" />}
         </Card>
       )}
@@ -1163,7 +1163,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                 <div key={act.id}>
                   <button
                     onClick={() => setExpandedRunId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-gray-800/40 cursor-pointer"
+                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
                     <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
@@ -1172,7 +1172,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                     <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                   </button>
                   {isExpanded && (
-                    <div className="border-t border-gray-800/60 bg-gray-950/40">
+                    <div className="border-t border-border-default/60 bg-surface-primary/40">
                       <ActivityLog agentId={agentId} activityId={act.id} />
                     </div>
                   )}
@@ -1189,7 +1189,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
 // ─── Tasks Tab ───────────────────────────────────────────────────────────────
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-const TASK_STATUS_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-indigo-400 animate-pulse', blocked: 'bg-amber-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
+const TASK_STATUS_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-brand-400 animate-pulse', blocked: 'bg-amber-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
 
 function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: string[] }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
@@ -1220,16 +1220,16 @@ function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: 
               return (
                 <div key={task.id}>
                   <button onClick={() => hasLogs ? setExpandedId(isExpanded ? null : task.id) : undefined}
-                    className={`w-full flex items-center gap-3 px-5 py-3 text-left transition-colors ${hasLogs ? 'hover:bg-gray-800/40 cursor-pointer' : 'cursor-default'}`}>
+                    className={`w-full flex items-center gap-3 px-5 py-3 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}>
                     <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_STATUS_DOT[task.status] ?? 'bg-gray-500'}`} />
                     <div className="flex-1 min-w-0">
                       <div className={`text-xs font-medium truncate ${TERMINAL.has(task.status) ? 'text-gray-500' : 'text-gray-200'}`}>{task.title}</div>
                       <div className="text-[10px] text-gray-600 mt-0.5 capitalize">{task.status.replace(/_/g, ' ')}</div>
                     </div>
-                    {isExecuting && <span className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />}
+                    {isExecuting && <span className="w-3 h-3 border-2 border-brand-400 border-t-transparent rounded-full animate-spin shrink-0" />}
                     {hasLogs && <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
                   </button>
-                  {isExpanded && <div className="border-t border-gray-800/60 bg-gray-950/40"><TaskLog taskId={task.id} isLive={isExecuting} /></div>}
+                  {isExpanded && <div className="border-t border-border-default/60 bg-surface-primary/40"><TaskLog taskId={task.id} isLive={isExecuting} /></div>}
                 </div>
               );
             })}
@@ -1316,7 +1316,7 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
 
 function Card({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5">
+    <div className="bg-surface-secondary/60 border border-border-default rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">{title}</h3>
         {action}
@@ -1331,7 +1331,7 @@ function KV({ label, mono, children }: { label: string; mono?: boolean; children
 }
 
 function StatBox({ label, value, color }: { label: string; value: string; color?: string }) {
-  const c = color === 'green' ? 'text-green-400' : color === 'indigo' ? 'text-indigo-400' : color === 'red' ? 'text-red-400' : 'text-gray-300';
+  const c = color === 'green' ? 'text-green-400' : color === 'indigo' ? 'text-brand-400' : color === 'red' ? 'text-red-400' : 'text-gray-300';
   return (<div className="text-center"><div className={`text-lg font-semibold ${c}`}>{value}</div><div className="text-[10px] text-gray-600 mt-0.5">{label}</div></div>);
 }
 

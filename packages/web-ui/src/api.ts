@@ -392,6 +392,7 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  result?: string;
   taskType?: string;
   scheduleConfig?: {
     cron?: string;
@@ -837,6 +838,8 @@ export const api = {
       }),
     sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal; images?: string[] }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
       return new Promise(async (resolve, reject) => {
+        let fullContent = '';
+        let routedAgentId = '';
         try {
           const { signal, ...restOpts } = opts ?? {};
           const res = await fetch(`${BASE}/message`, {
@@ -850,8 +853,6 @@ export const api = {
           const reader = res.body?.getReader();
           if (!reader) { reject(new Error('No reader')); return; }
           const decoder = new TextDecoder();
-          let fullContent = '';
-          let routedAgentId = '';
           let buffer = '';
           while (true) {
             const { done, value } = await reader.read();
@@ -1243,9 +1244,16 @@ export const wsClient = new WSClient();
 
 let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global';
 
-// Fetch hub URL from server config (overrides default if available)
+// Fetch hub URL from server config (overrides default if available),
+// and sync existing Hub token to backend for agent tool access.
 request<{ hubUrl: string }>('/settings/hub')
-  .then(r => { if (r.hubUrl) HUB_URL = r.hubUrl; })
+  .then(r => {
+    if (r.hubUrl) HUB_URL = r.hubUrl;
+    const existingToken = localStorage.getItem('markus_hub_token');
+    if (existingToken) {
+      request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
+    }
+  })
   .catch(() => {});
 
 const HUB_TOKEN_KEY = 'markus_hub_token';
@@ -1289,11 +1297,17 @@ export function getHubUser(): HubUser | null {
 export function clearHubAuth(): void {
   localStorage.removeItem(HUB_TOKEN_KEY);
   localStorage.removeItem(HUB_USER_KEY);
+  syncHubTokenToBackend(null);
 }
 
 function saveHubAuth(token: string, user: HubUser): void {
   localStorage.setItem(HUB_TOKEN_KEY, token);
   localStorage.setItem(HUB_USER_KEY, JSON.stringify(user));
+  syncHubTokenToBackend(token);
+}
+
+function syncHubTokenToBackend(token: string | null): void {
+  request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token }) }).catch(() => {});
 }
 
 /**
@@ -1407,7 +1421,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest(`/items/${id}/download`, { method: 'POST' }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ config: unknown; name: string; itemType: string; version: string; files?: Record<string, string> }>(`/items/${id}/download`, { method: 'POST' }); }
       throw e;
     }
   },
@@ -1416,7 +1430,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ id: string; name: string; slug: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(data) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(data) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id: string; name: string; slug: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(data) }); }
       throw e;
     }
   },
@@ -1425,7 +1439,7 @@ export const hubApi = {
     try {
       return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
       throw e;
     }
   },

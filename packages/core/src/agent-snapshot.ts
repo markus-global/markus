@@ -1,5 +1,4 @@
-import { createLogger, generateId } from '@markus/shared';
-import type { AgentConfig } from '@markus/shared';
+import { createLogger, generateId, type AgentConfig } from '@markus/shared';
 
 const log = createLogger('agent-snapshot');
 

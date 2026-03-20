@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type PackageType } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -28,6 +28,7 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
+  type SkillCategory,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -285,6 +286,7 @@ export class APIServer {
         return [...teamChats, ...customChats];
       },
     });
+
   }
 
   setSkillRegistry(registry: SkillRegistry): void {
@@ -473,10 +475,10 @@ export class APIServer {
   async ensureAdminUser(orgId: string): Promise<void> {
     if (!this.storage) return;
     const allUsers = await this.storage.userRepo.listByOrg(orgId);
-    if (allUsers.some(u => u.passwordHash && u.id === 'default')) return;
+    if (allUsers.some((u: any) => u.passwordHash && u.id === 'default')) return;
 
     // Remove any stale non-default admin users from old versions
-    for (const u of allUsers.filter(u => u.passwordHash && u.id !== 'default')) {
+    for (const u of allUsers.filter((u: any) => u.passwordHash && u.id !== 'default')) {
       await this.storage.userRepo.delete(u.id);
     }
 
@@ -680,11 +682,11 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      const title = !session.title ? userMessage.slice(0, 60) : undefined;
+      const title = !session!.title ? userMessage.slice(0, 60) : undefined;
       const meta = images?.length ? { images } : undefined;
-      await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0, meta);
-      if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
-      return session.id;
+      await this.storage.chatSessionRepo.appendMessage(session!.id, agentId, 'user', userMessage, 0, meta);
+      if (title) await this.storage.chatSessionRepo.updateLastMessage(session!.id, title);
+      return session!.id;
     } catch (err) {
       log.warn('Failed to persist user message', { error: String(err) });
       return null;
@@ -3100,7 +3102,7 @@ export class APIServer {
               text: userText,
               mentions: [],
             })
-            .catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+            .catch((err: unknown) => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
 
         const sseHandler = new SSEHandler({
@@ -3138,7 +3140,7 @@ export class APIServer {
                   text: reply,
                   mentions: [],
                 })
-                .catch(err =>
+                .catch((err: unknown) =>
                   log.warn('Failed to persist smart agent reply', { error: String(err) })
                 );
             }
@@ -3156,7 +3158,7 @@ export class APIServer {
                 text: errText,
                 mentions: [],
               })
-              .catch(e => log.warn('Failed to persist smart error message', { error: String(e) }));
+              .catch((e: unknown) => log.warn('Failed to persist smart error message', { error: String(e) }));
           },
         });
 
@@ -3175,7 +3177,7 @@ export class APIServer {
               text: userText,
               mentions: [],
             })
-            .catch(err => log.warn('Failed to persist smart user message', { error: String(err) }));
+            .catch((err: unknown) => log.warn('Failed to persist smart user message', { error: String(err) }));
         }
         let reply: string;
         try {
@@ -3193,7 +3195,7 @@ export class APIServer {
                 text: errText,
                 mentions: [],
               })
-              .catch(e => log.warn('Failed to persist smart error message', { error: String(e) }));
+              .catch((e: unknown) => log.warn('Failed to persist smart error message', { error: String(e) }));
           }
           throw err;
         }
@@ -3216,7 +3218,7 @@ export class APIServer {
               text: reply,
               mentions: [],
             })
-            .catch(err => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+            .catch((err: unknown) => log.warn('Failed to persist smart agent reply', { error: String(err) }));
         }
       }
       const _st2 = agent.getState();
@@ -3342,7 +3344,7 @@ export class APIServer {
       }
 
       try {
-        let skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }> = [];
+        const skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }> = [];
 
         if (source === 'openclaw') {
           const resp = await fetch('https://raw.githubusercontent.com/LeoYeAI/openclaw-master-skills/main/README.md');
@@ -4043,7 +4045,7 @@ export class APIServer {
                     version: manifest.version,
                     description: manifest.description,
                     author: manifest.author ?? '',
-                    category: (manifest.category ?? 'custom') as import('@markus/core').SkillCategory,
+                    category: (manifest.category ?? 'custom') as SkillCategory,
                     tags: manifest.tags,
                     instructions,
                     requiredPermissions: manifest.skill?.requiredPermissions,
@@ -4873,6 +4875,26 @@ export class APIServer {
     // Settings — Hub URL (for web-ui to discover hub address)
     if (path === '/api/settings/hub' && req.method === 'GET') {
       this.json(res, 200, { hubUrl: this.hubUrl });
+      return;
+    }
+
+    // Settings — Hub Token (frontend pushes token so MCP skill servers can read it)
+    if (path === '/api/settings/hub-token' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const token = body['token'] as string | null;
+      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      try {
+        if (token) {
+          mkdirSync(join(homedir(), '.markus'), { recursive: true });
+          writeFileSync(tokenPath, token, 'utf-8');
+        } else if (existsSync(tokenPath)) {
+          rmSync(tokenPath);
+        }
+        log.info(`Hub token ${token ? 'saved to' : 'cleared from'} ${tokenPath}`);
+      } catch (err) {
+        log.error('Failed to write hub token file', { error: String(err) });
+      }
+      this.json(res, 200, { ok: true });
       return;
     }
 
@@ -5858,7 +5880,7 @@ export class APIServer {
       try {
         const requirement = this.requirementService.updateRequirementStatus(
           reqId,
-          body['status'] as string as import('@markus/shared').RequirementStatus,
+          body['status'] as string as RequirementStatus,
           authUser?.userId ?? 'unknown'
         );
         this.json(res, 200, { requirement });

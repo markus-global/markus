@@ -1,7 +1,6 @@
 import { MemoryStore } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
-import type { LLMMessage } from '@markus/shared';
-import { createLogger, getTextContent } from '@markus/shared';
+import { createLogger, getTextContent, type LLMMessage } from '@markus/shared';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 

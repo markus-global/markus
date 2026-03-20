@@ -1,5 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import { createLogger } from '@markus/shared';
+import type { TaskDelegation, DelegationResult } from '@markus/a2a';
 
 const log = createLogger('a2a-tools');
 
@@ -8,7 +9,7 @@ export interface A2AContext {
   selfName: string;
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[] }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string) => Promise<string>;
-  delegateTask?: (targetId: string, delegation: import('@markus/a2a').TaskDelegation) => Promise<import('@markus/a2a').DelegationResult>;
+  delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
   listGroupChats?: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
