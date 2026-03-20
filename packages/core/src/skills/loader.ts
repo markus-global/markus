@@ -5,6 +5,28 @@ import { join, resolve } from 'node:path';
 
 const log = createLogger('skill-loader');
 
+/**
+ * Resolve ${SKILL_DIR} placeholders in MCP server args so skills can
+ * reference bundled scripts relative to their own directory.
+ */
+function resolveMcpServerPaths(
+  servers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | undefined,
+  skillDir: string,
+): Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | undefined {
+  if (!servers) return undefined;
+  const resolved: typeof servers = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    resolved[name] = {
+      ...cfg,
+      args: cfg.args?.map(a => a.replaceAll('${SKILL_DIR}', skillDir)),
+      env: cfg.env
+        ? Object.fromEntries(Object.entries(cfg.env).map(([k, v]) => [k, v.replaceAll('${SKILL_DIR}', skillDir)]))
+        : undefined,
+    };
+  }
+  return resolved;
+}
+
 export interface SkillPackage {
   manifest: SkillManifest;
   readme?: string;
@@ -78,7 +100,7 @@ export class SkillLoader {
             category: (pkg_.category ?? 'custom') as SkillCategory,
             tags: pkg_.tags,
             requiredPermissions: pkg_.skill?.requiredPermissions,
-            mcpServers: pkg_.skill?.mcpServers,
+            mcpServers: resolveMcpServerPaths(pkg_.skill?.mcpServers, skillDir),
             sourcePath: skillDir,
           };
 

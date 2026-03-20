@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createLogger, msgId } from '@markus/shared';
-import type { Message } from '@markus/shared';
+import { createLogger, msgId, type Message } from '@markus/shared';
 import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
 import { FeishuClient } from './client.js';
 import { createHmac } from 'node:crypto';

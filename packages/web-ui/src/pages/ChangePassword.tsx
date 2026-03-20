@@ -30,14 +30,16 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-surface-primary flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-brand-950/50 via-transparent to-transparent" />
+      <div className="w-full max-w-sm relative z-10">
         <div className="text-center mb-8">
-          <div className="text-4xl font-bold text-white mb-1">◈ Markus</div>
+          <img src="/logo.png" alt="Markus" className="w-14 h-14 mx-auto mb-3 rounded-xl shadow-lg shadow-black/40" />
+          <div className="text-2xl font-extrabold tracking-tight text-white mb-1">Markus</div>
           <div className="text-sm text-gray-500">AI Digital Employee Platform</div>
         </div>
 
-        <form onSubmit={submit} className="bg-gray-900 border border-gray-800 rounded-2xl p-8 space-y-5 shadow-2xl">
+        <form onSubmit={submit} className="bg-surface-secondary/80 backdrop-blur-sm border border-border-default rounded-2xl p-8 space-y-5 shadow-2xl shadow-black/30">
           <div>
             <h2 className="text-lg font-semibold text-white text-center">
               {isFirstTime ? 'Set Your Password' : 'Change Password'}
@@ -57,7 +59,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
                 value={current}
                 onChange={e => setCurrent(e.target.value)}
                 autoComplete="current-password"
-                className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm text-gray-100 focus:border-indigo-500 outline-none transition-colors"
+                className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
               />
             </div>
           )}
@@ -69,7 +71,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
               value={next}
               onChange={e => setNext(e.target.value)}
               autoComplete="new-password"
-              className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm text-gray-100 focus:border-indigo-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
               required
               minLength={6}
             />
@@ -82,7 +84,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
               value={confirm}
               onChange={e => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm text-gray-100 focus:border-indigo-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
               required
             />
           </div>
@@ -96,7 +98,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
           <button
             type="submit"
             disabled={loading || !next || !confirm}
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
+            className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
           >
             {loading ? 'Saving…' : isFirstTime ? 'Set Password & Continue' : 'Change Password'}
           </button>

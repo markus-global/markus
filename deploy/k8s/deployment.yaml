@@ -53,10 +53,6 @@ spec:
                   name: markus-secrets
                   key: feishu-app-secret
                   optional: true
-            - name: DATABASE_URL
-              value: postgresql://markus:markus@markus-postgres:5432/markus
-            - name: REDIS_URL
-              value: redis://markus-redis:6379
           resources:
             requests:
               cpu: 250m

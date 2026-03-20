@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { LLMMessage } from '@markus/shared';
-import { createLogger, getTextContent } from '@markus/shared';
+import { createLogger, getTextContent, type LLMMessage } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';

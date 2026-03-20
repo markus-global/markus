@@ -226,7 +226,7 @@ export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
       <span>{label}</span>
       <span className="flex gap-0.5">
         {[0, 150, 300].map(d => (
-          <span key={d} className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce"
+          <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
             style={{ animationDelay: `${d}ms`, animationDuration: '1s' }} />
         ))}
       </span>
@@ -238,9 +238,9 @@ export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
 
 export function StreamingText({ content, className }: { content: string; className?: string }) {
   return (
-    <div className="bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+    <div className="bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
       <MarkdownMessage content={content} className={className ?? 'text-sm text-gray-300'} />
-      <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse ml-0.5 align-middle" />
+      <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-middle" />
     </div>
   );
 }
@@ -278,11 +278,11 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
   return createPortal(
     <div
       style={style}
-      className="w-96 max-w-[90vw] max-h-[60vh] bg-gray-900 border border-gray-700 rounded-lg shadow-xl text-xs flex flex-col"
+      className="w-96 max-w-[90vw] max-h-[60vh] bg-surface-secondary border border-border-default rounded-lg shadow-xl text-xs flex flex-col"
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
     >
-      <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between shrink-0">
+      <div className="px-3 py-2 border-b border-border-default flex items-center justify-between shrink-0">
         <span className="font-medium text-gray-200">{meta.label}</span>
         <div className="flex items-center gap-2">
           {info.durationMs != null && <span className="text-gray-500">{formatDuration(info.durationMs)}</span>}
@@ -291,7 +291,7 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
       </div>
       <div className="flex-1 overflow-y-auto min-h-0">
         {argSummary && (
-          <div className="px-3 py-1.5 border-b border-gray-800">
+          <div className="px-3 py-1.5 border-b border-border-default">
             <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
             <div className="text-gray-400 font-mono text-[11px] break-all">{argSummary}</div>
           </div>
@@ -312,7 +312,7 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
           <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
         )}
       </div>
-      <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600 shrink-0">Click to expand full details</div>
+      <div className="px-3 py-1 border-t border-border-default text-[10px] text-gray-600 shrink-0">Click to expand full details</div>
     </div>,
     document.body,
   );
@@ -334,9 +334,9 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60" />
-      <div className="relative bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
+      <div className="relative bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()}>
-        <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
+        <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <span className="opacity-60 text-sm">{meta.icon}</span>
             <span className={`text-sm font-semibold ${success ? 'text-gray-100' : 'text-red-300'}`}>{meta.label}</span>
@@ -356,8 +356,8 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
               <div className="space-y-2">
                 {argEntries.map(({ key, value }) => (
                   <div key={key}>
-                    <div className="text-[11px] text-indigo-400 font-medium mb-0.5">{key}</div>
-                    <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{value}</pre>
+                    <div className="text-[11px] text-brand-400 font-medium mb-0.5">{key}</div>
+                    <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{value}</pre>
                   </div>
                 ))}
               </div>
@@ -366,7 +366,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           {info.result && (
             <div>
               <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-gray-300 bg-gray-800/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
+              <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {info.error && (
@@ -396,7 +396,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isDone = info.status !== 'running';
   const isStopped = info.status === 'stopped';
 
@@ -424,7 +424,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
     <>
       <div
         ref={rowRef}
-        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-gray-700/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-gray-800/30 transition-colors' : ''}`}
+        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
         onMouseEnter={() => isDone && handleHover(true)}
         onMouseLeave={() => handleHover(false)}
         onClick={() => isDone && setExpanded(true)}
@@ -434,17 +434,17 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
         )}
         <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-            info.status === 'running' ? 'border-indigo-500 bg-indigo-950 animate-pulse'
+            info.status === 'running' ? 'border-brand-500 bg-brand-950 animate-pulse'
             : info.status === 'error' ? 'border-red-600 bg-red-950 text-red-400'
-            : isStopped ? 'border-gray-500 bg-gray-900 text-gray-500'
-            : 'border-gray-600 bg-gray-800 text-gray-400'
+            : isStopped ? 'border-gray-500 bg-surface-secondary text-gray-500'
+            : 'border-gray-600 bg-surface-elevated text-gray-400'
           }`}>
             {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : isStopped ? '■' : ''}
           </div>
         </div>
         <div className="flex-1 min-w-0">
           <div className={`flex items-center gap-1 text-xs leading-snug ${
-            info.status === 'running' ? 'text-indigo-300'
+            info.status === 'running' ? 'text-brand-300'
             : info.status === 'error' ? 'text-red-400 line-through opacity-50'
             : isStopped ? 'text-gray-500 opacity-60'
             : 'text-gray-500'
@@ -469,7 +469,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
           )}
           {/* Live streaming output */}
           {info.liveOutput && info.status === 'running' && (
-            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-gray-500 bg-gray-900/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
+            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-gray-500 bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
               {info.liveOutput}
             </pre>
           )}
@@ -499,7 +499,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
         {showTime && entry.time && (
           <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums mt-2.5">{entry.time}</span>
         )}
-        <div className="flex-1 bg-gray-800/50 rounded-lg px-3 py-2.5 my-1">
+        <div className="flex-1 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
           <MarkdownMessage content={entry.content} className="text-sm text-gray-300" />
         </div>
       </div>

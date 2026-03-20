@@ -1,0 +1,60 @@
+{
+  "org": {
+    "id": "default",
+    "name": "My Organization"
+  },
+  "llm": {
+    "defaultProvider": "anthropic",
+    "defaultModel": "claude-opus-4-6",
+    "providers": {
+      "anthropic": {
+        "apiKey": "sk-ant-...",
+        "model": "claude-opus-4-6"
+      },
+      "openai": {
+        "apiKey": "sk-...",
+        "model": "gpt-5.4"
+      },
+      "google": {
+        "apiKey": "...",
+        "model": "gemini-3-1-pro"
+      },
+      "minimax": {
+        "apiKey": "sk-...",
+        "baseUrl": "https://api.minimax.io/v1",
+        "model": "MiniMax-M2.7"
+      },
+      "siliconflow": {
+        "apiKey": "sk-...",
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen3.5-35B-A3B"
+      }
+    },
+    "timeoutMs": 90000
+  },
+  "server": {
+    "apiPort": 3001,
+    "webPort": 3000
+  },
+  "security": {
+    "adminPassword": "markus123",
+    "gatewaySecret": "change-me-in-production"
+  },
+  "integrations": {
+    "feishu": {
+      "appId": "",
+      "appSecret": ""
+    },
+    "search": {
+      "serperApiKey": "",
+      "braveApiKey": ""
+    },
+    "embedding": {
+      "apiKey": ""
+    }
+  },
+  "database": {},
+  "hub": {
+    "url": "https://markus.global"
+  }
+}

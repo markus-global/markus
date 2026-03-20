@@ -96,7 +96,7 @@ export function GovernancePage() {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+      <div className="sticky top-0 z-10 bg-surface-secondary border-b border-border-default px-6 h-14 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-white">Governance</h2>
           <p className="text-xs text-gray-500">System controls, announcements, and governance policy</p>
@@ -108,7 +108,7 @@ export function GovernancePage() {
 
       <div className="p-6 space-y-6 max-w-5xl">
         {/* System Status & Controls */}
-        <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
           <h3 className="text-sm font-semibold text-gray-300 mb-4">System Status</h3>
           <div className="flex items-center gap-4 mb-5">
             <StatusBadge label="Global" active={!status?.globalPaused} activeText="Running" inactiveText="Paused" />
@@ -132,10 +132,10 @@ export function GovernancePage() {
         </section>
 
         {/* Governance Policy */}
-        <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-gray-300">Governance Policy</h3>
-            <button onClick={() => { setShowPolicyEdit(!showPolicyEdit); if (policy) { setPolicyTier(policy.defaultApprovalTier); setPolicyMaxTasks(policy.maxTasksPerAgent ?? 10); setPolicyRequireReq(policy.requireRequirement ?? true); } }} className="text-xs text-indigo-400 hover:text-indigo-300">
+            <button onClick={() => { setShowPolicyEdit(!showPolicyEdit); if (policy) { setPolicyTier(policy.defaultApprovalTier); setPolicyMaxTasks(policy.maxTasksPerAgent ?? 10); setPolicyRequireReq(policy.requireRequirement ?? true); } }} className="text-xs text-brand-400 hover:text-brand-300">
               {showPolicyEdit ? 'Cancel' : 'Edit'}
             </button>
           </div>
@@ -144,7 +144,7 @@ export function GovernancePage() {
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-gray-500 block mb-1">Default Approval Tier</label>
-                <select value={policyTier} onChange={e => setPolicyTier(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-48">
+                <select value={policyTier} onChange={e => setPolicyTier(e.target.value)} className="bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 w-48">
                   <option value="auto">Auto (no approval)</option>
                   <option value="manager">Manager Approval</option>
                   <option value="human">Human Approval</option>
@@ -152,12 +152,12 @@ export function GovernancePage() {
               </div>
               <div>
                 <label className="text-xs text-gray-500 block mb-1">Max Tasks per Agent</label>
-                <input type="number" value={policyMaxTasks} onChange={e => setPolicyMaxTasks(Number(e.target.value))} className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-32" />
+                <input type="number" value={policyMaxTasks} onChange={e => setPolicyMaxTasks(Number(e.target.value))} className="bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 w-32" />
               </div>
               <div className="flex items-center gap-3">
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input type="checkbox" checked={policyRequireReq} onChange={e => setPolicyRequireReq(e.target.checked)} className="sr-only peer" />
-                  <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
+                  <div className="w-9 h-5 bg-surface-overlay peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600" />
                 </label>
                 <div>
                   <span className="text-xs text-gray-300">Require Requirement for Tasks</span>
@@ -180,8 +180,8 @@ export function GovernancePage() {
                 <span className="text-gray-500">Require Requirement:</span>
                 <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium ${
                   policy.requireRequirement !== false
-                    ? 'bg-indigo-900/40 text-indigo-300'
-                    : 'bg-gray-700 text-gray-400'
+                    ? 'bg-brand-900/40 text-brand-300'
+                    : 'bg-surface-overlay text-gray-400'
                 }`}>{policy.requireRequirement !== false ? 'Enabled' : 'Disabled'}</span>
               </div>
               {policy.rules && policy.rules.length > 0 && (
@@ -189,8 +189,8 @@ export function GovernancePage() {
                   <span className="text-gray-500">Rules:</span>
                   <div className="mt-1 space-y-1">
                     {policy.rules.map((r, i) => (
-                      <div key={i} className="text-xs bg-gray-800 rounded px-2 py-1 text-gray-400">
-                        When <code className="text-amber-300">{r.condition}</code> → <span className="text-indigo-300">{r.approvalTier}</span>
+                      <div key={i} className="text-xs bg-surface-elevated rounded px-2 py-1 text-gray-400">
+                        When <code className="text-amber-300">{r.condition}</code> → <span className="text-brand-300">{r.approvalTier}</span>
                       </div>
                     ))}
                   </div>
@@ -203,20 +203,20 @@ export function GovernancePage() {
         </section>
 
         {/* Announcements */}
-        <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-gray-300">System Announcements</h3>
-            <button onClick={() => setShowNewAnn(!showNewAnn)} className="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white">
+            <button onClick={() => setShowNewAnn(!showNewAnn)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white">
               + New Announcement
             </button>
           </div>
 
           {showNewAnn && (
-            <div className="mb-4 p-4 bg-gray-800 rounded-lg space-y-3">
-              <input value={annTitle} onChange={e => setAnnTitle(e.target.value)} placeholder="Title" className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200" />
-              <textarea value={annMessage} onChange={e => setAnnMessage(e.target.value)} placeholder="Message (optional)" className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none" />
+            <div className="mb-4 p-4 bg-surface-elevated rounded-lg space-y-3">
+              <input value={annTitle} onChange={e => setAnnTitle(e.target.value)} placeholder="Title" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200" />
+              <textarea value={annMessage} onChange={e => setAnnMessage(e.target.value)} placeholder="Message (optional)" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 h-20 resize-none" />
               <div className="flex items-center gap-3">
-                <select value={annPriority} onChange={e => setAnnPriority(e.target.value)} className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200">
+                <select value={annPriority} onChange={e => setAnnPriority(e.target.value)} className="bg-surface-overlay border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200">
                   <option value="low">Low</option>
                   <option value="normal">Normal</option>
                   <option value="high">High</option>
@@ -233,7 +233,7 @@ export function GovernancePage() {
           ) : (
             <div className="space-y-2">
               {announcements.map(a => (
-                <div key={a.id} className="flex items-start gap-3 p-3 bg-gray-800/50 rounded-lg">
+                <div key={a.id} className="flex items-start gap-3 p-3 bg-surface-elevated/50 rounded-lg">
                   <PriorityDot priority={a.priority} />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-gray-200">{a.title}</div>
@@ -250,10 +250,10 @@ export function GovernancePage() {
       {/* Pause Modal */}
       {showPauseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-96 space-y-4">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-96 space-y-4">
             <h3 className="text-base font-semibold text-white">Pause All Agents</h3>
             <p className="text-sm text-gray-400">All agents will be paused. They will stop processing tasks until resumed.</p>
-            <input value={pauseReason} onChange={e => setPauseReason(e.target.value)} placeholder="Reason (optional)" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200" />
+            <input value={pauseReason} onChange={e => setPauseReason(e.target.value)} placeholder="Reason (optional)" className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200" />
             <div className="flex justify-end gap-3">
               <button onClick={() => setShowPauseModal(false)} className="text-sm text-gray-500 hover:text-gray-300">Cancel</button>
               <button onClick={handlePause} className="text-sm px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white">Pause All</button>

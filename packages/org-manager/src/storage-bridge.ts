@@ -1,107 +1,50 @@
 import { createLogger } from '@markus/shared';
-import type {
-  OrgRepo,
-  TaskRepo,
-  TaskLogRepo,
-  TaskCommentRepo,
-  AgentRepo,
-  TeamRepo,
-  MessageRepo,
-  MemoryRepo,
-  ChatSessionRepo,
-  ChannelMessageRepo,
-  UserRepo,
-} from '@markus/storage';
-import type { SqliteProjectRepo, SqliteIterationRepo, RequirementRepo } from '@markus/storage';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const log = createLogger('storage-bridge');
 
 /**
- * Optional storage bridge: when a DATABASE_URL is configured, initializes
- * the database and provides access to repositories.
+ * Storage bridge: initializes SQLite storage and provides access to repositories.
  *
- * Storage priority:
- * 1. PostgreSQL — if DATABASE_URL starts with "postgresql://" or "postgres://"
- * 2. SQLite — if DATABASE_URL starts with "sqlite:" or no DATABASE_URL at all
- *    Default path: ~/.markus/data.db
+ * Default SQLite path: ~/.markus/data.db
+ * Override via DATABASE_URL=sqlite:/path/to/file.db
  *
- * Falls back gracefully to in-memory mode only if all backends fail.
+ * Falls back gracefully to in-memory mode only if SQLite init fails.
  */
 export interface StorageBridge {
-  orgRepo: OrgRepo;
-  taskRepo: TaskRepo;
-  taskLogRepo: TaskLogRepo;
-  agentRepo: AgentRepo;
-  teamRepo: TeamRepo;
-  messageRepo: MessageRepo;
-  memoryRepo: MemoryRepo;
-  chatSessionRepo: ChatSessionRepo;
-  channelMessageRepo: ChannelMessageRepo;
-  userRepo: UserRepo;
-  taskCommentRepo?: TaskCommentRepo | any;
-  requirementRepo?: RequirementRepo | any;
+  orgRepo: any;
+  taskRepo: any;
+  taskLogRepo: any;
+  agentRepo: any;
+  teamRepo: any;
+  messageRepo: any;
+  memoryRepo: any;
+  chatSessionRepo: any;
+  channelMessageRepo: any;
+  userRepo: any;
+  taskCommentRepo?: any;
+  requirementRepo?: any;
   projectRepo?: any;
   iterationRepo?: any;
   externalAgentRepo?: any;
   deliverableRepo?: any;
 }
 
-function isPostgresUrl(url: string): boolean {
-  return url.startsWith('postgresql://') || url.startsWith('postgres://');
-}
-
 function resolveSqlitePath(url?: string): string {
   if (url?.startsWith('sqlite:')) {
-    return url.slice('sqlite:'.length);
+    let p = url.slice('sqlite:'.length);
+    if (p.startsWith('~/') || p === '~') {
+      p = join(homedir(), p.slice(2));
+    }
+    return p;
   }
   return join(homedir(), '.markus', 'data.db');
 }
 
 export async function initStorage(databaseUrl?: string): Promise<StorageBridge | null> {
   const url = databaseUrl ?? process.env['DATABASE_URL'];
-
-  // If a PostgreSQL URL is explicitly provided, use PostgreSQL
-  if (url && isPostgresUrl(url)) {
-    return initPostgresStorage(url);
-  }
-
-  // Otherwise, use SQLite (zero-dependency, no Docker needed)
   return initSqliteStorage(url);
-}
-
-async function initPostgresStorage(url: string): Promise<StorageBridge | null> {
-  try {
-    const storage = await import('@markus/storage');
-    const db = storage.getDb(url);
-
-    // Health check: postgres.js uses lazy connections, so getDb() never throws.
-    // We must run an actual query to verify the database is reachable.
-    const { sql } = await import('drizzle-orm');
-    await db.execute(sql`SELECT 1`);
-
-    const bridge: StorageBridge = {
-      orgRepo: new storage.OrgRepo(db),
-      taskRepo: new storage.TaskRepo(db),
-      taskLogRepo: new storage.TaskLogRepo(db),
-      agentRepo: new storage.AgentRepo(db),
-      teamRepo: new storage.TeamRepo(db),
-      messageRepo: new storage.MessageRepo(db),
-      memoryRepo: new storage.MemoryRepo(db),
-      chatSessionRepo: new storage.ChatSessionRepo(db),
-      channelMessageRepo: new storage.ChannelMessageRepo(db),
-      userRepo: new storage.UserRepo(db),
-      taskCommentRepo: new storage.TaskCommentRepo(db),
-      requirementRepo: new storage.RequirementRepo(db),
-      deliverableRepo: new storage.DeliverableRepo(db),
-    };
-    log.info('PostgreSQL storage initialized');
-    return bridge;
-  } catch (error) {
-    log.warn('Failed to initialize PostgreSQL, falling back to SQLite', { error: String(error) });
-    return initSqliteStorage();
-  }
 }
 
 async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {

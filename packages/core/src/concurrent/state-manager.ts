@@ -3,8 +3,8 @@
  * 负责同步TaskExecutor和Agent的状态
  */
 
-import { TaskExecutor, TaskProgressEvent } from './task-executor.js';
-import { TaskStatus, TaskType, TaskPriority } from './task-queue.js';
+import type { TaskExecutor, TaskProgressEvent } from './task-executor.js';
+import { TaskStatus, type TaskType, TaskPriority } from './task-queue.js';
 
 export interface AgentState {
   agentId: string;

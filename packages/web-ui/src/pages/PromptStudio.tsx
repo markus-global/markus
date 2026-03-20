@@ -38,14 +38,14 @@ export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
   return (
     <div className="flex h-full">
       {/* Sidebar - prompt list */}
-      <div className="w-72 border-r border-gray-800 flex flex-col bg-gray-900/50 shrink-0">
-        <div className="p-4 border-b border-gray-800 space-y-3">
+      <div className="w-72 border-r border-border-default flex flex-col bg-surface-secondary/50 shrink-0">
+        <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             {!embedded && <h2 className="text-lg font-semibold text-gray-100">Prompt Studio</h2>}
             {embedded && <h3 className="text-sm font-semibold text-gray-300">Prompts</h3>}
             <button
               onClick={() => setShowCreate(true)}
-              className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white transition-colors"
+              className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-md text-white transition-colors"
             >
               + New
             </button>
@@ -55,15 +55,15 @@ export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
             placeholder="Search prompts…"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 placeholder-gray-500 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+            className="w-full px-3 py-1.5 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 placeholder-gray-500 focus:ring-1 focus:ring-brand-500 focus:border-brand-500 outline-none"
           />
           {categories.length > 0 && (
             <div className="flex gap-1 flex-wrap">
               <button onClick={() => setFilterCategory('')}
-                className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors ${!filterCategory ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'}`}>All</button>
+                className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors ${!filterCategory ? 'bg-brand-500/15 text-brand-400 border-brand-500/30' : 'bg-surface-elevated text-gray-500 border-border-default hover:border-gray-600'}`}>All</button>
               {categories.map(c => (
                 <button key={c} onClick={() => setFilterCategory(c)}
-                  className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${filterCategory === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'}`}>{c}</button>
+                  className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${filterCategory === c ? 'bg-brand-500/15 text-brand-400 border-brand-500/30' : 'bg-surface-elevated text-gray-500 border-border-default hover:border-gray-600'}`}>{c}</button>
               ))}
             </div>
           )}
@@ -81,13 +81,13 @@ export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
               onClick={() => selectPrompt(p)}
               className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${
                 selected?.id === p.id
-                  ? 'bg-indigo-600/20 border border-indigo-500/40 text-indigo-200'
-                  : 'hover:bg-gray-800 text-gray-300 border border-transparent'
+                  ? 'bg-brand-600/20 border border-brand-500/40 text-brand-200'
+                  : 'hover:bg-surface-elevated text-gray-300 border border-transparent'
               }`}
             >
               <div className="text-sm font-medium truncate">{p.name}</div>
               <div className="flex items-center gap-2 mt-1">
-                <span className="text-[10px] px-1.5 py-0.5 bg-gray-700/50 rounded text-gray-400">{p.category}</span>
+                <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/50 rounded text-gray-400">{p.category}</span>
                 <span className="text-[10px] text-gray-500">v{p.currentVersion}</span>
                 <span className="text-[10px] text-gray-600">{p.versions?.length ?? 0} versions</span>
               </div>
@@ -111,7 +111,7 @@ export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
         ) : (
           <>
             {/* Tab bar */}
-            <div className="border-b border-gray-800 px-6 flex items-center gap-1 bg-gray-900/30">
+            <div className="border-b border-border-default px-6 flex items-center gap-1 bg-surface-secondary/30">
               {([
                 { id: 'editor' as Tab, label: 'Editor', icon: '✎' },
                 { id: 'versions' as Tab, label: 'Versions', icon: '⟳' },
@@ -123,7 +123,7 @@ export function PromptStudioPage({ embedded }: { embedded?: boolean } = {}) {
                   onClick={() => setTab(t.id)}
                   className={`px-4 py-3 text-sm border-b-2 transition-colors ${
                     tab === t.id
-                      ? 'border-indigo-500 text-indigo-300'
+                      ? 'border-brand-500 text-brand-300'
                       : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
@@ -228,8 +228,8 @@ function EditorTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdate:
           <p className="text-sm text-gray-500 mt-0.5">{prompt.description || 'No description'}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs px-2 py-1 bg-gray-800 rounded text-gray-400">v{prompt.currentVersion}</span>
-          <span className="text-xs px-2 py-1 bg-gray-800 rounded text-gray-400">{prompt.category}</span>
+          <span className="text-xs px-2 py-1 bg-surface-elevated rounded text-gray-400">v{prompt.currentVersion}</span>
+          <span className="text-xs px-2 py-1 bg-surface-elevated rounded text-gray-400">{prompt.category}</span>
         </div>
       </div>
 
@@ -240,12 +240,12 @@ function EditorTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdate:
           ref={textareaRef}
           value={content}
           onChange={e => setContent(e.target.value)}
-          className="w-full h-80 px-4 py-3 bg-gray-800/70 border border-gray-700 rounded-lg text-sm text-gray-200 font-mono resize-y focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+          className="w-full h-80 px-4 py-3 bg-surface-elevated/70 border border-border-default rounded-lg text-sm text-gray-200 font-mono resize-y focus:ring-1 focus:ring-brand-500 focus:border-brand-500 outline-none"
           placeholder="Write your prompt here. Use {{variable}} for template variables."
         />
         {uniqueVars.length > 0 && (
           <div className="text-xs text-gray-500">
-            Variables detected: {uniqueVars.map(v => <code key={v} className="mx-1 px-1.5 py-0.5 bg-gray-700 rounded text-amber-300">{`{{${v}}}`}</code>)}
+            Variables detected: {uniqueVars.map(v => <code key={v} className="mx-1 px-1.5 py-0.5 bg-surface-overlay rounded text-amber-300">{`{{${v}}}`}</code>)}
           </div>
         )}
       </div>
@@ -262,7 +262,7 @@ function EditorTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdate:
                   type="text"
                   value={variables[v] ?? ''}
                   onChange={e => setVariables({ ...variables, [v]: e.target.value })}
-                  className="flex-1 px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="flex-1 px-2.5 py-1.5 bg-surface-elevated border border-border-default rounded text-sm text-gray-200 outline-none focus:ring-1 focus:ring-brand-500"
                   placeholder={`Value for ${v}`}
                 />
               </div>
@@ -278,19 +278,19 @@ function EditorTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdate:
           value={changelog}
           onChange={e => setChangelog(e.target.value)}
           placeholder="Changelog (optional)"
-          className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
+          className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-brand-500 placeholder-gray-500"
         />
         <button
           onClick={handleSave}
           disabled={!hasChanges || saving}
-          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
+          className="px-5 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
         >
           {saving ? 'Saving…' : 'Save New Version'}
         </button>
         {uniqueVars.length > 0 && (
           <button
             onClick={handlePreview}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-md text-sm text-gray-200 transition-colors"
+            className="px-4 py-2 bg-surface-overlay hover:bg-gray-600 rounded-md text-sm text-gray-200 transition-colors"
           >
             Preview
           </button>
@@ -304,7 +304,7 @@ function EditorTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdate:
             <label className="text-sm font-medium text-gray-300">Rendered Preview</label>
             <button onClick={() => setPreview('')} className="text-xs text-gray-500 hover:text-gray-300">Close</button>
           </div>
-          <div className="p-4 bg-gray-800/50 border border-gray-700 rounded-lg text-sm text-gray-300 whitespace-pre-wrap font-mono">
+          <div className="p-4 bg-surface-elevated/50 border border-border-default rounded-lg text-sm text-gray-300 whitespace-pre-wrap font-mono">
             {preview}
           </div>
         </div>
@@ -336,21 +336,21 @@ function VersionsTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdat
 
           return (
             <div key={v.id} className={`border rounded-lg transition-colors ${
-              isCurrent ? 'border-indigo-500/40 bg-indigo-900/10' : 'border-gray-700/50 bg-gray-800/30'
+              isCurrent ? 'border-brand-500/40 bg-brand-900/10' : 'border-border-default/50 bg-surface-elevated/30'
             }`}>
               <button
                 onClick={() => setExpandedVersion(isExpanded ? null : v.version)}
                 className="w-full flex items-center gap-4 px-4 py-3 text-left"
               >
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                  isCurrent ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-gray-400'
+                  isCurrent ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-gray-400'
                 }`}>
                   v{v.version}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-gray-200">{v.changelog || `Version ${v.version}`}</span>
-                    {isCurrent && <span className="text-[10px] px-1.5 py-0.5 bg-indigo-600/30 text-indigo-300 rounded">current</span>}
+                    {isCurrent && <span className="text-[10px] px-1.5 py-0.5 bg-brand-600/30 text-brand-300 rounded">current</span>}
                   </div>
                   <div className="flex items-center gap-3 mt-0.5 text-[11px] text-gray-500">
                     <span>by {v.author}</span>
@@ -362,9 +362,9 @@ function VersionsTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdat
               </button>
 
               {isExpanded && (
-                <div className="px-4 pb-4 space-y-3 border-t border-gray-700/30">
+                <div className="px-4 pb-4 space-y-3 border-t border-border-default/30">
                   <div className="mt-3">
-                    <pre className="p-3 bg-gray-900/80 rounded-md text-xs text-gray-300 font-mono whitespace-pre-wrap overflow-auto max-h-64">
+                    <pre className="p-3 bg-surface-secondary/80 rounded-md text-xs text-gray-300 font-mono whitespace-pre-wrap overflow-auto max-h-64">
                       {v.content}
                     </pre>
                   </div>
@@ -372,7 +372,7 @@ function VersionsTab({ prompt, onUpdate }: { prompt: PromptTemplateInfo; onUpdat
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setDiffBase(diffBase === prevVersion.version ? null : prevVersion.version)}
-                        className="text-xs text-indigo-400 hover:text-indigo-300"
+                        className="text-xs text-brand-400 hover:text-brand-300"
                       >
                         {diffBase === prevVersion.version ? 'Hide diff' : `Diff with v${prevVersion.version}`}
                       </button>
@@ -451,7 +451,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
         <select
           value={version}
           onChange={e => setVersion(parseInt(e.target.value, 10))}
-          className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-300 outline-none"
+          className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-300 outline-none"
         >
           {[...(prompt.versions ?? [])].sort((a, b) => b.version - a.version).map(v => (
             <option key={v.version} value={v.version}>v{v.version}{v.version === prompt.currentVersion ? ' (current)' : ''}</option>
@@ -468,7 +468,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
             { label: 'Avg Tokens', value: String(Math.round(summary.avgTokenCount)), suffix: '', color: 'text-purple-400' },
             { label: 'Total Evals', value: String(summary.count), suffix: '', color: 'text-gray-300' },
           ].map(m => (
-            <div key={m.label} className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
+            <div key={m.label} className="p-3 bg-surface-elevated/50 border border-border-default/50 rounded-lg">
               <div className="text-[11px] text-gray-500 mb-1">{m.label}</div>
               <div className={`text-lg font-semibold ${m.color}`}>
                 {m.value}<span className="text-xs text-gray-500 ml-0.5">{m.suffix}</span>
@@ -484,7 +484,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
         <textarea
           value={testInput}
           onChange={e => setTestInput(e.target.value)}
-          className="w-full h-28 px-3 py-2.5 bg-gray-800/70 border border-gray-700 rounded-lg text-sm text-gray-200 font-mono resize-y outline-none focus:ring-1 focus:ring-indigo-500"
+          className="w-full h-28 px-3 py-2.5 bg-surface-elevated/70 border border-border-default rounded-lg text-sm text-gray-200 font-mono resize-y outline-none focus:ring-1 focus:ring-brand-500"
           placeholder="Enter test input to evaluate the prompt against…"
         />
         {vars.length > 0 && (
@@ -496,7 +496,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
                   type="text"
                   value={variables[v] ?? ''}
                   onChange={e => setVariables({ ...variables, [v]: e.target.value })}
-                  className="flex-1 px-2.5 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-200 outline-none"
+                  className="flex-1 px-2.5 py-1.5 bg-surface-elevated border border-border-default rounded text-sm text-gray-200 outline-none"
                 />
               </div>
             ))}
@@ -516,7 +516,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
         <div className="space-y-3">
           <h4 className="text-sm font-medium text-gray-400">Evaluation Results</h4>
           {evaluations.map(ev => (
-            <div key={ev.id} className="p-4 bg-gray-800/30 border border-gray-700/50 rounded-lg space-y-3">
+            <div key={ev.id} className="p-4 bg-surface-elevated/30 border border-border-default/50 rounded-lg space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 text-xs text-gray-500">
                   <span>v{ev.version}</span>
@@ -529,7 +529,7 @@ function EvaluateTab({ prompt }: { prompt: PromptTemplateInfo }) {
               <div className="text-xs text-gray-400">
                 <span className="font-medium text-gray-500">Input:</span> {ev.testInput}
               </div>
-              <div className="p-3 bg-gray-900/60 rounded text-sm text-gray-300 whitespace-pre-wrap max-h-40 overflow-auto">
+              <div className="p-3 bg-surface-secondary/60 rounded text-sm text-gray-300 whitespace-pre-wrap max-h-40 overflow-auto">
                 {ev.output}
               </div>
             </div>
@@ -573,7 +573,7 @@ function ABTestsTab({ prompt }: { prompt: PromptTemplateInfo }) {
         <h3 className="text-lg font-semibold text-gray-100">A/B Tests</h3>
         <button
           onClick={() => setShowCreate(true)}
-          className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 rounded-md text-white transition-colors"
+          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-md text-white transition-colors"
         >
           + New A/B Test
         </button>
@@ -621,7 +621,7 @@ function ABTestCard({ test, prompt, onStart, onComplete }: {
   };
 
   return (
-    <div className="p-4 bg-gray-800/30 border border-gray-700/50 rounded-lg space-y-4">
+    <div className="p-4 bg-surface-elevated/30 border border-border-default/50 rounded-lg space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-medium text-gray-200">{test.name}</div>
@@ -630,7 +630,7 @@ function ABTestCard({ test, prompt, onStart, onComplete }: {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-[10px] px-2 py-0.5 rounded ${statusColors[test.status] ?? 'bg-gray-700 text-gray-400'}`}>
+          <span className={`text-[10px] px-2 py-0.5 rounded ${statusColors[test.status] ?? 'bg-surface-overlay text-gray-400'}`}>
             {test.status}
           </span>
           {test.status === 'draft' && (
@@ -674,7 +674,7 @@ function VariantMetric({ label, trials, avgScore, isWinner }: {
   label: string; trials: number; avgScore: number; isWinner: boolean;
 }) {
   return (
-    <div className={`p-3 rounded-lg border ${isWinner ? 'bg-green-900/10 border-green-500/30' : 'bg-gray-800/30 border-gray-700/30'}`}>
+    <div className={`p-3 rounded-lg border ${isWinner ? 'bg-green-900/10 border-green-500/30' : 'bg-surface-elevated/30 border-border-default/30'}`}>
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs text-gray-400">{label}</span>
         {isWinner && <span className="text-[10px] text-green-400">Winner</span>}
@@ -705,7 +705,7 @@ function ScoreSelector({ score, onChange }: { score: number; onChange: (s: numbe
           className={`w-5 h-5 rounded text-[10px] font-medium transition-colors ${
             s <= score
               ? s >= 7 ? 'bg-green-600/30 text-green-400' : s >= 4 ? 'bg-amber-600/30 text-amber-400' : 'bg-red-600/30 text-red-400'
-              : 'bg-gray-800 text-gray-600 hover:bg-gray-700'
+              : 'bg-surface-elevated text-gray-600 hover:bg-surface-overlay'
           }`}
         >
           {s}
@@ -787,7 +787,7 @@ function CreatePromptDialog({ onClose, onCreate }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-lg p-6 space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-full max-w-lg p-6 space-y-4" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-gray-100">Create New Prompt</h3>
 
         <div className="space-y-3">
@@ -796,7 +796,7 @@ function CreatePromptDialog({ onClose, onCreate }: {
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="Prompt name"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
+            className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-brand-500 placeholder-gray-500"
             autoFocus
           />
           <input
@@ -804,7 +804,7 @@ function CreatePromptDialog({ onClose, onCreate }: {
             value={description}
             onChange={e => setDescription(e.target.value)}
             placeholder="Description (optional)"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
+            className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-brand-500 placeholder-gray-500"
           />
           <div className="space-y-2">
             <label className="text-xs text-gray-400">Category</label>
@@ -812,7 +812,7 @@ function CreatePromptDialog({ onClose, onCreate }: {
               {['general', 'system', 'agent-role', 'task', 'chat', 'code', 'analysis', 'creative'].map(c => (
                 <button key={c} onClick={() => setCategory(c)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors capitalize ${
-                    category === c ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-600'
+                    category === c ? 'bg-brand-500/15 text-brand-400 border-brand-500/30' : 'bg-surface-elevated text-gray-500 border-border-default hover:border-gray-600'
                   }`}>{c.replace('-', ' ')}</button>
               ))}
             </div>
@@ -822,13 +822,13 @@ function CreatePromptDialog({ onClose, onCreate }: {
             value={tags}
             onChange={e => setTags(e.target.value)}
             placeholder="Tags (comma-separated)"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none placeholder-gray-500"
+            className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 outline-none placeholder-gray-500"
           />
           <textarea
             value={content}
             onChange={e => setContent(e.target.value)}
             placeholder="Prompt content… Use {{variable}} for template variables."
-            className="w-full h-48 px-3 py-2.5 bg-gray-800/70 border border-gray-700 rounded-lg text-sm text-gray-200 font-mono resize-y outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
+            className="w-full h-48 px-3 py-2.5 bg-surface-elevated/70 border border-border-default rounded-lg text-sm text-gray-200 font-mono resize-y outline-none focus:ring-1 focus:ring-brand-500 placeholder-gray-500"
           />
         </div>
 
@@ -837,7 +837,7 @@ function CreatePromptDialog({ onClose, onCreate }: {
           <button
             onClick={handleCreate}
             disabled={!name.trim() || !content.trim() || saving}
-            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
+            className="px-5 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
           >
             {saving ? 'Creating…' : 'Create Prompt'}
           </button>
@@ -881,7 +881,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
         <h3 className="text-lg font-semibold text-gray-100">New A/B Test</h3>
 
         <div className="space-y-3">
@@ -890,7 +890,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
             value={name}
             onChange={e => setName(e.target.value)}
             placeholder="Test name"
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
+            className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-200 outline-none focus:ring-1 focus:ring-brand-500 placeholder-gray-500"
             autoFocus
           />
           <div className="grid grid-cols-2 gap-3">
@@ -899,7 +899,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
               <select
                 value={variantA}
                 onChange={e => setVariantA(parseInt(e.target.value, 10))}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-300 outline-none"
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-300 outline-none"
               >
                 {versions.map(v => <option key={v.version} value={v.version}>v{v.version}</option>)}
               </select>
@@ -909,7 +909,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
               <select
                 value={variantB}
                 onChange={e => setVariantB(parseInt(e.target.value, 10))}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-sm text-gray-300 outline-none"
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-md text-sm text-gray-300 outline-none"
               >
                 {versions.map(v => <option key={v.version} value={v.version}>v{v.version}</option>)}
               </select>
@@ -923,7 +923,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
               max={90}
               value={splitRatio}
               onChange={e => setSplitRatio(parseInt(e.target.value, 10))}
-              className="w-full accent-indigo-500"
+              className="w-full accent-brand-500"
             />
           </div>
         </div>
@@ -933,7 +933,7 @@ function CreateABTestDialog({ prompt, versions, onClose, onCreate }: {
           <button
             onClick={handleCreate}
             disabled={!name.trim() || saving || variantA === variantB}
-            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
+            className="px-5 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md text-sm text-white font-medium transition-colors"
           >
             {saving ? 'Creating…' : 'Create Test'}
           </button>

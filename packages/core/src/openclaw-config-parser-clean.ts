@@ -1,5 +1,4 @@
-import type { RoleTemplate, Policy, RoleCategory } from '@markus/shared';
-import { generateId } from '@markus/shared';
+import { generateId, type RoleTemplate, type Policy, type RoleCategory } from '@markus/shared';
 
 export interface OpenClawRoleConfig {
   memoryConfig?: {

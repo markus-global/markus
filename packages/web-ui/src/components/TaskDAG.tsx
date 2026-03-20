@@ -26,13 +26,13 @@ const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }
   pending_approval: { bg: 'bg-blue-900/30',    border: 'border-blue-400/40',   text: 'text-blue-400' },
   assigned:         { bg: 'bg-cyan-900/40',     border: 'border-cyan-500/50',   text: 'text-cyan-300' },
   in_progress:      { bg: 'bg-amber-900/40',   border: 'border-amber-500/50',  text: 'text-amber-300' },
-  blocked:          { bg: 'bg-gray-800/60',     border: 'border-gray-600/50',   text: 'text-gray-400' },
+  blocked:          { bg: 'bg-surface-elevated/60',     border: 'border-gray-600/50',   text: 'text-gray-400' },
   review:           { bg: 'bg-purple-900/40',   border: 'border-purple-500/50', text: 'text-purple-300' },
   revision:         { bg: 'bg-orange-900/40',   border: 'border-orange-500/50', text: 'text-orange-300' },
   accepted:         { bg: 'bg-emerald-900/30',  border: 'border-emerald-500/40',text: 'text-emerald-400' },
   completed:        { bg: 'bg-emerald-900/40',  border: 'border-emerald-500/50',text: 'text-emerald-300' },
   failed:           { bg: 'bg-red-900/40',      border: 'border-red-500/50',    text: 'text-red-300' },
-  cancelled:        { bg: 'bg-gray-800/40',     border: 'border-gray-700/50',   text: 'text-gray-500' },
+  cancelled:        { bg: 'bg-surface-elevated/40',     border: 'border-border-default/50',   text: 'text-gray-500' },
 };
 
 const PRIORITY_INDICATOR: Record<string, string> = {
@@ -79,13 +79,13 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
 }
 
 const REQ_STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  draft:          { bg: 'bg-gray-800/60',    border: 'border-gray-600/50',   text: 'text-gray-400' },
+  draft:          { bg: 'bg-surface-elevated/60',    border: 'border-gray-600/50',   text: 'text-gray-400' },
   pending_review: { bg: 'bg-yellow-900/40',  border: 'border-yellow-500/50', text: 'text-yellow-300' },
   approved:       { bg: 'bg-blue-900/40',    border: 'border-blue-500/50',   text: 'text-blue-300' },
-  in_progress:    { bg: 'bg-indigo-900/40',  border: 'border-indigo-500/50', text: 'text-indigo-300' },
+  in_progress:    { bg: 'bg-brand-900/40',  border: 'border-brand-500/50', text: 'text-brand-300' },
   completed:      { bg: 'bg-emerald-900/40', border: 'border-emerald-500/50',text: 'text-emerald-300' },
   rejected:       { bg: 'bg-red-900/40',     border: 'border-red-500/50',    text: 'text-red-300' },
-  cancelled:      { bg: 'bg-gray-800/40',    border: 'border-gray-700/50',   text: 'text-gray-500' },
+  cancelled:      { bg: 'bg-surface-elevated/40',    border: 'border-border-default/50',   text: 'text-gray-500' },
 };
 
 const REQ_GROUP_MAP: Record<string, string> = {
@@ -501,7 +501,7 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
         <Background color="#374151" gap={20} size={1} />
         <Controls
           showInteractive={false}
-          className="!bg-gray-900 !border-gray-700 !shadow-xl [&>button]:!bg-gray-800 [&>button]:!border-gray-700 [&>button]:!text-gray-300 [&>button:hover]:!bg-gray-700"
+          className="!bg-surface-secondary !border-border-default !shadow-xl [&>button]:!bg-surface-elevated [&>button]:!border-border-default [&>button]:!text-gray-300 [&>button:hover]:!bg-surface-overlay"
         />
         <MiniMap
           nodeColor={(node) => {
@@ -514,25 +514,25 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
             return '#6b7280';
           }}
           maskColor="rgba(0,0,0,0.7)"
-          className="!bg-gray-900 !border-gray-700"
+          className="!bg-surface-secondary !border-border-default"
         />
       </ReactFlow>
 
       {/* Filter + hint bar */}
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-gray-900/90 border border-gray-700 rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-surface-secondary/90 border border-border-default rounded-lg backdrop-blur-sm z-10 flex flex-col items-center gap-1">
         <div className="flex items-center gap-1 flex-wrap justify-center">
           {presentGroups.map(g => {
             const active = groupFilter.has(g.id);
             return (
               <button key={g.id} onClick={() => toggleGroup(g.id)}
-                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-surface-elevated/50 border-border-default/50 text-gray-600'}`}>
                 {g.label}
               </button>
             );
           })}
           {archivedCount > 0 && (
             <button onClick={() => setShowArchived(v => !v)}
-              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-gray-700/60 border-gray-500/50 text-gray-300' : 'bg-gray-800/50 border-gray-700/50 text-gray-600'}`}>
+              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-surface-overlay/60 border-gray-500/50 text-gray-300' : 'bg-surface-elevated/50 border-border-default/50 text-gray-600'}`}>
               Archived {archivedCount}
             </button>
           )}
@@ -557,7 +557,7 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
       {/* Confirm delete dialog */}
       {pendingDelete && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-[2px]" onClick={() => setPendingDelete(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 shadow-2xl max-w-sm" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 shadow-2xl max-w-sm" onClick={e => e.stopPropagation()}>
             <h4 className="text-sm font-semibold text-gray-200 mb-2">Remove dependency?</h4>
             <p className="text-xs text-gray-400 mb-4 leading-relaxed">
               <span className="text-gray-300 font-medium">{targetTask?.title ?? pendingDelete.target.slice(-8)}</span>
@@ -565,7 +565,7 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
               <span className="text-gray-300 font-medium">{sourceTask?.title ?? pendingDelete.source.slice(-8)}</span>.
             </p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-gray-800 rounded-lg border border-gray-700 hover:border-gray-600 transition-colors">
+              <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-surface-elevated rounded-lg border border-border-default hover:border-gray-600 transition-colors">
                 Cancel
               </button>
               <button onClick={confirmDeleteEdge} className="px-3 py-1.5 text-xs text-red-200 bg-red-600/20 hover:bg-red-600/30 rounded-lg border border-red-500/40 hover:border-red-500/60 transition-colors">

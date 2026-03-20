@@ -8,19 +8,14 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "tsc -b --watch",
-    "clean": "rm -rf dist *.tsbuildinfo",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push"
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "@markus/shared": "workspace:*",
     "better-sqlite3": "^12.6.2",
-    "drizzle-orm": "^0.45.1",
-    "postgres": "^3.4.8"
+    "drizzle-orm": "^0.45.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "drizzle-kit": "^0.31.9"
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

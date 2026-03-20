@@ -22,7 +22,6 @@
 |------|---------|------|
 | Node.js | 20.0.0+ | 运行时 |
 | pnpm | 9.0.0+ | 包管理 |
-| PostgreSQL | 16+ | 持久化存储（可选，Docker Compose 自带） |
 | Docker | 24.0+ | Agent 沙箱容器（可选） |
 
 ---
@@ -45,11 +44,11 @@ pnpm build
 
 成功后会看到 11 个 workspace 包依次编译完成。
 
-### 3. 配置环境变量
+### 3. 配置
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入 LLM API Key
+cp markus.json.example ~/.markus/markus.json
+# 编辑 ~/.markus/markus.json，填入 LLM API Key
 ```
 
 ### 4. 启动后端服务
@@ -82,13 +81,10 @@ pnpm --filter @markus/web-ui dev
 
 ```bash
 cd deploy
-cp ../.env.example .env
-# 编辑 .env
-
 docker compose up -d
 ```
 
-会自动启动：PostgreSQL + Markus 服务。
+会自动启动 Markus 服务。
 
 ---
 
@@ -99,7 +95,7 @@ docker compose up -d
 | `OPENAI_API_KEY` | 建议 | OpenAI API Key（主 LLM） |
 | `ANTHROPIC_API_KEY` | 可选 | Anthropic API Key |
 | `DEEPSEEK_API_KEY` | 可选 | DeepSeek API Key（Fallback） |
-| `DATABASE_URL` | 可选 | PostgreSQL 连接串（不设则内存模式，重启丢数据） |
+| `DATABASE_URL` | 可选 | SQLite 路径覆盖（默认 `~/.markus/data.db`，格式：`sqlite:/path/to/db`） |
 | `JWT_SECRET` | 建议生产 | JWT 签名密钥 |
 | `AUTH_ENABLED` | 可选 | 是否启用登录（默认 true） |
 | `API_PORT` | 可选 | API 端口（默认 3001） |
@@ -334,7 +330,7 @@ templates/roles/my-role/
 ## 常见问题
 
 **Q: 重启服务后数据丢失？**  
-A: 没有设置 `DATABASE_URL`，当前运行在内存模式。设置 PostgreSQL 连接串后数据会持久化。
+A: 数据默认存储在 SQLite（`~/.markus/data.db`）。如果该目录不存在或不可写，系统可能回退到内存模式。
 
 **Q: Agent 没有响应？**  
 A: 检查 LLM API Key 是否正确配置，以及 Agent 是否处于 `online` 状态（绿色 `●`）。

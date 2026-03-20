@@ -77,7 +77,7 @@ function buildTimeline(activities: ActivityStep[]): ToolItem[] {
 
 function Spinner() {
   return (
-    <svg className="w-3 h-3 animate-spin text-indigo-400 shrink-0" viewBox="0 0 24 24" fill="none">
+    <svg className="w-3 h-3 animate-spin text-brand-400 shrink-0" viewBox="0 0 24 24" fill="none">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
@@ -88,7 +88,7 @@ function PulsingDots() {
   return (
     <span className="flex items-center gap-0.5">
       {[0, 150, 300].map(d => (
-        <span key={d} className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce"
+        <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
           style={{ animationDelay: `${d}ms`, animationDuration: '1s' }} />
       ))}
     </span>
@@ -101,23 +101,23 @@ function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total
     <div className="flex items-center gap-2 py-0.5">
       {/* Vertical connector */}
       <div className="flex flex-col items-center self-stretch w-3 shrink-0">
-        {idx > 0 && <div className="w-px h-2 bg-gray-700" />}
+        {idx > 0 && <div className="w-px h-2 bg-surface-overlay" />}
         <div className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
           item.status === 'running'
-            ? 'border-indigo-500 bg-indigo-950'
+            ? 'border-brand-500 bg-brand-950'
             : item.status === 'error'
             ? 'border-red-600 bg-red-950 text-red-400'
-            : 'border-gray-600 bg-gray-800 text-gray-500'
+            : 'border-gray-600 bg-surface-elevated text-gray-500'
         }`}>
           {item.status === 'done' ? '✓' : item.status === 'error' ? '✗' : ''}
         </div>
-        {idx < total - 1 && <div className="w-px flex-1 bg-gray-700 mt-0.5" />}
+        {idx < total - 1 && <div className="w-px flex-1 bg-surface-overlay mt-0.5" />}
       </div>
 
       {/* Label */}
       <div className={`flex items-center gap-1.5 text-xs ${
         item.status === 'running'
-          ? 'text-indigo-300'
+          ? 'text-brand-300'
           : item.status === 'error'
           ? 'text-red-400 opacity-60'
           : 'text-gray-500'
@@ -158,7 +158,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
     const errorCount = timeline.filter(t => t.status === 'error').length;
     const doneCount = timeline.filter(t => t.status === 'done').length;
     return (
-      <div className="mb-3 border-b border-gray-700/50 pb-2">
+      <div className="mb-3 border-b border-border-default/50 pb-2">
         <button
           onClick={() => setExpanded(v => !v)}
           className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-400 transition-colors select-none"
@@ -208,10 +208,10 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
       {showWriting && (
         <div className="flex items-center gap-1.5 py-0.5">
           <div className="flex flex-col items-center self-stretch w-3 shrink-0">
-            <div className="w-px h-2 bg-gray-700" />
-            <div className="w-2.5 h-2.5 rounded-full border border-indigo-500 bg-indigo-950 shrink-0" />
+            <div className="w-px h-2 bg-surface-overlay" />
+            <div className="w-2.5 h-2.5 rounded-full border border-brand-500 bg-brand-950 shrink-0" />
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-indigo-300">
+          <div className="flex items-center gap-1.5 text-xs text-brand-300">
             <Spinner />
             <span>Writing response…</span>
           </div>

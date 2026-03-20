@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { loadConfig, getDefaultConfigPath, createLogger, APP_VERSION, type LLMProviderConfig } from '@markus/shared';
+import { loadConfig, saveConfig, getDefaultConfigPath, createLogger, APP_VERSION, type LLMProviderConfig } from '@markus/shared';
 import { AgentManager, LLMRouter, LLMLogger, type LLMLogEntry, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
 import {
   OrganizationService,
@@ -22,7 +22,6 @@ import {
   TrustService,
   ScheduledTaskRunner,
   initStorage,
-  runMigrations,
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
@@ -238,27 +237,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openaiKey) {
     providerConfigs['openai'] = {
       provider: 'openai',
-      model: 'gpt-4o',
+      model: 'gpt-5.4',
       apiKey: openaiKey,
       timeoutMs: llmTimeoutMs,
     };
-  }
-
-  const deepseekKey = config.llm.providers['deepseek']?.apiKey ?? process.env['DEEPSEEK_API_KEY'];
-  if (deepseekKey) {
-    providerConfigs['deepseek'] = {
-      provider: 'openai',
-      model: process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat',
-      apiKey: deepseekKey,
-      baseUrl:
-        process.env['DEEPSEEK_BASE_URL'] ??
-        config.llm.providers['deepseek']?.baseUrl ??
-        'https://api.deepseek.com',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'deepseek') {
-      defaultProvider = 'deepseek';
-    }
   }
 
   const siliconflowKey =
@@ -284,7 +266,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (minimaxKey) {
     providerConfigs['minimax'] = {
       provider: 'openai',
-      model: process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.5',
+      model: process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.7',
       apiKey: minimaxKey,
       baseUrl:
         process.env['MINIMAX_BASE_URL'] ??
@@ -311,23 +293,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const llmLogger = new LLMLogger();
   llmRouter.setLogCallback((entry: LLMLogEntry) => llmLogger.log(entry));
 
-  const skillRegistry = await createDefaultSkillRegistry();
-
-  // Run DB migrations for PostgreSQL only (SQLite creates tables on open).
-  // Wrapped in try/catch: if PG is unreachable, initStorage will fall back to SQLite.
-  const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
-  if (dbUrl && (dbUrl.startsWith('postgresql://') || dbUrl.startsWith('postgres://'))) {
-    try {
-      await runMigrations(dbUrl);
-    } catch (migrationErr) {
-      log.warn(
-        'PostgreSQL migrations failed (database may be unreachable), will attempt SQLite fallback',
-        {
-          error: String(migrationErr),
-        }
-      );
-    }
-  }
+  const builtinSkillsDir = resolve(process.cwd(), 'templates', 'skills');
+  const skillRegistry = await createDefaultSkillRegistry({
+    extraSkillDirs: existsSync(builtinSkillsDir) ? [builtinSkillsDir] : [],
+  });
 
   const storage = await initStorage(config.database?.url);
 
@@ -387,6 +356,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
 async function startServer(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
   console.log('Starting Markus server...');
+
+  // Propagate markus.json security settings into env so downstream services can read them
+  if (config.security?.adminPassword && !process.env['ADMIN_PASSWORD']) {
+    process.env['ADMIN_PASSWORD'] = config.security.adminPassword;
+  }
 
   const {
     orgService,
@@ -478,7 +452,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   log.info('Skipping auto-resume of in-progress tasks (governance mode)');
 
   // Wire External Agent Gateway for OpenClaw integration
-  const gatewaySecret = process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
+  const gatewaySecret = config.security?.gatewaySecret ?? process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
   const gateway = new ExternalAgentGateway({ signingSecret: gatewaySecret });
 
   gateway.setAgentCreator(async (opts) => {
@@ -724,8 +698,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   await messageRouter.connectAll([{ platform: 'webui', port: 3002 }]);
 
   // Check for Feishu config
-  const feishuAppId = process.env['FEISHU_APP_ID'];
-  const feishuAppSecret = process.env['FEISHU_APP_SECRET'];
+  const feishuAppId = config.integrations?.feishu?.appId ?? process.env['FEISHU_APP_ID'];
+  const feishuAppSecret = config.integrations?.feishu?.appSecret ?? process.env['FEISHU_APP_SECRET'];
   if (feishuAppId && feishuAppSecret) {
     const feishuAdapter = new FeishuAdapter();
     messageRouter.registerAdapter(feishuAdapter);
@@ -966,28 +940,18 @@ async function agentProfile(
   }
 }
 
-async function dbInit(config: ReturnType<typeof loadConfig>) {
-  const dbUrl = config.database?.url ?? process.env['DATABASE_URL'];
-  if (!dbUrl) {
-    console.error('No DATABASE_URL configured. Set it in .env or markus.json');
-    process.exit(1);
-  }
-
-  console.log('Initializing database...');
-  console.log(`  URL: ${dbUrl.replace(/:[^@]*@/, ':***@')}`);
-
+async function dbInit(_config: ReturnType<typeof loadConfig>) {
+  console.log('Initializing database (SQLite)...');
   try {
-    const { execSync } = await import('node:child_process');
-    const cwd = resolve(process.cwd(), 'packages', 'storage');
-    execSync('npx drizzle-kit push', {
-      cwd,
-      stdio: 'inherit',
-      env: { ...process.env, DATABASE_URL: dbUrl },
-    });
-    console.log('\nDatabase initialized successfully!');
+    const storage = await initStorage();
+    if (storage) {
+      console.log('\nSQLite database initialized successfully!');
+    } else {
+      console.error('\nDatabase initialization failed.');
+      process.exit(1);
+    }
   } catch (error) {
     console.error(`\nDatabase initialization failed: ${String(error)}`);
-    console.error('\nMake sure PostgreSQL is running and the DATABASE_URL is correct.');
     process.exit(1);
   }
 }
@@ -1406,53 +1370,47 @@ async function quickInit() {
     );
 
   console.log('\n  Welcome to Markus Quick Setup\n');
-  console.log('  This will configure your .env file and create default templates.\n');
+  console.log('  This will configure ~/.markus/markus.json and create default templates.\n');
 
-  const provider = await ask('  LLM Provider (anthropic/openai/google/ollama)', 'anthropic');
-  const envLines = [`LLM_PROVIDER=${provider}`];
+  const provider = await ask('  LLM Provider (anthropic/openai/google/minimax/ollama)', 'anthropic');
 
-  if (provider === 'anthropic') {
-    const key = await ask('  Anthropic API Key');
-    if (key) envLines.push(`ANTHROPIC_API_KEY=${key}`);
-    envLines.push('LLM_MODEL=claude-sonnet-4-20250514');
-  } else if (provider === 'openai') {
-    const key = await ask('  OpenAI API Key');
-    if (key) envLines.push(`OPENAI_API_KEY=${key}`);
-    envLines.push('LLM_MODEL=gpt-4o');
-  } else if (provider === 'google') {
-    const key = await ask('  Google API Key');
-    if (key) envLines.push(`GOOGLE_API_KEY=${key}`);
-    envLines.push('LLM_MODEL=gemini-2.0-flash');
-  } else {
-    envLines.push('OLLAMA_HOST=http://localhost:11434');
-    envLines.push('LLM_MODEL=llama3');
+  const modelMap: Record<string, string> = {
+    anthropic: 'claude-opus-4-6',
+    openai: 'gpt-5.4',
+    google: 'gemini-3-1-pro',
+    minimax: 'MiniMax-M2.7',
+    ollama: 'llama3',
+  };
+
+  let apiKey = '';
+  if (provider !== 'ollama') {
+    apiKey = await ask(`  ${provider.charAt(0).toUpperCase() + provider.slice(1)} API Key`) ?? '';
   }
 
-  const dbUrl = await ask('  PostgreSQL URL', 'postgresql://localhost:5432/markus');
-  envLines.push(`DATABASE_URL=${dbUrl}`);
-
   const port = await ask('  API Port', '3001');
-  envLines.push(`PORT=${port}`);
-  envLines.push(`WEB_UI_PORT=${parseInt(port) + 1}`);
 
   rl.close();
 
-  const envFile = join(process.cwd(), '.env');
-  if (existsSync(envFile)) {
-    const existing = readFileSync(envFile, 'utf-8');
-    const newLines = envLines.filter(l => {
-      const key = l.split('=')[0]!;
-      return !existing.includes(`${key}=`);
-    });
-    if (newLines.length > 0) {
-      writeFileSync(envFile, existing.trimEnd() + '\n' + newLines.join('\n') + '\n');
-      console.log(`\n  Updated .env with ${newLines.length} new variables.`);
-    } else {
-      console.log('\n  .env already configured — no changes needed.');
-    }
-  } else {
-    writeFileSync(envFile, envLines.join('\n') + '\n');
-    console.log('\n  Created .env file.');
+  const configUpdates: Record<string, unknown> = {
+    llm: {
+      defaultProvider: provider,
+      defaultModel: modelMap[provider] ?? modelMap.anthropic,
+      providers: apiKey ? { [provider]: { apiKey } } : {},
+    },
+    server: { apiPort: parseInt(port), webPort: parseInt(port) - 1 },
+  };
+
+  if (provider === 'minimax') {
+    (configUpdates.llm as Record<string, unknown>).providers = {
+      minimax: { apiKey, baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M2.7' },
+    };
+  }
+
+  try {
+    saveConfig(configUpdates as any);
+    console.log(`\n  Configuration saved to ${getDefaultConfigPath()}`);
+  } catch (e) {
+    console.error(`\n  Failed to save config: ${e}`);
   }
 
   // Ensure templates/roles directory exists with a default developer role

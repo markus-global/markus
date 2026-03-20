@@ -158,8 +158,8 @@ export function Messages() {
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Channel sidebar */}
-      <div className="w-48 bg-gray-900/50 border-r border-gray-800 flex flex-col shrink-0">
-        <div className="p-3 border-b border-gray-800">
+      <div className="w-48 bg-surface-secondary/50 border-r border-border-default flex flex-col shrink-0">
+        <div className="p-3 border-b border-border-default">
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Channels</h3>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
@@ -168,14 +168,14 @@ export function Messages() {
               key={ch}
               onClick={() => setActiveChannel(ch)}
               className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                activeChannel === ch ? 'bg-indigo-600/20 text-indigo-300' : 'text-gray-400 hover:bg-gray-800'
+                activeChannel === ch ? 'bg-brand-600/20 text-brand-300' : 'text-gray-400 hover:bg-surface-elevated'
               }`}
             >
               {ch}
             </button>
           ))}
         </div>
-        <div className="p-2 border-t border-gray-800">
+        <div className="p-2 border-t border-border-default">
           <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">Direct</div>
           {agents.map(a => (
             <div key={a.id} className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-400">
@@ -188,7 +188,7 @@ export function Messages() {
 
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="h-12 border-b border-gray-800 flex items-center px-5 shrink-0">
+        <div className="h-14 border-b border-border-default flex items-center px-6 shrink-0">
           <span className="font-semibold text-sm">{activeChannel}</span>
           <span className="ml-3 text-xs text-gray-500">{messages.length} messages</span>
         </div>
@@ -205,7 +205,7 @@ export function Messages() {
               <button
                 onClick={() => void loadMore()}
                 disabled={loadingMore}
-                className="text-xs text-indigo-400 hover:text-indigo-300 disabled:opacity-50 px-4 py-1.5 border border-indigo-800/50 rounded-lg transition-colors"
+                className="text-xs text-brand-400 hover:text-brand-300 disabled:opacity-50 px-4 py-1.5 border border-brand-800/50 rounded-lg transition-colors"
               >
                 {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
               </button>
@@ -221,7 +221,7 @@ export function Messages() {
           {messages.map(msg => (
             <div key={msg.id} className="flex gap-3">
               <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-                msg.senderType === 'human' ? 'bg-indigo-600' : 'bg-gray-700'
+                msg.senderType === 'human' ? 'bg-brand-600' : 'bg-surface-overlay'
               }`}>
                 {msg.senderName[0]?.toUpperCase()}
               </div>
@@ -230,7 +230,7 @@ export function Messages() {
                   <span className="text-sm font-medium text-white">{msg.senderName}</span>
                   <span className="text-xs text-gray-600">{formatTime(msg.createdAt)}</span>
                   {msg.mentions.length > 0 && (
-                    <span className="text-xs text-indigo-400">@{msg.mentions.join(' @')}</span>
+                    <span className="text-xs text-brand-400">@{msg.mentions.join(' @')}</span>
                   )}
                 </div>
                 {msg.senderType === 'agent'
@@ -245,16 +245,16 @@ export function Messages() {
         </div>
 
         {/* Input with @mention */}
-        <div className="p-4 border-t border-gray-800 relative">
+        <div className="p-4 border-t border-border-default relative">
           {mentionDropdown && filteredAgents.length > 0 && (
-            <div className="absolute bottom-full left-4 mb-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden">
               {filteredAgents.map(a => (
                 <button
                   key={a.id}
                   onClick={() => insertMention(a.name)}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-surface-overlay flex items-center gap-2"
                 >
-                  <span className="text-indigo-400">@</span>
+                  <span className="text-brand-400">@</span>
                   {a.name}
                   <span className="text-xs text-gray-500 ml-auto">{a.role}</span>
                 </button>
@@ -272,13 +272,13 @@ export function Messages() {
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               placeholder={`Message ${activeChannel}… (use @name to mention)`}
               rows={1}
-              className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm focus:border-indigo-500 outline-none resize-none overflow-y-auto leading-5"
+              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none resize-none overflow-y-auto leading-5"
               style={{ maxHeight: '120px' }}
             />
             <button
               onClick={() => void send()}
               disabled={sending || !input.trim()}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm rounded-xl transition-colors"
+              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm rounded-xl transition-colors"
             >
               Send
             </button>

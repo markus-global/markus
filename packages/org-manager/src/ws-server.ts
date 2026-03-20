@@ -1,4 +1,4 @@
-import { createServer as createHttpServer, type IncomingMessage } from 'node:http';
+import type { Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createLogger } from '@markus/shared';
 
@@ -14,10 +14,10 @@ export class WSBroadcaster {
   private wss?: WebSocketServer;
   private clients = new Set<WebSocket>();
 
-  attach(server: ReturnType<typeof createHttpServer>): void {
+  attach(server: Server): void {
     this.wss = new WebSocketServer({ server, path: '/ws' });
 
-    this.wss.on('connection', (ws, req) => {
+    this.wss.on('connection', (ws, _req) => {
       this.clients.add(ws);
       log.info('WebSocket client connected', { clients: this.clients.size });
 

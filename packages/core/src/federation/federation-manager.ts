@@ -1,10 +1,10 @@
 import { createLogger, generateId } from '@markus/shared';
-import type {
-  FederationLink, FederationStatus, TrustLevel,
-  FederatedAgent, CrossOrgMessage, SandboxPolicy,
-  FederationPolicy, FederationEvent,
+import {
+  DEFAULT_SANDBOX,
+  type FederationLink, type TrustLevel,
+  type FederatedAgent, type CrossOrgMessage,
+  type FederationPolicy, type FederationEvent,
 } from './types.js';
-import { DEFAULT_SANDBOX } from './types.js';
 
 const log = createLogger('federation');
 

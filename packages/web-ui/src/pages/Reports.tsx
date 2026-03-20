@@ -88,14 +88,14 @@ export function ReportsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="max-w-5xl p-6 space-y-6">
         {/* Header with inline filters */}
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-semibold text-white">Reports</h1>
           <select
             value={period}
             onChange={e => setPeriod(e.target.value as Period)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200"
+            className="bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-gray-200"
           >
             <option value="daily">Daily</option>
             <option value="weekly">Weekly</option>
@@ -106,7 +106,7 @@ export function ReportsPage() {
         {/* Usage Overview */}
         {usageSummary && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-indigo-400" />
+            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-brand-400" />
             <UsageCard label="Tool Calls (today)" value={formatNumber(usageSummary.toolCalls)} color="text-blue-400" />
             <UsageCard label="Messages (today)" value={formatNumber(usageSummary.messages)} color="text-emerald-400" />
             <UsageCard label="Storage" value={formatBytes(usageSummary.storageBytes)} color="text-amber-400" />
@@ -126,11 +126,11 @@ export function ReportsPage() {
 
             {/* Task Metrics */}
             {report.metrics && (
-              <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-gray-400 mb-3">Task Metrics</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                   <MetricCard label="Completed" value={report.metrics.tasksCompleted} color="text-emerald-400" />
-                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-indigo-400" />
+                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-brand-400" />
                   <MetricCard label="Created" value={report.metrics.tasksCreated} color="text-blue-400" />
                   <MetricCard label="Blocked" value={report.metrics.tasksBlocked} color="text-amber-400" />
                   <MetricCard label="Failed" value={report.metrics.tasksFailed} color="text-red-400" />
@@ -139,7 +139,7 @@ export function ReportsPage() {
             )}
 
             {/* Cost Summary */}
-            <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
               <h3 className="text-xs font-semibold text-gray-400 mb-3">Cost Overview</h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
@@ -167,7 +167,7 @@ export function ReportsPage() {
 
             {/* Task Summary */}
             {report.taskSummary && (
-              <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 <h3 className="text-xs font-semibold text-gray-400 mb-3">Task Summary</h3>
                 <div className="space-y-4">
                   {report.taskSummary.completed.length > 0 && (
@@ -189,8 +189,8 @@ export function ReportsPage() {
         ) : null}
 
         {/* Per-Agent Breakdown */}
-        <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-gray-800">
+        <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-border-default">
             <h3 className="text-sm font-semibold text-gray-300">Per-Agent Usage</h3>
           </div>
           {agents.length === 0 ? (
@@ -199,7 +199,7 @@ export function ReportsPage() {
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wider">
+                  <tr className="border-b border-border-default text-xs text-gray-500 uppercase tracking-wider">
                     <th className="px-4 py-3 text-left font-medium">Agent</th>
                     <SortHeader label="Total Tokens" col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
                     <SortHeader label="Today" col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
@@ -214,7 +214,7 @@ export function ReportsPage() {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t border-gray-700 bg-gray-800/30">
+                  <tr className="border-t border-border-default bg-surface-elevated/30">
                     <td className="px-4 py-3 text-sm font-medium text-gray-300">Total ({agents.length} agents)</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(totalTokensToday)}</td>
@@ -263,7 +263,7 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
 
 function UsageCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+    <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
       <div className="text-sm text-gray-400 mb-2">{label}</div>
       <div className={`text-2xl font-bold ${color}`}>{value}</div>
     </div>
@@ -276,7 +276,7 @@ function SortHeader({ label, col, current, desc, onSort, align }: {
   label: string; col: SortCol; current: SortCol; desc: boolean; onSort: (c: SortCol) => void; align?: string;
 }) {
   const arrow = current === col ? (desc ? '↓' : '↑') : '↕';
-  const arrowColor = current === col ? 'text-indigo-400' : 'text-gray-700';
+  const arrowColor = current === col ? 'text-brand-400' : 'text-gray-700';
   return (
     <th
       className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'} font-medium cursor-pointer select-none hover:text-gray-300`}
@@ -295,21 +295,21 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
     agent.status === 'error' ? 'bg-red-500' : 'bg-gray-600';
 
   return (
-    <tr className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors cursor-pointer"
+    <tr className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors cursor-pointer"
         onClick={() => navBus.navigate('team', { selectAgent: agent.agentId })}>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
           <div>
-            <div className="text-sm font-medium text-gray-200 hover:text-indigo-300 transition-colors">{agent.agentName}</div>
+            <div className="text-sm font-medium text-gray-200 hover:text-brand-300 transition-colors">{agent.agentName}</div>
             <div className="text-xs text-gray-500">{agent.role}</div>
           </div>
         </div>
       </td>
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="flex-1 bg-gray-800 rounded-full h-1.5 overflow-hidden max-w-[120px]">
-            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${barWidth}%` }} />
+          <div className="flex-1 bg-surface-elevated rounded-full h-1.5 overflow-hidden max-w-[120px]">
+            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${barWidth}%` }} />
           </div>
           <span className="text-sm text-gray-300 tabular-nums">{formatNumber(agent.totalTokens)}</span>
         </div>

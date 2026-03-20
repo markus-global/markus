@@ -1,7 +1,7 @@
 import { createLogger } from '@markus/shared';
 import type { VNCClient } from './vnc-client.js';
-import { ScreenshotProvider } from './screenshot.js';
-import { DesktopInput } from './input.js';
+import type { ScreenshotProvider } from './screenshot.js';
+import type { DesktopInput } from './input.js';
 import { ElementDetector, type ElementDetectorConfig } from './element-detector.js';
 import type { GUIElement, ElementQuery, ScreenRegion, GUIConfig } from './types.js';
 

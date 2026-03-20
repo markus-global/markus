@@ -125,23 +125,21 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
   const hasMoreProjects = projects.length > DEFAULT_VISIBLE_PROJECTS;
 
   return (
-    <aside className="h-screen bg-gray-900 flex flex-col shrink-0 overflow-hidden">
-      <div className={`border-b border-gray-800 flex items-center ${collapsed ? 'px-2 py-4 justify-center' : 'px-5 py-4 justify-between'}`}>
+    <aside className="h-screen bg-surface-secondary flex flex-col shrink-0 overflow-hidden border-r border-border-subtle">
+      <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
         {collapsed ? (
-          <button onClick={onToggleCollapse} className="text-lg font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent" title="Expand sidebar">
-            M
+          <button onClick={onToggleCollapse} title="Expand sidebar" className="group">
+            <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
           </button>
         ) : (
           <>
-            <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-                Markus
-              </h1>
-              <p className="text-xs text-gray-500 mt-0.5">AI Digital Employee Platform</p>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0" />
+              <span className="text-[15px] font-bold tracking-tight text-white whitespace-nowrap">Markus</span>
             </div>
             <button
               onClick={onToggleCollapse}
-              className="text-gray-600 hover:text-gray-300 transition-colors p-1 rounded hover:bg-gray-800"
+              className="text-gray-600 hover:text-gray-300 transition-colors p-1 rounded-md hover:bg-surface-overlay shrink-0"
               title="Collapse sidebar"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></svg>
@@ -154,11 +152,11 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
           <div key={section.key}>
             <div className="mb-3">
               {!collapsed && (
-                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-600 uppercase tracking-wider">
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-gray-500 uppercase tracking-widest">
                   {section.label}
                 </div>
               )}
-              {collapsed && si > 0 && <div className="border-t border-gray-800 my-2 mx-1" />}
+              {collapsed && si > 0 && <div className="my-2 mx-1" />}
               {/* Render nav items, but defer Deliverables to after Projects */}
               {navItems.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === 'deliverables')).map((item) => {
                 const isActive = currentPage === item.id;
@@ -167,10 +165,10 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     key={item.id}
                     onClick={() => onNavigate(item.id)}
                     title={collapsed ? item.label : undefined}
-                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'} rounded-lg text-sm mb-0.5 transition-colors ${
+                    className={`w-full flex items-center ${collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2'} rounded-lg text-sm mb-0.5 transition-all ${
                       isActive
-                        ? 'bg-indigo-600 text-white'
-                        : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30'
+                        : 'text-gray-400 hover:bg-surface-overlay hover:text-gray-200'
                     }`}
                   >
                     <Icon d={ICONS[item.id] ?? ''} />
@@ -185,12 +183,12 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   <button
                     onClick={() => { setSelectedProjectId(null); onNavigate('projects'); }}
                     title="Projects"
-                    className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
+                    className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-all ${
                       currentPage === 'projects' && !selectedProjectId
-                        ? 'bg-indigo-600 text-white'
+                        ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30'
                         : currentPage === 'projects'
-                          ? 'text-indigo-300 bg-indigo-600/15'
-                          : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                          ? 'text-brand-300 bg-brand-600/15'
+                          : 'text-gray-400 hover:bg-surface-overlay hover:text-gray-200'
                     }`}
                   >
                     <Icon d={ICONS.projects ?? ''} />
@@ -199,7 +197,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     onClick={() => onNavigate('deliverables')}
                     title="Deliverables"
                     className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'deliverables' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                      currentPage === 'deliverables' ? 'bg-brand-600 text-white' : 'text-gray-400 hover:bg-surface-elevated hover:text-gray-200'
                     }`}
                   >
                     <Icon d={ICONS.deliverables ?? ''} />
@@ -214,8 +212,8 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                       onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; onNavigate('projects'); }}
                       className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                         currentPage === 'projects' && !selectedProjectId
-                          ? 'bg-indigo-600 text-white'
-                          : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                          ? 'bg-brand-600 text-white'
+                          : 'text-gray-400 hover:bg-surface-elevated hover:text-gray-200'
                       }`}
                     >
                       <Icon d={ICONS.projects ?? ''} />
@@ -223,7 +221,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     </button>
                     <button
                       onClick={openNewProject}
-                      className="text-gray-600 hover:text-gray-300 transition-colors p-1.5 rounded hover:bg-gray-800 shrink-0"
+                      className="text-gray-600 hover:text-gray-300 transition-colors p-1.5 rounded hover:bg-surface-elevated shrink-0"
                       title="New Project"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
@@ -233,7 +231,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   {projects.length === 0 && (
                     <button
                       onClick={openNewProject}
-                      className="w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-xs text-gray-600 hover:text-gray-400 hover:bg-gray-800/50 rounded-lg transition-colors"
+                      className="w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-xs text-gray-600 hover:text-gray-400 hover:bg-surface-elevated/50 rounded-lg transition-colors"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                       Create your first project
@@ -251,8 +249,8 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                         }}
                         className={`w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 rounded-lg text-sm mb-0.5 transition-colors ${
                           isActive
-                            ? 'bg-indigo-600/20 text-indigo-300'
-                            : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                            ? 'bg-brand-600/20 text-brand-300'
+                            : 'text-gray-400 hover:bg-surface-elevated hover:text-gray-200'
                         }`}
                       >
                         <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[p.status] ?? 'bg-gray-600'}`} />
@@ -272,7 +270,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   <button
                     onClick={() => onNavigate('deliverables')}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'deliverables' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+                      currentPage === 'deliverables' ? 'bg-brand-600 text-white' : 'text-gray-400 hover:bg-surface-elevated hover:text-gray-200'
                     }`}
                   >
                     <Icon d={ICONS.deliverables ?? ''} />
@@ -284,19 +282,19 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
           </div>
         ))}
       </nav>
-      <div className={`border-t border-gray-800 ${collapsed ? 'p-2 flex flex-col items-center gap-2' : 'p-4 space-y-2'}`}>
+      <div className={`${collapsed ? 'p-2 flex flex-col items-center gap-2' : 'px-4 py-3 space-y-2'}`}>
         {authUser && (
           collapsed ? (
             <button
               onClick={handleLogout}
               title={`${authUser.name ?? authUser.email} — Sign out`}
-              className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0 hover:ring-2 hover:ring-indigo-500/50 transition-all"
+              className="w-7 h-7 rounded-full bg-brand-600 flex items-center justify-center text-white text-xs font-bold shrink-0 hover:ring-2 hover:ring-brand-500/50 transition-all"
             >
               {authUser.name?.[0]?.toUpperCase() ?? 'A'}
             </button>
           ) : (
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+              <div className="w-7 h-7 rounded-full bg-brand-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
                 {authUser.name?.[0]?.toUpperCase() ?? 'A'}
               </div>
               <div className="flex-1 min-w-0">
@@ -319,7 +317,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
       {/* New Project Modal — portaled to body for full-page centering */}
       {showNewProject && createPortal(
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowNewProject(false)}>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-[520px] shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[520px] shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold mb-5">New Project</h3>
             <div className="space-y-4">
               <div>
@@ -352,8 +350,8 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                         onClick={() => setNewProj(p => ({ ...p, iterationModel: model }))}
                         className={`flex-1 py-2 text-xs rounded-lg border transition-colors capitalize ${
                           newProj.iterationModel === model
-                            ? 'border-indigo-500 bg-indigo-600/15 text-indigo-300'
-                            : 'border-gray-700 text-gray-400 hover:border-gray-600'
+                            ? 'border-brand-500 bg-brand-600/15 text-brand-300'
+                            : 'border-border-default text-gray-400 hover:border-gray-600'
                         }`}
                       >
                         {model === 'kanban' ? 'Kanban' : 'Sprint'}
@@ -378,7 +376,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                                 ...p,
                                 teamIds: checked ? p.teamIds.filter(id => id !== t.id) : [...p.teamIds, t.id],
                               }))}
-                              className="accent-indigo-500"
+                              className="accent-brand-500"
                             />
                             <span className="truncate">{t.name}</span>
                           </label>
@@ -398,11 +396,11 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                 />
               </div>
               <div className="flex justify-end gap-3 pt-2">
-                <button onClick={() => setShowNewProject(false)} className="px-4 py-2 text-sm border border-gray-700 rounded-lg hover:bg-gray-800">Cancel</button>
+                <button onClick={() => setShowNewProject(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
                 <button
                   onClick={handleCreateProject}
                   disabled={!newProj.name.trim() || creatingProject}
-                  className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg text-white"
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white"
                 >
                   {creatingProject ? 'Creating...' : 'Create Project'}
                 </button>

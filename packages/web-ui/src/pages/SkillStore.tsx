@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api, hubApi, AgentInfo, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   devops: 'bg-orange-500/15 text-orange-400',
   productivity: 'bg-green-500/15 text-green-400',
   custom: 'bg-gray-500/15 text-gray-400',
-  browser: 'bg-indigo-500/15 text-indigo-400',
+  browser: 'bg-brand-500/15 text-brand-400',
   communication: 'bg-emerald-500/15 text-emerald-400',
   data: 'bg-violet-500/15 text-violet-400',
   'AI 智能': 'bg-purple-500/15 text-purple-400',
@@ -149,7 +150,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
 
   if (isInstalled) {
     return (
-      <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">
+      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">
         Installed{matchedSkill?.version ? ` (v${matchedSkill.version})` : ''}
       </span>
     );
@@ -159,7 +160,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
     <button
       onClick={() => void handleInstall()}
       disabled={installing}
-      className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+      className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
     >
       {installing ? 'Installing...' : 'Install'}
     </button>
@@ -194,10 +195,10 @@ function AgentAssignModal({
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-800 rounded-xl w-[480px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="px-6 pt-5 pb-4 border-b border-gray-800">
+      <div className="bg-surface-secondary border border-border-default rounded-xl w-[480px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="px-6 pt-5 pb-4 border-b border-border-default">
           <h3 className="text-base font-semibold">Assign to Agents</h3>
-          <p className="text-xs text-gray-400 mt-1">Select which agents can use <span className="text-indigo-400 font-medium">{skillName}</span></p>
+          <p className="text-xs text-gray-400 mt-1">Select which agents can use <span className="text-brand-400 font-medium">{skillName}</span></p>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {agents.length === 0 ? (
@@ -205,12 +206,12 @@ function AgentAssignModal({
           ) : (
             <div className="space-y-2">
               {agents.map(agent => (
-                <label key={agent.id} className="flex items-center gap-3 p-3 rounded-lg bg-gray-800 hover:bg-gray-750 cursor-pointer transition-colors">
+                <label key={agent.id} className="flex items-center gap-3 p-3 rounded-lg bg-surface-elevated hover:bg-gray-750 cursor-pointer transition-colors">
                   <input
                     type="checkbox"
                     checked={selected.has(agent.id)}
                     onChange={() => toggle(agent.id)}
-                    className="w-4 h-4 rounded accent-indigo-500"
+                    className="w-4 h-4 rounded accent-brand-500"
                   />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{agent.name}</div>
@@ -224,11 +225,11 @@ function AgentAssignModal({
             </div>
           )}
         </div>
-        <div className="px-6 py-4 border-t border-gray-800 flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg hover:bg-gray-800">
+        <div className="px-6 py-4 border-t border-border-default flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg hover:bg-surface-elevated">
             Cancel
           </button>
-          <button onClick={() => onConfirm([...selected])} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg">
+          <button onClick={() => onConfirm([...selected])} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg">
             Confirm ({selected.size} agent{selected.size !== 1 ? 's' : ''})
           </button>
         </div>
@@ -340,8 +341,11 @@ export function SkillStore() {
   const loadHubSkills = useCallback(async (q?: string) => {
     setLoadingHub(true);
     try {
-      const d = await hubApi.search({ type: 'skill', q: q || undefined, limit: 50 });
-      setHubSkills(d.items);
+      const p = !q
+        ? (consume<{ items: HubItem[] }>(PREFETCH_KEYS.hubSkills) ?? hubApi.search({ type: 'skill', limit: 50 }))
+        : hubApi.search({ type: 'skill', q, limit: 50 });
+      const d = await p;
+      setHubSkills(d?.items ?? []);
     } catch { /* Hub might be offline */ }
     setLoadingHub(false);
   }, []);
@@ -460,13 +464,13 @@ export function SkillStore() {
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-4 px-7 h-14 border-b border-gray-800 bg-gray-900 shrink-0">
+      <div className="flex items-center gap-4 px-6 h-14 border-b border-border-default bg-surface-secondary shrink-0">
         <h2 className="text-lg font-semibold">Skill Store</h2>
         <div className="flex gap-1 ml-2">
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                tab === t.id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+                tab === t.id ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated'
               }`}>
               {t.label}
             </button>
@@ -488,7 +492,7 @@ export function SkillStore() {
               value={installedSearch}
               onChange={e => setInstalledSearch(e.target.value)}
               placeholder="Search installed skills..."
-              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
             />
             <span className="text-xs text-gray-500">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
           </div>
@@ -506,7 +510,7 @@ export function SkillStore() {
               {filteredInstalled.map(skill => {
                 const agentNames = skill.agentIds.map(id => agents.find(a => a.id === id)?.name ?? id).filter(Boolean);
                 return (
-                  <div key={skill.name} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                  <div key={skill.name} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
@@ -530,13 +534,13 @@ export function SkillStore() {
                     <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
 
                     <div className="flex flex-wrap gap-1.5 mt-2">
-                      {skill.tags?.slice(0, 3).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
+                      {skill.tags?.slice(0, 3).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded-full">{t}</span>)}
                     </div>
 
-                    <div className="mt-3 pt-2 border-t border-gray-800 flex items-center justify-between">
+                    <div className="mt-3 pt-2 border-t border-border-default flex items-center justify-between">
                       <button
                         onClick={() => setAssignModal({ skillName: skill.name, currentAgentIds: skill.agentIds })}
-                        className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-indigo-400 transition-colors"
+                        className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-brand-400 transition-colors"
                       >
                         <span>
                           {agentNames.length === 0
@@ -573,7 +577,7 @@ export function SkillStore() {
             <span className="text-xs text-gray-500">{builtinSkills.length} built-in skill{builtinSkills.length !== 1 ? 's' : ''} available</span>
             <button
               onClick={() => void loadBuiltin()}
-              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+              className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
             >
               Refresh
             </button>
@@ -590,7 +594,7 @@ export function SkillStore() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {builtinSkills.map(skill => (
-                <div key={skill.name} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                <div key={skill.name} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -611,7 +615,7 @@ export function SkillStore() {
                   <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
 
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {skill.tags.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-gray-800 text-gray-500 rounded-full">{t}</span>)}
+                    {skill.tags.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded-full">{t}</span>)}
                   </div>
 
                   {skill.requiredPermissions.length > 0 && (
@@ -622,7 +626,7 @@ export function SkillStore() {
                     </div>
                   )}
 
-                  <div className="mt-3 pt-2 border-t border-gray-800 flex items-center justify-between">
+                  <div className="mt-3 pt-2 border-t border-border-default flex items-center justify-between">
                     {skill.installed && skill.installedVersion ? (
                       <span className="text-[10px] text-gray-500">v{skill.installedVersion}</span>
                     ) : <span />}
@@ -635,7 +639,7 @@ export function SkillStore() {
                         {installing.has(skill.name) ? 'Upgrading...' : `Upgrade → v${skill.version}`}
                       </button>
                     ) : skill.installed ? (
-                      <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
                     ) : (
                       <button
                         onClick={() => void installBuiltin(skill)}
@@ -661,7 +665,7 @@ export function SkillStore() {
             <select
               value={skillhubCategory}
               onChange={e => { setSkillhubCategory(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: e.target.value || undefined, page: 1 }); }}
-              className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 outline-none"
+              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-300 outline-none"
             >
               <option value="">全部分类</option>
               {skillhubCategories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -669,7 +673,7 @@ export function SkillStore() {
             <select
               value={skillhubSort}
               onChange={e => { setSkillhubSort(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1, sort: e.target.value }); }}
-              className="px-2 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 outline-none"
+              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-300 outline-none"
             >
               <option value="score">综合排序</option>
               <option value="downloads">下载量</option>
@@ -681,16 +685,16 @@ export function SkillStore() {
               onChange={e => setSkillhubSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); } }}
               placeholder="搜索 SkillHub 技能..."
-              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-64"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-64"
             />
             <button
               onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg"
             >
               Search
             </button>
             <span className="text-xs text-gray-500 ml-auto">
-              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">Visit site →</a>
+              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300">Visit site →</a>
             </span>
           </div>
 
@@ -708,31 +712,31 @@ export function SkillStore() {
                 {skillhubSkills.map(skill => {
                   const isInstalled = installed.some(s => s.name === skill.name || s.name === skill.slug);
                   return (
-                    <div key={skill.slug} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                    <div key={skill.slug} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
                           <div className="font-semibold text-sm truncate">{skill.name}</div>
                           <div className="text-xs text-gray-500 mt-0.5">v{skill.version}</div>
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-indigo-500/15 text-indigo-400') : 'bg-indigo-500/15 text-indigo-400'}`}>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-brand-500/15 text-brand-400') : 'bg-brand-500/15 text-brand-400'}`}>
                           {skill.tags?.[0] ?? 'SkillHub'}
                         </span>
                       </div>
                       <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
-                      <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
+                      <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {skill.stars > 0 && <span className="text-[10px] text-amber-400">★ {skill.stars.toLocaleString()}</span>}
                           {skill.downloads > 0 && <span className="text-[10px] text-gray-500">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} 下载</span>}
                         </div>
                         <div className="flex items-center gap-2">
-                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
+                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-400 hover:text-brand-300">View →</a>
                           {isInstalled ? (
-                            <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                            <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
                           ) : (
                             <button
                               onClick={() => void installSkillhub(skill)}
                               disabled={installing.has(skill.name)}
-                              className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+                              className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
                             >
                               {installing.has(skill.name) ? '...' : 'Install'}
                             </button>
@@ -748,14 +752,14 @@ export function SkillStore() {
                   <button
                     disabled={skillhubPage <= 1}
                     onClick={() => { const p = skillhubPage - 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
-                    className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 disabled:opacity-30">
+                    className="px-3 py-1.5 text-xs bg-surface-elevated text-gray-400 rounded-lg hover:bg-surface-overlay disabled:opacity-30">
                     ← 上一页
                   </button>
                   <span className="text-xs text-gray-500">第 {skillhubPage} / {Math.ceil(skillhubTotal / 24)} 页</span>
                   <button
                     disabled={skillhubPage >= Math.ceil(skillhubTotal / 24)}
                     onClick={() => { const p = skillhubPage + 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
-                    className="px-3 py-1.5 text-xs bg-gray-800 text-gray-400 rounded-lg hover:bg-gray-700 disabled:opacity-30">
+                    className="px-3 py-1.5 text-xs bg-surface-elevated text-gray-400 rounded-lg hover:bg-surface-overlay disabled:opacity-30">
                     下一页 →
                   </button>
                 </div>
@@ -774,16 +778,16 @@ export function SkillStore() {
               onChange={e => setSkillsshSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
               placeholder="Search skills.sh..."
-              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
             />
             <button
               onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg"
             >
               Search
             </button>
             <span className="text-xs text-gray-500 ml-auto">
-              <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:text-indigo-300">Visit site →</a>
+              <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300">Visit site →</a>
             </span>
           </div>
 
@@ -800,7 +804,7 @@ export function SkillStore() {
               {filteredSkillssh.map(skill => {
                 const isInstalled = installed.some(s => s.name === skill.name);
                 return (
-                  <div key={`${skill.author}-${skill.name}`} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                  <div key={`${skill.author}-${skill.name}`} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm truncate">{skill.name}</div>
@@ -809,19 +813,19 @@ export function SkillStore() {
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">skills.sh</span>
                     </div>
                     <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description || 'No description'}</p>
-                    <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between">
+                    <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
                       </div>
                       <div className="flex items-center gap-2">
-                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-indigo-400 hover:text-indigo-300">View →</a>
+                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-400 hover:text-brand-300">View →</a>
                         {isInstalled ? (
-                          <span className="px-2.5 py-1 text-[10px] bg-gray-700 text-gray-400 rounded-lg">Installed</span>
+                          <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
                         ) : (
                           <button
                             onClick={() => void installSkillssh(skill)}
                             disabled={installing.has(skill.name)}
-                            className="px-2.5 py-1 text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50"
+                            className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
                           >
                             {installing.has(skill.name) ? '...' : 'Install'}
                           </button>
@@ -844,7 +848,7 @@ export function SkillStore() {
               value={hubSearch}
               onChange={e => setHubSearch(e.target.value)}
               placeholder="Search Markus Hub skills..."
-              className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 focus:border-indigo-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
             />
             <span className="text-xs text-gray-500 ml-auto">Community skills from Markus Hub</span>
           </div>
@@ -860,7 +864,7 @@ export function SkillStore() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {hubSkills.map(item => (
-                <div key={item.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
+                <div key={item.id} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-sm truncate">{item.name}</div>
@@ -873,7 +877,7 @@ export function SkillStore() {
                     {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
                     <span className="text-gray-500 ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
                   </div>
-                  <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-end gap-2">
+                  <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-end gap-2">
                     <HubSkillInstallButton item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} />
                   </div>
                 </div>

@@ -1,124 +1,201 @@
 # Contributing to Markus
 
-This guide is written for AI coding assistants and human contributors. Follow it to contribute effectively to the Markus AI Digital Employee Platform.
+Thank you for your interest in contributing to Markus! This guide helps AI coding assistants and human developers contribute effectively to the AI Agent team platform.
 
-## Prerequisites
+## 🤝 How to Contribute
 
-- Node.js >= 20
-- pnpm >= 9
-- Docker (optional; for sandbox features)
+### Ways to Contribute
 
-## Quick Development Setup
+- 🐛 **Report bugs** — Help us identify issues
+- 💡 **Suggest features** — Share your ideas for making Markus better
+- 📝 **Improve documentation** — Help others get started
+- 💻 **Write code** — Fix bugs or implement new features
+- 🎨 **Design** — Improve UI/UX or create visual assets
+- 📢 **Spread the word** — Star the repo, write about Markus
+
+## 🚀 Quick Development Setup
 
 ```bash
+# Clone and install
+git clone https://github.com/markus-global/markus.git
+cd markus
 pnpm install
 pnpm build
+
+# Start development servers
 pnpm dev
 ```
 
-- API server: `http://localhost:3001`
-- Web UI: `http://localhost:3000`
+**Services:**
+- Web UI: http://localhost:3000
+- API: http://localhost:3001
 - Default admin: `admin@markus.local` / `markus123`
 
-Database: SQLite by default (zero config). PostgreSQL is optional.
+**Databases:** SQLite by default (zero config). PostgreSQL is optional for production.
 
-## Project Structure
+## 📋 Good First Issues
+
+New to the project? Start with these labels:
+
+| Label | Description |
+|-------|-------------|
+| [good first issue](https://github.com/markus-global/markus/labels/good%20first%20issue) | Beginner-friendly tasks |
+| [help wanted](https://github.com/markus-global/markus/labels/help%20wanted) | Features we need help with |
+| [documentation](https://github.com/markus-global/markus/labels/documentation) | Improve docs and guides |
+| [bug](https://github.com/markus-global/markus/labels/bug) | Fix reported issues |
+
+## 🏗️ Project Structure
 
 ```
 packages/
-├── shared/       # Shared types, constants, utilities
-├── core/         # Agent runtime (core engine)
-├── storage/      # Database schema + repository layer
-├── org-manager/  # Organization management + REST API + governance services
-├── compute/      # Docker sandbox management (optional)
-├── comms/        # Communication adapters (Feishu, etc.)
-├── a2a/          # Agent-to-Agent protocol
-├── gui/          # GUI automation (VNC + OmniParser)
-├── web-ui/       # Web management UI (React + Vite + Tailwind)
-└── cli/          # CLI entry point + service assembly
+├── shared/       Shared types, constants, utilities
+├── core/         Agent runtime engine — autonomous behavior
+├── storage/      Database schema + repository layer
+├── org-manager/  Organization management + REST API + governance
+├── web-ui/       React + Vite + Tailwind management interface
+├── cli/          CLI entry point + service assembly
+├── a2a/          Agent-to-Agent communication protocol
+├── comms/        External integrations (Feishu, Slack, WhatsApp)
+├── gui/          GUI automation (VNC + OmniParser)
+└── shared/       Shared types and utilities
 ```
 
-## Commands
+## ⌨️ Development Commands
 
 | Command | Purpose |
 |---------|---------|
-| `pnpm install` | Install dependencies |
+| `pnpm install` | Install all dependencies |
 | `pnpm build` | Build all packages |
 | `pnpm dev` | Start API + Web UI |
-| `pnpm test` | Run tests (vitest) |
-| `pnpm typecheck` | TypeScript check |
-| `pnpm lint` | ESLint |
+| `pnpm test` | Run all tests (Vitest) |
+| `pnpm test --filter @markus/<pkg>` | Run tests for specific package |
+| `pnpm typecheck` | TypeScript type checking |
+| `pnpm lint` | ESLint code quality |
 
-## Code Style and Conventions
+## 📐 Code Standards
 
-- **TypeScript strict mode**: All packages use `strict: true`.
-- **ESM modules**: Use `import`/`export`. No CommonJS.
-- **No default exports**: Use named exports only.
-- **Type imports**: Use `import type { X }` for type-only imports (enforced by ESLint).
-- **Unused vars**: Prefix with `_` to ignore (e.g., `_unused`).
+### TypeScript
+- All packages use `strict: true`
+- ESM modules only (`import`/`export`)
+- No default exports — use named exports
+- Use `import type { X }` for type-only imports
+- Prefix unused variables with `_` (e.g., `_unused`)
 
-## Commit Messages
+### Commits
+We use [Conventional Commits](https://www.conventionalcommits.org/):
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+```
+feat(scope): add user authentication
+fix(api): handle null response in /api/agents
+docs(readme): update installation instructions
+chore(deps): upgrade to Node.js 22
+refactor(core): simplify task delegation logic
+test(agent): add unit tests for role assignment
+```
 
-- `feat(scope): description`
-- `fix(scope): description`
-- `docs(scope): description`
-- `chore(scope): description`
+## 🔧 Adding New Features
 
-Example: `feat(api): add GET /api/health endpoint`
+### New Agent Role
 
-## Adding a New Agent Role
+1. Create directory: `templates/roles/<role-name>/`
+2. Add `ROLE.md` with role definition
+3. Optionally add `HEARTBEAT.md`, `POLICIES.md`
+4. Reference `templates/roles/SHARED.md` for shared content
 
-1. Create a directory under `templates/roles/<role-name>/`.
-2. Add `ROLE.md` with the role definition (responsibilities, competencies, style).
-3. Optionally add `HEARTBEAT.md`, `POLICIES.md`, or other role-specific files.
-4. Reference shared content from `templates/roles/SHARED.md` if needed.
+### New Skill
 
-## Adding a New Skill
+1. Create directory: `templates/skills/<skill-name>/`
+2. Add `manifest.json`:
+   ```json
+   {
+     "name": "my-skill",
+     "version": "1.0.0",
+     "description": "What this skill does",
+     "requiredPermissions": [],
+     "requiredEnv": []
+   }
+   ```
+3. Add `SKILL.md` with usage instructions
 
-1. Create a directory under `templates/skills/<skill-name>/`.
-2. Add `manifest.json` with:
-   - `name`, `version`, `description`, `author`, `category`, `tags`
-   - `requiredPermissions`, `requiredEnv` (arrays)
-   - `mcpServers` (if the skill uses MCP)
-3. Add `SKILL.md` with instructions for the AI (when to use, how to use, tool reference).
-4. Skills are discovered from `templates/skills/` and `WELL_KNOWN_SKILL_DIRS`.
+### New API Endpoint
 
-## Adding a New API Endpoint
+1. Open `packages/org-manager/src/api-server.ts`
+2. Add route in `route()` method:
+   ```typescript
+   if (path === '/api/your-resource' && req.method === 'GET') {
+     // Handle request
+   }
+   ```
+3. Use `this.readBody(req)` for request body
+4. Use `this.json(res, statusCode, payload)` for response
+5. Add `await this.requireAuth(req, res)` for protected endpoints
 
-1. Open `packages/org-manager/src/api-server.ts`.
-2. In the `route()` method, add a new branch for your path and HTTP method.
-3. Pattern: `if (path === '/api/your-resource' && req.method === 'GET') { ... }`
-4. Use `this.readBody(req)` for request body.
-5. Use `this.json(res, statusCode, payload)` for JSON response.
-6. Use `await this.requireAuth(req, res)` for authenticated endpoints.
-7. Place new routes in logical order with similar endpoints.
-
-## Testing Guidelines
+## 🧪 Testing
 
 - **Framework**: Vitest
-- **Location**: `packages/<pkg>/test/*.test.ts` or colocated `*.test.ts` next to source
-- **Run**: `pnpm test` (all) or `pnpm --filter @markus/<pkg> test` (single package)
-- Add tests for new behavior. Keep tests focused and deterministic.
+- **Location**: `packages/<pkg>/test/*.test.ts`
+- **Run**: `pnpm test` or `pnpm --filter @markus/<pkg> test`
+- Write tests for new features
+- Keep tests focused and deterministic
+- Avoid external dependencies in unit tests
 
-## Pull Request Process
+## 🔀 Pull Request Process
 
-1. Fork the repository.
-2. Create a branch: `git checkout -b feat/your-feature`.
-3. Make changes. Run `pnpm typecheck`, `pnpm lint`, `pnpm test`.
-4. Commit with conventional format.
-5. Open a PR against the main branch.
-6. Address review feedback.
+1. **Fork** the repository
+2. **Create branch**: `git checkout -b feat/your-feature`
+3. **Make changes** with tests
+4. **Verify**: Run `pnpm typecheck && pnpm lint && pnpm test`
+5. **Commit** using Conventional Commits
+6. **Open PR** with:
+   - Clear description of changes
+   - Link to related issues
+   - Screenshots for UI changes
+7. **Address review** feedback
+8. **Merge** after approval
 
-## Code Review Expectations
+## 🔍 Code Review Expectations
 
-- Changes align with project structure and conventions.
-- New code has tests where appropriate.
-- No unnecessary dependencies or complexity.
-- TypeScript types are correct; avoid `any`.
-- API changes are backward-compatible or documented.
+- Changes align with project structure
+- New code has tests where appropriate
+- No unnecessary dependencies
+- TypeScript types are correct (avoid `any`)
+- API changes are backward-compatible or documented
+- No security vulnerabilities
 
-## License
+## 📊 Developer Roadmap
 
-AGPL-3.0 (dual license with commercial option).
+### Beginner Tasks
+- [ ] Improve documentation and examples
+- [ ] Add unit tests for untested modules
+- [ ] Fix typos and grammar issues
+- [ ] Add inline comments to complex code
+
+### Intermediate Tasks
+- [ ] Implement new API endpoints
+- [ ] Create new agent roles
+- [ ] Add new communication adapters
+- [ ] Improve error handling
+
+### Advanced Tasks
+- [ ] Design new system features
+- [ ] Optimize performance bottlenecks
+- [ ] Implement security features
+- [ ] Architecture refactoring
+
+## 📚 Resources
+
+- [Architecture Docs](docs/ARCHITECTURE.md)
+- [API Reference](docs/API.md)
+- [User Guide](docs/GUIDE.md)
+- [TypeScript Handbook](https://www.typescriptlang.org/docs/)
+
+## 📄 License
+
+By contributing, you agree that your contributions will be licensed under the [AGPL-3.0 License](LICENSE).
+
+---
+
+<p align="center">
+  <strong>Questions?</strong> Open an issue or start a discussion.<br>
+  We welcome all contributions, big or small! 🎉
+</p>

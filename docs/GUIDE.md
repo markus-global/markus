@@ -22,7 +22,6 @@
 |------------|-----------------|---------|
 | Node.js | 20.0.0+ | Runtime |
 | pnpm | 9.0.0+ | Package manager |
-| PostgreSQL | 16+ | Persistent storage (optional; Docker Compose includes it) |
 | Docker | 24.0+ | Agent sandbox containers (optional) |
 
 ---
@@ -45,11 +44,11 @@ pnpm build
 
 You should see 11 workspace packages compile successfully.
 
-### 3. Configure Environment Variables
+### 3. Configure
 
 ```bash
-cp .env.example .env
-# Edit .env and add your LLM API key
+cp markus.json.example ~/.markus/markus.json
+# Edit ~/.markus/markus.json and add your LLM API key
 ```
 
 ### 4. Start the Backend Service
@@ -82,13 +81,10 @@ Default ports:
 
 ```bash
 cd deploy
-cp ../.env.example .env
-# Edit .env
-
 docker compose up -d
 ```
 
-This starts PostgreSQL and Markus services automatically.
+This starts the Markus services automatically.
 
 ---
 
@@ -99,7 +95,7 @@ This starts PostgreSQL and Markus services automatically.
 | `OPENAI_API_KEY` | Recommended | OpenAI API key (primary LLM) |
 | `ANTHROPIC_API_KEY` | Optional | Anthropic API key |
 | `DEEPSEEK_API_KEY` | Optional | DeepSeek API key (fallback) |
-| `DATABASE_URL` | Optional | PostgreSQL connection string (omit for in-memory mode; data is lost on restart) |
+| `DATABASE_URL` | Optional | SQLite path override (default: `~/.markus/data.db`, format: `sqlite:/path/to/db`) |
 | `JWT_SECRET` | Recommended for production | JWT signing secret |
 | `AUTH_ENABLED` | Optional | Enable login (default: true) |
 | `API_PORT` | Optional | API port (default: 3001) |
@@ -334,7 +330,7 @@ After creating the role, you can hire Agents with that role via the API or the W
 ## FAQ
 
 **Q: Data is lost after restarting the service?**  
-A: `DATABASE_URL` is not set, so the system runs in in-memory mode. Set a PostgreSQL connection string to persist data.
+A: Data is stored in SQLite at `~/.markus/data.db` by default. If that directory is missing or unwritable, the system may fall back to in-memory mode.
 
 **Q: Agent is not responding?**  
 A: Check that the LLM API key is correctly configured and that the Agent is in `online` status (green dot).
