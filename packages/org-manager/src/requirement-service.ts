@@ -297,7 +297,7 @@ export class RequirementService {
 
     const allDone = req.taskIds.every(tid => {
       const status = taskStatuses.get(tid);
-      return status === 'completed' || status === 'accepted' || status === 'cancelled' || status === 'archived';
+      return status === 'completed' || status === 'cancelled' || status === 'archived';
     });
 
     if (allDone) {

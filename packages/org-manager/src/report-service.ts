@@ -50,7 +50,7 @@ export class ReportService {
 
     let upcomingPlan: ReportPlan | undefined;
     if (opts.includePlan) {
-      const pendingTasks = allTasks.filter(t => t.status === 'pending');
+      const pendingTasks = allTasks.filter(t => t.status === 'pending_approval');
       upcomingPlan = {
         status: 'draft',
         goals: [],
@@ -116,12 +116,14 @@ export class ReportService {
     report.reviewedAt = new Date().toISOString();
 
     for (const planned of report.upcomingPlan.plannedTasks) {
+      if (!planned.assignedAgent) continue;
       this.taskService.createTask({
         orgId: report.scopeId,
         title: planned.title,
         description: planned.description,
         priority: (planned.priority as any) ?? 'medium',
         assignedAgentId: planned.assignedAgent,
+        reviewerAgentId: planned.assignedAgent,
         approvedVia: 'plan_approval',
         planReportId: reportId,
         projectId: report.scope === 'project' ? report.scopeId : undefined,
@@ -161,6 +163,8 @@ export class ReportService {
     };
     saveToKnowledge?: boolean;
     projectId?: string;
+    assignedAgentId?: string;
+    reviewerAgentId?: string;
   }): ReportFeedback {
     const actions: FeedbackAction[] = [];
 
@@ -183,12 +187,14 @@ export class ReportService {
       actions.push({ type: 'knowledge', knowledgeId: entry.id });
     }
 
-    if (opts.type === 'directive') {
+    if (opts.type === 'directive' && opts.assignedAgentId && opts.reviewerAgentId) {
       const task = this.taskService.createTask({
         orgId: opts.reportId,
         title: `Directive: ${opts.content.slice(0, 100)}`,
         description: opts.content,
         priority: opts.priority === 'critical' ? 'urgent' : 'high',
+        assignedAgentId: opts.assignedAgentId,
+        reviewerAgentId: opts.reviewerAgentId,
         approvedVia: 'plan_approval',
         projectId: opts.projectId,
       });
@@ -245,7 +251,7 @@ export class ReportService {
   // ─── Private helpers ───────────────────────────────────────────────────────
 
   private computeMetrics(tasks: any[]): ReportMetrics {
-    const completed = tasks.filter(t => t.status === 'completed' || t.status === 'accepted');
+    const completed = tasks.filter(t => t.status === 'completed');
     const durations = completed
       .filter(t => t.startedAt)
       .map(t => new Date(t.updatedAt).getTime() - new Date(t.startedAt).getTime());
@@ -268,7 +274,7 @@ export class ReportService {
   private buildTaskSummary(tasks: any[]): ReportTaskSummary {
     return {
       completed: tasks
-        .filter(t => t.status === 'completed' || t.status === 'accepted')
+        .filter(t => t.status === 'completed')
         .map(t => ({
           id: t.id,
           title: t.title,

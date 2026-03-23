@@ -402,7 +402,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentTasks.map(t => {
               const isExpanded = expandedTaskId === t.id;
-              const hasLogs = ['in_progress', 'failed', 'completed', 'review', 'accepted'].includes(t.status);
+              const hasLogs = ['in_progress', 'failed', 'completed', 'review'].includes(t.status);
               return (
                 <div key={t.id}>
                   <button
@@ -675,12 +675,13 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   'Search': ['grep_search', 'glob_find', 'list_directory'],
   'Runtime': ['shell_execute', 'background_exec', 'process'],
   'Web': ['web_search', 'web_fetch', 'web_extract'],
-  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_submit_review'],
+  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list'],
   'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status'],
   'Projects': ['list_projects', 'get_project', 'project_info', 'iteration_status'],
   'Deliverables': ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   'Communication': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'],
   'Memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
+  'Planning': ['todo_write', 'todo_read'],
   'Team (Manager)': ['team_list', 'team_status', 'delegate_message', 'create_task', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
 };
 
@@ -692,7 +693,18 @@ function categorizeTools(tools: AgentToolInfo[]): Array<{ category: string; tool
     if (matched.length > 0) { categorized.set(cat, matched); matched.forEach(m => used.add(m.name)); }
   }
   const remaining = tools.filter(t => !used.has(t.name));
-  if (remaining.length > 0) categorized.set('Other', remaining);
+  for (const tool of remaining) {
+    const sep = tool.name.indexOf('__');
+    if (sep > 0) {
+      const server = tool.name.slice(0, sep);
+      const label = `MCP: ${server}`;
+      if (!categorized.has(label)) categorized.set(label, []);
+      categorized.get(label)!.push(tool);
+      used.add(tool.name);
+    }
+  }
+  const other = tools.filter(t => !used.has(t.name));
+  if (other.length > 0) categorized.set('Other', other);
   return [...categorized.entries()].map(([category, tools]) => ({ category, tools }));
 }
 
@@ -1127,13 +1139,43 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   const [loading, setLoading] = useState(!initialData);
   const [recentRuns, setRecentRuns] = useState<ActivitySummary[]>([]);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [triggering, setTriggering] = useState(false);
+  const [triggerMsg, setTriggerMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.agents.getHeartbeat(agentId).then(setData).catch(() => {}).finally(() => setLoading(false));
+  const refresh = useCallback(() => {
+    api.agents.getHeartbeat(agentId).then(setData).catch(() => {});
     api.agents.getRecentActivities(agentId).then(d => {
       setRecentRuns(d.activities.filter(a => a.type === 'heartbeat'));
     }).catch(() => {});
   }, [agentId]);
+
+  useEffect(() => {
+    setLoading(true);
+    refresh();
+    setLoading(false);
+  }, [refresh]);
+
+  // Auto-refresh when agent activity changes (heartbeat completes)
+  useEffect(() => {
+    const unsub = wsClient.on('agent:update', (event) => {
+      if (event.payload?.agentId === agentId) refresh();
+    });
+    return unsub;
+  }, [agentId, refresh]);
+
+  const handleTrigger = async () => {
+    setTriggering(true);
+    setTriggerMsg(null);
+    try {
+      const r = await api.agents.triggerHeartbeat(agentId);
+      setTriggerMsg(r.message);
+      setTimeout(() => setTriggerMsg(null), 4000);
+      setTimeout(refresh, 2000);
+    } catch (err) {
+      setTriggerMsg(String(err).replace('Error: ', ''));
+    }
+    setTriggering(false);
+  };
 
   if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading heartbeat data...</div>;
   if (!data) return <div className="text-xs text-gray-600 py-8 text-center">No heartbeat data available</div>;
@@ -1145,19 +1187,66 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     return `${(ms / 60000).toFixed(1)}m`;
   };
 
+  const formatRelativeTime = (iso?: string) => {
+    if (!iso) return null;
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 0) {
+      const abs = Math.abs(ms);
+      if (abs < 60000) return `in ${Math.ceil(abs / 1000)}s`;
+      if (abs < 3600000) return `in ${Math.ceil(abs / 60000)}m`;
+      return `in ${(abs / 3600000).toFixed(1)}h`;
+    }
+    if (ms < 60000) return `${Math.floor(ms / 1000)}s ago`;
+    if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
+    return `${(ms / 3600000).toFixed(1)}h ago`;
+  };
+
   return (
     <div className="space-y-4">
-      <Card title="Heartbeat Scheduler">
-        <div className="grid grid-cols-3 gap-4">
-          <StatBox label="Status" value={data.running ? 'Running' : 'Stopped'} color={data.running ? 'green' : 'gray'} />
-          <StatBox label="Uptime" value={formatDuration(data.uptimeMs) ?? '—'} />
-          <StatBox label="Interval" value={formatDuration(data.intervalMs) ?? '—'} />
+      {/* Scheduler + Controls */}
+      <Card title="Heartbeat Scheduler" action={
+        <div className="flex items-center gap-2">
+          <button onClick={refresh} className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+            Refresh
+          </button>
+          <button
+            onClick={handleTrigger}
+            disabled={triggering || !data.running}
+            className="text-[10px] px-2.5 py-1 rounded-md bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 border border-cyan-500/30 transition-colors disabled:opacity-40"
+          >
+            {triggering ? 'Triggering...' : 'Trigger Now'}
+          </button>
         </div>
+      }>
+        <div className="grid grid-cols-4 gap-4">
+          <StatBox label="Status" value={data.running ? 'Running' : 'Stopped'} color={data.running ? 'green' : 'gray'} />
+          <StatBox label="Interval" value={formatDuration(data.intervalMs) ?? '—'} />
+          <StatBox label="Last Run" value={data.lastHeartbeat ? formatRelativeTime(data.lastHeartbeat) ?? '—' : 'Never'} />
+          <StatBox label="Next Run" value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? '—' : data.running ? 'Pending' : '—'} />
+        </div>
+        {triggerMsg && (
+          <div className="mt-3 text-[11px] text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2">
+            {triggerMsg}
+          </div>
+        )}
       </Card>
-      {recentRuns.length > 0 && (
-        <Card title="Recent Heartbeat Runs" action={<span className="text-[10px] text-gray-600">{recentRuns.length} runs</span>}>
+
+      {/* Last Heartbeat Summary */}
+      {data.lastSummary && (
+        <Card title="Last Heartbeat Summary" action={
+          data.lastSummaryAt ? <span className="text-[10px] text-gray-600">{new Date(data.lastSummaryAt).toLocaleString()}</span> : undefined
+        }>
+          <div className="bg-surface-primary/50 rounded-lg px-4 py-3">
+            <MarkdownMessage content={data.lastSummary} className="text-xs text-gray-300 leading-relaxed" />
+          </div>
+        </Card>
+      )}
+
+      {/* Recent Runs */}
+      {recentRuns.length > 0 ? (
+        <Card title="Recent Runs" action={<span className="text-[10px] text-gray-600">{recentRuns.length} runs this session</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentRuns.map(act => {
+            {[...recentRuns].reverse().map(act => {
               const isExpanded = expandedRunId === act.id;
               return (
                 <div key={act.id}>
@@ -1165,11 +1254,13 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                     onClick={() => setExpandedRunId(isExpanded ? null : act.id)}
                     className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-cyan-400" />
                     <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-gray-500 shrink-0">{act.logCount} logs</span>
+                    <span className="text-[10px] text-gray-500 shrink-0">{act.logCount} actions</span>
                     <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                    <svg className={`w-3 h-3 text-gray-600 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="currentColor">
+                      <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
                   </button>
                   {isExpanded && (
                     <div className="border-t border-border-default/60 bg-surface-primary/40">
@@ -1181,7 +1272,25 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
             })}
           </div>
         </Card>
-      )}
+      ) : !data.lastHeartbeat ? (
+        <Card title="Recent Runs">
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <div className="text-xl mb-2 opacity-40">♡</div>
+            <p className="text-xs text-gray-500">No heartbeat runs yet this session.</p>
+            <p className="text-[10px] text-gray-600 mt-1">
+              {data.running
+                ? `First heartbeat will trigger in ~${formatDuration(data.intervalMs - data.uptimeMs % data.intervalMs) ?? 'soon'}.`
+                : 'Heartbeat scheduler is stopped.'}
+            </p>
+            {data.running && (
+              <button onClick={handleTrigger} disabled={triggering}
+                className="mt-3 text-[10px] px-3 py-1.5 rounded-md bg-cyan-600/15 text-cyan-400 hover:bg-cyan-600/25 border border-cyan-500/25 transition-colors disabled:opacity-40">
+                {triggering ? 'Triggering...' : 'Run First Heartbeat Now'}
+              </button>
+            )}
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }
@@ -1197,7 +1306,7 @@ function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: 
 
   const loadTasks = useCallback(() => {
     api.tasks.list({ assignedAgentId: agentId })
-      .then(d => { setTasks(d.tasks.filter(t => !t.parentTaskId)); })
+      .then(d => { setTasks(d.tasks); })
       .catch(() => {});
   }, [agentId]);
 

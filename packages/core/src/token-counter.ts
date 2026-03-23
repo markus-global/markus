@@ -15,44 +15,128 @@ function cjkRatio(text: string): number {
   return matches ? matches.length / text.length : 0;
 }
 
+type TiktokenEncoding = { encode: (text: string) => number[] | Uint32Array; free?: () => void };
+
+let tiktokenCache: Map<string, TiktokenEncoding> = new Map();
+
+async function loadTiktokenEncoding(encoding: string): Promise<TiktokenEncoding | null> {
+  if (tiktokenCache.has(encoding)) return tiktokenCache.get(encoding)!;
+  try {
+    const { getEncoding } = await import('js-tiktoken');
+    const enc = getEncoding(encoding as any);
+    tiktokenCache.set(encoding, enc);
+    return enc;
+  } catch (err) {
+    log.debug('Failed to load tiktoken encoding, using heuristic', { encoding, error: String(err) });
+    return null;
+  }
+}
+
+function getTiktokenEncodingName(model: string): string | null {
+  if (model.startsWith('gpt-4o') || model.startsWith('gpt-4-turbo') || model.startsWith('gpt-5') || model.startsWith('o4') || model.startsWith('o3')) {
+    return 'o200k_base';
+  }
+  if (model.startsWith('gpt-4') || model.startsWith('gpt-3.5')) {
+    return 'cl100k_base';
+  }
+  return null;
+}
+
 /**
- * Adaptive heuristic token counter that adjusts chars/token ratio based on
- * CJK character density. Optionally calibrated by real API usage data.
- *
- * Accuracy hierarchy (used when available):
- * 1. API-returned actual token counts (post-request, already captured in LLMResponse.usage)
- * 2. Anthropic Token Counting API (pre-request, via countTokensViaAPI)
- * 3. This local heuristic (pre-request, synchronous fallback)
- *
- * The calibration feedback loop uses actual API values to continuously
- * improve the heuristic coefficients.
+ * Adaptive token counter with model-specific support:
+ * 1. js-tiktoken for OpenAI models (exact)
+ * 2. Anthropic Token Counting API for Claude (exact, async)
+ * 3. Calibrated heuristic fallback for all others
  */
 export class SmartTokenCounter implements TokenCounter {
   private calibrationSamples: Array<{ estimated: number; actual: number }> = [];
   private calibrationFactor = 1.0;
   private anthropicApiKey?: string;
   private anthropicBaseUrl: string;
+  private activeModel = '';
+  private tiktokenEncoder: TiktokenEncoding | null = null;
+  private tiktokenLoading = false;
 
   constructor(opts?: { anthropicApiKey?: string; anthropicBaseUrl?: string }) {
     this.anthropicApiKey = opts?.anthropicApiKey;
     this.anthropicBaseUrl = opts?.anthropicBaseUrl ?? 'https://api.anthropic.com';
   }
 
+  private tiktokenLoadPromise: Promise<void> | null = null;
+
+  setActiveModel(model: string): void {
+    if (model === this.activeModel) return;
+    this.activeModel = model;
+    this.tiktokenEncoder = null;
+    this.tiktokenLoadPromise = null;
+
+    const encoding = getTiktokenEncodingName(model);
+    if (encoding) {
+      const cached = tiktokenCache.get(encoding);
+      if (cached) {
+        this.tiktokenEncoder = cached;
+      } else if (!this.tiktokenLoading) {
+        this.tiktokenLoadPromise = this.loadEncoderAsync(model, encoding);
+      }
+    }
+  }
+
+  /**
+   * Wait for the tiktoken encoder to finish loading.
+   * Call this at agent startup to avoid first-call heuristic fallback.
+   */
+  async ensureReady(): Promise<void> {
+    if (this.tiktokenLoadPromise) {
+      await this.tiktokenLoadPromise;
+    }
+  }
+
+  private async loadEncoderAsync(model: string, encoding: string): Promise<void> {
+    this.tiktokenLoading = true;
+    try {
+      const enc = await loadTiktokenEncoding(encoding);
+      if (enc && this.activeModel === model) {
+        this.tiktokenEncoder = enc;
+      }
+    } catch {
+      // heuristic fallback
+    } finally {
+      this.tiktokenLoading = false;
+    }
+  }
+
   countTokens(text: string): number {
-    const ratio = cjkRatio(text);
-    // Pure English: ~4 chars/token; Pure CJK: ~1.5 chars/token
-    const charsPerToken = 4 - ratio * 2.5;
-    const raw = Math.ceil(text.length / charsPerToken);
-    return Math.ceil(raw * this.calibrationFactor);
+    if (this.tiktokenEncoder) {
+      try {
+        return this.tiktokenEncoder.encode(text).length;
+      } catch {
+        // fall through to heuristic
+      }
+    }
+    return this.heuristicCount(text);
   }
 
   countMessageTokens(content: string, role?: string): number {
-    const overhead = 20; // role/framing tokens
+    const overhead = 20;
+    if (this.tiktokenEncoder) {
+      try {
+        return this.tiktokenEncoder.encode(content).length + overhead;
+      } catch {
+        // fall through
+      }
+    }
     let chars = content.length + overhead;
     if (role === 'assistant') chars += 5;
     const ratio = cjkRatio(content);
     const charsPerToken = 4 - ratio * 2.5;
     const raw = Math.ceil(chars / charsPerToken);
+    return Math.ceil(raw * this.calibrationFactor);
+  }
+
+  private heuristicCount(text: string): number {
+    const ratio = cjkRatio(text);
+    const charsPerToken = 4 - ratio * 2.5;
+    const raw = Math.ceil(text.length / charsPerToken);
     return Math.ceil(raw * this.calibrationFactor);
   }
 
@@ -91,21 +175,20 @@ export class SmartTokenCounter implements TokenCounter {
    */
   calibrate(estimated: number, actual: number): void {
     if (estimated <= 0 || actual <= 0) return;
+    // Skip calibration when using tiktoken (already exact)
+    if (this.tiktokenEncoder) return;
 
     this.calibrationSamples.push({ estimated, actual });
-    // Keep last 50 samples
     if (this.calibrationSamples.length > 50) {
       this.calibrationSamples.shift();
     }
 
-    // Recalculate calibration factor: actual/estimated ratio
     let sumRatio = 0;
     for (const s of this.calibrationSamples) {
       sumRatio += s.actual / s.estimated;
     }
     this.calibrationFactor = sumRatio / this.calibrationSamples.length;
 
-    // Clamp to reasonable range
     if (this.calibrationFactor < 0.5) this.calibrationFactor = 0.5;
     if (this.calibrationFactor > 2.0) this.calibrationFactor = 2.0;
 
@@ -113,12 +196,17 @@ export class SmartTokenCounter implements TokenCounter {
       log.debug('Token counter calibration updated', {
         factor: this.calibrationFactor.toFixed(3),
         samples: this.calibrationSamples.length,
+        model: this.activeModel,
       });
     }
   }
 
   getCalibrationFactor(): number {
     return this.calibrationFactor;
+  }
+
+  getActiveModel(): string {
+    return this.activeModel;
   }
 }
 

@@ -30,6 +30,23 @@ export interface OrgContext {
   customContext?: string;
 }
 
+export interface ContextUsageStats {
+  contextWindow: number;
+  systemTokens: number;
+  toolDefTokens: number;
+  messageTokens: number;
+  maxOutputReserved: number;
+  safetyMargin: number;
+  totalUsed: number;
+  available: number;
+  usagePercent: number;
+}
+
+export interface PreparedContext {
+  messages: LLMMessage[];
+  usage: ContextUsageStats;
+}
+
 function estimateTokens(text: string, counter?: TokenCounter): number {
   return (counter ?? getDefaultTokenCounter()).countTokens(text);
 }
@@ -46,10 +63,18 @@ function estimateMessageTokens(msg: LLMMessage, counter?: TokenCounter): number 
   return tokens;
 }
 
+/**
+ * Callback type for LLM-powered conversation summarization.
+ * Given a list of messages, returns a concise summary string.
+ * Used by ContextEngine when compacting old conversation history.
+ */
+export type LLMSummarizer = (messages: LLMMessage[]) => Promise<string>;
+
 export class ContextEngine {
   private config: ContextConfig;
   private tokenCounter: TokenCounter;
   private semanticSearch?: SemanticMemorySearch;
+  private llmSummarizer?: LLMSummarizer;
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -58,6 +83,10 @@ export class ContextEngine {
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
     this.semanticSearch = ss;
+  }
+
+  setLLMSummarizer(summarizer: LLMSummarizer): void {
+    this.llmSummarizer = summarizer;
   }
 
   async buildSystemPrompt(opts: {
@@ -329,10 +358,10 @@ export class ContextEngine {
 
     parts.push('');
     parts.push(
-      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` → `task_update(in_progress)` → decompose with `subtask_create` → work through subtasks → `task_submit_review` with `reviewer_id` (never `task_update(completed)` yourself). Choose the right reviewer: if the task was delegated to you, the delegator is the reviewer; if you created it yourself, use your team manager. The system notifies the reviewer automatically — do NOT call `agent_broadcast_status`. Reviewer flow: `task_update(accepted)` or `task_update(revision)`. Standard tasks auto-complete after acceptance. Scheduled tasks return to pending after acceptance, awaiting the next scheduled run. Check `task_list` before creating duplicates.'
+      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` (with `reviewer_agent_id`) → task auto-starts after approval → decompose with `subtask_create` → work through subtasks → **call `task_submit_review`** with summary and deliverables when done. Calling `task_submit_review` is MANDATORY — the task will NOT enter review without it. The system auto-fills task_id, reviewer, and branch. Workers MUST NOT set status to `completed` — only the reviewer can. Reviewer flow: `task_update(status: "completed")` to approve, or `task_update(note: "what needs to change")` to reject — rejection auto-restarts execution. Scheduled tasks return to pending after acceptance, awaiting the next scheduled run. Check `task_list` before creating duplicates.'
     );
     parts.push(
-      '**Subtask Rule:** For any complex task, decompose it into subtasks using `subtask_create` BEFORE starting work. Mark each done with `subtask_complete` as you progress. Use `subtask_list` to check progress. Only submit the parent task for review when all subtasks are complete.'
+      '**Subtask Rule:** Subtasks are embedded checklist items within a task. For any complex task, decompose it into subtasks using `subtask_create` with the task ID BEFORE starting work. Mark each done with `subtask_complete` as you progress. Use `subtask_list` to check progress. Only submit the task for review when all subtasks are complete.'
     );
     parts.push(
       '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'
@@ -428,12 +457,12 @@ export class ContextEngine {
 
       case 'task_execution':
         lines.push('You are in **task execution** mode. Follow these behavioral rules:');
-        lines.push('- **Check dependencies first**: If your task has dependency tasks, review their deliverables and notes BEFORE starting work. Use `file_read` on deliverable file paths and `task_get` to retrieve full context. Dependency outputs are your essential background knowledge.');
+        lines.push('- **Check dependencies first**: If your task has dependency tasks, review their deliverables and notes BEFORE starting work. Use `file_read` on deliverable file paths and `task_get` to retrieve full context.');
         lines.push('- Be thorough and methodical — this is your dedicated work time.');
-        lines.push('- Complete all steps of the task before submitting for review.');
+        lines.push('- **Decompose with subtasks**: For any non-trivial task, break it into subtasks using `subtask_create` BEFORE starting work. This gives visibility into progress. Use `subtask_list` to check existing subtasks (each has a `sub_`-prefixed ID). Mark each done with `subtask_complete` (requires both `task_id` and `subtask_id`). Do NOT use `task_update` to complete subtasks — `task_update` changes the *parent task* status and will fail on pending_approval tasks.');
         lines.push('- Update task notes with progress after each significant step using `task_note`.');
         lines.push('- Use all available tools to deliver high-quality output.');
-        lines.push('- Follow the full task lifecycle: work → test → document → `task_submit_review`.');
+        lines.push('- **MANDATORY**: When your work is complete, you MUST call `task_submit_review` with a summary and list of deliverable files. The task is NOT considered complete until you do this. The system auto-fills task_id, reviewer, and branch for you.');
         lines.push('- If you discover blockers, update the task status to `blocked` with a clear explanation.');
         lines.push('- Stay focused on the assigned task — do not wander into unrelated work.');
         break;
@@ -442,8 +471,13 @@ export class ContextEngine {
         lines.push('You are in **heartbeat** mode — a brief periodic check-in.');
         lines.push('- Be concise. This is monitoring, not a work session.');
         lines.push('- Compare current state against your last heartbeat summary. Skip unchanged items.');
-        lines.push('- NEVER execute actual work, create tasks, or start tasks during heartbeat.');
-        lines.push('- **Review duty**: If you are a manager/reviewer and there are tasks in `review` status where you are the reviewer, inspect and approve/reject them promptly. Only review tasks that are in `review` status — do not review tasks in other statuses.');
+        lines.push('- Do NOT create new tasks or start non-review work during heartbeat.');
+        lines.push('- **Review duty (IMPORTANT)**: Use `task_list` to check for tasks in `review` status where YOU are the designated reviewer (`reviewer_agent_id` matches your agent ID). For each such task:');
+        lines.push('  1. Call `task_get` to inspect deliverables and notes');
+        lines.push('  2. Use `file_read` to examine the actual work artifacts');
+        lines.push('  3. Either approve via `task_update(task_id, status: "completed")` with a review note, or reject via `task_update(task_id, note: "what needs to change")` — rejection auto-restarts execution');
+        lines.push('  4. Review is your PRIMARY responsibility — unreviewed tasks block the entire team');
+        lines.push('- If you see a `review` task assigned to you, you MUST review it in this heartbeat — do not defer.');
         lines.push('- If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
 
@@ -542,7 +576,7 @@ export class ContextEngine {
    * 3. Fills remaining budget with messages, newest first
    * 4. Compacts old tool-call turns into summaries instead of truncating
    */
-  prepareMessages(opts: {
+  async prepareMessages(opts: {
     systemPrompt: string;
     sessionMessages: LLMMessage[];
     memory: IMemoryStore;
@@ -554,7 +588,7 @@ export class ContextEngine {
       description: string;
       inputSchema: Record<string, unknown>;
     }>;
-  }): LLMMessage[] {
+  }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const maxOutput = opts.modelMaxOutput ?? 4096;
 
@@ -562,8 +596,7 @@ export class ContextEngine {
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
-    // Budget = contextWindow - system - tools - reply - safety margin (15%)
-    const safetyMargin = Math.ceil(contextWindow * 0.15);
+    const safetyMargin = Math.ceil(Math.min(contextWindow * 0.15, 30000));
     const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
 
     if (messageBudget < 500) {
@@ -578,35 +611,39 @@ export class ContextEngine {
 
     let messages = opts.sessionMessages;
 
-    // Step 1: Summarize very old sessions if memory supports it
     if (messages.length > 60) {
-      messages = opts.memory.summarizeAndTruncate(opts.sessionId, 40);
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 40);
     }
 
-    // Step 2: Shrink oversized individual messages. Any single message
-    // that exceeds 1/8 of the budget is likely a huge tool result or
-    // dumped data — compact it to a short summary in-place.
     const perMessageCap = Math.max(2000, Math.floor(messageBudget / 8));
     messages = this.shrinkOversizedMessages(messages, perMessageCap);
-
-    // Step 3: Sanitize message sequence (fix orphaned tool results)
     messages = this.sanitizeMessageSequence(messages);
 
-    // Step 4: Identify the "current turn" — the most recent user message and
-    // any tool-call chain following it. This is never compacted.
     const currentTurnStart = this.findCurrentTurnStart(messages);
-
-    // Step 5: Compact old turns to fit budget.
-    // Work from oldest to newest: compact tool-call blocks in history
-    // into one-line summaries. Stop compacting once we fit the budget.
     let totalTokens = this.sumTokens(messages);
 
+    const preCompressionUsed = systemTokens + toolDefTokens + totalTokens;
+    const effectiveBudget = contextWindow - maxOutput;
+    const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
+
     if (totalTokens > messageBudget) {
-      messages = this.compactOldTurns(messages, currentTurnStart, messageBudget);
-      totalTokens = this.sumTokens(messages);
+      if (preCompressionPct > 90 && messages.length > 20) {
+        log.warn('Context usage >90%, forcing aggressive summarization', {
+          usagePercent: preCompressionPct.toFixed(1),
+          messageCount: messages.length,
+        });
+        messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 15);
+        messages = this.sanitizeMessageSequence(messages);
+        totalTokens = this.sumTokens(messages);
+      }
+
+      if (totalTokens > messageBudget) {
+        const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
+        messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
+        totalTokens = this.sumTokens(messages);
+      }
     }
 
-    // Step 6: If still over budget (e.g. huge current turn), trim oldest messages
     if (totalTokens > messageBudget) {
       messages = this.trimToFitBudget(messages, messageBudget);
       totalTokens = this.sumTokens(messages);
@@ -617,6 +654,10 @@ export class ContextEngine {
       });
     }
 
+    const totalUsed = systemTokens + toolDefTokens + totalTokens;
+    const available = Math.max(0, messageBudget - totalTokens);
+    const usagePercent = effectiveBudget > 0 ? (totalUsed / effectiveBudget) * 100 : 0;
+
     log.debug('Context assembled', {
       contextWindow,
       messageBudget,
@@ -624,9 +665,66 @@ export class ContextEngine {
       systemTokens,
       toolDefTokens,
       messageCount: messages.length,
+      usagePercent: usagePercent.toFixed(1),
     });
 
-    return [{ role: 'system', content: opts.systemPrompt }, ...messages];
+    if (usagePercent > 80) {
+      log.warn('Context usage above 80%', { usagePercent: usagePercent.toFixed(1), totalUsed, effectiveBudget });
+    }
+
+    return {
+      messages: [{ role: 'system', content: opts.systemPrompt }, ...messages],
+      usage: {
+        contextWindow,
+        systemTokens,
+        toolDefTokens,
+        messageTokens: totalTokens,
+        maxOutputReserved: maxOutput,
+        safetyMargin,
+        totalUsed,
+        available,
+        usagePercent: Math.round(usagePercent * 10) / 10,
+      },
+    };
+  }
+
+  /**
+   * Attempt LLM-powered summarization, falling back to heuristic truncation.
+   * When an LLM summarizer is available, the older messages are summarized
+   * by the model into a concise summary that preserves key decisions and context.
+   */
+  private async smartSummarizeAndTruncate(
+    memory: IMemoryStore,
+    sessionId: string,
+    messages: LLMMessage[],
+    keepLast: number,
+  ): Promise<LLMMessage[]> {
+    if (messages.length <= keepLast) return messages;
+
+    if (this.llmSummarizer) {
+      try {
+        const older = messages.slice(0, -keepLast);
+        const retained = messages.slice(-keepLast);
+        const summary = await this.llmSummarizer(older);
+        if (summary && summary.length > 0) {
+          log.info('LLM-powered summarization succeeded', {
+            sessionId,
+            compactedMessages: older.length,
+            summaryLength: summary.length,
+          });
+          const summaryMessage: LLMMessage = {
+            role: 'user',
+            content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
+          };
+          memory.writeDailyLog(sessionId, summary);
+          return [summaryMessage, ...retained];
+        }
+      } catch (err) {
+        log.warn('LLM summarization failed, falling back to heuristic', { error: String(err) });
+      }
+    }
+
+    return memory.summarizeAndTruncate(sessionId, keepLast);
   }
 
   /**
@@ -857,7 +955,13 @@ export class ContextEngine {
         }
       } else {
         flushPending(pendingIds.size > 0);
-        result.push(msg);
+        // Merge consecutive same-role messages (e.g. two user messages from retry)
+        const prev = result[result.length - 1];
+        if (prev && prev.role === msg.role && msg.role === 'user') {
+          prev.content = prev.content + '\n\n' + msg.content;
+        } else {
+          result.push(msg);
+        }
       }
     }
 

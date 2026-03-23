@@ -58,6 +58,8 @@ export interface LLMRequest {
     taskId?: string;
     sessionId?: string;
   };
+  /** Enable Anthropic server-side context compaction (beta) */
+  compaction?: boolean;
 }
 
 export type LLMContentPart =
@@ -100,6 +102,8 @@ export interface LLMResponse {
     outputTokens: number;
   };
   finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+  /** Anthropic compaction summary (present when compaction triggers) */
+  compactionContent?: string;
 }
 
 export interface LLMStreamEvent {

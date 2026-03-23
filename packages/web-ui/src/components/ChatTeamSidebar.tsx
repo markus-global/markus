@@ -348,8 +348,7 @@ export function ChatTeamSidebar({
   const renderAgentItem = (a: AgentInfo, teamId?: string) => {
     const selected = chatMode === 'direct' && selectedAgent === a.id;
     const isExt = externalMarkusIds.has(a.id);
-    const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500 animate-pulse' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
-    const isError = a.status === 'error';
+    const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-yellow-500 animate-pulse' : a.status === 'error' ? 'bg-red-500' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
@@ -358,7 +357,7 @@ export function ChatTeamSidebar({
     const showRole = roleNorm && roleNorm !== nameNorm;
 
     const subtitle = agentLastMsg.get(a.id)
-      || (isError ? 'Error' : a.currentActivity?.label?.slice(0, 60) || '');
+      || (a.currentActivity?.label?.slice(0, 60) || '');
 
     const statusTitle = a.status === 'idle' ? 'Online' : a.status === 'working' ? 'Working' : a.status === 'error' ? 'Error' : a.status === 'paused' ? 'Paused' : 'Offline';
 
@@ -380,11 +379,11 @@ export function ChatTeamSidebar({
             setAgentMenu({ agentId: a.id, teamId, x: e.clientX, y: e.clientY });
           }}
           className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors touch-none select-none ${
-            selected ? 'bg-brand-600/20 text-brand-300' : isError ? 'text-gray-400 hover:bg-red-500/10' : 'text-gray-400 hover:bg-surface-elevated'
+            selected ? 'bg-brand-600/20 text-brand-300' : 'text-gray-400 hover:bg-surface-elevated'
           }`}
         >
           <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-            isError ? 'bg-red-900/60 text-red-300' : selected ? 'bg-brand-600' : 'bg-surface-overlay'
+            selected ? 'bg-brand-600' : 'bg-surface-overlay'
           }`}>
             {agentInitials(a.name)}
           </div>
@@ -395,7 +394,7 @@ export function ChatTeamSidebar({
               {isManager && <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" className="text-amber-400 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
               {isExt && <span className="text-[8px] px-1 py-0 rounded bg-purple-500/20 text-purple-400 font-medium shrink-0 leading-relaxed">EXT</span>}
             </div>
-            <div className={`truncate text-[10px] leading-tight mt-0.5 ${isError && !agentLastMsg.has(a.id) ? 'text-red-400/60' : 'text-gray-500'}`}>
+            <div className="truncate text-[10px] leading-tight mt-0.5 text-gray-500">
               {subtitle || '\u00A0'}
             </div>
           </div>

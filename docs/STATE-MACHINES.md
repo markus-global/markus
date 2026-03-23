@@ -1,131 +1,213 @@
 # Task & Requirement State Machines
 
-This document defines the complete Finite State Machine (FSM) specifications for standard tasks, scheduled (recurring) tasks, and requirements in Markus.
+This document defines the Finite State Machine (FSM) specifications for tasks and requirements in Markus.
 
-## 1. Standard Task FSM
+## 1. Task States
 
-### States
+Markus uses **8 states** for all task types (standard and scheduled):
 
 | State | Description |
 |-------|-------------|
-| `pending` | Created, awaiting assignment or approval |
-| `pending_approval` | Awaiting human or manager approval before work begins |
-| `assigned` | Assigned to an agent, ready to start |
-| `in_progress` | Agent is actively working |
-| `blocked` | Blocked by unfinished dependencies |
-| `review` | Agent submitted deliverables, awaiting reviewer evaluation |
-| `revision` | Reviewer requested rework |
-| `accepted` | Review passed (transient — auto-transitions to `completed`) |
-| `completed` | Task done, branch merged, worktree cleaned up |
-| `failed` | Task failed due to unrecoverable error |
-| `cancelled` | Task cancelled |
-| `archived` | Historical, no longer active |
+| `pending_approval` | Created, awaiting human approval before work can begin |
+| `in_progress` | Agent is actively executing |
+| `blocked` | Paused by user, or waiting for dependency tasks to finish |
+| `review` | Execution finished, awaiting reviewer evaluation |
+| `completed` | Reviewer approved; task is done |
+| `failed` | Unrecoverable error after retry exhaustion |
+| `cancelled` | Cancelled by user (with optional cascade to dependents) |
+| `archived` | Historical record, no longer active |
 
-### Transitions
+### State Transition Diagram
 
 ```
-                          ┌───────────────────────────┐
-                          │                           ▼
-pending ──► pending_approval ──► assigned ──► in_progress ──► review ──► accepted ──► completed ──► archived
-                                    │              │            │
-                                    │              │            └──► revision ──► in_progress
-                                    │              │
-                                    ▼              ▼
-                                 blocked      failed / cancelled
+                    ┌─────── (retry fresh) ───────┐
+                    │                              │
+                    ▼                              │
+pending_approval ──► in_progress ──► review ──► completed ──► archived
+       │                │    ▲         │
+       │                │    │         └── (revision) ──► in_progress
+       │                │    │
+       │                ▼    │
+       │             blocked ┘ (resume / deps satisfied)
+       │                │
+       ▼                ▼
+   cancelled         failed ──► archived
+                        │
+                        └── (retry fresh) ──► in_progress
 ```
 
-| From | To | Trigger | Notes |
-|------|----|---------|-------|
-| `pending` | `pending_approval` | Task created with governance requiring approval | Auto on create |
-| `pending` | `assigned` | Agent assigned (auto-approve or no governance) | |
-| `pending_approval` | `assigned` | Human/manager approves task | Only via `approveTask()` |
-| `pending_approval` | `cancelled` | Human/manager rejects task | Only via `rejectTask()` |
-| `assigned` | `in_progress` | Agent starts working | Auto-starts execution |
-| `in_progress` | `review` | Agent calls `task_submit_review` with `reviewer_id` | System notifies reviewer |
-| `in_progress` | `blocked` | Dependencies not met | |
-| `in_progress` | `failed` | Unrecoverable error | |
-| `in_progress` | `cancelled` | Agent/human cancels | |
-| `blocked` | `in_progress` | All blockers resolved | Auto-checked |
-| `review` | `accepted` | Reviewer approves | Via `task_update(accepted)` or `acceptTask()` |
-| `review` | `revision` | Reviewer requests rework | Via `task_update(revision)` or `requestRevision()` |
-| `revision` | `in_progress` | Agent starts rework | Auto-starts execution |
-| `accepted` | `completed` | **Automatic** — branch merged, worktree cleaned | `setImmediate` in `updateTaskStatus`/`acceptTask` |
-| `completed` | `archived` | Manual archival | |
-| `failed` | `archived` | Manual archival | |
-| `cancelled` | `archived` | Manual archival | |
+### Transition Table
+
+**All state transitions go through `updateTaskStatus()`** — no direct status mutation.
+
+| From | To | Trigger | Method |
+|------|----|---------|--------|
+| `pending_approval` | `in_progress` | Human approves (no blockers) | `approveTask()` |
+| `pending_approval` | `blocked` | Human approves (has unmet blockers) | `approveTask()` |
+| `pending_approval` | `cancelled` | Human rejects | `rejectTask()` |
+| `in_progress` | `review` | Agent execution finishes | Auto (log handler in `runTask`) |
+| `in_progress` | `blocked` | User pauses task | API `POST /tasks/:id/pause` |
+| `in_progress` | `failed` | Error + retries exhausted | Auto (retry logic) |
+| `in_progress` | `cancelled` | User cancels | `cancelTask()` |
+| `blocked` | `in_progress` | User resumes, or all blockers satisfied | `resumeTask` / `checkDependentTasks()` |
+| `blocked` | `cancelled` | User cancels / cascade cancel | `cancelTask()` |
+| `review` | `completed` | Reviewer approves | `acceptTask()` |
+| `review` | `in_progress` | Reviewer requests revision (new round) | `requestRevision()` |
+| `review` | `cancelled` | User cancels | `cancelTask()` |
+| `failed` | `in_progress` | User clicks Retry (fresh start, new round) | `retryTaskFresh()` |
+| `failed` | `archived` | Manual archival | `archiveTask()` |
+| `completed` | `archived` | Manual archival | `archiveTask()` |
+| `cancelled` | `archived` | Manual archival | `archiveTask()` |
+
+### Side Effects in `updateTaskStatus()`
+
+These happen automatically when the status changes:
+
+| Trigger | Side Effect |
+|---------|-------------|
+| → `in_progress` (from non-`in_progress`) | Auto-start: `runTask()` via `setImmediate` |
+| `in_progress` → anything else | Cancel running execution (cancel token) |
+| → `completed` / `failed` / `cancelled` | Set `completedAt`; check dependent tasks for unblocking |
+| → `review` | Notify reviewer agent automatically |
 
 ### Key Rules
 
-1. **Workers cannot set their own task to `completed`** — they must use `task_submit_review`.
-2. **`accepted → completed` is automatic** — the system merges branches and cleans up worktrees.
-3. **`task_submit_review` requires `reviewer_id`** — the agent must specify who reviews.
-4. **Reviewer must differ from worker** — self-review is blocked.
-5. **Choosing a reviewer**: if the task was delegated, the delegator reviews; if self-created, the team manager reviews.
+1. **Single entry point**: All status changes go through `updateTaskStatus()`. Methods like `approveTask`, `acceptTask`, `requestRevision` prepare the task then delegate to `updateTaskStatus`.
+2. **Workers cannot self-complete**: Execution finish → `review`, not `completed`. A reviewer must approve.
+3. **Reviewer ≠ Worker**: Self-review is blocked. `reviewerAgentId` is mandatory at task creation.
+4. **Retry = fresh start**: Retry increments `executionRound`, creates a new LLM session, discards previous execution context. Only the task description and notes carry over.
+5. **Pause = blocked**: Pausing a running task sets it to `blocked` and cancels execution. Resume calls `runTask` with full previous context.
+6. **No worktree management in task-service**: Git worktrees, branches, and merges are the agent's responsibility. The task service only manages task state.
 
 ---
 
-## 2. Scheduled (Recurring) Task FSM
+## 2. Execution Rounds
 
-Scheduled tasks follow the same review pipeline as standard tasks, but **cycle back to `pending` after acceptance** instead of completing.
+Each task tracks an `executionRound` counter (starts at 1). It increments when:
 
-### States
+- Reviewer requests revision (`requestRevision`)
+- Scheduled task fires again (`resetTaskForRerun`)
+- User clicks Retry (`retryTaskFresh`)
 
-Same as standard tasks, except:
-- `completed` is only reached when `maxRuns` is exhausted or the task is manually completed.
-- `accepted` is transient — auto-transitions to `pending` (not `completed`).
+Within a single round, transient retries (network errors, timeouts) reuse the same LLM session — the agent picks up where it left off with full conversation history.
+
+A new round always gets a fresh LLM session (`task_{taskId}_r{round}`).
+
+### Context by Round Type
+
+| Scenario | Previous execution context | LLM session |
+|----------|---------------------------|-------------|
+| Transient retry (same round) | N/A — same session | Reused (full history) |
+| Review revision (new round) | Included with `🔴 REVISION REQUIRED` header | Fresh |
+| Scheduled rerun (new round) | Included (last N rounds) | Fresh |
+| User Retry (new round) | **Not included** — clean start | Fresh |
+
+---
+
+## 3. Scheduled (Recurring) Tasks
+
+Scheduled tasks follow the same state machine as standard tasks, with these differences:
 
 ### Lifecycle
 
 ```
-                    ┌──────────────────────────────────────────────────┐
-                    │                                                  │
-                    ▼                                                  │
-pending ──► assigned ──► in_progress ──► review ──► accepted ──► pending (next run)
-                              │            │
-                              │            └──► revision ──► in_progress
-                              ▼
-                         failed / cancelled
+pending_approval → in_progress → review → completed
+                                             │
+                                    (scheduled rerun)
+                                             │
+                                             ▼
+                                         in_progress → review → completed → ...
 ```
+
+After `completed`, the `ScheduledTaskRunner` checks `nextRunAt`. When it's time, it calls `resetTaskForRerun()` which bumps `executionRound` and transitions back to `in_progress`.
 
 ### Schedule Mechanism
 
-1. **`ScheduledTaskRunner`** polls on a fixed interval (default 60s).
-2. On each tick, checks `nextRunAt` against current time.
-3. When `nextRunAt` has passed and task is in a fireable state (`pending`, `completed`, `failed`):
-   - Calls `advanceScheduleConfig()` — increments `currentRuns`, sets `lastRunAt`, computes `nextRunAt` for the next cycle.
-   - Resets task from terminal states (if needed) via `resetTaskForRerun()`.
-   - Auto-starts execution via `runTask()`.
-4. Tasks in `in_progress`, `assigned`, `review`, `revision`, `blocked`, `pending_approval` are **skipped** (a run is already active).
-5. Paused tasks (`config.paused = true`) are skipped.
+1. **`ScheduledTaskRunner`** polls every 60 seconds.
+2. Checks `nextRunAt` against current time.
+3. Fires only when task is in a "fireable" state (`completed`, `failed`) and not paused.
+4. Tasks in `in_progress`, `review`, `blocked`, `pending_approval` are **skipped** (a run is active).
+5. `config.paused = true` skips the task.
+6. `maxRuns` limit stops scheduling when `currentRuns >= maxRuns`.
 
-### Transitions (differences from standard)
+### Key Differences from Standard Tasks
 
-| From | To | Trigger | Notes |
-|------|----|---------|-------|
-| `accepted` | `pending` | **Automatic** after review acceptance | Resets `result`, `startedAt`, `completedAt` |
-| `pending` | `in_progress` | `ScheduledTaskRunner` fires when `nextRunAt` arrives | Via `runTask()` |
-
-### Key Rules
-
-1. **Same review pipeline** — scheduled tasks go through `review → accepted`, not directly to `completed`.
-2. **After acceptance → `pending`** — the task waits for the next scheduled run.
-3. **`nextRunAt` is computed before each run** — so after acceptance, the next run time is already set.
-4. **Branch merge is skipped** — scheduled tasks keep their worktree across iterations.
-5. **Deliverables accumulate** — each run's deliverables are tagged with run number and appended.
-6. **`maxRuns` limit** — when `currentRuns >= maxRuns`, the runner stops firing.
+| Aspect | Standard Task | Scheduled Task |
+|--------|---------------|----------------|
+| After `completed` | Terminal (can archive) | Waits for next scheduled run |
+| Review acceptance | → `completed` (done) | → `completed` → next run at `nextRunAt` |
+| Deliverables | Replaced each run | Accumulated (tagged with run number) |
 
 ---
 
-## 3. Requirement FSM
+## 4. Review Flow
 
-Requirements represent high-level work items that are fulfilled by one or more tasks.
+```
+Agent (Worker)              System                     Reviewer Agent
+     │                        │                              │
+     │── execution finishes ─►│                              │
+     │                        │── status → review ──────────►│
+     │                        │── notify reviewer ──────────►│
+     │                        │   (handleMessage with        │
+     │                        │    task context + prompt)     │
+     │                        │                              │
+     │                        │◄── acceptTask() ─────────────│
+     │                        │    (→ completed)              │
+     │                        │  OR                           │
+     │                        │◄── requestRevision(reason) ──│
+     │                        │    (→ in_progress, new round) │
+     │                        │                              │
+     │◄── auto re-execute ───│                              │
+     │                        │                              │
+```
+
+### Reviewer Notification
+
+When a task enters `review` status (via `updateTaskStatus`), the system automatically:
+1. Looks up the `reviewerAgentId` on the task
+2. Sends a structured review request message to the reviewer agent via `handleMessage`
+3. The message includes: task description, deliverables, subtask status, recent notes, and instructions
+
+### Reviewer Actions
+
+- **Approve**: Calls `acceptTask(taskId)` → task moves to `completed`
+- **Request Revision**: Calls `requestRevision(taskId, reason)` → task moves to `in_progress` with incremented `executionRound`
+
+---
+
+## 5. Cancellation
+
+### Single Task Cancellation
+
+When a task is cancelled:
+1. Running execution is stopped (cancel token)
+2. Status → `cancelled`
+3. Dependent tasks are checked:
+   - If the cancelled task was a dependent's **only** remaining blocker, the dependent unblocks
+   - If the dependent has other incomplete blockers, it stays `blocked`
+
+### Cascade Cancellation
+
+User can choose to cascade-cancel all dependent tasks:
+1. The task and all its `blocked` dependents are cancelled
+2. Their dependents are recursively checked
+
+### What Cannot Be Cancelled
+
+- `pending_approval` tasks → use Reject instead
+- Already terminal tasks (`completed`, `failed`, `cancelled`, `archived`)
+
+---
+
+## 6. Requirement FSM
+
+Requirements represent high-level work items fulfilled by one or more tasks.
 
 ### States
 
 | State | Description |
 |-------|-------------|
 | `draft` | Agent-proposed, awaiting user review |
-| `pending_review` | Submitted for user review (equivalent to `draft` for approval purposes) |
 | `approved` | User approved, tasks can be created against it |
 | `in_progress` | At least one task has been linked |
 | `completed` | All linked tasks are done |
@@ -134,61 +216,19 @@ Requirements represent high-level work items that are fulfilled by one or more t
 
 ### Transitions
 
-```
-draft ──► pending_review ──► approved ──► in_progress ──► completed
-                          │
-                          └──► rejected
-                          └──► cancelled
-```
-
-| From | To | Trigger | Notes |
-|------|----|---------|-------|
-| (new) | `draft` | Agent proposes via `requirement_propose` | Max 3 pending per agent |
-| (new) | `approved` | User creates directly | Auto-approved |
-| `draft` | `approved` | User approves | Via `approveRequirement()` |
-| `draft` | `rejected` | User rejects | Via `rejectRequirement()` |
-| `pending_review` | `approved` | User approves | |
-| `pending_review` | `rejected` | User rejects | |
-| `approved` | `in_progress` | First task linked | Auto via `linkTask()` |
-| `in_progress` | `completed` | All linked tasks completed/accepted/cancelled | Auto via `checkCompletion()` |
-| any | `cancelled` | Manual cancellation | Via `cancelRequirement()` |
+| From | To | Trigger |
+|------|----|---------|
+| (new) | `draft` | Agent proposes via `requirement_propose` |
+| (new) | `approved` | User creates directly (auto-approved) |
+| `draft` | `approved` | User approves |
+| `draft` | `rejected` | User rejects |
+| `approved` | `in_progress` | First task linked |
+| `in_progress` | `completed` | All linked tasks reach terminal state |
+| any | `cancelled` | Manual cancellation |
 
 ### Key Rules
 
-1. **User-created requirements auto-approve** — they start at `approved`.
-2. **Agent proposals need user approval** — they start at `draft`.
-3. **Max 3 pending proposals per agent** — prevents proposal spam.
-4. **Completion is automatic** — when all linked tasks reach a terminal state.
-5. **`approved` and `in_progress` both authorize task creation** — `isApproved()` checks both.
-
----
-
-## 4. Review Flow
-
-The review flow is shared between standard and scheduled tasks:
-
-```
-Worker                                  System                          Reviewer
-  │                                       │                               │
-  │── task_submit_review(reviewer_id) ──►│                               │
-  │                                       │── notify reviewer ──────────►│
-  │                                       │   (handleMessage)             │
-  │                                       │                               │
-  │                                       │◄── task_update(accepted) ─────│
-  │                                       │    OR                         │
-  │                                       │◄── task_update(revision) ─────│
-  │                                       │                               │
-  │◄── (revision: restart work) ─────────│                               │
-  │                                       │                               │
-```
-
-### Reviewer Selection Rules
-
-| Scenario | Reviewer |
-|----------|----------|
-| Task was delegated by another agent | The delegating agent |
-| Task was self-created | Team manager |
-| Neither available | Agent must find one via `team_list` |
-
-The agent is responsible for choosing the right reviewer via the `reviewer_id` parameter.
-The system does NOT auto-detect reviewers — this is intentional to keep the logic in the agent's prompt, not in hardcoded service code.
+1. **User-created requirements auto-approve** — start at `approved`
+2. **Agent proposals need user approval** — start at `draft`
+3. **Max 3 pending proposals per agent** — prevents spam
+4. **Completion is automatic** — when all linked tasks terminate

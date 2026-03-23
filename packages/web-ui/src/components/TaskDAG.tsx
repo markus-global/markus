@@ -259,7 +259,7 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
   const [showArchived, setShowArchived] = useState(false);
 
-  const archivedCount = useMemo(() => tasks.filter(t => !t.parentTaskId && isArchivedTask(t)).length, [tasks]);
+  const archivedCount = useMemo(() => tasks.filter(t => isArchivedTask(t)).length, [tasks]);
 
   const allowedStatuses = useMemo(() => {
     const s = new Set<string>();
@@ -274,10 +274,8 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
   const presentGroups = useMemo(() => {
     const activeGroupIds = new Set<string>();
     for (const t of tasks) {
-      if (!t.parentTaskId) {
-        for (const g of DAG_FILTER_GROUPS) {
-          if (g.statuses.has(t.status)) { activeGroupIds.add(g.id); break; }
-        }
+      for (const g of DAG_FILTER_GROUPS) {
+        if (g.statuses.has(t.status)) { activeGroupIds.add(g.id); break; }
       }
     }
     for (const r of requirements) {
@@ -328,7 +326,7 @@ export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqCl
   }), []);
 
   const { initialNodes, initialEdges } = useMemo(() => {
-    const rootTasks = tasks.filter(t => !t.parentTaskId && allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
+    const rootTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
 
     const rawNodes: Node[] = rootTasks.map(task => ({
       id: task.id,

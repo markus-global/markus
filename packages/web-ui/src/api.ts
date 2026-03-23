@@ -372,9 +372,10 @@ export interface TaskInfo {
   description: string;
   status: string;
   priority: string;
-  assignedAgentId?: string;
-  parentTaskId?: string;
-  subtaskIds?: string[];
+  assignedAgentId: string;
+  reviewerAgentId: string;
+  executionRound?: number;
+  subtasks?: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }>;
   blockedBy?: string[];
   notes?: string[];
   deliverables?: Array<{
@@ -385,7 +386,6 @@ export interface TaskInfo {
   projectId?: string;
   iterationId?: string;
   requirementId?: string;
-  reviewerAgentId?: string;
   createdBy?: string;
   updatedBy?: string;
   startedAt?: string;
@@ -446,6 +446,7 @@ export interface TaskLogEntry {
   type: string;
   content: string;
   metadata?: Record<string, unknown>;
+  executionRound?: number;
   createdAt: string;
 }
 
@@ -469,6 +470,10 @@ export interface AgentHeartbeatInfo {
   running: boolean;
   uptimeMs: number;
   intervalMs: number;
+  lastHeartbeat?: string;
+  lastSummary?: string;
+  lastSummaryAt?: string;
+  nextRunAt?: string;
 }
 
 export interface RoleFileStatus {
@@ -637,6 +642,7 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
@@ -755,9 +761,9 @@ export const api = {
       return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
-    create: (title: string, description: string, priority?: string, assignedAgentId?: string, autoAssign?: boolean, projectId?: string, iterationId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, priority, assignedAgentId, autoAssign, projectId, iterationId, blockedBy, requirementId, taskType, scheduleConfig }) }),
-    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[] }) =>
+    create: (title: string, description: string, assignedAgentId: string, reviewerAgentId: string, priority?: string, projectId?: string, iterationId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerAgentId, priority, projectId, iterationId, blockedBy, requirementId, taskType, scheduleConfig }) }),
+    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -765,7 +771,8 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     approve: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST' }),
     reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
-    delete: (id: string) => request(`/tasks/${id}`, { method: 'DELETE' }),
+    cancel: (id: string, cascade = false) => request<{ task: TaskInfo }>(`/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify({ cascade }) }),
+    getDependentCount: (id: string) => request<{ count: number }>(`/tasks/${id}/dependents`),
     board: (filters?: { projectId?: string; iterationId?: string }) => {
       const params = new URLSearchParams();
       if (filters?.projectId) params.set('projectId', filters.projectId);
@@ -773,9 +780,15 @@ export const api = {
       const qs = params.toString();
       return request<{ board: Record<string, TaskInfo[]> }>(`/taskboard${qs ? `?${qs}` : ''}`);
     },
-    listSubtasks: (parentId: string) => request<{ subtasks: TaskInfo[] }>(`/tasks/${parentId}/subtasks`),
-    createSubtask: (parentId: string, title: string, description?: string, priority?: string) =>
-      request<{ subtask: TaskInfo }>(`/tasks/${parentId}/subtasks`, { method: 'POST', body: JSON.stringify({ title, description: description ?? '', priority: priority ?? 'medium' }) }),
+    listSubtasks: (taskId: string) => request<{ subtasks: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }> }>(`/tasks/${taskId}/subtasks`),
+    createSubtask: (taskId: string, title: string) =>
+      request<{ subtask: { id: string; title: string; status: string } }>(`/tasks/${taskId}/subtasks`, { method: 'POST', body: JSON.stringify({ title }) }),
+    completeSubtask: (taskId: string, subtaskId: string) =>
+      request<{ subtask: { id: string; title: string; status: string } }>(`/tasks/${taskId}/subtasks/${subtaskId}/complete`, { method: 'POST' }),
+    cancelSubtask: (taskId: string, subtaskId: string) =>
+      request<{ subtask: { id: string; title: string; status: string } }>(`/tasks/${taskId}/subtasks/${subtaskId}/cancel`, { method: 'POST' }),
+    deleteSubtask: (taskId: string, subtaskId: string) =>
+      request(`/tasks/${taskId}/subtasks/${subtaskId}`, { method: 'DELETE' }),
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
     getLogs: (id: string) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs`),
     accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: reviewerId ?? 'human' }) }),
@@ -783,6 +796,7 @@ export const api = {
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
     pause: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/pause`, { method: 'POST' }),
     resume: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/resume`, { method: 'POST' }),
+    retry: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/retry`, { method: 'POST' }),
     getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
     addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string) =>
       request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments }) }),

@@ -43,7 +43,6 @@ export interface SyncResponse {
     description: string;
     priority: string;
     status: string;
-    parentTaskId?: string | null;
     requirementId?: string | null;
     projectId?: string | null;
   }>;
@@ -76,7 +75,6 @@ export interface TaskBridge {
     description: string;
     priority: string;
     status: string;
-    parentTaskId?: string | null;
     requirementId?: string | null;
     projectId?: string | null;
   }>;
@@ -86,8 +84,8 @@ export interface TaskBridge {
     description: string;
     priority: string;
     orgId: string;
-    assignedAgentId?: string;
-    parentTaskId?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
     createdBy?: string;
   }): { id: string };
 }
@@ -199,14 +197,15 @@ export class GatewaySyncHandler {
     }
 
     const assignedTasks = this.tasks.getTasksByAgent(markusAgentId)
-      .filter(t => t.status === 'assigned' || t.status === 'in_progress' || t.status === 'pending')
+      .filter(t =>
+        ['pending_approval', 'in_progress', 'blocked', 'review'].includes(t.status)
+      )
       .map(t => ({
         id: t.id,
         title: t.title,
         description: t.description,
         priority: t.priority,
         status: t.status,
-        parentTaskId: t.parentTaskId ?? null,
         requirementId: t.requirementId ?? null,
         projectId: t.projectId ?? null,
       }));

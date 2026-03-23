@@ -204,7 +204,7 @@ draft -> pending_review -> approved -> in_progress -> completed
 
 | Approval tier | Trigger | Approver |
 |---------------|---------|----------|
-| `auto` | Low-priority subtasks | No approval |
+| `auto` | Low-priority tasks | No approval |
 | `manager` | Standard tasks | Team Manager Agent |
 | `human` | High/urgent priority, shared-resource impact | Human (HITL) |
 
@@ -334,7 +334,7 @@ chat_messages (id, session_id, agent_id, role, content, tokens_used, created_at)
 channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at)
 
 -- Tasks (extended)
-tasks (id, org_id, title, description, status, priority, assigned_agent_id, parent_task_id,
+tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,
        project_id, iteration_id, due_at, created_at, updated_at)
 
 -- Projects

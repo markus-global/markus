@@ -24,7 +24,7 @@ import { MemoryStore } from './memory/store.js';
 import type { IMemoryStore } from './memory/types.js';
 import { EnhancedMemorySystem } from './enhanced-memory-system.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
-import { ContextEngine, type OrgContext } from './context-engine.js';
+import { ContextEngine, type OrgContext, type LLMSummarizer } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -147,6 +147,8 @@ export class Agent {
   private metricsCollector: AgentMetricsCollector;
   /** Tracks concurrently executing task IDs */
   private activeTasks = new Set<string>();
+  /** Generation counter per task — prevents stale finally blocks from clearing a newer execution */
+  private activeTaskGen = new Map<string, number>();
   private activeStreamToken?: { cancelled: boolean };
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
@@ -161,6 +163,7 @@ export class Agent {
   private dataDir: string;
   private pauseReason?: string;
   private toolResultCounter = 0;
+  private lastEstimatedInputTokens = 0;
   /** In-memory activity log buffer (keyed by activity ID) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
@@ -197,6 +200,7 @@ export class Agent {
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
+    this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
@@ -371,6 +375,20 @@ export class Agent {
   }
 
   /**
+   * Inject a user message into a specific session (e.g. live comments during task execution).
+   * The message will be seen by the LLM on its next turn.
+   */
+  injectUserMessage(sessionId: string, content: string): void {
+    const session = this.memory.getSession?.(sessionId);
+    if (!session) {
+      log.warn('Cannot inject message: session not found', { sessionId });
+      return;
+    }
+    this.memory.appendMessage(sessionId, { role: 'user', content });
+    log.debug('Injected user message into session', { sessionId, contentLength: content.length });
+  }
+
+  /**
    * 执行聊天任务（高优先级）
    */
   async executeChatTask(
@@ -454,6 +472,10 @@ export class Agent {
     return this.stateManager.getAllTaskInfo();
   }
 
+  getActiveTasks(): Array<{ taskId: string }> {
+    return Array.from(this.activeTasks).map(taskId => ({ taskId }));
+  }
+
   /**
    * 获取运行中的任务
    */
@@ -528,6 +550,40 @@ export class Agent {
    * 更新令牌使用量
    */
   /**
+   * Create an LLM-powered summarizer that uses the cheapest available model
+   * to produce high-quality conversation summaries during context compaction.
+   */
+  private createLLMSummarizer(): LLMSummarizer {
+    return async (messages: LLMMessage[]): Promise<string> => {
+      const textParts: string[] = [];
+      for (const msg of messages) {
+        const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        if (msg.role === 'system') continue;
+        const truncated = text.slice(0, 300);
+        textParts.push(`[${msg.role}]: ${truncated}`);
+      }
+      const conversationText = textParts.join('\n').slice(0, 8000);
+
+      const response = await this.llmRouter.chat({
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a conversation summarizer. Given a conversation history, produce a concise summary that preserves: (1) key decisions and their reasoning, (2) important file paths, variable names, and technical details, (3) errors encountered and how they were resolved, (4) current task progress and next steps. Keep the summary under 1500 characters. Write in the same language as the conversation.',
+          },
+          {
+            role: 'user',
+            content: `Summarize the following conversation history:\n\n${conversationText}`,
+          },
+        ],
+        maxTokens: 1024,
+        temperature: 0.2,
+      });
+
+      return response.content || '';
+    };
+  }
+
+  /**
    * Manus-inspired: offload large tool results to filesystem.
    * Keeps a compact reference in context, full data in a file the agent can re-read.
    * This prevents context bloat while preserving all information (restorable compression).
@@ -557,6 +613,35 @@ export class Agent {
     } catch {
       return result.slice(0, 8000) + `\n\n[... output truncated at 8000 of ${result.length} total chars due to file-save failure ...]`;
     }
+  }
+
+  private estimateMessagesTokens(messages: LLMMessage[]): number {
+    const counter = (() => {
+      try {
+        const { getDefaultTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
+        return getDefaultTokenCounter();
+      } catch { return null; }
+    })();
+    if (!counter) return 0;
+    let total = 0;
+    for (const msg of messages) {
+      const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      total += counter.countMessageTokens(text, msg.role);
+    }
+    return total;
+  }
+
+  private calibrateTokenCounter(actualInputTokens: number): void {
+    if (this.lastEstimatedInputTokens > 0 && actualInputTokens > 0) {
+      try {
+        const { getDefaultTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
+        const counter = getDefaultTokenCounter();
+        if ('calibrate' in counter) {
+          (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
+        }
+      } catch { /* ignore */ }
+    }
+    this.lastEstimatedInputTokens = 0;
   }
 
   private updateTokensUsed(tokens: number): void {
@@ -975,6 +1060,15 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
     }
 
+    // Set active model on token counter and ensure tiktoken encoder is loaded
+    const effectiveModelName = this.llmRouter.getActiveModelName(this.getEffectiveProvider());
+    if (effectiveModelName) {
+      const { getDefaultTokenCounter } = await import('./token-counter.js');
+      const counter = getDefaultTokenCounter();
+      counter.setActiveModel(effectiveModelName);
+      await counter.ensureReady();
+    }
+
     const scenario = options?.scenario ?? (isEphemeral && senderId ? 'a2a' : 'chat');
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -1016,30 +1110,36 @@ export class Agent {
       ];
     } else {
       const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-      messages = this.contextEngine.prepareMessages({
+      const prepared = await this.contextEngine.prepareMessages({
         systemPrompt,
         sessionMessages,
         memory: this.memory,
         sessionId,
-        modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-        modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
+        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
       });
+      messages = prepared.messages;
+      log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
     }
 
+    const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     try {
+      this.lastEstimatedInputTokens = this.estimateMessagesTokens(messages);
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chat({
           messages,
           tools: llmTools.length > 0 ? llmTools : undefined,
           metadata: this.getLLMMetadata(sessionId),
+          compaction: useCompaction,
         }, this.getEffectiveProvider()),
         'Chat LLM call',
       );
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
+      this.calibrateTokenCounter(response.usage.inputTokens);
       this.emitAudit({
         type: 'llm_request',
         action: 'chat',
@@ -1201,15 +1301,16 @@ export class Agent {
           updatedMessages = messages;
         } else {
           const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-          updatedMessages = this.contextEngine.prepareMessages({
+          const prepared2 = await this.contextEngine.prepareMessages({
             systemPrompt,
             sessionMessages: updatedSessionMessages,
             memory: this.memory,
             sessionId,
-            modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-            modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
+            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
             toolDefinitions: llmTools,
           });
+          updatedMessages = prepared2.messages;
         }
 
         const llmStart2 = Date.now();
@@ -1224,6 +1325,7 @@ export class Agent {
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
+        this.calibrateTokenCounter(response.usage.inputTokens);
         this.emitAudit({
           type: 'llm_request',
           action: 'chat',
@@ -1353,15 +1455,17 @@ export class Agent {
     const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
-    const messages = this.contextEngine.prepareMessages({
+    const preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
       sessionId: this.currentSessionId,
-      modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-      modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
+      modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+      modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
     });
+    const messages = preparedStream.messages;
+    log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
 
     // Link cancelToken to an AbortController so we can abort in-flight LLM calls
     const abortController = new AbortController();
@@ -1388,6 +1492,7 @@ export class Agent {
       );
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
+      this.calibrateTokenCounter(response.usage.inputTokens);
       lastResponseContent = response.content || '';
       this.emitAudit({
         type: 'llm_request',
@@ -1483,15 +1588,16 @@ export class Agent {
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
-        const updatedMessages = this.contextEngine.prepareMessages({
+        const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
           memory: this.memory,
           sessionId: this.currentSessionId,
-          modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-          modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
         });
+        const updatedMessages = preparedCont.messages;
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
@@ -1512,6 +1618,7 @@ export class Agent {
         );
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
+        this.calibrateTokenCounter(response.usage.inputTokens);
         lastResponseContent = response.content || lastResponseContent;
         this.emitAudit({
           type: 'llm_request',
@@ -1600,9 +1707,10 @@ export class Agent {
       persist: boolean;
     }) => void,
     cancelToken?: { cancelled: boolean },
-    taskWorkspace?: TaskWorkspace
+    taskWorkspace?: TaskWorkspace,
+    executionRound?: number
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskWorkspace);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskWorkspace, executionRound);
   }
 
   /**
@@ -1620,7 +1728,8 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     priority: TaskPriority = TaskPriority.MEDIUM,
-    taskWorkspace?: TaskWorkspace
+    taskWorkspace?: TaskWorkspace,
+    executionRound?: number
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -1630,7 +1739,7 @@ export class Agent {
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
       async () => {
-        return this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace);
+        return this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace, executionRound);
       },
       {
         priority,
@@ -1667,7 +1776,8 @@ export class Agent {
       persist: boolean;
     }) => void,
     cancelToken?: { cancelled: boolean },
-    taskWorkspace?: TaskWorkspace
+    taskWorkspace?: TaskWorkspace,
+    executionRound?: number
   ): Promise<void> {
     this.currentTaskId = taskId;
     if (
@@ -1681,14 +1791,14 @@ export class Agent {
     }
     this.setStatus('working');
     this.activeTasks.add(taskId);
-    // Track task activity for UI visibility
+    const execGen = (this.activeTaskGen.get(taskId) ?? 0) + 1;
+    this.activeTaskGen.set(taskId, execGen);
     const taskActId = this.startActivity('task', description.slice(0, 100), { taskId });
     this.notifyStateChange();
     const taskStartMs = Date.now();
     let taskFailed = '';
 
     let seq = 0;
-    let submittedForReview = false;
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
@@ -1739,12 +1849,19 @@ export class Agent {
       }, 500);
     }
 
-    // Isolated session for this task — does NOT share with chat session
-    const session = this.memory.createSession(this.id);
-    const sessionId = session.id;
+    // Deterministic session ID per task+round. Retries within the same execution
+    // round reuse the existing message history (tool calls, file contents, etc.)
+    // so the agent doesn't have to re-read files or redo work.
+    // New rounds (scheduled reruns, review rejections) get a fresh session.
+    const round = executionRound ?? 1;
+    const sessionId = `task_${taskId}_r${round}`;
+    const session = this.memory.getOrCreateSession(this.id, sessionId);
+    const isRetryWithHistory = session.messages.length > 0;
 
-    const isResume = description.startsWith('## Previous Execution History');
-    const hasErrors = isResume && description.includes('⚠ Errors from Previous Attempts');
+    const isResume = description.includes('## Previous Execution Context') ||
+      description.includes('## ⚠ RETRY');
+    const hasErrors = description.includes('⚠ Error Guidance') ||
+      description.includes('⚠ Errors from Previous Attempts');
     const taskPrompt = [
       `[TASK EXECUTION — Task ID: ${taskId}]`,
       '',
@@ -1770,33 +1887,39 @@ export class Agent {
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section above, you MUST review all dependency task outputs BEFORE starting your own work. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details of each dependency task. These dependency outputs provide essential background knowledge and artifacts that your work should build upon.',
           ].join('\n'),
       '',
-      '## Completion Requirements',
-      'Before calling task_submit_review, you MUST update the task notes using task_update with a detailed note that includes:',
-      '1. Key conclusions and results of your work',
-      '2. File paths of all deliverables and artifacts you created or modified',
-      '3. Any important decisions made and their rationale',
-      '4. Known limitations or follow-up items',
-      'This note serves as a permanent record for reviewers, other agents, and future reference.',
+      '## Completion Requirements — MANDATORY',
+      '**You MUST call `task_submit_review` when your work is done.** This is the ONLY way to complete a task execution round.',
+      'The task will NOT be considered complete and will NOT enter review unless you call `task_submit_review`.',
       '',
-      '## File Deliverables',
-      'When calling task_submit_review, you MUST include all file artifacts you created or modified in the `deliverables` parameter.',
-      'Each deliverable is an object with `path` (absolute file path, string) and `summary` (brief description, string).',
-      'Example tool call:',
-      '```',
-      'task_submit_review({',
-      '  "task_id": "tsk_abc",',
-      '  "summary": "Created the marketing copy as requested.",',
-      '  "deliverables": [',
-      '    { "path": "/home/user/.markus/workspace/output.md", "summary": "Final marketing copy document" },',
-      '    { "path": "/home/user/.markus/workspace/research.md", "summary": "Background research notes" }',
-      '  ]',
-      '})',
-      '```',
-      'IMPORTANT: `deliverables` must be a JSON array of objects. Each object MUST have both `path` and `summary` as non-empty strings.',
-      'Do NOT pass file paths as plain strings — always wrap them in objects with both fields.',
+      'When calling `task_submit_review`, provide:',
+      '- `summary`: A clear description of what was accomplished, key decisions, and results',
+      '- `deliverables`: List ALL artifacts produced — each with `type` (file/document/report/directory/url/text), `reference` (path, URL, or content), and `summary`',
+      '- `known_issues` (optional): Any limitations or follow-up items',
+      '',
+      'The system auto-fills task_id, reviewer, and branch — you do NOT need to specify these.',
+      'Before calling `task_submit_review`, use `task_note` to record detailed progress notes for traceability.',
     ].join('\n');
 
-    this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
+    // Check if session has meaningful work from a previous attempt
+    const hasAssistantWork = isRetryWithHistory &&
+      session.messages.some(m => m.role === 'assistant' || m.role === 'tool');
+
+    if (hasAssistantWork) {
+      // On retry with previous work: the session already has the full conversation
+      // (tool calls, file contents, results). Append a continuation message so
+      // the LLM picks up where it left off without redoing work.
+      this.memory.appendMessage(sessionId, {
+        role: 'user',
+        content: [
+          '[SYSTEM: Your previous execution attempt was interrupted by a transient error (e.g. network timeout).',
+          'The conversation history above contains ALL your prior work — tool calls, file reads, and results are preserved.',
+          'CONTINUE from where you left off. Do NOT re-read files or redo completed steps.',
+          'Pick up exactly at the point where the error occurred and finish the task.]',
+        ].join('\n'),
+      });
+    } else {
+      this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
+    }
 
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -1843,15 +1966,17 @@ export class Agent {
         return;
       }
 
-      const messages = this.contextEngine.prepareMessages({
+      const preparedTask = await this.contextEngine.prepareMessages({
         systemPrompt,
         sessionMessages: this.memory.getRecentMessages(sessionId, 200),
         memory: this.memory,
         sessionId,
-        modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-        modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
+        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
       });
+      const messages = preparedTask.messages;
+      log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
 
       let response = await this.llmRouter.chatStream(
         { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId) },
@@ -1865,6 +1990,7 @@ export class Agent {
         abortController.signal,
       );
       this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens);
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
         if (cancelToken?.cancelled) {
@@ -1890,9 +2016,6 @@ export class Agent {
             const result = await this.executeTool(tc);
             const isErr = isErrorResult(result);
             const durationMs = Date.now() - toolStart;
-            if (tc.name === 'task_submit_review' && !isErr) {
-              submittedForReview = true;
-            }
             emit('tool_end', tc.name, {
               success: !isErr,
               durationMs,
@@ -1923,17 +2046,18 @@ export class Agent {
           return;
         }
 
+        const preparedTaskCont = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          memory: this.memory,
+          sessionId,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
         response = await this.llmRouter.chatStream(
           {
-            messages: this.contextEngine.prepareMessages({
-              systemPrompt,
-              sessionMessages: this.memory.getRecentMessages(sessionId, 200),
-              memory: this.memory,
-              sessionId,
-              modelContextWindow: this.llmRouter.getActiveModelContextWindow(),
-              modelMaxOutput: this.llmRouter.getActiveModelMaxOutput(),
-              toolDefinitions: llmTools,
-            }),
+            messages: preparedTaskCont.messages,
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
           },
@@ -1947,6 +2071,7 @@ export class Agent {
           abortController.signal,
         );
         this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens);
       }
 
       // Final cancel check after the tool loop exits
@@ -1960,16 +2085,10 @@ export class Agent {
       flushText();
       const finalReply = response.content;
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
-      // Always emit execution_finished — let task-service decide the final status.
-      // Standard tasks require explicit task_submit_review; scheduled tasks auto-complete.
-      emit('status', 'execution_finished', { submittedForReview });
+      emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
-      if (submittedForReview) {
-        log.info('Task execution finished (submitted for review)', { taskId, agentId: this.id });
-      } else {
-        this.eventBus.emit('task:completed', { taskId, agentId: this.id });
-        log.info('Task execution finished (no review submitted)', { taskId, agentId: this.id });
-      }
+      this.eventBus.emit('task:completed', { taskId, agentId: this.id });
+      log.info('Task execution finished', { taskId, agentId: this.id });
     } catch (error) {
       // If abort was triggered by cancel, treat as cancellation not error
       if (cancelToken?.cancelled) {
@@ -1977,6 +2096,13 @@ export class Agent {
         emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
         log.info('Task execution cancelled (caught abort)', { taskId, agentId: this.id });
         return;
+      }
+      // Save any partial assistant text to the session so retries have full context
+      if (textBuffer.trim()) {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: textBuffer + '\n\n[interrupted by error]',
+        });
       }
       flushText();
       emit('error', String(error));
@@ -2000,7 +2126,13 @@ export class Agent {
         log.info('Tools restored to agent default workspace', { taskId, agentId: this.id });
       }
 
-      this.activeTasks.delete(taskId);
+      // Only remove from activeTasks if this execution is still the latest one.
+      // A newer execution for the same taskId bumps the generation counter;
+      // stale finally blocks must not clear it.
+      if (this.activeTaskGen.get(taskId) === execGen) {
+        this.activeTasks.delete(taskId);
+        this.activeTaskGen.delete(taskId);
+      }
       this.endActivity(taskActId);
       this.notifyStateChange();
 
@@ -2419,6 +2551,7 @@ export class Agent {
   }
 
   private static isNetworkError(error: unknown): boolean {
+    if (error instanceof Error && error.name === 'AbortError') return true;
     const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
     return msg.includes('enotfound') ||
       msg.includes('getaddrinfo') ||
@@ -2428,7 +2561,9 @@ export class Agent {
       msg.includes('fetch failed') ||
       msg.includes('network') ||
       msg.includes('socket hang up') ||
-      msg.includes('dns');
+      msg.includes('dns') ||
+      msg.includes('aborted') ||
+      msg.includes('aborterror');
   }
 
   private async withNetworkRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -2488,17 +2623,20 @@ export class Agent {
       lastHeartbeatSummary,
       '## Rules',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
-      '- Max 5 tool calls. This is monitoring, not a work session.',
+      '- For routine checks: max 5 tool calls. This is monitoring, not a work session.',
+      '- **Exception — review duty**: If you find tasks in `review` where you are the reviewer, you MUST review them now. Reviews may require more tool calls (task_get, file_read, task_note, task_update). Complete the review fully.',
       '- At the end, call `memory_save` with key `heartbeat:summary` — one line per finding.',
       '- If nothing needs attention, respond with exactly: HEARTBEAT_OK',
     ].join('\n');
 
     const baseTools = [
-      'task_list', 'task_update', 'requirement_propose', 'requirement_list',
+      'task_list', 'task_update', 'task_get', 'task_note',
+      'file_read', 'agent_send_message',
+      'requirement_propose', 'requirement_list',
       'memory_save', 'memory_search', 'discover_tools',
     ];
     if (this.config.agentRole === 'manager') {
-      baseTools.push('task_board_health', 'task_cleanup_duplicates', 'task_assign', 'task_get', 'task_note', 'agent_send_message');
+      baseTools.push('task_board_health', 'task_cleanup_duplicates', 'task_assign');
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);
 
@@ -2506,7 +2644,7 @@ export class Agent {
       const reply = await this.withNetworkRetry(
         () => this.handleMessage(prompt, undefined, undefined, {
           ephemeral: true,
-          maxHistory: 10,
+          maxHistory: 30,
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
         }),

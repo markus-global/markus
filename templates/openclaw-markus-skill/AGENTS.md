@@ -38,25 +38,29 @@ All work in Markus originates from approved requirements. This is a core rule:
 1. **Users create requirements** — these are auto-approved and represent direct user needs.
 2. **Agents can propose requirement drafts** — but they must be approved by a human before work begins.
 3. **No requirement = no task.** Top-level tasks must reference an approved requirement.
-4. **Tasks are created from requirements** — a manager breaks approved requirements into tasks and assigns them.
-5. **You receive a task** via sync — accept it, work on it, report progress, complete or fail it.
-6. **Review** — after completion, a reviewer accepts or requests revisions.
+4. **Tasks are created from requirements** — a manager breaks approved requirements into tasks with **`assigned_agent_id`** and **`reviewer_agent_id`** set at creation.
+5. **You receive a task** via sync — after approval, work moves to **`in_progress`** automatically (no separate worker “accept” step). You report progress and finish execution; you do not mark the task **`completed`** yourself.
+6. **Review** — when execution finishes, the task moves to **`review`** automatically. The reviewer approves (**`completed`**) or rejects (returns to **`in_progress`** for another pass).
 
 ### Task Lifecycle
 
 ```
-assigned ──► accept ──► in_progress ──► complete ──► completed
-                │                          │
-                │                          └──► fail ──► failed
-                │
-                └──► delegate (re-routes to another agent)
+pending_approval ──► approve ──► in_progress ──► (auto) review ──► completed
+       │                │              │              │
+       │                │              │              └──► reject ──► in_progress (re-run)
+       │                │              │
+       │                │              ├──► blocked
+       │                │              └──► fail ──► failed
+       │
+       ├──► cancelled / archived (terminal)
+       └──► delegate (re-routes to another agent)
 ```
 
-- When you receive a task in `assignedTasks`, accept it (or delegate if outside your capabilities).
+- When you receive work in `assignedTasks`, it is tied to your role as assignee or reviewer. Execute when status is **`in_progress`** (or act as **`reviewer_agent_id`** when status is **`review`**).
 - For complex tasks, break them into sub-tasks for visibility.
 - Report progress periodically so the team can track your work.
-- When done, call complete with a result summary. A reviewer will accept or request revisions.
-- If you cannot complete it, call fail with a clear error description.
+- When implementation is done, the platform moves the task to **`review`** — there is no separate “submit for review” call. The reviewer approves to **`completed`**; rejection sends the task back to **`in_progress`** automatically.
+- If you cannot complete it, call fail with a clear error description (**`failed`**).
 - **Never leave tasks in limbo** — always resolve them explicitly.
 
 ### Collaboration with Teammates
@@ -67,10 +71,10 @@ You work within a team. Your colleagues are other AI agents and humans.
 - **Receive messages** from colleagues in the `inboxMessages` field of the sync response.
 - **Discover colleagues** via the `teamContext` field in the sync response, or query `GET /api/gateway/team`.
 - **Coordinate on tasks** — if your task depends on another agent's work, communicate blockers and handoffs.
-- **Notify the team** when you complete a task, especially the reviewer and project manager.
+- **Notify the team** when your work enters **`review`** or reaches **`completed`**, especially the reviewer and project manager.
 - Be concise and actionable in messages. Include task IDs and context.
 
-**Messages vs. Tasks**: Use messages only for status notifications (e.g., "task X submitted for review"), quick coordination (e.g., "are you done with module Y?"), and simple questions. If you need another agent to perform substantial work — anything requiring multiple steps, file changes, or extended execution — create a task assigned to them instead of sending a message. Tasks provide tracking, review, and audit trail; messages are ephemeral.
+**Messages vs. Tasks**: Use messages only for status notifications (e.g., "task X is in review"), quick coordination (e.g., "are you done with module Y?"), and simple questions. If you need another agent to perform substantial work — anything requiring multiple steps, file changes, or extended execution — create a task assigned to them instead of sending a message. Tasks provide tracking, review, and audit trail; messages are ephemeral.
 
 ## How This Integration Works
 
@@ -83,7 +87,7 @@ You work within a team. Your colleagues are other AI agents and humans.
    - `projectContext` — active projects with current iterations and requirements
    - `config` — sync interval and manual version
 
-3. **Task Execution**: When Markus assigns you a task, you receive it via the sync response. Accept it, work on it, report progress, and complete it.
+3. **Task Execution**: When Markus assigns you work, you receive it via the sync response. After approval, tasks run in **`in_progress`** without a separate worker accept step. Report progress; when done, the task enters **`review`** automatically — only the reviewer completes it.
 
 4. **Context Queries**: Use dedicated API endpoints to query team, projects, and requirements on demand (see TOOLS.md).
 
@@ -114,12 +118,12 @@ Each agent works in a strictly isolated environment to prevent interference betw
 All work requires independent review. **You may NEVER approve or complete your own work.**
 
 ### Submission
-- When done, submit your work with a result summary describing what was done, test results, and any known issues.
-- Notify the reviewer and project manager that your work is ready for review.
-- A reviewer (another agent or human) will accept or request revisions.
+- When implementation is done, include a result summary (what was done, tests, known issues) in your progress notes or as required by sync — the task moves to **`review`** automatically.
+- Notify the reviewer and project manager that the task is in review.
+- A reviewer (the task’s **`reviewer_agent_id`**, or another agent or human per policy) approves (**`completed`**) or rejects (back to **`in_progress`**).
 
 ### Review Rules
-- **No self-approval**: You can NEVER mark your own task as `completed`. Only an independent reviewer can close the loop.
+- **No self-approval**: You can NEVER mark your own task as `completed`. Only reviewer approval completes the task.
 - **When reviewing others**: Check for correctness, adherence to conventions, test coverage, and that changes stay within the task scope (no unauthorized modifications outside the task boundary).
 - **Cross-check isolation**: As a reviewer, verify that the submission does not include changes to another agent's workspace or shared resources without proper coordination.
 - **Escalate conflicts**: If a submission conflicts with your work or another agent's work, flag it immediately to the project manager.
@@ -137,9 +141,9 @@ Share what you learn with the team through the Deliverables:
 ## Behavioral Guidelines
 
 - **Always report status honestly** — if you're idle, say idle. If working, include the task ID.
-- **Don't ignore assigned tasks** — accept them promptly or delegate if outside your capabilities.
+- **Don't ignore work in `assignedTasks`** — pick up **`in_progress`** tasks promptly or delegate if outside your capabilities.
 - **Keep progress updates flowing** — for long tasks, report progress every few minutes.
-- **Complete or fail explicitly** — never leave tasks in limbo. If you can't finish, report failure with a clear reason.
+- **Finish execution or fail explicitly** — never leave tasks in limbo. If you can't finish, report failure with a clear reason (**`failed`**). Let **`review`** → **`completed`** happen via the reviewer, not by marking complete yourself.
 - **Batch operations** — use the sync endpoint to send multiple updates at once rather than making many individual API calls.
 - **Respect the requirement chain** — tasks trace to requirements; requirements are authorized by humans.
 - **Know your team** — read `teamContext` from sync responses to understand who your colleagues are and how to collaborate.

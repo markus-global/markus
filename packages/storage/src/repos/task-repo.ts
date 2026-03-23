@@ -3,14 +3,10 @@ import type { Database } from '../db.js';
 import { tasks } from '../schema.js';
 
 type TaskStatus =
-  | 'pending'
   | 'pending_approval'
-  | 'assigned'
   | 'in_progress'
   | 'blocked'
   | 'review'
-  | 'revision'
-  | 'accepted'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -27,8 +23,9 @@ export class TaskRepo {
     description?: string;
     priority?: TaskPriority;
     status?: TaskStatus;
-    assignedAgentId?: string;
-    parentTaskId?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
+    executionRound?: number;
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
@@ -37,6 +34,7 @@ export class TaskRepo {
     dueAt?: Date;
     taskType?: string;
     scheduleConfig?: Record<string, unknown>;
+    subtasks?: unknown[];
   }) {
     const [row] = await this.db
       .insert(tasks)
@@ -46,9 +44,10 @@ export class TaskRepo {
         title: data.title,
         description: data.description ?? '',
         priority: data.priority ?? 'medium',
-        status: data.status ?? (data.assignedAgentId ? 'assigned' : 'pending'),
-        assignedAgentId: data.assignedAgentId ?? null,
-        parentTaskId: data.parentTaskId ?? null,
+        status: data.status ?? 'pending_approval',
+        assignedAgentId: data.assignedAgentId,
+        reviewerAgentId: data.reviewerAgentId,
+        executionRound: data.executionRound ?? 1,
         requirementId: data.requirementId ?? null,
         projectId: data.projectId ?? null,
         iterationId: data.iterationId ?? null,
@@ -57,6 +56,7 @@ export class TaskRepo {
         dueAt: data.dueAt ?? null,
         taskType: data.taskType ?? 'standard',
         scheduleConfig: data.scheduleConfig ?? null,
+        subtasks: data.subtasks ?? [],
       })
       .returning();
     return row!;
@@ -72,24 +72,12 @@ export class TaskRepo {
     const updates: Record<string, unknown> = { status, updatedAt: now };
     if (updatedBy) updates['updatedBy'] = updatedBy;
     if (status === 'in_progress') {
-      // Only set startedAt if not already set (use raw SQL for conditional)
       updates['startedAt'] = now;
     }
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
       updates['completedAt'] = now;
     }
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
-  }
-
-  async assign(id: string, agentId: string | null) {
-    await this.db
-      .update(tasks)
-      .set({
-        assignedAgentId: agentId,
-        status: agentId ? 'assigned' : 'pending',
-        updatedAt: new Date(),
-      })
-      .where(eq(tasks.id, id));
   }
 
   async update(
@@ -114,6 +102,14 @@ export class TaskRepo {
 
   async updateDeliverables(id: string, deliverables: unknown[]) {
     await this.db.update(tasks).set({ deliverables, updatedAt: new Date() }).where(eq(tasks.id, id));
+  }
+
+  async updateSubtasks(id: string, subtasks: unknown[]) {
+    await this.db.update(tasks).set({ subtasks, updatedAt: new Date() }).where(eq(tasks.id, id));
+  }
+
+  async updateExecutionRound(id: string, round: number) {
+    await this.db.update(tasks).set({ executionRound: round, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
   async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string; taskType?: string }) {

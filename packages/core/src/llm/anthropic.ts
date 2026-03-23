@@ -7,7 +7,7 @@ interface AnthropicAPIMessage {
 }
 
 interface AnthropicContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'image';
+  type: 'text' | 'tool_use' | 'tool_result' | 'image' | 'compaction';
   text?: string;
   id?: string;
   name?: string;
@@ -15,6 +15,7 @@ interface AnthropicContentBlock {
   tool_use_id?: string;
   content?: string;
   source?: { type: 'base64'; media_type: string; data: string };
+  summary?: string;
 }
 
 interface AnthropicToolDef {
@@ -53,6 +54,7 @@ export class AnthropicProvider implements LLMProviderInterface {
   async chat(request: LLMRequest): Promise<LLMResponse> {
     const systemMsg = request.messages.find((m) => m.role === 'system');
     const messages = this.convertMessages(request.messages.filter((m) => m.role !== 'system'));
+    const useCompaction = request.compaction && this.isCompactionSupported();
 
     const body: Record<string, unknown> = {
       model: this.model,
@@ -64,14 +66,22 @@ export class AnthropicProvider implements LLMProviderInterface {
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
+    if (useCompaction) {
+      body['context_management'] = { edits: [{ type: 'compact_20260112' }] };
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+    if (useCompaction) {
+      headers['anthropic-beta'] = 'compact-2026-01-12';
+    }
 
     const res = await fetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -87,6 +97,7 @@ export class AnthropicProvider implements LLMProviderInterface {
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
     const systemMsg = request.messages.find((m) => m.role === 'system');
     const messages = this.convertMessages(request.messages.filter((m) => m.role !== 'system'));
+    const useCompaction = request.compaction && this.isCompactionSupported();
 
     const body: Record<string, unknown> = {
       model: this.model,
@@ -98,6 +109,18 @@ export class AnthropicProvider implements LLMProviderInterface {
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
+    if (useCompaction) {
+      body['context_management'] = { edits: [{ type: 'compact_20260112' }] };
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+    if (useCompaction) {
+      headers['anthropic-beta'] = 'compact-2026-01-12';
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
@@ -105,11 +128,7 @@ export class AnthropicProvider implements LLMProviderInterface {
 
     const res = await fetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -287,8 +306,13 @@ export class AnthropicProvider implements LLMProviderInterface {
     }));
   }
 
+  private isCompactionSupported(): boolean {
+    return this.model.startsWith('claude-opus-4') || this.model.startsWith('claude-sonnet-4');
+  }
+
   private convertResponse(data: AnthropicResponse): LLMResponse {
     let content = '';
+    let compactionContent: string | undefined;
     const toolCalls: LLMResponse['toolCalls'] = [];
 
     for (const block of data.content) {
@@ -300,6 +324,8 @@ export class AnthropicProvider implements LLMProviderInterface {
           name: block.name!,
           arguments: (block.input as Record<string, unknown>) ?? {},
         });
+      } else if (block.type === 'compaction' && block.summary) {
+        compactionContent = block.summary;
       }
     }
 
@@ -318,6 +344,7 @@ export class AnthropicProvider implements LLMProviderInterface {
         outputTokens: data.usage.output_tokens,
       },
       finishReason: finishMap[data.stop_reason] ?? 'end_turn',
+      compactionContent,
     };
   }
 }

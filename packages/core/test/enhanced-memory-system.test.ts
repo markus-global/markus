@@ -220,11 +220,11 @@ describe('EnhancedMemorySystem', () => {
       system.addLongTermMemory('project-info', 'Markus is an AI platform');
       expect(system.getLongTermMemory()).toContain('Markus is an AI platform');
 
-      // Compaction
+      // Compaction — keepLast=1 retains 1 message + injects 1 summary message
       const result = system.compactSession(session.id, 1);
       expect(result.flushedCount).toBe(1);
       const remaining = system.summarizeAndTruncate(session.id, 1);
-      expect(remaining.length).toBeLessThanOrEqual(1);
+      expect(remaining.length).toBeLessThanOrEqual(2);
     });
   });
 });

@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { loadConfig, saveConfig, getDefaultConfigPath, createLogger, APP_VERSION, type LLMProviderConfig } from '@markus/shared';
-import { AgentManager, LLMRouter, LLMLogger, type LLMLogEntry, RoleLoader, createDefaultSkillRegistry, WorkspaceManager, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
+import { AgentManager, LLMRouter, LLMLogger, type LLMLogEntry, RoleLoader, createDefaultSkillRegistry, ExternalAgentGateway, type GatewayStore, type ExternalAgentRegistration } from '@markus/core';
 import {
   OrganizationService,
   TaskService,
@@ -417,11 +417,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setRequirementService(requirementService);
   taskService.setDeliverableService(deliverableService);
 
-  // Wire WorkspaceManager and ProjectService into TaskService for worktree-based task execution
-  const workspaceManager = new WorkspaceManager();
+  // Wire ProjectService into TaskService (worktree management is handled by agents)
   taskService.setProjectService(projectService);
   taskService.setRequirementService(requirementService);
-  taskService.setWorkspaceManager(workspaceManager);
 
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);

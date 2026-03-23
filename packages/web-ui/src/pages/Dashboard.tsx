@@ -27,13 +27,13 @@ export function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsPeriod]);
 
-  const rootOnly = (tasks: TaskInfo[]) => tasks.filter(t => !t.parentTaskId);
+  const rootOnly = (tasks: TaskInfo[]) => tasks;
   const rootStatusCounts: Record<string, number> = {};
   for (const [status, tasks] of Object.entries(board)) {
     const count = rootOnly(tasks).length;
     if (count > 0) rootStatusCounts[status] = count;
   }
-  const pending = (rootStatusCounts['pending'] ?? 0) + (rootStatusCounts['assigned'] ?? 0);
+  const pending = rootStatusCounts['pending_approval'] ?? 0;
   const inProgress = rootStatusCounts['in_progress'] ?? 0;
   const completed = rootStatusCounts['completed'] ?? 0;
   const failed = rootStatusCounts['failed'] ?? 0;
@@ -276,13 +276,13 @@ export function Dashboard() {
 // ─── Task Distribution Bar ───────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: 'bg-green-500', pending: 'bg-gray-500', assigned: 'bg-blue-500',
-  in_progress: 'bg-brand-500', failed: 'bg-red-500', blocked: 'bg-amber-500', cancelled: 'bg-gray-600',
+  pending_approval: 'bg-yellow-500', in_progress: 'bg-brand-500', blocked: 'bg-amber-500',
+  review: 'bg-purple-500', completed: 'bg-green-500', failed: 'bg-red-500', cancelled: 'bg-gray-600',
 };
 
 const STATUS_TEXT: Record<string, string> = {
-  completed: 'text-green-400', pending: 'text-gray-400', assigned: 'text-blue-400',
-  in_progress: 'text-brand-400', failed: 'text-red-400', blocked: 'text-amber-400', cancelled: 'text-gray-500',
+  pending_approval: 'text-yellow-400', in_progress: 'text-brand-400', blocked: 'text-amber-400',
+  review: 'text-purple-400', completed: 'text-green-400', failed: 'text-red-400', cancelled: 'text-gray-500',
 };
 
 function TaskBar({ statusCounts, total }: { statusCounts: Record<string, number>; total: number }) {

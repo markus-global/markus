@@ -1,10 +1,20 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { navBus } from '../navBus.ts';
+
+function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string | null {
+  if (!id) return null;
+  const agent = agents.find(a => a.id === id);
+  if (agent) return agent.name;
+  const user = users.find(u => u.id === id);
+  if (user) return user.name;
+  if (id === 'anonymous') return 'Admin';
+  return null;
+}
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
   const [open, setOpen] = useState(false);
@@ -150,49 +160,40 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
-const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled', 'archived'] as const;
+const ALL_STATUSES = ['pending_approval', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
-  { id: 'todo',        label: 'To Do',       statuses: ['pending_approval', 'pending', 'assigned'], accent: 'border-t-blue-500',   dropStatus: 'pending' },
-  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],                  accent: 'border-t-brand-500', dropStatus: 'in_progress' },
-  { id: 'review',      label: 'In Review',   statuses: ['review', 'revision', 'accepted'],          accent: 'border-t-purple-500', dropStatus: 'review' },
-  { id: 'done',        label: 'Done',        statuses: ['completed'],                               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],                     accent: 'border-t-red-500',    dropStatus: 'cancelled' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending_approval'],        accent: 'border-t-yellow-500', dropStatus: 'pending_approval' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
+  { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],     accent: 'border-t-red-500',    dropStatus: 'cancelled' },
 ] as const;
 
 const COLUMN_LABELS: Record<string, string> = {
-  pending: 'Pending', pending_approval: 'Awaiting Approval', assigned: 'Assigned',
+  pending_approval: 'Awaiting Approval',
   in_progress: 'In Progress', blocked: 'Blocked',
-  review: 'In Review', revision: 'Needs Revision', accepted: 'Accepted', completed: 'Completed',
+  review: 'In Review', completed: 'Completed',
   failed: 'Failed', cancelled: 'Cancelled', archived: 'Archived',
 };
 const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   pending_approval: { label: 'Awaiting',  cls: 'bg-yellow-500/15 text-yellow-400' },
-  assigned:         { label: 'Assigned',  cls: 'bg-blue-500/15 text-blue-400' },
   blocked:          { label: 'Blocked',   cls: 'bg-amber-500/15 text-amber-400' },
-  revision:         { label: 'Revision',  cls: 'bg-orange-500/15 text-orange-400' },
-  accepted:         { label: 'Accepted',  cls: 'bg-teal-500/15 text-teal-400' },
   failed:           { label: 'Failed',    cls: 'bg-red-500/15 text-red-400' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
 const STATUS_DOT: Record<string, string> = {
-  pending: 'bg-gray-400', pending_approval: 'bg-yellow-400', assigned: 'bg-blue-400',
+  pending_approval: 'bg-yellow-400',
   in_progress: 'bg-brand-400', blocked: 'bg-amber-400',
-  review: 'bg-purple-400', revision: 'bg-orange-400', accepted: 'bg-teal-400', completed: 'bg-green-400',
+  review: 'bg-purple-400', completed: 'bg-green-400',
   failed: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-surface-overlay',
 };
 
 type ViewMode = 'all' | 'project';
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
-
-function convertLogs(logs: TaskLogEntry[]): ExecEntry[] {
-  return filterCompletedStarts(
-    logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null)
-  );
-}
 
 const MemoCommentBubble = memo(function CommentBubble({ comment }: { comment: TaskComment }) {
   return (
@@ -214,63 +215,97 @@ const MemoCommentBubble = memo(function CommentBubble({ comment }: { comment: Ta
   );
 });
 
-// ─── Run-based types ────────────────────────────────────────────────────────
+// ─── Execution-round-based types ─────────────────────────────────────────────
 
 type TimelineItem =
-  | { kind: 'log'; entry: ExecEntry; time: number }
+  | { kind: 'log'; entry: ExecEntry; time: number; executionRound?: number }
   | { kind: 'comment'; entry: TaskComment; time: number };
 
-interface RunGroup {
-  runNumber: number;
+interface RoundGroup {
+  id: number;
+  roundNumber: number;
   startTime: string;
   endTime?: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   items: TimelineItem[];
-  preComments: TimelineItem[]; // comments between previous run end and this run start
+  preComments: TimelineItem[];
 }
 
-function groupTimelineIntoRuns(timeline: TimelineItem[]): RunGroup[] {
-  const runs: RunGroup[] = [];
-  let currentRun: RunGroup | null = null;
+function getExecutionRound(item: TimelineItem): number {
+  if (item.kind === 'log') return (item as any).executionRound ?? 1;
+  return 0; // comments have no round — assigned to nearest
+}
+
+function groupTimelineIntoRounds(timeline: TimelineItem[]): RoundGroup[] {
+  const rounds: RoundGroup[] = [];
+  let currentRound: RoundGroup | null = null;
   let pendingComments: TimelineItem[] = [];
+  let nextId = 1;
 
   for (const item of timeline) {
-    if (item.kind === 'log' && item.entry.type === 'status' && item.entry.content === 'started') {
-      currentRun = {
-        runNumber: runs.length + 1,
-        startTime: item.entry.timestamp ?? item.entry.time ?? '',
-        status: 'running',
-        items: [],
-        preComments: [...pendingComments],
-      };
-      pendingComments = [];
-      runs.push(currentRun);
+    if (item.kind === 'comment') {
+      if (currentRound) currentRound.items.push(item);
+      else pendingComments.push(item);
       continue;
     }
-    if (item.kind === 'log' && item.entry.type === 'status' && ['completed', 'failed', 'cancelled'].includes(item.entry.content)) {
-      if (currentRun) {
-        currentRun.status = item.entry.content as RunGroup['status'];
-        currentRun.endTime = item.entry.timestamp ?? item.entry.time;
-        currentRun = null;
+
+    const round = getExecutionRound(item);
+
+    // New round boundary: round number changed
+    if (item.entry.type === 'status' && (item.entry.content === 'started' || item.entry.content === 'resumed')) {
+      if (!currentRound || round !== currentRound.roundNumber) {
+        currentRound = {
+          id: nextId++,
+          roundNumber: round,
+          startTime: item.entry.timestamp ?? item.entry.time ?? '',
+          status: 'running',
+          items: [],
+          preComments: [...pendingComments],
+        };
+        pendingComments = [];
+        rounds.push(currentRound);
+      }
+      // 'resumed' after retry: add as informational item within the round
+      if (item.entry.content === 'resumed') {
+        currentRound.items.push(item);
       }
       continue;
     }
-    if (currentRun) {
-      currentRun.items.push(item);
-    } else if (item.kind === 'comment') {
-      pendingComments.push(item);
+
+    // Terminal status for the round
+    if (item.entry.type === 'status' && ['completed', 'failed', 'cancelled', 'execution_finished'].includes(item.entry.content)) {
+      if (currentRound) {
+        const terminal = item.entry.content === 'execution_finished' ? 'completed' : item.entry.content;
+        currentRound.status = terminal as RoundGroup['status'];
+        currentRound.endTime = item.entry.timestamp ?? item.entry.time;
+      }
+      continue;
+    }
+
+    if (currentRound) {
+      currentRound.items.push(item);
     }
   }
-  if (currentRun && currentRun.status === 'running') {
-    // Check if the task is still actually running vs interrupted
-    const hasRecentActivity = currentRun.items.length > 0;
-    if (!hasRecentActivity) currentRun.status = 'interrupted';
+
+  if (currentRound && currentRound.status === 'running') {
+    const hasRecentActivity = currentRound.items.length > 0;
+    if (!hasRecentActivity) currentRound.status = 'interrupted';
   }
-  // Attach any trailing comments to the last run
-  if (pendingComments.length > 0 && runs.length > 0) {
-    runs[runs.length - 1]!.items.push(...pendingComments);
+  if (pendingComments.length > 0 && rounds.length > 0) {
+    rounds[rounds.length - 1]!.items.push(...pendingComments);
   }
-  return runs;
+  // If no rounds were created but there are timeline items, create a default round
+  if (rounds.length === 0 && timeline.length > 0) {
+    rounds.push({
+      id: nextId++,
+      roundNumber: 1,
+      startTime: timeline[0]!.kind === 'log' ? (timeline[0]!.entry.timestamp ?? '') : new Date(timeline[0]!.time).toISOString(),
+      status: 'running',
+      items: [...pendingComments, ...timeline],
+      preComments: [],
+    });
+  }
+  return rounds;
 }
 
 function formatDurationShort(startTime: string, endTime?: string): string {
@@ -293,33 +328,30 @@ const statusConfig: Record<string, { label: string; color: string; bg: string }>
   interrupted: { label: 'Interrupted', color: 'text-amber-400', bg: 'bg-amber-500/15' },
 };
 
-const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, streamingText, isExecuting }: {
-  run: RunGroup;
+const RoundSection = memo(function RoundSection({ round, expanded, onToggle, isLive, streamingText, isExecuting, totalRounds }: {
+  round: RoundGroup;
   expanded: boolean;
   onToggle: () => void;
   isLive: boolean;
   streamingText?: string;
   isExecuting?: boolean;
+  totalRounds: number;
 }) {
-  const sc = statusConfig[run.status] ?? statusConfig.running!;
-  const duration = formatDurationShort(run.startTime, run.endTime);
-  const startDate = (() => {
-    try { return new Date(run.startTime).toLocaleString(); } catch { return run.startTime; }
-  })();
-  const toolCount = run.items.filter(i => i.kind === 'log' && i.entry.type === 'tool').length;
-  const errorCount = run.items.filter(i => i.kind === 'log' && i.entry.type === 'error').length;
+  const sc = statusConfig[round.status] ?? statusConfig.running!;
+  const duration = formatDurationShort(round.startTime, round.endTime);
+  const startDate = formatLogTime(round.startTime);
+  const toolCount = round.items.filter(i => i.kind === 'log' && i.entry.type === 'tool').length;
+  const errorCount = round.items.filter(i => i.kind === 'log' && i.entry.type === 'error').length;
 
   return (
     <div className="border-b border-border-default/60 last:border-b-0">
-      {/* Pre-comments (between runs) */}
-      {run.preComments.length > 0 && (
+      {round.preComments.length > 0 && (
         <div className="px-4 py-2">
-          {run.preComments.map((item, i) =>
+          {round.preComments.map((item, i) =>
             item.kind === 'comment' ? <MemoCommentBubble key={`pc-${item.entry.id}`} comment={item.entry} /> : null
           )}
         </div>
       )}
-      {/* Run header */}
       <button
         onClick={onToggle}
         className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left"
@@ -327,9 +359,9 @@ const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, s
         <svg className={`w-3 h-3 text-gray-500 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 12 12" fill="currentColor">
           <path d="M4 2l5 4-5 4V2z" />
         </svg>
-        <span className="text-xs font-medium text-gray-300">Run #{run.runNumber}</span>
+        <span className="text-xs font-medium text-gray-300">{totalRounds > 1 ? `Round #${round.id}` : 'Execution'}</span>
         <span className={`text-[10px] px-1.5 py-0.5 rounded ${sc.bg} ${sc.color}`}>{sc.label}</span>
-        {run.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
+        {round.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
         <span className="text-[10px] text-gray-600 ml-auto flex items-center gap-2">
           {toolCount > 0 && <span>{toolCount} tool calls</span>}
           {errorCount > 0 && <span className="text-red-400">{errorCount} errors</span>}
@@ -337,13 +369,12 @@ const RunSection = memo(function RunSection({ run, expanded, onToggle, isLive, s
           <span>{startDate}</span>
         </span>
       </button>
-      {/* Run body (lazy rendered) */}
       {expanded && (
         <div className="px-4 pb-3 space-y-0.5">
-          {run.items.map((item, i) =>
+          {round.items.map((item, i) =>
             item.kind === 'comment'
               ? <MemoCommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
-              : <MemoExecEntryRow key={`l-${(item.entry.type === 'tool' ? item.entry.key : undefined) ?? item.entry.timestamp ?? i}`} entry={item.entry} showTime />
+              : <MemoExecEntryRow key={`l-${(item.entry.type === 'tool' ? item.entry.key : undefined) ?? `${item.entry.timestamp}-${i}`}`} entry={item.entry} showTime />
           )}
           {isLive && streamingText && <StreamingText content={streamingText} />}
           {isLive && isExecuting && !streamingText && <ThinkingDots label="Thinking" />}
@@ -362,10 +393,11 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
-  const [expandedRuns, setExpandedRuns] = useState<Set<number>>(new Set());
-  const [runsPage, setRunsPage] = useState(1);
-  const RUNS_PAGE_SIZE = 20;
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
+  const [roundsPage, setRoundsPage] = useState(1);
+  const ROUNDS_PAGE_SIZE = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const topRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
@@ -389,7 +421,9 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
       const entry: TaskLogEntry = {
         id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
         seq: p.seq as number, type: p.logType as string, content: p.content as string,
-        metadata: p.metadata as Record<string, unknown> | undefined, createdAt: p.createdAt as string,
+        metadata: p.metadata as Record<string, unknown> | undefined,
+        executionRound: p.executionRound as number | undefined,
+        createdAt: p.createdAt as string,
       };
       setLogs(prev => {
         if (entry.id && prev.some(e => e.id === entry.id)) return prev;
@@ -398,8 +432,8 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
       });
       if (entry.type === 'text') setStreamingText('');
       if (entry.type === 'status') {
-        if (entry.content === 'started') setIsExecuting(true);
-        else if (['completed', 'failed', 'cancelled'].includes(entry.content)) setIsExecuting(false);
+        if (entry.content === 'started' || entry.content === 'resumed') setIsExecuting(true);
+        else if (['completed', 'failed', 'cancelled', 'execution_finished'].includes(entry.content)) setIsExecuting(false);
       }
       if (entry.type === 'error') setIsExecuting(false);
     });
@@ -417,41 +451,59 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
 
+  // Build a map from seq -> executionRound for log entries
+  const seqToRound = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const log of logs) {
+      if (log.executionRound) m.set(log.seq, log.executionRound);
+    }
+    return m;
+  }, [logs]);
+
   const timeline = useMemo(() => {
-    const execEntries = convertLogs(logs);
+    const rawPairs = logs
+      .map(log => ({ log, entry: taskLogToEntry(log) }))
+      .filter((p): p is { log: TaskLogEntry; entry: ExecEntry } => p.entry != null);
+    const filteredEntries = filterCompletedStarts(rawPairs.map(p => p.entry));
+    const kept = new Set(filteredEntries);
     const items: TimelineItem[] = [
-      ...execEntries.map(entry => ({ kind: 'log' as const, entry, time: new Date(entry.timestamp ?? entry.time ?? 0).getTime() })),
+      ...rawPairs.filter(p => kept.has(p.entry)).map(({ log, entry }) => ({
+        kind: 'log' as const,
+        entry,
+        time: new Date(entry.timestamp ?? entry.time ?? 0).getTime(),
+        executionRound: log.executionRound ?? seqToRound.get(log.seq) ?? 1,
+      })),
       ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
     ];
     items.sort((a, b) => a.time - b.time);
     return items;
-  }, [logs, comments]);
+  }, [logs, comments, seqToRound]);
 
-  const runs = useMemo(() => groupTimelineIntoRuns(timeline), [timeline]);
+  const rounds = useMemo(() => groupTimelineIntoRounds(timeline), [timeline]);
 
-  // Auto-expand the latest run; keep manually toggled runs in sync
+  // Auto-expand the latest round
   useEffect(() => {
-    if (runs.length > 0) {
-      setExpandedRuns(prev => {
-        const lastRunNum = runs[runs.length - 1]!.runNumber;
-        if (prev.has(lastRunNum)) return prev;
-        return new Set([lastRunNum]);
+    if (rounds.length > 0) {
+      setExpandedRounds(prev => {
+        const lastId = rounds[rounds.length - 1]!.id;
+        if (prev.has(lastId)) return prev;
+        return new Set([lastId]);
       });
     }
-  }, [runs.length]); // only re-run when run count changes
+  }, [rounds.length]);
 
-  // Scroll to bottom when new content arrives for the expanded live run
+  // Scroll to keep live content visible (newest round is at bottom)
   useEffect(() => {
     if (isVisible && isExecuting) {
-      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   }, [logs, streamingText, isVisible, isExecuting]);
 
-  const toggleRun = useCallback((runNumber: number) => {
-    setExpandedRuns(prev => {
+  const toggleRound = useCallback((roundId: number) => {
+    setExpandedRounds(prev => {
       const next = new Set(prev);
-      if (next.has(runNumber)) next.delete(runNumber);
-      else next.add(runNumber);
+      if (next.has(roundId)) next.delete(roundId);
+      else next.add(roundId);
       return next;
     });
   }, []);
@@ -511,7 +563,7 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   );
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-gray-600">Loading logs…</div>;
-  if (runs.length === 0 && !streamingText) {
+  if (rounds.length === 0 && !streamingText) {
     return (
       <div className="flex flex-col flex-1">
         <div className="flex-1 flex items-center justify-center">
@@ -525,35 +577,43 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     );
   }
 
-  // Paginate runs: show latest page first (reversed order, latest on page 1)
-  const reversedRuns = [...runs].reverse();
-  const totalRunPages = Math.ceil(reversedRuns.length / RUNS_PAGE_SIZE);
-  const pagedRuns = reversedRuns.slice((runsPage - 1) * RUNS_PAGE_SIZE, runsPage * RUNS_PAGE_SIZE).reverse();
+  const totalRoundPages = Math.ceil(rounds.length / ROUNDS_PAGE_SIZE);
+  const pageEndOffset = roundsPage * ROUNDS_PAGE_SIZE;
+  const pageStartOffset = (roundsPage - 1) * ROUNDS_PAGE_SIZE;
+  const pagedRounds = rounds.slice(
+    Math.max(0, rounds.length - pageEndOffset),
+    rounds.length - pageStartOffset,
+  );
 
   return (
     <div>
-      {totalRunPages > 1 && (
+      {totalRoundPages > 1 && (
         <div className="flex items-center justify-between px-4 py-2 border-b border-border-default">
-          <span className="text-[10px] text-gray-500">{runs.length} runs total</span>
+          <span className="text-[10px] text-gray-500">{rounds.length} rounds total</span>
           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-            <button disabled={runsPage >= totalRunPages} onClick={() => setRunsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Older</button>
-            <span>{runsPage}/{totalRunPages}</span>
-            <button disabled={runsPage <= 1} onClick={() => setRunsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Newer →</button>
+            <button disabled={roundsPage >= totalRoundPages} onClick={() => setRoundsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Older</button>
+            <span>{roundsPage}/{totalRoundPages}</span>
+            <button disabled={roundsPage <= 1} onClick={() => setRoundsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Newer →</button>
           </div>
         </div>
       )}
       <div className="py-1">
-        {pagedRuns.map(run => (
-          <RunSection
-            key={run.runNumber}
-            run={run}
-            expanded={expandedRuns.has(run.runNumber)}
-            onToggle={() => toggleRun(run.runNumber)}
-            isLive={run.runNumber === runs.length && isExecuting}
-            streamingText={run.runNumber === runs.length ? streamingText : undefined}
-            isExecuting={run.runNumber === runs.length ? isExecuting : false}
-          />
-        ))}
+        <div ref={topRef} />
+        {pagedRounds.map(round => {
+          const isLastRound = round.id === rounds[rounds.length - 1]?.id;
+          return (
+            <RoundSection
+              key={round.id}
+              round={round}
+              expanded={expandedRounds.has(round.id)}
+              onToggle={() => toggleRound(round.id)}
+              isLive={isLastRound && isExecuting}
+              streamingText={isLastRound ? streamingText : undefined}
+              isExecuting={isLastRound ? isExecuting : false}
+              totalRounds={rounds.length}
+            />
+          );
+        })}
         <div ref={endRef} />
       </div>
       {commentInput}
@@ -615,22 +675,23 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailModal({
-  task, agents, projects, requirements, allTasks, onClose, onRefresh, authUser,
+  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
   projects: ProjectInfo[];
   requirements: RequirementInfo[];
   allTasks: TaskInfo[];
+  users: HumanUserInfo[];
   onClose: () => void;
   onRefresh: () => void;
   authUser?: { id: string; name: string; role: string; orgId: string };
 }) {
-  const [subtasks, setSubtasks] = useState<TaskInfo[]>([]);
+  const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<TaskInfo | null>(null);
-  const [pendingDeleteParent, setPendingDeleteParent] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string; status: string } | null>(null);
+  const [cancelConfirm, setCancelConfirm] = useState<{ dependentCount: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'notes' | 'deliverables'>('details');
   const [running, setRunning] = useState(false);
@@ -651,7 +712,7 @@ function TaskDetailModal({
 
   const doUpdate = async (fn: () => Promise<unknown>) => {
     if (busy) return; setBusy(true);
-    try { await fn(); onRefresh(); void loadSubtasks(); } catch (err) {
+    try { await fn(); onRefresh(); await loadSubtasks(); } catch (err) {
       setRunError(String(err).replace('Error: ', ''));
     } finally { setBusy(false); }
   };
@@ -695,24 +756,23 @@ function TaskDetailModal({
     void loadSubtasks(); onRefresh();
   };
 
-  const toggleSubtask = async (sub: TaskInfo) => {
-    await api.tasks.updateStatus(sub.id, sub.status === 'completed' ? 'pending' : 'completed');
+  const toggleSubtask = async (sub: { id: string; title: string; status: string }) => {
+    if (sub.status === 'completed') {
+      await api.tasks.cancelSubtask(task.id, sub.id);
+    } else {
+      await api.tasks.completeSubtask(task.id, sub.id);
+    }
     void loadSubtasks(); onRefresh();
   };
 
-  const deleteSubtask = async (sub: TaskInfo) => {
-    await api.tasks.delete(sub.id); setPendingDelete(null);
+  const deleteSubtask = async (sub: { id: string; title: string; status: string }) => {
+    await api.tasks.deleteSubtask(task.id, sub.id); setPendingDelete(null);
     void loadSubtasks(); onRefresh();
-  };
-
-  const deleteParent = async () => {
-    await api.tasks.delete(task.id); setPendingDeleteParent(false);
-    onClose(); onRefresh();
   };
 
   const reopenTask = async () => {
     if (busy) return; setBusy(true);
-    try { await api.tasks.updateStatus(task.id, 'pending'); onRefresh(); } finally { setBusy(false); }
+    try { await api.tasks.updateStatus(task.id, 'pending_approval'); onRefresh(); } finally { setBusy(false); }
   };
 
   const runWithAgent = async () => {
@@ -721,6 +781,13 @@ function TaskDetailModal({
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
       onRefresh();
     } finally { setRunning(false); }
+  };
+
+  const retryFresh = async () => {
+    if (busy) return; setBusy(true); setRunError(null); setActiveTab('logs');
+    try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
+      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+    } finally { setBusy(false); }
   };
 
   const runScheduledNow = async () => {
@@ -746,7 +813,6 @@ function TaskDetailModal({
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
   const isTerminal = isCompleted || isFailed || isCancelled || isArchived;
-  void isBlocked;
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -800,7 +866,7 @@ function TaskDetailModal({
           </div>
 
           {/* Context badges — project, requirement */}
-          {(taskProject || taskRequirement || task.parentTaskId) && (
+          {(taskProject || taskRequirement) && (
             <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
               {taskProject && (
                 <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-300 rounded-full">
@@ -812,12 +878,6 @@ function TaskDetailModal({
                 <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-purple-500/10 text-purple-300 rounded-full">
                   <span className="text-[9px] text-purple-400/60">Req</span>
                   {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
-                </span>
-              )}
-              {task.parentTaskId && (
-                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-surface-overlay/60 text-gray-400 rounded-full">
-                  <span className="text-[9px] text-gray-500">Subtask of</span>
-                  <span className="font-mono">{task.parentTaskId.slice(-8)}</span>
                 </span>
               )}
             </div>
@@ -869,7 +929,7 @@ function TaskDetailModal({
               >
                 <option value="">+ Add dependency…</option>
                 {allTasks
-                  .filter(t => t.id !== task.id && !t.parentTaskId && !(task.blockedBy ?? []).includes(t.id))
+                  .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
                   .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
               </select>
             )}
@@ -926,13 +986,20 @@ function TaskDetailModal({
                     </select>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Assignee</label>
                     <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">Unassigned</option>
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Reviewer</label>
+                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={busy}
+                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-200 focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
+                      {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
                   <div>
@@ -945,55 +1012,24 @@ function TaskDetailModal({
                 </div>
               </div>
 
-              {/* Read-only metadata */}
-              <div className="px-6 py-3 border-b border-border-default/60 grid grid-cols-3 gap-x-4 gap-y-2.5">
-                <div>
-                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Created by</p>
-                  <p className="text-xs text-gray-400">{task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : <span className="text-gray-600">—</span>}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Assignee</p>
-                  <p className="text-xs text-gray-400">{assignedAgent ? assignedAgent.name : <span className="text-amber-500/70">Unassigned</span>}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Last updated by</p>
-                  <p className="text-xs text-gray-400">{task.updatedBy ? (agents.find(a => a.id === task.updatedBy)?.name ?? task.updatedBy) : <span className="text-gray-600">—</span>}</p>
-                </div>
-                {task.createdAt && (
-                  <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Created</p>
-                    <p className="text-xs text-gray-500">{new Date(task.createdAt).toLocaleString()}</p>
-                  </div>
+              {/* Metadata */}
+              <div className="px-6 py-3 border-b border-border-default/60 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-gray-500">
+                {task.createdBy && (
+                  <span>Created by <span className="text-gray-400">{resolveActorName(task.createdBy, agents, users) ?? task.createdBy}</span></span>
                 )}
-                {task.updatedAt && (
-                  <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Updated</p>
-                    <p className="text-xs text-gray-500">{new Date(task.updatedAt).toLocaleString()}</p>
-                  </div>
+                {task.updatedBy && (
+                  <span>Updated by <span className="text-gray-400">{resolveActorName(task.updatedBy, agents, users) ?? task.updatedBy}</span></span>
                 )}
-                {task.startedAt && (
-                  <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Started</p>
-                    <p className="text-xs text-gray-500">{new Date(task.startedAt).toLocaleString()}</p>
-                  </div>
+                {task.createdAt && <span>{new Date(task.createdAt).toLocaleDateString()}</span>}
+                {task.startedAt && <span>Started {new Date(task.startedAt).toLocaleDateString()}</span>}
+                {task.updatedAt && <span>Updated {new Date(task.updatedAt).toLocaleDateString()}</span>}
+                {task.projectId && (
+                  <span className="font-mono text-cyan-400/70">task/{task.id}</span>
+                )}
+                {(task.executionRound ?? 1) > 1 && (
+                  <span className="text-amber-400">Round {task.executionRound}</span>
                 )}
               </div>
-
-              {/* Workspace isolation & review info */}
-              {(task.projectId || task.reviewerAgentId) && (
-                <div className="px-6 py-2.5 border-b border-border-default/60 grid grid-cols-2 gap-x-4 gap-y-2">
-                  {task.projectId && (
-                    <div>
-                      <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Task Branch</p>
-                      <p className="text-xs text-cyan-400/80 font-mono">task/{task.id}</p>
-                    </div>
-                  )}
-                  <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider mb-0.5">Reviewer</p>
-                    <p className="text-xs text-gray-400">{task.reviewerAgentId ? (agents.find(a => a.id === task.reviewerAgentId)?.name ?? task.reviewerAgentId) : <span className="text-gray-600">Pending review</span>}</p>
-                  </div>
-                </div>
-              )}
 
               <div className="px-6 py-4">
                 <div className="flex items-center justify-between mb-3">
@@ -1025,7 +1061,7 @@ function TaskDetailModal({
                     <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">Cancel</button>
                   </div>
                 )}
-                {/* Deliverables preview — latest 3 */}
+                {/* Deliverables preview — latest 3 (newest first) */}
                 {(() => {
                   const validDeliverables = (task.deliverables ?? []).filter(
                     d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
@@ -1035,6 +1071,9 @@ function TaskDetailModal({
                     file: 'bg-cyan-500/15 text-cyan-400',
                     document: 'bg-blue-500/15 text-blue-400',
                     report: 'bg-purple-500/15 text-purple-400',
+                    directory: 'bg-teal-500/15 text-teal-400',
+                    url: 'bg-pink-500/15 text-pink-400',
+                    text: 'bg-gray-500/15 text-gray-400',
                   };
                   const latest3 = validDeliverables.slice(0, 3);
                   return (
@@ -1120,7 +1159,7 @@ function TaskDetailModal({
             </div>
           )}
 
-          {/* Deliverables tab — full paginated list */}
+          {/* Deliverables tab — full paginated list (newest first) */}
           {activeTab === 'deliverables' && (
             <div className="px-6 py-4">
               {(() => {
@@ -1132,6 +1171,9 @@ function TaskDetailModal({
                   file: 'bg-cyan-500/15 text-cyan-400',
                   document: 'bg-blue-500/15 text-blue-400',
                   report: 'bg-purple-500/15 text-purple-400',
+                  directory: 'bg-teal-500/15 text-teal-400',
+                  url: 'bg-pink-500/15 text-pink-400',
+                  text: 'bg-gray-500/15 text-gray-400',
                 };
                 const totalPages = Math.ceil(validDeliverables.length / PAGE_SIZE);
                 const paged = validDeliverables.slice((deliverablesPage - 1) * PAGE_SIZE, deliverablesPage * PAGE_SIZE);
@@ -1222,114 +1264,110 @@ function TaskDetailModal({
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {isScheduled ? (<>
-              {/* ── Scheduled task buttons ── */}
-              {task.status === 'pending_approval' && (
-                <>
-                  <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
-                  <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
-                </>
-              )}
-              {(task.status === 'pending' || task.status === 'assigned' || task.status === 'accepted' || isCompleted || isFailed) && task.assignedAgentId && (
-                <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                  {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
+            {/* ── Approve / Reject (pending_approval) ── */}
+            {task.status === 'pending_approval' && (
+              <>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+              </>
+            )}
+            {/* ── Review actions ── */}
+            {task.status === 'review' && (
+              <>
+                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 rounded-lg text-white disabled:opacity-50">✓ Approve</button>
+                {!showRevision ? (
+                  <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">↻ Request Revision</button>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
+                      placeholder="Revision reason…" autoFocus
+                      className="px-2 py-1 text-xs bg-surface-elevated border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
+                    <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
+                      disabled={busy} className="px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">Send</button>
+                    <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
+                      className="px-1.5 py-1 text-xs text-gray-400 hover:text-gray-200">✕</button>
+                  </div>
+                )}
+              </>
+            )}
+            {/* ── Execution controls (in_progress / blocked / failed) ── */}
+            {isRunning && (
+              <>
+                <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-400 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>Pause
                 </button>
-              )}
-              {task.status === 'revision' && task.assignedAgentId && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                  {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run / Resume</>}
+                <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-400 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
                 </button>
-              )}
-              {isRunning && <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Pause</button>}
-              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
-              {task.status === 'review' && (
-                <>
-                  <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 rounded-lg text-white disabled:opacity-50">✓ Accept</button>
-                  {!showRevision ? (
-                    <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">↻ Revision</button>
-                  ) : (
-                    <div className="flex items-center gap-1.5">
-                      <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
-                        placeholder="Revision reason…" autoFocus
-                        className="px-2 py-1 text-xs bg-surface-elevated border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
-                      <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
-                        disabled={busy} className="px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">Send</button>
-                      <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
-                        className="px-1.5 py-1 text-xs text-gray-400 hover:text-gray-200">✕</button>
-                    </div>
-                  )}
-                </>
-              )}
-              {(task.status === 'in_progress' || task.status === 'revision') && (
-                <button onClick={() => void updateStatus(task.id, 'review')} disabled={busy} className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50">Submit for Review</button>
-              )}
-              {!isRunning && (
-                schedPaused
-                  ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
-                  : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-400 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
-              )}
-              {!isCompleted && !isFailed && !isCancelled && !isArchived && task.status !== 'pending_approval' && task.status !== 'accepted' && (
-                <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
-              )}
-            </>) : (<>
-              {/* ── Standard task buttons ── */}
-              {task.status === 'pending_approval' && (
-                <>
-                  <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">Approve</button>
-                  <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
-                </>
-              )}
-              {task.assignedAgentId && !isRunning && !isTerminal && task.status !== 'pending_approval' && task.status !== 'review' && task.status !== 'accepted' && task.status !== 'blocked' && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                  {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run / Resume</>}
-                </button>
-              )}
-              {isRunning && <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Pause</button>}
-              {isRunning && <button onClick={() => void updateStatus(task.id, 'blocked')} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Block</button>}
-              {isBlocked && <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Unblock</button>}
-              {(task.status === 'pending' || task.status === 'assigned') && (
-                <button onClick={() => void startTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Mark In Progress</button>
-              )}
-              {(isCompleted || isFailed) && task.assignedAgentId && (
-                <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">Run Again</button>
-              )}
-              {task.status === 'review' && (
-                <>
-                  <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 rounded-lg text-white disabled:opacity-50">✓ Accept</button>
-                  {!showRevision ? (
-                    <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">↻ Revision</button>
-                  ) : (
-                    <div className="flex items-center gap-1.5">
-                      <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
-                        placeholder="Revision reason…" autoFocus
-                        className="px-2 py-1 text-xs bg-surface-elevated border border-orange-500/40 rounded-lg text-gray-200 focus:border-orange-400 outline-none w-48" />
-                      <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
-                        disabled={busy} className="px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg text-white disabled:opacity-50">Send</button>
-                      <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
-                        className="px-1.5 py-1 text-xs text-gray-400 hover:text-gray-200">✕</button>
-                    </div>
-                  )}
-                </>
-              )}
-              {(task.status === 'completed' || task.status === 'accepted') && (
-                <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-gray-200 disabled:opacity-50">Archive</button>
-              )}
-              {(task.status === 'in_progress' || task.status === 'revision') && (
-                <button onClick={() => void updateStatus(task.id, 'review')} disabled={busy} className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-500 rounded-lg text-white disabled:opacity-50">Submit for Review</button>
-              )}
-              {isTerminal && <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>}
-              {task.status === 'accepted' && <button onClick={() => void updateStatus(task.id, 'completed')} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Complete</button>}
-              {!isTerminal && task.status !== 'pending_approval' && task.status !== 'accepted' && <button onClick={() => void updateStatus(task.id, 'cancelled')} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>}
-            </>)}
+              </>
+            )}
+            {isBlocked && (
+              <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                {running ? <>Resuming…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume</>}
+              </button>
+            )}
+            {isFailed && (
+              <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
+              </button>
+            )}
+            {/* ── Scheduled task: Run Now / Schedule controls ── */}
+            {isScheduled && (isCompleted || isFailed) && (
+              <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
+              </button>
+            )}
+            {isScheduled && !isRunning && (
+              schedPaused
+                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
+                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-400 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
+            )}
+            {/* ── Archive (completed) ── */}
+            {isCompleted && (
+              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-gray-200 disabled:opacity-50">Archive</button>
+            )}
+            {/* ── Reopen (terminal states) ── */}
+            {isTerminal && (
+              <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 disabled:opacity-50">Reopen</button>
+            )}
+            {/* ── Cancel (non-terminal, non-pending_approval) ── */}
+            {!isTerminal && task.status !== 'pending_approval' && (
+              <button onClick={async () => {
+                const { count } = await api.tasks.getDependentCount(task.id);
+                if (count > 0) { setCancelConfirm({ dependentCount: count }); } else { void doUpdate(() => api.tasks.cancel(task.id)); }
+              }} disabled={busy} className="px-3 py-1.5 text-xs text-red-400 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
+            )}
           </div>
-          <button onClick={() => setPendingDeleteParent(true)} className="px-3 py-1.5 text-xs text-gray-500 hover:text-red-400 border border-transparent hover:border-red-500/30 rounded-lg transition-colors">Delete</button>
         </div>
       </div>
 
       {pendingDelete && <ConfirmModal title={`Delete subtask "${pendingDelete.title}"?`} message="This subtask will be permanently deleted." confirmLabel="Delete" onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
-      {pendingDeleteParent && <ConfirmModal title={`Delete task "${task.title}"?`} message={subtasks.length > 0 ? `This will also delete all ${subtasks.length} subtask(s).` : 'This task will be permanently deleted.'} confirmLabel="Delete Task" onConfirm={() => void deleteParent()} onCancel={() => setPendingDeleteParent(false)} />}
+      {cancelConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setCancelConfirm(null)}>
+          <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-gray-100 mb-2">Cancel Task</h3>
+            <p className="text-sm text-gray-400 mb-4">
+              This task has <span className="text-amber-400 font-medium">{cancelConfirm.dependentCount}</span> dependent task{cancelConfirm.dependentCount > 1 ? 's' : ''} that {cancelConfirm.dependentCount > 1 ? 'are' : 'is'} currently blocked by it.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, false)); }}
+                className="w-full px-4 py-2.5 text-sm bg-surface-elevated border border-border-default rounded-lg hover:bg-surface-overlay text-gray-200 text-left">
+                <span className="font-medium">Cancel this task only</span>
+                <span className="block text-xs text-gray-500 mt-0.5">Dependent tasks will start if they have no other blockers</span>
+              </button>
+              <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, true)); }}
+                className="w-full px-4 py-2.5 text-sm bg-red-500/10 border border-red-500/30 rounded-lg hover:bg-red-500/20 text-red-300 text-left">
+                <span className="font-medium">Cancel with all dependents</span>
+                <span className="block text-xs text-red-400/70 mt-0.5">Also cancels {cancelConfirm.dependentCount} blocked task{cancelConfirm.dependentCount > 1 ? 's' : ''}</span>
+              </button>
+              <button onClick={() => setCancelConfirm(null)} className="w-full px-4 py-2 text-sm text-gray-500 hover:text-gray-300">
+                Keep task running
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {previewFile && <FilePreviewModal filePath={previewFile} onClose={() => setPreviewFile(null)} />}
     </div>
   );
@@ -1361,7 +1399,7 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
     setShowIterForm(false); setIterName(''); setIterGoal(''); setIterStart(''); setIterEnd('');
   };
 
-  const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id && !t.parentTaskId), [tasks, project.id]);
+  const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id), [tasks, project.id]);
   const projReqs = useMemo(() => requirements.filter(r => r.projectId === project.id), [requirements, project.id]);
   const stats = useMemo(() => {
     const s = { total: projTasks.length, completed: 0, inProgress: 0, inReview: 0, blocked: 0, pending: 0, failed: 0, reqs: projReqs.length, reqsDone: 0 };
@@ -1686,7 +1724,6 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   const rows = useMemo(() => {
     const result: BacklogRow[] = [];
     for (const t of tasks) {
-      if (t.parentTaskId) continue;
       const group = taskToGroup(t.status);
       result.push({ kind: 'task', data: t, group, groupOrder: GROUP_ORDER[group] ?? 5 });
     }
@@ -1868,6 +1905,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [iterations, setIterations] = useState<IterationInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [users, setUsers] = useState<HumanUserInfo[]>([]);
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [flash, setFlash] = useState('');
@@ -1887,8 +1925,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
   const [taskPriority, setTaskPriority] = useState('medium');
-  const [taskAutoAssign, setTaskAutoAssign] = useState(true);
   const [taskAssignTo, setTaskAssignTo] = useState('');
+  const [taskReviewer, setTaskReviewer] = useState('');
   const [taskProjectId, setTaskProjectId] = useState<string>('');
   const [taskRequirementId, setTaskRequirementId] = useState<string>('');
   const [taskBlockedBy, setTaskBlockedBy] = useState<string[]>([]);
@@ -1944,6 +1982,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     try { const { agents: a } = await api.agents.list(); setAgents(a); } catch { /* */ }
   }, []);
 
+  const refreshUsers = useCallback(async () => {
+    try { const { users: u } = await api.users.list(authUser?.orgId); setUsers(u); } catch { /* */ }
+  }, [authUser?.orgId]);
+
   const refreshRequirements = useCallback(async () => {
     try { const { requirements: r } = await api.requirements.list({}); setAllRequirements(r); } catch { /* */ }
   }, []);
@@ -1953,9 +1995,9 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   }, []);
 
   const refresh = useCallback(async () => {
-    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshRequirements()]);
+    await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshUsers(), refreshRequirements()]);
     setLoading(false);
-  }, [refreshProjects, refreshBoard, refreshAgents, refreshRequirements]);
+  }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -2110,15 +2152,17 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   };
 
   const createTask = async () => {
-    if (!taskTitle) return;
+    if (!taskTitle || !taskAssignTo || !taskReviewer) return;
+    if (taskAssignTo === taskReviewer) { msg('Assigned agent and reviewer must be different'); return; }
     const projId = taskProjectId || undefined;
     const iterId = projId && selectedIterationId ? selectedIterationId : undefined;
     const reqId = taskRequirementId || undefined;
     try {
       await api.tasks.create(
-        taskTitle, taskDesc, taskPriority,
-        taskAutoAssign ? undefined : taskAssignTo || undefined,
-        taskAutoAssign,
+        taskTitle, taskDesc,
+        taskAssignTo,
+        taskReviewer,
+        taskPriority,
         projId,
         iterId,
         taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
@@ -2246,7 +2290,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     t.status === 'completed' && t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
-    let result = tasks.filter(t => !t.parentTaskId && (showArchived || includeArchived || !isArchived(t)));
+    let result = tasks.filter(t => showArchived || includeArchived || !isArchived(t));
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
@@ -2282,7 +2326,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     return true;
   });
 
-  const archivedCount = Object.values(board).flat().filter(t => !t.parentTaskId && isArchived(t)).length;
+  const archivedCount = Object.values(board).flat().filter(t => isArchived(t)).length;
 
   const sortedAgents = useMemo(() => {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
@@ -2323,7 +2367,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     const counts: Record<string, number> = {};
     for (const tasks of Object.values(board)) {
       for (const t of tasks) {
-        if (t.parentTaskId) continue;
         const key = t.projectId ?? '__none__';
         counts[key] = (counts[key] ?? 0) + 1;
       }
@@ -2541,7 +2584,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         const isAgent = req.source === 'agent';
                         const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
                         const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
-                        const creatorName = agents.find(a => a.id === req.createdBy)?.name ?? req.createdBy.slice(0, 10);
+                        const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 10);
                         return (
                           <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
                             onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
@@ -2581,14 +2624,14 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         );
                           } else {
                             const task = item.data;
-                        const subCount = task.subtaskIds?.length ?? 0;
+                        const subCount = task.subtasks?.length ?? 0;
                         const badge = SUB_STATUS_BADGE[task.status];
                         const isApprovalTask = task.status === 'pending_approval';
                         const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
                         const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
                         const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
                         const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
-                        const taskCreatorName = task.createdBy ? (agents.find(a => a.id === task.createdBy)?.name ?? task.createdBy) : null;
+                        const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                         return (
                           <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                             onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
@@ -2719,7 +2762,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               <textarea value={taskDesc} onChange={e => setTaskDesc(e.target.value)} rows={2}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none resize-none" />
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Priority</label>
                 <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)}
@@ -2727,16 +2770,22 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                   <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                 </select>
               </div>
-              {!taskAutoAssign && (
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">Assign to</label>
-                  <select value={taskAssignTo} onChange={e => setTaskAssignTo(e.target.value)}
-                    className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
-                    <option value="">Unassigned</option>
-                    {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
-                </div>
-              )}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">Assign to <span className="text-red-400">*</span></label>
+                <select value={taskAssignTo} onChange={e => setTaskAssignTo(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
+                  <option value="">Select agent…</option>
+                  {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5">Reviewer <span className="text-red-400">*</span></label>
+                <select value={taskReviewer} onChange={e => setTaskReviewer(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
+                  <option value="">Select reviewer…</option>
+                  {agents.filter(a => a.id !== taskAssignTo).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -2776,7 +2825,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                 <option value="">Select a task to depend on…</option>
                 {Object.values(board).flat()
-                  .filter(t => !t.parentTaskId && t.status !== 'completed' && t.status !== 'cancelled' && !taskBlockedBy.includes(t.id))
+                  .filter(t => t.status !== 'completed' && t.status !== 'cancelled' && !taskBlockedBy.includes(t.id))
                   .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
               </select>
               {taskBlockedBy.length > 0 && (
@@ -2793,13 +2842,9 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 </div>
               )}
             </div>
-            <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-              <input type="checkbox" checked={taskAutoAssign} onChange={e => setTaskAutoAssign(e.target.checked)} className="rounded bg-surface-elevated border-border-default" />
-              Auto-assign to best available agent
-            </label>
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => setShowCreateTask(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Cancel</button>
-              <button onClick={() => void createTask()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
+              <button onClick={() => void createTask()} disabled={!taskAssignTo || !taskReviewer} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">Create</button>
             </div>
           </div>
         </div>
@@ -2813,6 +2858,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           projects={projects}
           requirements={allRequirements}
           allTasks={Object.values(board).flat()}
+          users={users}
           onClose={() => setSelectedTask(null)}
           onRefresh={handleTaskRefresh}
           authUser={authUser}
@@ -2884,6 +2930,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           agents={agents}
           projects={projects}
           allTasks={Object.values(board).flat()}
+          users={users}
           onClose={() => setSelectedReq(null)}
           onApprove={id => { handleApproveReq(id); setSelectedReq(null); }}
           onReject={id => { setRejectReqId(id); setSelectedReq(null); }}
@@ -2897,12 +2944,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailModal({
-  req, agents, projects, allTasks, onClose, onApprove, onReject, onCancel,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
   projects: ProjectInfo[];
   allTasks: TaskInfo[];
+  users: HumanUserInfo[];
   onClose: () => void;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
@@ -2913,7 +2961,7 @@ function RequirementDetailModal({
   const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
   const canCancel = req.status === 'draft' || req.status === 'approved';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
-  const creatorAgent = agents.find(a => a.id === req.createdBy);
+  const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
 
   return (
@@ -2948,7 +2996,7 @@ function RequirementDetailModal({
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div className="bg-surface-elevated/60 rounded-lg p-2.5">
               <span className="text-[10px] text-gray-500 block mb-1">Created by</span>
-              <span className="text-gray-300">{creatorAgent?.name ?? req.createdBy.slice(0, 12)}</span>
+              <span className="text-gray-300">{creatorName}</span>
               {isAgent && <span className="text-[10px] text-purple-400 ml-1.5">(Agent)</span>}
             </div>
             <div className="bg-surface-elevated/60 rounded-lg p-2.5">

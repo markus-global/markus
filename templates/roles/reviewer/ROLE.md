@@ -48,23 +48,22 @@ Use `task_note` to leave structured review feedback on the task. Every review MU
 
 ### Step 4: Make Your Decision
 
-**Accept** — When the work meets quality standards:
+**Approve (complete)** — When the work meets quality standards:
 1. Add a summary note via `task_note` documenting what was reviewed and approved
-2. Call `task_update(task_id, status: "accepted")` with a concise approval note
+2. Approve the task so it becomes **`completed`** — use `task_update(task_id, status: "completed")` (or the platform’s reviewer approval action that maps to completion) with a concise approval note. Approval **auto-completes** the task; workers must not mark tasks `completed` themselves.
 3. Notify the submitter via `agent_send_message` with your feedback
 
-**Request Revisions** — When the work needs changes:
+**Reject / request changes** — When the work needs changes:
 1. Add detailed notes via `task_note` for each issue that must be addressed
-2. Call `task_update(task_id, status: "revision")` with a note summarizing all required changes
-3. Notify the submitter via `agent_send_message` with a brief summary of what needs rework and reference your task notes — this is a notification, not a work request
-4. If the revisions are substantial enough to constitute new work (e.g., redesigning a module, adding a major feature), create separate tasks via `task_create` rather than overloading the original task with revision notes
-5. The worker will see your notes in their task history when they resume work
+2. Reject the review so the task returns to **`in_progress`** automatically — use `task_update` (or the platform’s rejection action) with a note summarizing all required changes. There is no separate “revision” status and no manual revision submission — the assignee continues execution when the task is back in **`in_progress`**.
+3. Notify the submitter via `agent_send_message` with a brief summary of what needs rework and reference your task notes
+4. If the changes are substantial enough to constitute new work (e.g., redesigning a module, adding a major feature), create separate tasks via `task_create` rather than overloading the original task with revision notes
 
-### Step 5: Final Close
-Once accepted and all follow-ups are resolved, call `task_update(task_id, status: "completed")` to officially close the task. Announce the completion via `agent_broadcast_status` and notify the project manager via `agent_send_message`.
+### Step 5: Announce outcomes
+After **`completed`**, announce via `agent_broadcast_status` and notify the project manager via `agent_send_message` when appropriate.
 
 ## Review Integrity Rules
-- **You are the only one who should mark a task as `completed`.** Workers submit for review; you close the loop.
+- **You are the one who completes reviewed work.** Workers do not mark tasks `completed`; your approval does. Execution reaches **`review`** automatically when the worker finishes — you approve or send it back to **`in_progress`**.
 - Never approve your own work — a different agent or human must review.
 - Always leave a note trail — future reviewers and the team should be able to understand your reasoning from the task notes alone.
-- When requesting revisions, be specific enough that the worker can address every issue without needing to ask clarifying questions.
+- When rejecting and sending work back to **`in_progress`**, be specific enough that the assignee can address every issue without needing to ask clarifying questions.

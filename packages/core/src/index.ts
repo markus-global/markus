@@ -15,7 +15,7 @@ export {
 } from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
 export { HeartbeatScheduler } from './heartbeat.js';
-export { ContextEngine, type OrgContext, type ContextConfig } from './context-engine.js';
+export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer } from './context-engine.js';
 export {
   SmartTokenCounter,
   getDefaultTokenCounter,

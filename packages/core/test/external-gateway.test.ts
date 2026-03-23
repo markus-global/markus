@@ -154,7 +154,7 @@ describe('ExternalAgentGateway', () => {
     });
 
     it('returns tasks from fetcher', async () => {
-      const tasks = [{ id: 't1', title: 'Task 1', status: 'assigned', priority: 'high' }];
+      const tasks = [{ id: 't1', title: 'Task 1', status: 'in_progress', priority: 'high' }];
       gw.setTasksFetcher(() => tasks);
 
       await gw.register({ externalAgentId: 'ext-1', agentName: 'Agent', orgId: 'org-1' });

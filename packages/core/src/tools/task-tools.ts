@@ -10,9 +10,9 @@ export interface AgentTaskContext {
   createTask: (params: {
     title: string;
     description: string;
-    assignedAgentId?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
     priority?: string;
-    parentTaskId?: string;
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
@@ -62,18 +62,12 @@ export interface AgentTaskContext {
   updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[] }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending_approval task (calls rejectTask under the hood) */
   cancelPendingTask?: (taskId: string) => Promise<{ id: string; title: string; status: string }>;
-  /** List subtasks of a parent task */
-  listSubtasks?: (parentId: string) => Promise<Array<{ id: string; title: string; status: string; priority: string; assignedAgentId?: string }>>;
-  /** Submit task deliverables for review */
-  submitForReview?: (
-    taskId: string,
-    summary: string,
-    branchName?: string,
-    testResults?: string,
-    knownIssues?: string,
-    deliverables?: Array<{ type?: string; path: string; summary: string }>,
-    reviewerAgentId?: string,
-  ) => Promise<{ id: string; status: string }>;
+  /** Add a subtask to a task */
+  addSubtask?: (taskId: string, title: string) => Promise<{ id: string; title: string; status: string }>;
+  /** Complete a subtask */
+  completeSubtask?: (taskId: string, subtaskId: string) => Promise<{ id: string; title: string; status: string }>;
+  /** Get subtasks of a task */
+  getSubtasks?: (taskId: string) => Promise<Array<{ id: string; title: string; status: string }>>;
   /** Propose a requirement for user review */
   proposeRequirement?: (params: {
     title: string;
@@ -97,6 +91,12 @@ export interface AgentTaskContext {
       taskIds: string[];
     }>
   >;
+  /** Submit completed work for review — system auto-fills task_id, reviewer, and branch */
+  submitForReview?: (
+    summary: string,
+    deliverables?: Array<{ type?: string; reference: string; summary: string }>,
+    knownIssues?: string
+  ) => Promise<{ id: string; status: string }>;
   /** Update a requirement's status (cancel, reject, etc.) */
   updateRequirementStatus?: (
     id: string,
@@ -111,10 +111,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       name: 'task_create',
       description: [
         'Create a new task in the team task board.',
-        'Top-level tasks MUST reference an approved requirement_id.',
-        'Subtasks (with parent_task_id) inherit the requirement from their parent.',
+        'Tasks MUST reference an approved requirement_id.',
         'If you want to propose new work, use requirement_propose instead.',
-        'IMPORTANT: assigned_agent_id is REQUIRED — every task must have a responsible person. Call team_list first to find the right agent.',
+        'IMPORTANT: assigned_agent_id and reviewer_agent_id are REQUIRED — every task must have an assignee and an independent reviewer. Call team_list first to pick both.',
+        'Use subtask_create to break a task into smaller steps.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -137,9 +137,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Agent ID to assign this task to. REQUIRED — every task must have a responsible person. Call team_list first to find the right agent by role/skills.',
           },
-          parent_task_id: {
+          reviewer_agent_id: {
             type: 'string',
-            description: 'Optional: parent task ID if this is a subtask',
+            description:
+              'Agent ID who will review deliverables when execution finishes (must differ from the assignee when both are agents). Call team_list to choose a reviewer (often the delegator or team manager).',
           },
           project_id: {
             type: 'string',
@@ -171,17 +172,29 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
           },
         },
-        required: ['title', 'description', 'assigned_agent_id'],
+        required: ['title', 'description', 'assigned_agent_id', 'reviewer_agent_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
           const assignedAgentId = args['assigned_agent_id'] as string | undefined;
+          const reviewerAgentId = args['reviewer_agent_id'] as string | undefined;
 
-          // Enforce: agent-created tasks must always have an assignee
           if (!assignedAgentId) {
             return JSON.stringify({
               status: 'error',
               error: 'assigned_agent_id is required. Every task must have a responsible person. Call team_list first to find the right agent by role/skills, then set assigned_agent_id.',
+            });
+          }
+          if (!reviewerAgentId?.trim()) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'reviewer_agent_id is required. Every task must have a designated reviewer for when execution finishes. Call team_list to pick a reviewer (e.g. delegator or team manager).',
+            });
+          }
+          if (reviewerAgentId === assignedAgentId) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'reviewer_agent_id must differ from assigned_agent_id — choose an independent reviewer via team_list.',
             });
           }
 
@@ -207,7 +220,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             description: args['description'] as string,
             priority: args['priority'] as string | undefined,
             assignedAgentId,
-            parentTaskId: args['parent_task_id'] as string | undefined,
+            reviewerAgentId,
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
             iterationId: args['iteration_id'] as string | undefined,
@@ -255,13 +268,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           status: {
             type: 'string',
             enum: [
-              'pending',
-              'assigned',
+              'pending_approval',
               'in_progress',
               'blocked',
+              'review',
               'completed',
               'failed',
               'cancelled',
+              'archived',
             ],
             description: 'Filter by status (optional)',
           },
@@ -311,14 +325,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update a task — add a progress note, change status, update description, modify blocked_by dependencies, or a combination.',
+        'Update a PARENT TASK — add a progress note, change status, update description, modify blocked_by dependencies, or a combination.',
+        'WARNING: This tool operates on the parent task, NOT on subtasks. To complete a subtask, use subtask_complete instead.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
-        'You can update the description of any task including those awaiting approval (pending_approval).',
-        'Worker lifecycle: assigned → in_progress → (submit via task_submit_review when done).',
-        'Reviewer lifecycle: review → accepted (approve) or revision (request changes) → completed (after all revisions resolved).',
-        'IMPORTANT: Workers MUST NOT set status to "completed" directly.',
-        'When your work is done, use task_submit_review instead — a reviewer must verify before the task closes.',
-        'IMPORTANT: Do NOT set status to "cancelled" or "failed" unless you are truly abandoning the task due to an unrecoverable problem.',
+        'Task lifecycle is mostly automatic: after approval, tasks start executing automatically; when execution finishes, the system auto-transitions to review and notifies the reviewer; reviewer approval auto-completes the task; revision auto-restarts execution.',
+        'IMPORTANT: Workers MUST NOT set status to "completed" — only the reviewer can approve completion.',
+        'IMPORTANT: Workers MUST NOT set status to "review" directly — use task_submit_review instead.',
+        'IMPORTANT: Do NOT set status to "cancelled" or "failed" unless truly abandoning the task.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -326,8 +339,16 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           task_id: { type: 'string', description: 'The task ID to update' },
           status: {
             type: 'string',
-            enum: ['in_progress', 'blocked', 'revision', 'accepted', 'completed', 'failed', 'cancelled'],
-            description: 'New status (optional — omit to keep current status). Workers: use only in_progress/blocked. Reviewers: use accepted/revision/completed.',
+            enum: [
+              'in_progress',
+              'blocked',
+              'review',
+              'completed',
+              'failed',
+              'cancelled',
+            ],
+            description:
+              'New status (optional). Mostly automatic — workers rarely need to change status manually. Workers: use blocked when waiting on external input. Reviewers: review→completed to approve.',
           },
           note: {
             type: 'string',
@@ -375,13 +396,24 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           }
 
           if (newStatus) {
-            // Prevent agents from completing/accepting their own tasks
-            if (newStatus === 'completed' || newStatus === 'accepted') {
+            if (newStatus === 'review') {
               const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
               if (existing?.assignedAgentId === ctx.agentId) {
                 return JSON.stringify({
                   status: 'denied',
-                  error: `You cannot set your own task to "${newStatus}". Workers must use task_submit_review to request independent review. Only a different reviewer agent or human can mark a task as completed or accepted.`,
+                  error:
+                    'Do NOT set status to "review" directly. Use the task_submit_review tool instead — it records your summary and deliverables for the reviewer.',
+                });
+              }
+            }
+
+            if (newStatus === 'completed') {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.assignedAgentId === ctx.agentId) {
+                return JSON.stringify({
+                  status: 'denied',
+                  error:
+                    'You cannot complete your own task. When execution finishes, the task enters review automatically; the designated reviewer must set status to completed.',
                 });
               }
             }
@@ -420,7 +452,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               }
             }
 
-            const task = await ctx.updateTaskStatus(taskId, newStatus);
+            let task: { id: string; title: string; status: string };
+            try {
+              task = await ctx.updateTaskStatus(taskId, newStatus);
+            } catch (err) {
+              return JSON.stringify({
+                status: 'error',
+                error: String(err),
+              });
+            }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(task.id, note, ctx.agentName).catch(() => {});
             }
@@ -556,35 +596,28 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         ]
       : []),
 
-    ...(ctx.listSubtasks
+    ...(ctx.addSubtask
       ? [
           {
             name: 'subtask_create',
             description: [
-              'Create a subtask under a parent task to break down complex work into trackable steps.',
+              'Create a subtask under a task to break down complex work into trackable steps.',
               'Use this to decompose your current task into smaller, actionable items.',
-              'Subtasks inherit the requirement and project from their parent automatically.',
               'Mark each subtask completed as you finish it — subtasks do not require separate review.',
-              'The parent task should only be submitted for review when all subtasks are done.',
+              'When all subtasks are done, finish the parent task normally — execution completion triggers review automatically.',
             ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {
-                parent_task_id: { type: 'string', description: 'The parent task ID to add this subtask to' },
+                task_id: { type: 'string', description: 'The task ID to add this subtask to' },
                 title: { type: 'string', description: 'Clear, action-oriented subtask title (e.g. "Research competitor pricing", not "research")' },
-                description: { type: 'string', description: 'What needs to be done (optional, can be brief)' },
               },
-              required: ['parent_task_id', 'title'],
+              required: ['task_id', 'title'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const task = await ctx.createTask({
-                  title: args['title'] as string,
-                  description: (args['description'] as string) ?? '',
-                  parentTaskId: args['parent_task_id'] as string,
-                  assignedAgentId: ctx.agentId,
-                });
-                return JSON.stringify({ status: 'success', subtask: { id: task.id, title: task.title, status: task.status } });
+                const sub = await ctx.addSubtask!(args['task_id'] as string, args['title'] as string);
+                return JSON.stringify({ status: 'success', subtask: sub });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -592,21 +625,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           } as AgentToolHandler,
           {
             name: 'subtask_complete',
-            description: 'Mark a subtask as completed. Use this when you finish a subtask to track progress. The parent task auto-completes when all subtasks are done.',
+            description: [
+              'Mark a subtask as completed. This is the ONLY way to complete subtasks — do NOT use task_update for this.',
+              'Requires both task_id (tsk_-prefixed parent task ID) and subtask_id (sub_-prefixed subtask ID).',
+              'If you don\'t know the subtask_id, call subtask_list first to get IDs.',
+            ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {
-                subtask_id: { type: 'string', description: 'The subtask ID to mark as completed' },
-                note: { type: 'string', description: 'Brief summary of what was done (optional)' },
+                task_id: { type: 'string', description: 'The parent task ID (tsk_-prefixed). This is NOT the subtask ID.' },
+                subtask_id: { type: 'string', description: 'The subtask ID to mark as completed (sub_-prefixed). Get this from subtask_list or subtask_create results.' },
               },
-              required: ['subtask_id'],
+              required: ['task_id', 'subtask_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const result = await ctx.updateTaskStatus(args['subtask_id'] as string, 'completed');
-                if (args['note'] && ctx.addTaskNote) {
-                  await ctx.addTaskNote(args['subtask_id'] as string, args['note'] as string, ctx.agentName).catch(() => {});
-                }
+                const result = await ctx.completeSubtask!(args['task_id'] as string, args['subtask_id'] as string);
                 return JSON.stringify({ status: 'success', subtask: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -615,17 +649,17 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           } as AgentToolHandler,
           {
             name: 'subtask_list',
-            description: 'List all subtasks of a parent task. Use this to check progress on a decomposed task.',
+            description: 'List all subtasks of a task with their IDs and statuses. Call this to get subtask IDs before using subtask_complete. Also useful to check progress on a decomposed task.',
             inputSchema: {
               type: 'object',
               properties: {
-                parent_task_id: { type: 'string', description: 'The parent task ID to list subtasks for' },
+                task_id: { type: 'string', description: 'The task ID to list subtasks for' },
               },
-              required: ['parent_task_id'],
+              required: ['task_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const subtasks = await ctx.listSubtasks!(args['parent_task_id'] as string);
+                const subtasks = await ctx.getSubtasks!(args['task_id'] as string);
                 const done = subtasks.filter(s => s.status === 'completed').length;
                 return JSON.stringify({
                   status: 'success',
@@ -645,65 +679,52 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_submit_review',
             description: [
-              'Submit your completed work for review.',
-              'IMPORTANT: Before calling this tool, use task_update to add a detailed note with key conclusions, deliverable file paths, decisions made, and any limitations.',
-              'Provide a summary of changes, the branch name with your commits, and any test results.',
-              'Use the deliverables parameter to list all file artifacts you created — these will be stored on the task and visible to reviewers.',
-              'You MUST specify a reviewer_id — the agent who will evaluate your work.',
-              'How to choose a reviewer: if the task was delegated to you by another agent, that agent is the reviewer.',
-              'If you created the task yourself, use your team manager as reviewer. Use `team_list` to find the right person.',
-              'The system will automatically notify the reviewer. Do NOT call agent_broadcast_status after submitting.',
+              'Submit your completed work for review. You MUST call this when your task is done — execution is NOT considered complete without it.',
+              'The system auto-fills task_id, reviewer, and branch from your current execution context.',
+              'Provide a summary and list all deliverables (files, documents, reports, URLs, directories, or text notes) you produced.',
             ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {
-                task_id: { type: 'string', description: 'The task ID to submit for review' },
-                summary: { type: 'string', description: 'What was done and why (2-5 sentences)' },
-                reviewer_id: {
+                summary: {
                   type: 'string',
-                  description: 'Agent ID of the reviewer. If the task was delegated to you, use the delegator. If self-created, use your team manager.',
-                },
-                branch_name: {
-                  type: 'string',
-                  description: 'Git branch containing your changes (optional)',
-                },
-                test_results: { type: 'string', description: 'Test execution results (optional)' },
-                known_issues: {
-                  type: 'string',
-                  description: 'Any known issues or follow-up items (optional)',
+                  description: 'What was accomplished and why (2-5 sentences). Include key decisions, results, and any test outcomes.',
                 },
                 deliverables: {
                   type: 'array',
-                  description: 'List of file artifacts produced by this task. Include all files you created or modified as deliverables.',
+                  description: 'All artifacts produced. Each item needs a type, reference, and summary.',
                   items: {
                     type: 'object',
                     properties: {
-                      type: { type: 'string', enum: ['file', 'document', 'report'], description: 'Deliverable type (default: file)' },
-                      path: { type: 'string', description: 'Absolute file path of the deliverable' },
+                      type: {
+                        type: 'string',
+                        enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
+                        description: 'file = source/config file, document = markdown/docs, report = analysis/audit, directory = folder of files, url = external link, text = inline text note',
+                      },
+                      reference: {
+                        type: 'string',
+                        description: 'File path, directory path, URL, or inline text content depending on type',
+                      },
                       summary: { type: 'string', description: 'Brief description of this deliverable' },
                     },
-                    required: ['path', 'summary'],
+                    required: ['type', 'reference', 'summary'],
                   },
                 },
+                known_issues: {
+                  type: 'string',
+                  description: 'Any known issues, limitations, or follow-up items (optional)',
+                },
               },
-              required: ['task_id', 'summary', 'reviewer_id'],
+              required: ['summary'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const reviewerId = args['reviewer_id'] as string | undefined;
-                if (!reviewerId || reviewerId.trim().length === 0) {
-                  return JSON.stringify({
-                    status: 'error',
-                    error: 'reviewer_id is required. You must specify who will review your work. If the task was delegated to you, use the delegator as reviewer. If you created the task yourself, use your team manager. Call team_list to find the right person.',
-                  });
+                const summary = args['summary'] as string;
+                if (!summary || summary.trim().length === 0) {
+                  return JSON.stringify({ status: 'error', error: 'summary is required — describe what you accomplished.' });
                 }
-                if (reviewerId === ctx.agentId) {
-                  return JSON.stringify({
-                    status: 'error',
-                    error: 'You cannot review your own work. Choose a different reviewer: if the task was delegated to you, use the delegator; otherwise use your team manager. Call team_list to find the right person.',
-                  });
-                }
-                let parsedDeliverables: Array<{ type?: string; path: string; summary: string }> | undefined;
+
+                let parsedDeliverables: Array<{ type?: string; reference: string; summary: string }> | undefined;
                 let rawDel = args['deliverables'];
                 if (typeof rawDel === 'string') {
                   try { rawDel = JSON.parse(rawDel); } catch { /* leave as-is */ }
@@ -711,32 +732,29 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 if (Array.isArray(rawDel)) {
                   parsedDeliverables = rawDel
                     .filter((d): d is Record<string, unknown> =>
-                      d !== null && d !== undefined && typeof d === 'object' && !Array.isArray(d)
-                      && typeof (d as Record<string, unknown>).path === 'string'
-                      && ((d as Record<string, unknown>).path as string).length > 0
+                      d !== null && typeof d === 'object' && !Array.isArray(d)
+                      && typeof (d as Record<string, unknown>).reference === 'string'
+                      && ((d as Record<string, unknown>).reference as string).length > 0
                     )
                     .map(d => ({
-                      type: typeof d.type === 'string' ? d.type : undefined,
-                      path: d.path as string,
+                      type: typeof d.type === 'string' ? d.type : 'file',
+                      reference: d.reference as string,
                       summary: typeof d.summary === 'string' && (d.summary as string).length > 0
                         ? d.summary as string
-                        : (d.path as string).split('/').pop() ?? '',
+                        : String(d.reference),
                     }));
                 }
+
                 const result = await ctx.submitForReview!(
-                  args['task_id'] as string,
-                  args['summary'] as string,
-                  args['branch_name'] as string | undefined,
-                  args['test_results'] as string | undefined,
-                  args['known_issues'] as string | undefined,
+                  summary,
                   parsedDeliverables,
-                  reviewerId,
+                  args['known_issues'] as string | undefined,
                 );
                 return JSON.stringify({
                   status: 'success',
                   taskId: result.id,
                   taskStatus: result.status,
-                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No file deliverables recorded.'}`,
+                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No deliverables recorded — consider adding them next time.'}`,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

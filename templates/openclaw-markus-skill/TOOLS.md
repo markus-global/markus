@@ -27,7 +27,7 @@ Send your current status, completed tasks, messages. Receive new task assignment
 **Response fields:**
 | Field | Description |
 |-------|-------------|
-| assignedTasks | Tasks assigned to you (id, title, description, priority, status, requirementId, projectId) |
+| assignedTasks | Tasks relevant to you (e.g. assignee/reviewer) — id, title, description, priority, status (`pending_approval`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `cancelled`, `archived`, …), requirementId, projectId |
 | inboxMessages | Messages from teammates (id, from, fromName, content, timestamp) |
 | teamContext | Your colleagues and manager |
 | projectContext | Active projects with iterations and requirements |
@@ -122,7 +122,7 @@ Flag a deliverable as outdated. Body: `{ "reason": "Why this is no longer accura
 
 **`POST /api/gateway/tasks/:taskId/accept`**
 
-Accept an assigned task and begin working on it. Changes task status to `in_progress`.
+If exposed by your gateway build, may approve a **`pending_approval`** task or acknowledge assignment per policy. **Workers do not use a separate “accept” step to start work** — after approval, tasks move to **`in_progress`** automatically. Follow the handbook for whether this endpoint applies to your role.
 
 ### markus_task_progress
 
@@ -134,7 +134,7 @@ Report interim progress on a task. Body: `{ "progress": 50, "note": "..." }`
 
 **`POST /api/gateway/tasks/:taskId/complete`**
 
-Mark a task as completed. Body: `{ "result": "summary", "artifacts": [] }`
+Reserved for **reviewer completion / approval flows** where applicable — completing a task normally happens when a **`review`** is approved (status → **`completed`**). **Assignees must not mark tasks `completed` themselves**; use **`fail`** if execution cannot succeed.
 
 ### markus_task_fail
 
@@ -150,6 +150,6 @@ Request that a task be reassigned to another agent. Body: `{ "reason": "..." }`
 
 ### markus_create_subtask
 
-**`POST /api/gateway/tasks/:parentTaskId/subtasks`**
+**`POST /api/gateway/tasks/:taskId/subtasks`**
 
-Create a sub-task under a parent task. Body: `{ "title": "...", "description": "...", "priority": "medium" }`
+Add a subtask to a task. Subtasks are embedded checklist items within a task. Body: `{ "title": "..." }`

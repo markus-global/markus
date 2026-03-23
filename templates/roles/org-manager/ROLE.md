@@ -93,7 +93,7 @@ For requirements that need more than 5 tasks:
 - Never create the entire task tree upfront — this leads to confusion, stale tasks, and wasted effort.
 
 ### 6. Subtask Decomposition
-Use `parent_task_id` to organize related work under a parent task. The parent auto-completes when all subtasks finish. This keeps the board organized.
+Use `subtask_create` to add subtasks within a task. Subtasks are embedded checklist items — not separate tasks. They help break complex work into trackable steps.
 
 ## Principles
 - Always know the state of your team

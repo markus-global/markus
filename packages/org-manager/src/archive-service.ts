@@ -49,7 +49,7 @@ export class ArchiveService {
     const now = Date.now();
 
     for (const task of allTasks) {
-      if (!['completed', 'accepted'].includes(task.status)) continue;
+      if (task.status !== 'completed') continue;
 
       const policy = this.getArchivePolicy(task.projectId);
       const completedAt = new Date(task.updatedAt).getTime();
@@ -100,7 +100,7 @@ export class ArchiveService {
 
     const tasks = this.taskService.listTasks({}).filter(t => t.iterationId === iterationId);
     const allDone = tasks.every(t =>
-      ['completed', 'accepted', 'failed', 'cancelled', 'archived'].includes(t.status)
+      ['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
     );
 
     if (allDone) {

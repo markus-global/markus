@@ -339,7 +339,7 @@ chat_messages (id, session_id, agent_id, role, content, tokens_used, created_at)
 channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at)
 
 -- 任务（扩展）
-tasks (id, org_id, title, description, status, priority, assigned_agent_id, parent_task_id,
+tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,
        project_id, iteration_id, due_at, created_at, updated_at)
 
 -- 项目

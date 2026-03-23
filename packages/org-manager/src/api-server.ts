@@ -329,7 +329,7 @@ export class APIServer {
         getTasksByAgent(agentId: string) {
           return self.taskService.getTasksByAgent(agentId).map(t => ({
             id: t.id, title: t.title, description: t.description,
-            priority: t.priority, status: t.status, parentTaskId: t.parentTaskId,
+            priority: t.priority, status: t.status,
             requirementId: t.requirementId,
             projectId: t.projectId,
           }));
@@ -341,8 +341,10 @@ export class APIServer {
           return self.taskService.createTask({
             title: req.title, description: req.description,
             priority: req.priority as TaskPriority,
-            orgId: req.orgId, assignedAgentId: req.assignedAgentId,
-            parentTaskId: req.parentTaskId, createdBy: req.createdBy,
+            orgId: req.orgId,
+            assignedAgentId: req.assignedAgentId,
+            reviewerAgentId: req.reviewerAgentId,
+            createdBy: req.createdBy,
           });
         },
       },
@@ -1750,15 +1752,20 @@ export class APIServer {
     if (path === '/api/tasks' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
+      const assignedAgentId = (body['assignedAgentId'] as string | undefined)?.trim();
+      const reviewerAgentId = (body['reviewerAgentId'] as string | undefined)?.trim();
+      if (!assignedAgentId || !reviewerAgentId) {
+        this.json(res, 400, { error: 'assignedAgentId and reviewerAgentId are required' });
+        return;
+      }
       const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
       const task = this.taskService.createTask({
         orgId: (body['orgId'] as string) ?? 'default',
         title: body['title'] as string,
         description: body['description'] as string,
         priority: body['priority'] as TaskPriority | undefined,
-        assignedAgentId: body['assignedAgentId'] as string | undefined,
-        requiredSkills: body['requiredSkills'] as string[] | undefined,
-        autoAssign: body['autoAssign'] as boolean | undefined,
+        assignedAgentId,
+        reviewerAgentId,
         projectId: body['projectId'] as string | undefined,
         iterationId: body['iterationId'] as string | undefined,
         blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
@@ -1791,14 +1798,16 @@ export class APIServer {
 
       if ('assignedAgentId' in body) {
         const agentId = body['assignedAgentId'] as string | null;
-        const task = agentId
-          ? this.taskService.assignTask(taskId, agentId)
-          : this.taskService.unassignTask(taskId);
-        this.json(res, 200, { task });
+        if (agentId) {
+          const task = this.taskService.assignTask(taskId, agentId);
+          this.json(res, 200, { task });
+        } else {
+          this.json(res, 400, { error: 'assignedAgentId is required — tasks must always have an assignee' });
+        }
         return;
       }
 
-      // General field update (title/description/priority/projectId/iterationId/requirementId/blockedBy)
+      // General field update (title/description/priority/projectId/iterationId/requirementId/blockedBy/reviewerAgentId)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
@@ -1806,7 +1815,8 @@ export class APIServer {
         body['projectId'] !== undefined ||
         body['iterationId'] !== undefined ||
         body['requirementId'] !== undefined ||
-        body['blockedBy'] !== undefined
+        body['blockedBy'] !== undefined ||
+        body['reviewerAgentId'] !== undefined
       ) {
         const task = this.taskService.updateTask(taskId, {
           title: body['title'] as string | undefined,
@@ -1816,6 +1826,7 @@ export class APIServer {
           iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
           requirementId: body['requirementId'] !== undefined ? (body['requirementId'] as string | null) : undefined,
           blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
+          reviewerAgentId: body['reviewerAgentId'] as string | undefined,
         }, authUser?.userId);
         this.json(res, 200, { task });
         return;
@@ -1849,37 +1860,69 @@ export class APIServer {
       return;
     }
 
-    if (path.startsWith('/api/tasks/') && req.method === 'DELETE') {
+    if (path.match(/^\/api\/tasks\/[^/]+\/cancel$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
-      this.taskService.deleteTask(taskId);
-      this.json(res, 200, { ok: true });
+      const authUser = await this.getAuthUser(req);
+      const body = await this.readBody(req);
+      const cascade = body['cascade'] === true;
+      try {
+        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId);
+        this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
       return;
     }
 
-    // Subtasks
+    if (path.match(/^\/api\/tasks\/[^/]+\/dependents$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      const count = this.taskService.getDependentTaskCount(taskId);
+      this.json(res, 200, { count });
+      return;
+    }
+
+    if (path.startsWith('/api/tasks/') && req.method === 'DELETE') {
+      this.json(res, 400, { error: 'Tasks cannot be deleted — use cancel instead to preserve audit trail' });
+      return;
+    }
+
+    // Subtasks (embedded within a task)
     if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
-      const subtasks = this.taskService.listSubtasks(taskId);
-      this.json(res, 200, { subtasks });
+      const task = this.taskService.getTask(taskId);
+      if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+      this.json(res, 200, { subtasks: task.subtasks });
       return;
     }
 
     if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'POST') {
       const body = await this.readBody(req);
-      const parentId = path.split('/')[3]!;
-      const parent = this.taskService.getTask(parentId);
-      if (!parent) {
-        this.json(res, 404, { error: 'Parent task not found' });
-        return;
-      }
-      const subtask = this.taskService.createTask({
-        orgId: parent.orgId,
-        title: body['title'] as string,
-        description: (body['description'] as string) ?? '',
-        priority: (body['priority'] as TaskPriority) ?? 'medium',
-        parentTaskId: parentId,
-      });
+      const taskId = path.split('/')[3]!;
+      const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
       this.json(res, 201, { subtask });
+      return;
+    }
+
+    // Complete/cancel a specific subtask
+    const subtaskActionMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)\/(complete|cancel)$/);
+    if (subtaskActionMatch && req.method === 'POST') {
+      const taskId = subtaskActionMatch[1]!;
+      const subtaskId = subtaskActionMatch[2]!;
+      const action = subtaskActionMatch[3]!;
+      const sub = action === 'complete'
+        ? this.taskService.completeSubtask(taskId, subtaskId)
+        : this.taskService.cancelSubtask(taskId, subtaskId);
+      this.json(res, 200, { subtask: sub });
+      return;
+    }
+
+    // Delete a specific subtask
+    const subtaskDeleteMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)$/);
+    if (subtaskDeleteMatch && req.method === 'DELETE') {
+      const taskId = subtaskDeleteMatch[1]!;
+      const subtaskId = subtaskDeleteMatch[2]!;
+      this.taskService.deleteSubtask(taskId, subtaskId);
+      this.json(res, 200, { ok: true });
       return;
     }
 
@@ -1965,6 +2008,12 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
+        // Inject live comment into running agent's context
+        this.taskService.injectCommentIntoRunningTask(
+          taskId,
+          (body['authorName'] as string) ?? 'User',
+          body['content'] as string
+        );
         this.json(res, 201, { comment });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
@@ -1998,8 +2047,8 @@ export class APIServer {
           this.json(res, 400, { error: `Cannot pause task in ${task.status} status` });
           return;
         }
-        const nextStatus = task.assignedAgentId ? 'assigned' : 'pending';
-        this.taskService.updateTaskStatus(taskId, nextStatus as any);
+        const nextStatus: TaskStatus = 'blocked';
+        this.taskService.updateTaskStatus(taskId, nextStatus);
         this.json(res, 200, { status: nextStatus, taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -2013,6 +2062,18 @@ export class APIServer {
       try {
         await this.taskService.runTask(taskId);
         this.json(res, 202, { status: 'running', taskId });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task retry fresh — discard previous execution, start clean
+    if (path.match(/^\/api\/tasks\/[^/]+\/retry$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      try {
+        const task = await this.taskService.retryTaskFresh(taskId);
+        this.json(res, 202, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
@@ -2475,15 +2536,69 @@ export class APIServer {
       return;
     }
 
-    // Agent heartbeat info
+    // Agent heartbeat info — enriched with last summary, next run estimate
     if (path.match(/^\/api\/agents\/[^/]+\/heartbeat$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const hb = (
-          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number }; isRunning(): boolean } }
+          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } } }
         ).heartbeat;
-        this.json(res, 200, hb.getStatus());
+        const status = hb.getStatus();
+
+        // Get last heartbeat summary from agent memory
+        let lastSummary: string | undefined;
+        let lastSummaryAt: string | undefined;
+        try {
+          const mem = agent.getMemory();
+          const results = mem.search('heartbeat:summary');
+          if (results.length > 0) {
+            const latest = results[results.length - 1];
+            lastSummary = latest?.content;
+            lastSummaryAt = latest?.timestamp;
+          }
+        } catch { /* ok */ }
+
+        const state = agent.getState();
+        const lastHeartbeat = state.lastHeartbeat;
+
+        // Estimate next heartbeat time
+        let nextRunAt: string | undefined;
+        if (status.running && status.intervalMs > 0 && lastHeartbeat) {
+          const next = new Date(new Date(lastHeartbeat).getTime() + status.intervalMs);
+          if (next.getTime() > Date.now()) nextRunAt = next.toISOString();
+        } else if (status.running && status.intervalMs > 0) {
+          const next = new Date(Date.now() + status.intervalMs - status.uptimeMs % status.intervalMs);
+          nextRunAt = next.toISOString();
+        }
+
+        this.json(res, 200, {
+          ...status,
+          lastHeartbeat,
+          lastSummary,
+          lastSummaryAt,
+          nextRunAt,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Manual heartbeat trigger
+    if (path.match(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const hb = (
+          agent as unknown as { heartbeat: { trigger(): void; isRunning(): boolean } }
+        ).heartbeat;
+        if (!hb.isRunning()) {
+          this.json(res, 400, { error: 'Heartbeat scheduler is not running' });
+          return;
+        }
+        hb.trigger();
+        this.json(res, 200, { status: 'triggered', message: 'Heartbeat triggered. Check activity logs for results.' });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -2982,22 +3097,13 @@ export class APIServer {
             break;
           }
           case 'delegate': {
-            const task = this.taskService.unassignTask(taskId);
-            this.json(res, 200, { task: { id: task.id, status: task.status }, delegated: true });
+            this.json(res, 400, { error: 'Delegation is not supported — tasks must always have an assigned agent' });
             break;
           }
           case 'subtasks': {
             const parentTask = this.taskService.getTask(taskId);
             if (!parentTask) { this.json(res, 404, { error: 'Parent task not found' }); break; }
-            const subtask = this.taskService.createTask({
-              title: body['title'] as string,
-              description: (body['description'] as string) ?? '',
-              priority: (body['priority'] as TaskPriority) ?? 'medium',
-              orgId: parentTask.orgId,
-              parentTaskId: taskId,
-              assignedAgentId: token.markusAgentId,
-              createdBy: `ext:${token.markusAgentId}`,
-            });
+            const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
             this.json(res, 201, { task: { id: subtask.id, title: subtask.title, status: subtask.status } });
             break;
           }
@@ -4563,12 +4669,13 @@ export class APIServer {
         this.json(res, 503, { error: 'HITL service not available' });
         return;
       }
+      const authUser = await this.getAuthUser(req);
       const approvalId = path.split('/')[3]!;
       const body = await this.readBody(req);
       const result = this.hitlService.respondToApproval(
         approvalId,
         body['approved'] as boolean,
-        (body['respondedBy'] as string) ?? 'default'
+        (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous'
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
@@ -6063,7 +6170,7 @@ export class APIServer {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const reviewerAgentId = (body['reviewerAgentId'] as string | undefined) ?? authUser?.userId ?? 'human';
-        const task = await this.taskService.acceptTask(taskId, reviewerAgentId);
+        const task = this.taskService.acceptTask(taskId, reviewerAgentId);
         this.json(res, 200, { task });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6076,7 +6183,7 @@ export class APIServer {
       const authUser = await this.getAuthUser(req);
       const body = await this.readBody(req);
       try {
-        const task = this.taskService.requestRevision(
+        const task = await this.taskService.requestRevision(
           taskId,
           (body['reason'] as string) ?? 'Revisions needed',
           authUser?.userId
@@ -6145,7 +6252,7 @@ export class APIServer {
         if (task.status === 'in_progress') {
           this.json(res, 400, { error: 'Task is already running' }); return;
         }
-        if (task.status === 'review' || task.status === 'revision') {
+        if (task.status === 'review') {
           this.json(res, 400, { error: 'Task is awaiting review. Accept or reject before running again.' }); return;
         }
         if (task.status === 'blocked') {
@@ -6155,7 +6262,7 @@ export class APIServer {
           this.json(res, 400, { error: 'Task is awaiting approval' }); return;
         }
         await this.taskService.advanceScheduleConfig(taskId);
-        const resettable = ['completed', 'cancelled', 'failed', 'accepted'];
+        const resettable = ['completed', 'cancelled', 'failed'];
         if (resettable.includes(task.status)) {
           await this.taskService.resetTaskForRerun(taskId);
         }

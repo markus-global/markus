@@ -16,6 +16,7 @@
     "@markus/gui": "workspace:*",
     "@markus/shared": "workspace:*",
     "@mozilla/readability": "^0.6.0",
+    "js-tiktoken": "^1.0.21",
     "linkedom": "^0.18.12",
     "node-cron": "^3.0.3",
     "turndown": "^7.2.2"

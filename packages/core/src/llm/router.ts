@@ -491,29 +491,56 @@ export class LLMRouter {
   }
 
   /**
-   * Returns the context window (in tokens) of the currently active default model.
-   * Used by ContextEngine to dynamically size the message budget.
+   * Returns the context window (in tokens) for a specific provider, or the
+   * active default if no provider name is given.
    */
   getActiveModelContextWindow(): number {
-    const provider = this.providers.get(this.defaultProvider);
+    return this.getModelContextWindow();
+  }
+
+  getModelContextWindow(providerName?: string): number {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
     if (!provider) return 64000;
-    const custom = this.customModelConfigs.get(this.defaultProvider);
+    const custom = this.customModelConfigs.get(name);
     if (custom?.contextWindow) return custom.contextWindow;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === this.defaultProvider);
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name);
     return catalogEntry?.contextWindow ?? 64000;
   }
 
   getActiveModelMaxOutput(): number {
-    const provider = this.providers.get(this.defaultProvider);
+    return this.getModelMaxOutput();
+  }
+
+  getModelMaxOutput(providerName?: string): number {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
     if (!provider) return 4096;
-    const custom = this.customModelConfigs.get(this.defaultProvider);
+    const custom = this.customModelConfigs.get(name);
     if (custom?.maxOutputTokens) return custom.maxOutputTokens;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === this.defaultProvider);
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name);
     return catalogEntry?.maxOutputTokens ?? 4096;
+  }
+
+  getActiveModelName(providerName?: string): string {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
+    return provider?.model ?? '';
   }
 
   isAutoSelectEnabled(): boolean {
     return this.autoSelect;
+  }
+
+  /**
+   * Check if the active provider supports Anthropic server-side compaction.
+   * Only Claude Opus 4.x and Sonnet 4.x models support the compact_20260112 beta.
+   */
+  isCompactionSupported(providerName?: string): boolean {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name);
+    if (!provider) return false;
+    return provider.model.startsWith('claude-opus-4') || provider.model.startsWith('claude-sonnet-4');
   }
 
   private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
@@ -548,18 +575,24 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   minimax: 'MiniMax',
 };
 
+// Sources:
+// - Anthropic: https://docs.anthropic.com/claude/reference/input-and-output-sizes
+// - OpenAI: https://developers.openai.com/api/docs/models
+// - Google: https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
+// - MiniMax: https://platform.minimax.io/docs/api-reference/api-overview
 const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
-  // Anthropic
-  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 32000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
+  // Anthropic — https://docs.anthropic.com/claude/reference/input-and-output-sizes
+  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'] },
-  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 8192, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
-  // OpenAI
+  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'] },
+  // OpenAI — https://developers.openai.com/api/docs/models
   { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
-  // Google
-  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 16384, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
+  // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
+  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },
-  // MiniMax
-  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 1, output: 4 }, reasoning: false, inputTypes: ['text'] },
+  // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.2, output: 0.95 }, reasoning: false, inputTypes: ['text'] },
 ];

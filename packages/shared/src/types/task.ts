@@ -1,14 +1,10 @@
 import type { TaskDeliverable } from './governance.js';
 
 export type TaskStatus =
-  | 'pending'
   | 'pending_approval'
-  | 'assigned'
   | 'in_progress'
   | 'blocked'
   | 'review'
-  | 'revision'
-  | 'accepted'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -38,6 +34,16 @@ export interface ScheduleConfig {
   paused?: boolean;
 }
 
+export type SubTaskStatus = 'pending' | 'completed' | 'cancelled';
+
+export interface SubTask {
+  id: string;
+  title: string;
+  status: SubTaskStatus;
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface Task {
   id: string;
   orgId: string;
@@ -46,9 +52,10 @@ export interface Task {
   status: TaskStatus;
   priority: TaskPriority;
   executionMode?: TaskExecutionMode;
-  assignedAgentId?: string;
-  parentTaskId?: string;
-  subtaskIds: string[];
+  assignedAgentId: string;
+  subtasks: SubTask[];
+  /** Current execution round (increments on revision rejection, reopen, scheduled rerun) */
+  executionRound: number;
   /** Task IDs that must be completed before this task can start */
   blockedBy?: string[];
   result?: TaskResult;
@@ -78,8 +85,8 @@ export interface Task {
   approvedVia?: string;
   /** Report ID if created from an approved plan */
   planReportId?: string;
-  /** Agent assigned to review deliverables */
-  reviewerAgentId?: string;
+  /** Agent assigned to review deliverables (required at creation) */
+  reviewerAgentId: string;
   deliverables?: TaskDeliverable[];
 
   // ── Scheduling fields ──

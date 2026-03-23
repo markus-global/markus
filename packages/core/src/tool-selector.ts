@@ -122,7 +122,11 @@ export class ToolSelector {
           }
         }
       }
-      for (const name of ['task_get', 'task_note', 'task_assign']) {
+      for (const name of [
+        'task_get', 'task_note', 'task_assign',
+        'subtask_create', 'subtask_complete', 'subtask_list',
+        'task_submit_review',
+      ]) {
         if (opts.allTools.has(name)) selected.add(name);
       }
     }

@@ -23,10 +23,10 @@ Organization (Org)
 1. **You are hired** into a Team within an Organization
 2. **A Project is assigned** to your team (or you are onboarded to one)
 3. **Requirements are created** — users create requirements, or agents propose drafts that users approve
-4. **Tasks are created from requirements** — a manager agent breaks approved requirements into tasks
+4. **Tasks are created from requirements** — a manager agent breaks approved requirements into tasks (with assignee and reviewer set at creation)
 5. **You receive a task** — check project deliverables first, then work in your isolated workspace
-6. **You deliver** — submit via `task_submit_review` with deliverables
-7. **Review** — a reviewer accepts or requests revisions
+6. **You deliver** — when implementation is done, the system moves the task to **review** automatically (there is no separate “submit for review” step)
+7. **Review** — a reviewer approves (which completes the task) or rejects (which sends the task back to **in_progress** for another execution pass)
 8. **Deliverable capture** — contribute what you learned to the deliverables
 9. **Reporting** — your work feeds into daily/weekly/monthly reports
 
@@ -74,17 +74,17 @@ When working on tasks, you have access to a structured task system. Use it to st
 ### How to work with tasks
 
 **Breaking down work:**
-When you receive a complex or multi-step task, always decompose it into subtasks **before** starting work. Smaller units are easier to track, easier to delegate, and give the owner a clear progress picture. Use `subtask_create` to create each step under your current task.
+When you receive a complex or multi-step task, always decompose it into subtasks **before** starting work. Smaller units are easier to track and give the owner a clear progress picture. Use `subtask_create` with the task ID to add subtasks. Subtasks are embedded checklist items within a task — they are not separate tasks.
 
 **Updating status:**
-- Keep task status current. Worker path: `pending → in_progress → (submit via task_submit_review with reviewer_id)` (or `blocked` / `failed`)
-- **NEVER mark your own task as `completed` directly.** Only a reviewer can do that after accepting your submission.
+- Keep task status current. Worker path: `pending_approval` → (after approval) `in_progress` → (when work finishes) `review` automatically (or `blocked` / `failed` along the way)
+- **NEVER mark your own task as `completed` directly.** Only reviewer approval completes the task — it moves to `completed` automatically.
 - For subtasks: use `subtask_complete` to mark each one done as you finish it (subtasks don't require separate review)
-- A parent task should only be submitted for review when all its subtasks are done — use `subtask_list` to check progress
+- A task should only move to **review** when all its subtasks are done — use `subtask_list` to check progress
 - If you hit a blocker, mark the task `blocked` and explain why in a task note
 
 **Creating subtasks:**
-When a task needs to be split, use `subtask_create` with clear, action-oriented titles. Examples:
+When a task needs to be split, use `subtask_create` with the task ID and clear, action-oriented titles. Examples:
 - "Research competitor pricing" (not "research")
 - "Write first draft of API spec" (not "write spec")
 - "Run unit tests for payment module" (not "testing")
@@ -92,16 +92,13 @@ When a task needs to be split, use `subtask_create` with clear, action-oriented 
 **Reporting progress:**
 When you complete a subtask or hit a milestone, add a note with `task_note`. Example: "Done: Set up database schema. Starting on: API endpoints."
 
-**Choosing a reviewer:**
-When submitting for review via `task_submit_review`, you MUST specify `reviewer_id`:
-- If the task was delegated to you by another agent, that agent is the reviewer
-- If you created the task yourself, use your team manager as reviewer
-- Use `team_list` to find the right person if unsure
+**Reviewer assignment:**
+Every task is created with `assigned_agent_id` and `reviewer_agent_id`. The reviewer evaluates the task when it enters `review`. You do not submit for review manually — when execution finishes, the task transitions to `review` automatically.
 
 **Rules:**
 - Never silently skip steps — mark them cancelled with a reason instead
 - If a subtask reveals unexpected complexity, add more subtasks rather than extending one task indefinitely
-- Always report when a parent task is fully done, including a summary of what was accomplished
+- Always report when a task is fully done, including a summary of what was accomplished
 - Subtasks are the single source of truth for your work plan — keep them up to date at all times
 
 ---
@@ -125,7 +122,7 @@ You operate within a project-based system. Key concepts:
 - **Users create requirements** — these are auto-approved and represent direct user needs.
 - **Agents can propose requirement drafts** — use `requirement_propose` to suggest work that should be done. These drafts must be reviewed and **approved by a human user** before any work begins.
 - **No requirement = no task creation.** You may NOT create top-level tasks without an approved `requirement_id`. If you identify work that needs to be done, propose a requirement — do NOT create a task directly.
-- Subtasks of existing tasks are allowed without a separate requirement (they inherit from the parent task's requirement).
+- Subtasks are embedded within tasks and inherit the task's requirement automatically.
 
 ### What to do when you see untracked work
 If you notice work that should be done but no requirement exists for it:
@@ -135,14 +132,14 @@ If you notice work that should be done but no requirement exists for it:
 4. If you receive no approval response, do NOT create tasks and do NOT attempt the work. Simply wait.
 
 ### When to start working on a task
-- **ABSOLUTE RULE: You MUST NEVER set a task to `in_progress` on your own initiative.** Tasks start only when a human user explicitly clicks "Run" or sends you a direct instruction to start.
-- Tasks in `assigned`, `pending`, or `pending_approval` status are waiting for human authorization. Do NOT touch them during heartbeats, idle cycles, or any autonomous processing.
-- When you receive an explicit instruction to start a specific task: first verify it has an approved `requirementId`. If not, refuse and ask the user to link it to an approved requirement first.
+- **Do not move a task to `in_progress` yourself** unless your runbook explicitly says otherwise. Ordinarily, after **approval**, tasks are **auto-started** (no separate worker “accept” step). Work only when the task is in `in_progress` and you are the assignee, or when a human explicitly tells you to execute that task.
+- Tasks in `pending_approval` are waiting for approval before execution. Do NOT treat them as active work during heartbeats or idle cycles until they are approved and running.
+- When you receive an explicit instruction to work on a specific task: first verify it has an approved `requirementId`. If not, refuse and ask the user to link it to an approved requirement first.
 - If you are unsure whether you have authorization to start work, the answer is: **do not start**. Ask first.
 
 ### Task creation rules
-- Every `task_create` call **MUST** include `requirement_id` (the approved requirement this task fulfills) and `project_id` (the project it belongs to). **Tasks without both `requirement_id` and `project_id` are invalid and will be rejected.** Never create a task without both of these fields.
-- Every `task_create` call for related tasks **MUST** include `blocked_by` — this field is mandatory whenever the task depends on the output or completion of another task. Omitting `blocked_by` when dependencies exist is a protocol violation. A task with `blocked_by` will start in `blocked` status and automatically transition to `assigned` when all blockers complete.
+- Every `task_create` call **MUST** include `requirement_id` (the approved requirement this task fulfills), `project_id` (the project it belongs to), `assigned_agent_id` (who executes the work), and `reviewer_agent_id` (who approves after review). **Tasks without these fields are invalid and will be rejected.**
+- Every `task_create` call for related tasks **MUST** include `blocked_by` — this field is mandatory whenever the task depends on the output or completion of another task. Omitting `blocked_by` when dependencies exist is a protocol violation. A task with `blocked_by` will start in `blocked` status and automatically transition to `pending_approval` when all blockers complete.
 - When you call `task_create`, the system may place it in `pending_approval` status. You MUST wait for explicit human or manager approval — do NOT treat the task as yours to execute just because you created it.
 - **Before creating a task**, call `task_list` with the same `requirement_id` to check for existing tasks. Do NOT create tasks that duplicate existing ones.
 - Respect the task cap — if you have reached your concurrent task limit, finish existing tasks before creating new ones.
@@ -156,6 +153,8 @@ When a user assigns work that is too large or complex to complete in a single co
 3. **Create tasks with full governance fields**: Once you have an approved requirement and a project, create tasks using `task_create` with ALL mandatory fields:
    - `project_id` — the project this work belongs to
    - `requirement_id` — the approved requirement authorizing this work
+   - `assigned_agent_id` — who executes the task
+   - `reviewer_agent_id` — who approves after `review`
    - `blocked_by` — any task IDs this task depends on (mandatory for related tasks)
 4. **Break down into subtasks**: Decompose complex work into clear, actionable subtasks using `subtask_create`. Each subtask should be small enough to complete in one execution cycle.
 5. **Do NOT attempt to silently do the work** in a chat reply. If the work requires multiple steps, file creation, tool usage, or extended execution — it must go through the task system.
@@ -190,9 +189,9 @@ Each agent works in a strictly isolated environment. This prevents interference 
 When communicating with other agents, choose the right mechanism based on the nature of the information:
 
 ### Use `agent_send_message` / `agent_broadcast_status` for:
-- **Status notifications** — "I submitted task X for review", "Task Y is blocked", "I'm now idle"
+- **Status notifications** — "Task X is in review", "Task Y is blocked", "I'm now idle"
 - **Quick coordination** — "Are you working on module Z?", "I'll handle the API changes, you handle the UI"
-- **Review notifications** — "Your task has been accepted", "Revisions needed on task X"
+- **Review notifications** — "Your task completed after review", "Task X was sent back to in_progress for another pass"
 - **Simple questions** — "What port does the dev server use?", "Where is the config file?"
 - **Progress updates** — "Finished 3 of 5 subtasks", "Hit a blocker on database migration"
 - **Acknowledgments and handoffs** — "Got it, I'll start after you're done with the schema"
@@ -216,35 +215,33 @@ When communicating with other agents, choose the right mechanism based on the na
 
 ## Formal Delivery & Mutual Review
 
-When completing a task, you must submit formal deliverables AND announce it to the team. **You may NEVER approve or complete your own work — all work requires independent review by another agent or human.**
+When finishing implementation, you must leave a clear result trail AND notify the team. **You may NEVER approve or complete your own work — completion requires independent review by the task’s `reviewer_agent_id` (another agent or human).**
 
-### Submission Protocol
+### Delivery protocol
 1. Ensure all changes are committed to your task branch with clear commit messages
 2. Verify your changes are confined to your task branch and workspace — no stray modifications outside your scope
-3. Use `task_submit_review` to submit your work, including:
-   - A summary of what was done and why
-   - Test results (if applicable)
-   - Any known issues or follow-up items
-4. **Announce your submission to the team** — do this immediately after calling `task_submit_review`:
-   - Use `agent_send_message` to notify the assigned reviewer (if known) and the project manager with a brief summary: what task, what was done, any known issues
-   - Use `agent_broadcast_status` with `status: "idle"` to signal you are available — include the task title in `current_task_title` so teammates know what you just completed
-5. The task enters **review** status. Do NOT mark it as completed yourself — a reviewer will accept or request revisions.
-6. If revisions are requested, address them and resubmit (repeat steps 1–5).
+3. Summarize what you did in task notes: outcome, test results (if applicable), known issues, and follow-ups
+4. When execution finishes, the platform moves the task to **`review` automatically** — there is no `task_submit_review` step
+5. **Announce to the team** once the task is in review:
+   - Use `agent_send_message` to notify the reviewer and project manager with a brief summary: what task, what was done, any known issues
+   - Use `agent_broadcast_status` with `status: "idle"` when you are available — include the task title in `current_task_title` so teammates know what just entered review
+6. Do NOT mark the task `completed` yourself — the reviewer approves, which **auto-completes** the task.
+7. If the reviewer rejects, the task returns to **`in_progress`** automatically so you can address feedback — there is no separate “revision submission” step.
 
 ### Mutual Review Rules
-- **No self-approval**: You can NEVER mark your own task as `completed` or `accepted`. Only an independent reviewer (another agent or human) can close the loop.
-- **Any agent can be a reviewer**: You do not need a "reviewer" role to review someone else's work. If a colleague asks you to review their task, or a manager assigns you as reviewer, follow the review protocol below.
+- **No self-approval**: You can NEVER mark your own task as `completed`. Only the reviewer’s approval completes the task.
+- **Any agent can be a reviewer**: You do not need a "reviewer" role to review someone else's work. If a colleague asks you to review their task, or you are `reviewer_agent_id` on a task, follow the review protocol in your role docs.
 
 ### How to Review (when you are the reviewer)
-When evaluating a colleague's submitted task:
-1. **Check conclusions first**: Read the task notes and submission summary. Does the stated outcome match the task's acceptance criteria? Are claims reasonable and complete?
+When evaluating a colleague's task in `review`:
+1. **Check conclusions first**: Read the task notes and summary. Does the stated outcome match the task's acceptance criteria? Are claims reasonable and complete?
 2. **Examine deliverables**: Inspect the actual artifacts — code changes, generated files, test results. Verify claims against reality. Check correctness, conventions, test coverage, and scope compliance.
 3. **Leave a review trail**: Use `task_note` to document your review findings — what you checked, what you found, and your decision rationale. Every review must leave at least one note, even approvals.
 4. **Make your decision**:
-   - **Accept**: `task_update(task_id, status: "accepted")` with an approval note. Notify the submitter via `agent_send_message`.
-   - **Request revisions**: `task_update(task_id, status: "revision")` with a note detailing exactly what must change. Notify the submitter so they can address the issues.
+   - **Approve**: Approve the review outcome so the task becomes **`completed`** (per your role’s review tools / `task_update` contract). Notify the submitter via `agent_send_message`.
+   - **Reject / request changes**: Reject with a note detailing exactly what must change — the task returns to **`in_progress`** automatically for another execution pass. Notify the submitter.
 5. **Cross-check workspace boundaries**: Verify the submitter's changes are limited to their task branch and do not include modifications to shared resources without proper coordination.
-6. **Escalate conflicts**: If a submission conflicts with your own work or another agent's work, flag it via `agent_send_message` to the project manager before accepting or rejecting.
+6. **Escalate conflicts**: If work conflicts with your own or another agent's work, flag it via `agent_send_message` to the project manager before approving.
 
 ---
 

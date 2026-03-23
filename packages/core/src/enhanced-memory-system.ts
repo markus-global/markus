@@ -329,7 +329,11 @@ export class EnhancedMemorySystem implements IMemoryStore {
   createSession(agentId: string): ConversationSession {
     return this.baseStore.createSession(agentId);
   }
-  
+
+  getOrCreateSession(agentId: string, sessionId: string): ConversationSession {
+    return this.baseStore.getOrCreateSession(agentId, sessionId);
+  }
+
   appendMessage(sessionId: string, message: LLMMessage): void {
     this.baseStore.appendMessage(sessionId, message);
   }

@@ -86,11 +86,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   org_id TEXT NOT NULL REFERENCES organizations(id),
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'pending_approval',
   priority TEXT NOT NULL DEFAULT 'medium',
   execution_mode TEXT,
-  assigned_agent_id TEXT REFERENCES agents(id),
-  parent_task_id TEXT,
+  assigned_agent_id TEXT NOT NULL REFERENCES agents(id),
+  reviewer_agent_id TEXT NOT NULL,
+  execution_round INTEGER NOT NULL DEFAULT 1,
+  subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
   blocked_by TEXT DEFAULT '[]',
   result TEXT,
@@ -176,6 +178,7 @@ CREATE TABLE IF NOT EXISTS task_logs (
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT DEFAULT '{}',
+  execution_round INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id, seq);
@@ -445,6 +448,10 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'tasks', column: 'schedule_config', sql: "ALTER TABLE tasks ADD COLUMN schedule_config TEXT" },
     { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
+    { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
+    { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
+    { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
+    { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -669,8 +676,9 @@ export class SqliteTaskRepo {
     status?: string;
     priority?: string;
     executionMode?: string;
-    assignedAgentId?: string;
-    parentTaskId?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
+    executionRound?: number;
     requirementId?: string;
     blockedBy?: string[];
     projectId?: string;
@@ -679,23 +687,26 @@ export class SqliteTaskRepo {
     dueAt?: Date;
     taskType?: string;
     scheduleConfig?: Record<string, unknown>;
+    subtasks?: unknown[];
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, parent_task_id, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
         data.orgId,
         data.title,
         data.description ?? '',
-        data.status ?? 'pending',
+        data.status ?? 'pending_approval',
         data.priority ?? 'medium',
         data.executionMode ?? null,
-        data.assignedAgentId ?? null,
-        data.parentTaskId ?? null,
+        data.assignedAgentId,
+        data.reviewerAgentId,
+        data.executionRound ?? 1,
+        toJson(data.subtasks ?? []),
         data.requirementId ?? null,
         toJson(data.blockedBy ?? []),
         data.projectId ?? null,
@@ -734,12 +745,12 @@ export class SqliteTaskRepo {
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
-  async assign(id: string, agentId: string | null) {
+  async assign(id: string, agentId: string) {
     this.db
       .prepare(
-        "UPDATE tasks SET assigned_agent_id = ?, status = CASE WHEN ? IS NOT NULL THEN 'assigned' ELSE status END, updated_at = ? WHERE id = ?"
+        "UPDATE tasks SET assigned_agent_id = ?, updated_at = ? WHERE id = ?"
       )
-      .run(agentId, agentId, now(), id);
+      .run(agentId, now(), id);
   }
 
   async update(
@@ -844,6 +855,12 @@ export class SqliteTaskRepo {
       .run(toJson(blockedBy), now(), id);
   }
 
+  async updateSubtasks(id: string, subtasks: unknown[]) {
+    this.db
+      .prepare('UPDATE tasks SET subtasks = ?, updated_at = ? WHERE id = ?')
+      .run(toJson(subtasks), now(), id);
+  }
+
   async delete(id: string) {
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
   }
@@ -858,7 +875,9 @@ export class SqliteTaskRepo {
       priority: r['priority'],
       executionMode: r['execution_mode'],
       assignedAgentId: r['assigned_agent_id'],
-      parentTaskId: r['parent_task_id'],
+      reviewerAgentId: r['reviewer_agent_id'],
+      executionRound: r['execution_round'] ?? 1,
+      subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
       blockedBy: fromJson<string[]>(r['blocked_by'] as string) ?? [],
       result: fromJson(r['result'] as string),
@@ -1187,12 +1206,13 @@ export class SqliteTaskLogRepo {
     type: string;
     content: string;
     metadata?: unknown;
+    executionRound?: number;
   }) {
     const id = generateId('tlog');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         id,
@@ -1202,6 +1222,7 @@ export class SqliteTaskLogRepo {
         data.type,
         data.content,
         toJson(data.metadata ?? {}),
+        data.executionRound ?? 1,
         ts
       );
     return {
@@ -1212,8 +1233,14 @@ export class SqliteTaskLogRepo {
       type: data.type,
       content: data.content,
       metadata: data.metadata ?? {},
+      executionRound: data.executionRound ?? 1,
       createdAt: new Date(ts),
     };
+  }
+
+  async getMaxSeq(taskId: string): Promise<number> {
+    const row = this.db.prepare('SELECT MAX(seq) as maxSeq FROM task_logs WHERE task_id = ?').get(taskId) as { maxSeq: number | null } | undefined;
+    return row?.maxSeq ?? -1;
   }
 
   getByTask(taskId: string) {
@@ -1229,6 +1256,7 @@ export class SqliteTaskLogRepo {
       type: r['type'] as string,
       content: r['content'] as string,
       metadata: fromJson(r['metadata'] as string),
+      executionRound: (r['execution_round'] as number) ?? 1,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }

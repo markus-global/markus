@@ -78,6 +78,21 @@ export class MemoryStore implements IMemoryStore {
     return session;
   }
 
+  getOrCreateSession(agentId: string, sessionId: string): ConversationSession {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+    const session: ConversationSession = {
+      id: sessionId,
+      agentId,
+      messages: [],
+      startedAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+    };
+    this.sessions.set(sessionId, session);
+    this.debouncedSaveSession(session);
+    return session;
+  }
+
   appendMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -164,26 +179,10 @@ export class MemoryStore implements IMemoryStore {
     const older = session.messages.slice(0, -keepLast);
     const flushedCount = older.length;
 
-    // Build summary from older messages
-    const summaryParts: string[] = [];
-    for (const msg of older) {
-      if (msg.role === 'system') continue;
-      const text = getTextContent(msg.content);
-      if (msg.role === 'user') {
-        summaryParts.push(`User: ${text.slice(0, 200)}`);
-      } else if (msg.role === 'assistant' && text) {
-        summaryParts.push(`Assistant: ${text.slice(0, 200)}`);
-      } else if (msg.role === 'tool') {
-        summaryParts.push(`Tool result: ${text.slice(0, 100)}`);
-      }
-    }
+    const summary = this.buildHeuristicSummary(older);
 
-    const summary = summaryParts.join('\n').slice(0, 2000);
-
-    // Flush to medium-term memory (daily log)
     this.writeDailyLog(session.agentId, summary);
 
-    // Extract any important facts for long-term memory
     const facts = older
       .filter((m) => m.role === 'assistant' && getTextContent(m.content).length > 50)
       .map((m) => getTextContent(m.content).slice(0, 150))
@@ -199,12 +198,38 @@ export class MemoryStore implements IMemoryStore {
       });
     }
 
-    // Truncate session to keep only recent messages
-    session.messages = session.messages.slice(-keepLast);
+    const retained = session.messages.slice(-keepLast);
+
+    // Inject a summary message so the model retains awareness of compacted history
+    const summaryMessage: LLMMessage = {
+      role: 'user',
+      content: `[Conversation history summary — ${flushedCount} earlier messages were compacted]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
+    };
+    session.messages = [summaryMessage, ...retained];
     this.saveSessionToDisk(session);
 
     log.info('Session compacted', { sessionId, flushedCount, remaining: session.messages.length });
     return { summary, flushedCount };
+  }
+
+  /**
+   * Build a heuristic summary by extracting key lines from messages.
+   * Used as the default (non-LLM) summarization strategy.
+   */
+  buildHeuristicSummary(messages: LLMMessage[]): string {
+    const summaryParts: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === 'system') continue;
+      const text = getTextContent(msg.content);
+      if (msg.role === 'user') {
+        summaryParts.push(`User: ${text.slice(0, 200)}`);
+      } else if (msg.role === 'assistant' && text) {
+        summaryParts.push(`Assistant: ${text.slice(0, 200)}`);
+      } else if (msg.role === 'tool') {
+        summaryParts.push(`Tool result: ${text.slice(0, 100)}`);
+      }
+    }
+    return summaryParts.join('\n').slice(0, 2000);
   }
 
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {

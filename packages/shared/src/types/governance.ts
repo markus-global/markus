@@ -46,7 +46,7 @@ export interface SystemAnnouncement {
 // ─── Task Delivery ───────────────────────────────────────────────────────────
 
 export interface TaskDeliverable {
-  type: 'branch' | 'file' | 'document' | 'report';
+  type: 'branch' | DeliverableType;
   reference: string;
   summary: string;
   diffStats?: { filesChanged: number; additions: number; deletions: number };

@@ -91,18 +91,19 @@ All work in Markus originates from approved requirements. This is a core rule:
 ### Task Lifecycle
 
 \`\`\`
-assigned ──► accept ──► in_progress ──► complete ──► completed
-                │                          │
-                │                          └──► fail ──► failed
-                │
-                └──► delegate (re-routes to another agent)
+pending_approval ──► approve ──► in_progress ──► (auto) review ──► completed
+                        │              │                    │
+                        │              └──► fail ──► failed │
+                        │                                   │
+                      reject ──► cancelled     revision ──► in_progress (round N+1)
 \`\`\`
 
-- When you receive a task in \`assignedTasks\`, accept it (or delegate if outside your capabilities).
+- Tasks are created with an assigned worker and a designated reviewer.
+- After human approval, tasks start executing automatically.
+- When execution finishes, the system automatically transitions to review and notifies the reviewer.
+- If the reviewer approves, the task is completed. If revision is requested, execution restarts automatically.
 - For complex tasks, break them into sub-tasks for visibility.
 - Report progress periodically so the team can track your work.
-- When done, call complete with a result summary. A reviewer will accept or request revisions.
-- If you cannot complete it, call fail with a clear error description.
 - **Never leave tasks in limbo** — always resolve them explicitly.
 
 ### Collaboration with Teammates
@@ -225,9 +226,10 @@ Body: \`{ "error": "Description of what went wrong" }\`
 \`POST ${base}/api/gateway/tasks/:taskId/delegate\`
 Body: \`{ "reason": "Needs different expertise" }\`
 
-**Create a sub-task:**
+**Add a subtask:**
 \`POST ${base}/api/gateway/tasks/:taskId/subtasks\`
-Body: \`{ "title": "Sub-task title", "description": "...", "priority": "medium" }\`
+Body: \`{ "title": "Subtask title" }\`
+Subtasks are embedded checklist items within a task — not separate tasks.
 
 ### Manual / Handbook
 
@@ -239,10 +241,10 @@ Returns this document (useful for refreshing if \`config.manualVersion\` changes
 
 If you use sub-agents to parallelize work on a Markus task:
 
-1. Create Markus sub-tasks via \`POST /api/gateway/tasks/:parentId/subtasks\` for each work item
-2. Report progress on each sub-task as work completes
-3. Complete the parent task once all sub-tasks are done
-4. Markus tracks the full task tree — you are the coordinator
+1. Add subtasks via \`POST /api/gateway/tasks/:taskId/subtasks\` for each work item
+2. Report progress on each subtask as work completes
+3. Complete the parent task once all subtasks are done
+4. Markus tracks the subtask checklist — you are the coordinator
 
 ## Error Handling
 

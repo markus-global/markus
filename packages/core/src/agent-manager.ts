@@ -8,7 +8,6 @@ import {
   type IdentityContext,
   type HumanUser,
   type SystemAnnouncement,
-  type TaskDeliverable,
   type PathAccessPolicy,
   type RoleTemplate,
 } from '@markus/shared';
@@ -81,8 +80,8 @@ export interface TaskServiceBridge {
     title: string;
     description: string;
     priority?: string;
-    assignedAgentId?: string;
-    parentTaskId?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
     requirementId?: string;
     projectId?: string;
     iterationId?: string;
@@ -118,14 +117,18 @@ export interface TaskServiceBridge {
         status: string;
         priority: string;
         assignedAgentId?: string;
+        reviewerAgentId?: string;
+        subtasks?: Array<{ id: string; title: string; status: string }>;
       }
     | undefined;
   assignTask(id: string, agentId: string): { id: string; status: string };
   addTaskNote(id: string, note: string, author?: string): void;
   updateTask(id: string, data: { description?: string; blockedBy?: string[] }, updatedBy?: string): { id: string; title: string; status: string };
   rejectTask(id: string): { id: string; title: string; status: string };
-  listSubtasks(parentId: string): Array<{ id: string; title: string; status: string; priority: string; assignedAgentId?: string }>;
-  submitForReview(taskId: string, deliverables: TaskDeliverable[], reviewerAgentId?: string): Promise<{ id: string; status: string }> | { id: string; status: string };
+  addSubtask(taskId: string, title: string): { id: string; title: string; status: string };
+  completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
+  getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
+  submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerAgentId?: string): Promise<{ id: string; status: string }>;
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
@@ -388,6 +391,7 @@ export class AgentManager {
           description: delegation.description,
           priority: delegation.priority ?? 'medium',
           assignedAgentId: envelope.to,
+          reviewerAgentId: envelope.from,
           createdBy: envelope.from,
           creatorRole: 'manager',
         });
@@ -700,7 +704,7 @@ export class AgentManager {
             description: params.description,
             priority: params.priority,
             assignedAgentId: params.assignedAgentId,
-            parentTaskId: params.parentTaskId,
+            reviewerAgentId: params.reviewerAgentId,
             requirementId: params.requirementId,
             projectId: params.projectId,
             iterationId: params.iterationId,
@@ -740,26 +744,35 @@ export class AgentManager {
           const task = ts.rejectTask(taskId);
           return { id: task.id, title: task.title, status: task.status };
         },
-        listSubtasks: async (parentId) => {
-          return ts.listSubtasks(parentId).map(s => ({ id: s.id, title: s.title, status: s.status, priority: s.priority, assignedAgentId: s.assignedAgentId }));
+        addSubtask: async (taskId, title) => {
+          return ts.addSubtask(taskId, title);
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables, reviewerAgentId) => {
-          const deliverables: TaskDeliverable[] = [{
-            type: 'branch',
-            reference: branchName ?? `task/${taskId}`,
-            summary,
-            ...(testResults ? { testResults: { passed: 0, failed: 0, skipped: 0 } } : {}),
+        completeSubtask: async (taskId, subtaskId) => {
+          return ts.completeSubtask(taskId, subtaskId);
+        },
+        getSubtasks: async (taskId) => {
+          const task = ts.getTask(taskId);
+          return task?.subtasks ?? [];
+        },
+        submitForReview: async (summary, inputDeliverables, knownIssues) => {
+          const agentObj = this.agents.get(id);
+          const activeTasks = agentObj?.getActiveTasks?.() ?? [];
+          if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
+          const taskId = activeTasks[0].taskId;
+          const task = ts.getTask(taskId);
+          if (!task) throw new Error(`Task not found: ${taskId}`);
+          const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
+          const _validTypes = new Set(['file', 'document', 'report', 'directory', 'url', 'text']);
+          const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
+            type: 'branch', reference: `task/${taskId}`,
+            summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,
           }];
-          if (knownIssues) {
-            deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
-          }
-          if (Array.isArray(fileDeliverables)) {
-            for (const fd of fileDeliverables) {
-              if (fd && typeof fd === 'object' && typeof fd.path === 'string' && fd.path) {
+          if (Array.isArray(inputDeliverables)) {
+            for (const d of inputDeliverables) {
+              if (d?.reference) {
                 deliverables.push({
-                  type: (fd.type as TaskDeliverable['type']) ?? 'file',
-                  reference: fd.path,
-                  summary: typeof fd.summary === 'string' ? fd.summary : fd.path.split('/').pop() ?? '',
+                  type: _validTypes.has(d.type ?? '') ? d.type! : 'file',
+                  reference: d.reference, summary: d.summary || String(d.reference),
                 });
               }
             }
@@ -865,8 +878,8 @@ export class AgentManager {
               description: params.description,
               priority: params.priority ?? 'medium',
               assignedAgentId: params.assignedAgentId,
+              reviewerAgentId: params.reviewerAgentId,
               blockedBy: params.blockedBy,
-              parentTaskId: params.parentTaskId,
               requirementId: params.requirementId,
               projectId: params.projectId,
               createdBy: id,
@@ -1237,26 +1250,35 @@ export class AgentManager {
           const task = ts.rejectTask(taskId);
           return { id: task.id, title: task.title, status: task.status };
         },
-        listSubtasks: async (parentId) => {
-          return ts.listSubtasks(parentId).map(s => ({ id: s.id, title: s.title, status: s.status, priority: s.priority, assignedAgentId: s.assignedAgentId }));
+        addSubtask: async (taskId, title) => {
+          return ts.addSubtask(taskId, title);
         },
-        submitForReview: async (taskId, summary, branchName, testResults, knownIssues, fileDeliverables, reviewerAgentId) => {
-          const deliverables: TaskDeliverable[] = [{
-            type: 'branch',
-            reference: branchName ?? `task/${taskId}`,
-            summary,
-            ...(testResults ? { testResults: { passed: 0, failed: 0, skipped: 0 } } : {}),
+        completeSubtask: async (taskId, subtaskId) => {
+          return ts.completeSubtask(taskId, subtaskId);
+        },
+        getSubtasks: async (taskId) => {
+          const task = ts.getTask(taskId);
+          return task?.subtasks ?? [];
+        },
+        submitForReview: async (summary, inputDeliverables, knownIssues) => {
+          const agentObj = this.agents.get(id);
+          const activeTasks = agentObj?.getActiveTasks?.() ?? [];
+          if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
+          const taskId = activeTasks[0].taskId;
+          const task = ts.getTask(taskId);
+          if (!task) throw new Error(`Task not found: ${taskId}`);
+          const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
+          const _validTypes = new Set(['file', 'document', 'report', 'directory', 'url', 'text']);
+          const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
+            type: 'branch', reference: `task/${taskId}`,
+            summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,
           }];
-          if (knownIssues) {
-            deliverables[0].summary += `\n\nKnown issues: ${knownIssues}`;
-          }
-          if (Array.isArray(fileDeliverables)) {
-            for (const fd of fileDeliverables) {
-              if (fd && typeof fd === 'object' && typeof fd.path === 'string' && fd.path) {
+          if (Array.isArray(inputDeliverables)) {
+            for (const d of inputDeliverables) {
+              if (d?.reference) {
                 deliverables.push({
-                  type: (fd.type as TaskDeliverable['type']) ?? 'file',
-                  reference: fd.path,
-                  summary: typeof fd.summary === 'string' ? fd.summary : fd.path.split('/').pop() ?? '',
+                  type: _validTypes.has(d.type ?? '') ? d.type! : 'file',
+                  reference: d.reference, summary: d.summary || String(d.reference),
                 });
               }
             }
@@ -1354,8 +1376,8 @@ export class AgentManager {
               description: params.description,
               priority: params.priority ?? 'medium',
               assignedAgentId: params.assignedAgentId,
+              reviewerAgentId: params.reviewerAgentId,
               blockedBy: params.blockedBy,
-              parentTaskId: params.parentTaskId,
               requirementId: params.requirementId,
               projectId: params.projectId,
               createdBy: id,

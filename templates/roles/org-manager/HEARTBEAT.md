@@ -4,6 +4,6 @@
 - If duplicates found, clean up via `task_cleanup_duplicates`.
 - Check team status via `team_status`. Note any agents newly stuck, idle, or in error.
 - **Review tasks you approved**: Use `task_list` to find tasks you previously approved or delegated. Check their progress — are they on track, stalled, or blocked? If stalled, follow up with the assignee via `agent_send_message`.
-- **Act on tasks in `review` status**: Use `task_list` to find tasks with status `review` where you are the reviewer. For each one, use `task_get` to inspect the deliverables, then either accept (`task_update` with status `accepted`) or request revisions (`task_update` with status `revision` and a note). Do NOT delay — timely review unblocks your team. Only review tasks that are in `review` status; do not review tasks in other statuses.
+- **Review duty (PRIORITY)**: Use `task_list` to find tasks in `review` status where you are the designated reviewer. For each one, use `task_get` to inspect deliverables, then either approve (`task_update` with status `completed` and a review note) or reject (`task_update` with a note explaining what must change — this auto-restarts execution). Do NOT delay — unreviewed tasks block your team.
 - Check for tasks in `pending_approval` — approve or reject promptly so work is not stalled.
 - If nothing changed since last summary, respond HEARTBEAT_OK.

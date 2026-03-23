@@ -81,13 +81,13 @@ export class StaleDetector {
         });
       }
 
-      if (task.status === 'assigned' && age > this.config.maxAssignedUnstartedMs) {
+      if (task.status === 'pending_approval' && age > this.config.maxAssignedUnstartedMs) {
         staleItems.push({
           type: 'unstarted_task',
           taskId: task.id,
           ageMs: age,
           agentId: task.assignedAgentId,
-          message: `Task "${task.title}" assigned ${Math.round(age / 3600000)}h ago but never started`,
+          message: `Task "${task.title}" awaiting approval for ${Math.round(age / 3600000)}h`,
         });
       }
     }

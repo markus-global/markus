@@ -93,6 +93,17 @@ export function formatDuration(ms: number | undefined): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+export function formatLogTime(isoStr: string): string {
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  const MM = String(d.getMonth() + 1).padStart(2, '0');
+  const DD = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${MM}-${DD} ${hh}:${mm}:${ss}`;
+}
+
 function truncate(s: string, len: number): string {
   return s.length <= len ? s : s.slice(0, len) + '…';
 }
@@ -129,7 +140,7 @@ function formatArgsDetail(args: unknown): Array<{ key: string; value: string }> 
 // ─── Conversion: TaskLogEntry → ExecEntry ─────────────────────────────────────
 
 export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
-  const time = new Date(entry.createdAt).toLocaleTimeString();
+  const time = formatLogTime(entry.createdAt);
   const ts = entry.createdAt;
   const meta = entry.metadata as Record<string, unknown> | undefined;
   switch (entry.type) {
@@ -166,7 +177,7 @@ export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
 // ─── Conversion: AgentActivityLogEntry → ExecEntry ────────────────────────────
 
 export function activityLogToEntry(entry: AgentActivityLogEntry): ExecEntry | null {
-  const time = new Date(entry.createdAt).toLocaleTimeString();
+  const time = formatLogTime(entry.createdAt);
   const meta = entry.metadata as Record<string, unknown> | undefined;
   switch (entry.type) {
     case 'text':
@@ -430,7 +441,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
         onClick={() => isDone && setExpanded(true)}
       >
         {showTime && time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums mt-0.5">{time}</span>
+          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-0.5">{time}</span>
         )}
         <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
@@ -497,7 +508,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums mt-2.5">{entry.time}</span>
+          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-2.5">{entry.time}</span>
         )}
         <div className="flex-1 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
           <MarkdownMessage content={entry.content} className="text-sm text-gray-300" />
@@ -506,14 +517,15 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     );
   }
   if (entry.type === 'status') {
-    const isCompleted = entry.content === 'completed';
+    const isCompleted = entry.content === 'completed' || entry.content === 'execution_finished';
     const isStarted = entry.content === 'started';
-    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : 'text-gray-500';
-    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : 'bg-gray-500';
+    const isResumed = entry.content === 'resumed';
+    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : isResumed ? 'text-amber-400' : 'text-gray-500';
+    const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : isResumed ? 'bg-amber-400' : 'bg-gray-500';
     return (
       <div className="flex items-center gap-2 py-0.5 px-1">
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums">{entry.time}</span>
+          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums">{entry.time}</span>
         )}
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
         <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
@@ -524,7 +536,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-16 text-right tabular-nums mt-2">{entry.time}</span>
+          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-2">{entry.time}</span>
         )}
         <div className="flex-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
           <span className="font-medium">Error:</span> {entry.content}

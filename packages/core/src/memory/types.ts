@@ -29,6 +29,7 @@ export interface IMemoryStore {
   listSessions(agentId?: string): ConversationSession[];
   getLatestSession(agentId: string): ConversationSession | undefined;
   createSession(agentId: string): ConversationSession;
+  getOrCreateSession(agentId: string, sessionId: string): ConversationSession;
   appendMessage(sessionId: string, message: LLMMessage): void;
   getRecentMessages(sessionId: string, limit: number): LLMMessage[];
 

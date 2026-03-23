@@ -1,4 +1,4 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, sql } from 'drizzle-orm';
 import type { Database } from '../db.js';
 import { taskLogs } from '../schema.js';
 import { generateId } from '@markus/shared';
@@ -13,6 +13,7 @@ export interface TaskLogRow {
   type: string;
   content: string;
   metadata: unknown;
+  executionRound: number;
   createdAt: Date;
 }
 
@@ -26,6 +27,7 @@ export class TaskLogRepo {
     type: TaskLogType;
     content: string;
     metadata?: unknown;
+    executionRound?: number;
   }): Promise<TaskLogRow> {
     const [row] = await this.db.insert(taskLogs).values({
       id: generateId('tl'),
@@ -35,8 +37,16 @@ export class TaskLogRepo {
       type: data.type,
       content: data.content,
       metadata: (data.metadata ?? {}) as Record<string, unknown>,
+      executionRound: data.executionRound ?? 1,
     }).returning();
     return row!;
+  }
+
+  async getMaxSeq(taskId: string): Promise<number> {
+    const result = await this.db.select({ maxSeq: sql<number>`COALESCE(MAX(${taskLogs.seq}), -1)` })
+      .from(taskLogs)
+      .where(eq(taskLogs.taskId, taskId));
+    return result[0]?.maxSeq ?? -1;
   }
 
   async getByTask(taskId: string): Promise<TaskLogRow[]> {

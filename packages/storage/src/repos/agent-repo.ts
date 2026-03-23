@@ -105,8 +105,8 @@ export class AgentRepo {
   }
 
   async delete(id: string): Promise<void> {
-    // Clear FK references from dependent tables before deleting the agent row
-    await this.db.update(tasks).set({ assignedAgentId: null }).where(eq(tasks.assignedAgentId, id));
+    // Fail any tasks assigned to this agent before deleting
+    await this.db.update(tasks).set({ status: 'failed' }).where(eq(tasks.assignedAgentId, id));
     await this.db.update(messages).set({ agentId: null }).where(eq(messages.agentId, id));
     await this.db.delete(memories).where(eq(memories.agentId, id));
     await this.db.delete(agents).where(eq(agents.id, id));

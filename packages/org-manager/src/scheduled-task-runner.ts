@@ -56,7 +56,7 @@ export class ScheduledTaskRunner {
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
-      if (['in_progress', 'assigned', 'review', 'revision', 'blocked', 'pending_approval'].includes(task.status)) {
+      if (['in_progress', 'review', 'blocked', 'pending_approval'].includes(task.status)) {
         continue;
       }
 
@@ -77,13 +77,12 @@ export class ScheduledTaskRunner {
 
     await this.taskService.advanceScheduleConfig(task.id);
 
-    // Reset from terminal states that require cleanup (pending is already ready)
     if (['completed', 'cancelled', 'failed'].includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
     }
 
     const current = this.taskService.getTask(task.id);
-    if (current && current.assignedAgentId && ['assigned', 'pending'].includes(current.status)) {
+    if (current && current.status === 'in_progress') {
       try {
         await this.taskService.runTask(task.id);
         log.info('Scheduled task auto-started', { taskId: task.id });

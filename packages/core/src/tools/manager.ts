@@ -6,10 +6,10 @@ const log = createLogger('manager-tools');
 export interface CreateTaskParams {
   title: string;
   description: string;
-  assignedAgentId?: string;
+  assignedAgentId: string;
+  reviewerAgentId: string;
   priority?: string;
   blockedBy?: string[];
-  parentTaskId?: string;
   requirementId?: string;
   projectId?: string;
 }
@@ -75,48 +75,58 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
     {
       name: 'create_task',
       description: [
-        'Create a new task and optionally assign it to a team member.',
-        'IMPORTANT: assigned_agent_id is required in almost all cases — use team_list first.',
+        'Create a new task and assign it to a team member with a designated reviewer.',
+        'IMPORTANT: assigned_agent_id and reviewer_agent_id are required — use team_list first.',
         'Use blocked_by to declare dependencies on other tasks.',
-        'Use parent_task_id to create subtasks under a parent task.',
-        'Always provide requirement_id and project_id for top-level tasks.',
+        'Always provide requirement_id and project_id for tasks.',
       ].join(' '),
       inputSchema: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Task title' },
           description: { type: 'string', description: 'Detailed task description' },
-          assigned_agent_id: { type: 'string', description: 'Agent ID to assign this task to. REQUIRED in almost all cases. Use team_list to find the right agent by role/skills.' },
-          reason_unassigned: { type: 'string', description: 'Required when assigned_agent_id is omitted. Explain why no agent can be assigned right now.' },
+          assigned_agent_id: { type: 'string', description: 'Agent ID to assign this task to. REQUIRED. Use team_list to find the right agent by role/skills.' },
+          reviewer_agent_id: { type: 'string', description: 'Agent ID who will review the task when execution finishes. REQUIRED — must differ from assigned_agent_id when both are agents.' },
           priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], description: 'Task priority' },
           blocked_by: {
             type: 'array',
             items: { type: 'string' },
             description: 'Array of task IDs that must complete before this task can start. Use this to express dependencies between tasks.',
           },
-          parent_task_id: { type: 'string', description: 'Parent task ID if this is a subtask.' },
-          requirement_id: { type: 'string', description: 'ID of the approved requirement this task fulfills. Required for top-level tasks.' },
+          requirement_id: { type: 'string', description: 'ID of the approved requirement this task fulfills. Required for tasks.' },
           project_id: { type: 'string', description: 'Project ID this task belongs to.' },
         },
-        required: ['title', 'description'],
+        required: ['title', 'description', 'assigned_agent_id', 'reviewer_agent_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
           const assignedAgentId = args['assigned_agent_id'] as string | undefined;
-          const reasonUnassigned = args['reason_unassigned'] as string | undefined;
-          if (!assignedAgentId && !reasonUnassigned) {
+          const reviewerAgentId = args['reviewer_agent_id'] as string | undefined;
+          if (!assignedAgentId?.trim()) {
             return JSON.stringify({
               status: 'error',
-              error: 'assigned_agent_id is required. If you cannot assign this task yet, provide reason_unassigned. Use team_list to find the right agent.',
+              error: 'assigned_agent_id is required. Use team_list to find the right agent.',
+            });
+          }
+          if (!reviewerAgentId?.trim()) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'reviewer_agent_id is required. Every task must have a designated reviewer.',
+            });
+          }
+          if (reviewerAgentId === assignedAgentId) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'reviewer_agent_id must differ from assigned_agent_id.',
             });
           }
           const taskId = ctx.createTask({
             title: args['title'] as string,
             description: args['description'] as string,
             assignedAgentId,
+            reviewerAgentId,
             priority: args['priority'] as string | undefined,
             blockedBy: args['blocked_by'] as string[] | undefined,
-            parentTaskId: args['parent_task_id'] as string | undefined,
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
           });

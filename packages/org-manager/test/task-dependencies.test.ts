@@ -1,12 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskService, type TaskEvent } from '../src/task-service.js';
 
+const AGENT_A = 'agent-a';
+const AGENT_B = 'agent-b';
+const REVIEWER = 'reviewer-1';
+
+function createDefaults(overrides: Record<string, unknown> = {}) {
+  return {
+    orgId: 'org-1',
+    title: 'Task',
+    description: '',
+    assignedAgentId: AGENT_A,
+    reviewerAgentId: REVIEWER,
+    ...overrides,
+  };
+}
+
 describe('TaskService - Dependencies & Timeouts', () => {
   let ts: TaskService;
 
   beforeEach(() => {
     ts = new TaskService();
-    // Disable governance for unit tests so tasks don't require requirementId or approval
     ts.setGovernancePolicy({
       enabled: false,
       defaultTier: 'auto',
@@ -22,65 +36,67 @@ describe('TaskService - Dependencies & Timeouts', () => {
     ts.stopTimeoutChecker();
   });
 
+  function createAndApprove(overrides: Record<string, unknown> = {}) {
+    const task = ts.createTask(createDefaults(overrides) as any);
+    ts.approveTask(task.id);
+    return ts.getTask(task.id)!;
+  }
+
   describe('blockedBy dependencies', () => {
     it('creates a task as blocked when it has blockers', () => {
-      const dep = ts.createTask({ orgId: 'org-1', title: 'Dependency', description: 'dep' });
-      const task = ts.createTask({
-        orgId: 'org-1',
+      const dep = ts.createTask(createDefaults({ title: 'Dependency', description: 'dep' }) as any);
+      ts.approveTask(dep.id);
+      const task = ts.createTask(createDefaults({
         title: 'Blocked Task',
         description: 'needs dep',
         blockedBy: [dep.id],
-      });
+      }) as any);
+      ts.approveTask(task.id);
 
-      expect(task.status).toBe('blocked');
-      expect(task.blockedBy).toContain(dep.id);
+      expect(ts.getTask(task.id)!.status).toBe('blocked');
+      expect(ts.getTask(task.id)!.blockedBy).toContain(dep.id);
     });
 
     it('unblocks a task when all dependencies complete', () => {
-      const dep1 = ts.createTask({ orgId: 'org-1', title: 'Dep 1', description: '' });
-      const dep2 = ts.createTask({ orgId: 'org-1', title: 'Dep 2', description: '' });
-      const blocked = ts.createTask({
-        orgId: 'org-1',
+      const dep1 = createAndApprove({ title: 'Dep 1' });
+      const dep2 = createAndApprove({ title: 'Dep 2' });
+      const blocked = ts.createTask(createDefaults({
         title: 'Blocked',
-        description: '',
         blockedBy: [dep1.id, dep2.id],
-      });
+      }) as any);
+      ts.approveTask(blocked.id);
 
-      expect(blocked.status).toBe('blocked');
+      expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
       ts.updateTaskStatus(dep1.id, 'completed');
-      // Still blocked (dep2 not done)
       expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
       ts.updateTaskStatus(dep2.id, 'completed');
-      // Now unblocked
-      expect(ts.getTask(blocked.id)!.status).toBe('pending');
+      expect(ts.getTask(blocked.id)!.status).toBe('in_progress');
     });
 
-    it('unblocks with assigned agent transitions to assigned status', () => {
-      const dep = ts.createTask({ orgId: 'org-1', title: 'Dep', description: '' });
-      const blocked = ts.createTask({
-        orgId: 'org-1',
+    it('unblocks with assigned agent transitions to in_progress', () => {
+      const dep = createAndApprove({ title: 'Dep' });
+      const blocked = ts.createTask(createDefaults({
         title: 'Blocked',
-        description: '',
         blockedBy: [dep.id],
-        assignedAgentId: 'agent-1',
-      });
+        assignedAgentId: AGENT_B,
+      }) as any);
+      ts.approveTask(blocked.id);
 
-      expect(blocked.status).toBe('blocked');
+      expect(ts.getTask(blocked.id)!.status).toBe('blocked');
 
       ts.updateTaskStatus(dep.id, 'completed');
-      expect(ts.getTask(blocked.id)!.status).toBe('assigned');
+      expect(ts.getTask(blocked.id)!.status).toBe('in_progress');
     });
 
     it('prevents starting a blocked task', () => {
-      const dep = ts.createTask({ orgId: 'org-1', title: 'Dep', description: '' });
-      const blocked = ts.createTask({
-        orgId: 'org-1',
+      const dep = createAndApprove({ title: 'Dep' });
+      const blocked = ts.createTask(createDefaults({
         title: 'Blocked',
-        description: '',
         blockedBy: [dep.id],
-      });
+      }) as any);
+      ts.approveTask(blocked.id);
 
       expect(() => ts.updateTaskStatus(blocked.id, 'in_progress'))
         .toThrow('blocked by unfinished dependencies');
@@ -90,13 +106,12 @@ describe('TaskService - Dependencies & Timeouts', () => {
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
-      const dep = ts.createTask({ orgId: 'org-1', title: 'Dep', description: '' });
-      ts.createTask({
-        orgId: 'org-1',
+      const dep = createAndApprove({ title: 'Dep' });
+      const blocked = ts.createTask(createDefaults({
         title: 'Blocked',
-        description: '',
         blockedBy: [dep.id],
-      });
+      }) as any);
+      ts.approveTask(blocked.id);
 
       ts.updateTaskStatus(dep.id, 'completed');
 
@@ -111,7 +126,7 @@ describe('TaskService - Dependencies & Timeouts', () => {
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
-      ts.createTask({ orgId: 'org-1', title: 'New Task', description: 'test' });
+      ts.createTask(createDefaults({ title: 'New Task', description: 'test' }) as any);
 
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe('created');
@@ -122,19 +137,19 @@ describe('TaskService - Dependencies & Timeouts', () => {
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
-      const task = ts.createTask({ orgId: 'org-1', title: 'Task', description: 'test' });
+      const task = createAndApprove({ title: 'Task', description: 'test' });
       ts.updateTaskStatus(task.id, 'completed');
 
       const completed = events.find(e => e.type === 'completed');
       expect(completed).toBeDefined();
-      expect(completed!.previousStatus).toBe('pending');
+      expect(completed!.previousStatus).toBe('in_progress');
     });
 
     it('emits failed event', () => {
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
-      const task = ts.createTask({ orgId: 'org-1', title: 'Task', description: '' });
+      const task = createAndApprove({ title: 'Task' });
       ts.updateTaskStatus(task.id, 'failed');
 
       const failed = events.find(e => e.type === 'failed');
@@ -143,38 +158,33 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
     it('handles webhook errors gracefully', () => {
       ts.onTaskEvent(() => { throw new Error('webhook broke'); });
-      expect(() => ts.createTask({ orgId: 'org-1', title: 'Task', description: '' })).not.toThrow();
+      expect(() => ts.createTask(createDefaults() as any)).not.toThrow();
     });
   });
 
   describe('startedAt tracking', () => {
-    it('sets startedAt when task moves to in_progress', () => {
-      const task = ts.createTask({ orgId: 'org-1', title: 'Task', description: '' });
+    it('sets startedAt when task is approved and starts in_progress', () => {
+      const task = ts.createTask(createDefaults({ title: 'Task' }) as any);
       expect(task.startedAt).toBeUndefined();
 
-      ts.updateTaskStatus(task.id, 'in_progress');
+      ts.approveTask(task.id);
       expect(ts.getTask(task.id)!.startedAt).toBeDefined();
     });
   });
 
   describe('timeout detection', () => {
     it('detects timed-out tasks', () => {
-      const task = ts.createTask({
-        orgId: 'org-1',
+      const task = createAndApprove({
         title: 'Timeout Task',
-        description: '',
         timeoutMs: 100,
       });
 
-      // Manually set startedAt in the past
       const t = ts.getTask(task.id)!;
-      t.status = 'in_progress';
       t.startedAt = new Date(Date.now() - 200).toISOString();
 
       const events: TaskEvent[] = [];
       ts.onTaskEvent(e => events.push(e));
 
-      // Manually trigger the timeout check
       (ts as any).checkTimeouts();
 
       expect(ts.getTask(task.id)!.status).toBe('failed');
@@ -184,9 +194,8 @@ describe('TaskService - Dependencies & Timeouts', () => {
     });
 
     it('does not timeout tasks without timeoutMs', () => {
-      const task = ts.createTask({ orgId: 'org-1', title: 'No Timeout', description: '' });
+      const task = createAndApprove({ title: 'No Timeout' });
       const t = ts.getTask(task.id)!;
-      t.status = 'in_progress';
       t.startedAt = new Date(Date.now() - 999999).toISOString();
 
       (ts as any).checkTimeouts();
@@ -194,49 +203,46 @@ describe('TaskService - Dependencies & Timeouts', () => {
     });
   });
 
-  describe('parent auto-completion with dependencies', () => {
-    it('auto-completes parent when all subtasks finish (including unblocked ones)', () => {
-      const parent = ts.createTask({ orgId: 'org-1', title: 'Parent', description: '' });
-      const sub1 = ts.createTask({
-        orgId: 'org-1',
-        title: 'Sub 1',
-        description: '',
-        parentTaskId: parent.id,
-      });
-      const sub2 = ts.createTask({
-        orgId: 'org-1',
-        title: 'Sub 2',
-        description: '',
-        parentTaskId: parent.id,
-        blockedBy: [sub1.id],
-      });
+  describe('embedded subtasks', () => {
+    it('can add, complete and cancel subtasks within a task', () => {
+      const task = createAndApprove({ title: 'Parent' });
 
-      expect(sub2.status).toBe('blocked');
+      const sub1 = ts.addSubtask(task.id, 'Sub 1');
+      const sub2 = ts.addSubtask(task.id, 'Sub 2');
 
-      ts.updateTaskStatus(sub1.id, 'completed');
-      expect(ts.getTask(sub2.id)!.status).toBe('pending');
+      expect(ts.getTask(task.id)!.subtasks).toHaveLength(2);
+      expect(sub1.status).toBe('pending');
+      expect(sub2.status).toBe('pending');
 
-      ts.updateTaskStatus(sub2.id, 'completed');
-      expect(ts.getTask(parent.id)!.status).toBe('completed');
+      ts.completeSubtask(task.id, sub1.id);
+      expect(ts.getTask(task.id)!.subtasks.find(s => s.id === sub1.id)!.status).toBe('completed');
+
+      ts.cancelSubtask(task.id, sub2.id);
+      expect(ts.getTask(task.id)!.subtasks.find(s => s.id === sub2.id)!.status).toBe('cancelled');
+    });
+
+    it('can delete a subtask', () => {
+      const task = createAndApprove({ title: 'Parent' });
+      const sub = ts.addSubtask(task.id, 'Sub to delete');
+      expect(ts.getTask(task.id)!.subtasks).toHaveLength(1);
+
+      ts.deleteSubtask(task.id, sub.id);
+      expect(ts.getTask(task.id)!.subtasks).toHaveLength(0);
     });
   });
 
   describe('findDuplicateTasks', () => {
     it('finds tasks with identical titles in same requirement/agent scope', () => {
-      ts.createTask({
-        orgId: 'org-1',
+      ts.createTask(createDefaults({
         title: 'Implement login',
         description: 'first',
         requirementId: 'req-1',
-        assignedAgentId: 'agent-1',
-      });
-      ts.createTask({
-        orgId: 'org-1',
+      }) as any);
+      ts.createTask(createDefaults({
         title: 'Implement login',
         description: 'duplicate',
         requirementId: 'req-1',
-        assignedAgentId: 'agent-1',
-      });
+      }) as any);
 
       const groups = ts.findDuplicateTasks('org-1');
       expect(groups.length).toBe(1);
@@ -244,34 +250,30 @@ describe('TaskService - Dependencies & Timeouts', () => {
     });
 
     it('finds tasks with similar titles (containment)', () => {
-      ts.createTask({
-        orgId: 'org-1',
+      ts.createTask(createDefaults({
         title: 'Add user authentication',
-        description: '',
         requirementId: 'req-1',
-      });
-      ts.createTask({
-        orgId: 'org-1',
+      }) as any);
+      ts.createTask(createDefaults({
         title: 'add user authentication module',
-        description: '',
         requirementId: 'req-1',
-      });
+      }) as any);
 
       const groups = ts.findDuplicateTasks('org-1');
       expect(groups.length).toBe(1);
     });
 
     it('does not flag unrelated tasks as duplicates', () => {
-      ts.createTask({ orgId: 'org-1', title: 'Setup database', description: '' });
-      ts.createTask({ orgId: 'org-1', title: 'Design frontend UI', description: '' });
+      ts.createTask(createDefaults({ title: 'Setup database' }) as any);
+      ts.createTask(createDefaults({ title: 'Design frontend UI' }) as any);
 
       const groups = ts.findDuplicateTasks('org-1');
       expect(groups.length).toBe(0);
     });
 
     it('ignores completed/cancelled tasks', () => {
-      const t1 = ts.createTask({ orgId: 'org-1', title: 'Same title', description: '' });
-      ts.createTask({ orgId: 'org-1', title: 'Same title', description: '' });
+      const t1 = createAndApprove({ title: 'Same title' });
+      ts.createTask(createDefaults({ title: 'Same title' }) as any);
       ts.updateTaskStatus(t1.id, 'completed');
 
       const groups = ts.findDuplicateTasks('org-1');
@@ -281,38 +283,32 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
   describe('cleanupDuplicateTasks', () => {
     it('cancels newer duplicates and keeps the oldest', () => {
-      const t1 = ts.createTask({
-        orgId: 'org-1',
+      const t1 = ts.createTask(createDefaults({
         title: 'Build API',
-        description: '',
         requirementId: 'req-1',
-      });
-      const t2 = ts.createTask({
-        orgId: 'org-1',
+      }) as any);
+      const t2 = ts.createTask(createDefaults({
         title: 'Build API',
-        description: '',
         requirementId: 'req-1',
-      });
-      const t3 = ts.createTask({
-        orgId: 'org-1',
+      }) as any);
+      const t3 = ts.createTask(createDefaults({
         title: 'Build API',
-        description: '',
         requirementId: 'req-1',
-      });
+      }) as any);
 
       const result = ts.cleanupDuplicateTasks('org-1');
       expect(result.count).toBe(2);
       expect(result.cancelledIds).toContain(t2.id);
       expect(result.cancelledIds).toContain(t3.id);
 
-      expect(ts.getTask(t1.id)!.status).toBe('pending');
+      expect(ts.getTask(t1.id)!.status).toBe('pending_approval');
       expect(ts.getTask(t2.id)!.status).toBe('cancelled');
       expect(ts.getTask(t3.id)!.status).toBe('cancelled');
     });
 
     it('returns empty when no duplicates', () => {
-      ts.createTask({ orgId: 'org-1', title: 'Unique A', description: '' });
-      ts.createTask({ orgId: 'org-1', title: 'Unique B', description: '' });
+      ts.createTask(createDefaults({ title: 'Unique A' }) as any);
+      ts.createTask(createDefaults({ title: 'Unique B' }) as any);
 
       const result = ts.cleanupDuplicateTasks('org-1');
       expect(result.count).toBe(0);
@@ -322,39 +318,24 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
   describe('getTaskBoardHealth', () => {
     it('returns board health summary with status counts', () => {
-      ts.createTask({ orgId: 'org-1', title: 'Pending', description: '' });
-      const t2 = ts.createTask({
-        orgId: 'org-1',
-        title: 'Assigned',
-        description: '',
-        assignedAgentId: 'agent-1',
-      });
-      const dep = ts.createTask({ orgId: 'org-1', title: 'Dep', description: '' });
-      ts.createTask({
-        orgId: 'org-1',
+      ts.createTask(createDefaults({ title: 'Pending' }) as any);
+      const dep = createAndApprove({ title: 'Dep' });
+      const blocked = ts.createTask(createDefaults({
         title: 'Blocked',
-        description: '',
         blockedBy: [dep.id],
-      });
+      }) as any);
+      ts.approveTask(blocked.id);
 
       const health = ts.getTaskBoardHealth('org-1') as any;
-      expect(health.totalTasks).toBe(4);
-      expect(health.statusCounts['pending']).toBe(2);
-      expect(health.statusCounts['assigned']).toBe(1);
+      expect(health.totalTasks).toBe(3);
+      expect(health.statusCounts['pending_approval']).toBe(1);
+      expect(health.statusCounts['in_progress']).toBe(1);
       expect(health.statusCounts['blocked']).toBe(1);
     });
 
-    it('detects unassigned tasks', () => {
-      ts.createTask({ orgId: 'org-1', title: 'Unassigned', description: '' });
-
-      const health = ts.getTaskBoardHealth('org-1') as any;
-      expect(health.unassigned.length).toBe(1);
-      expect(health.unassigned[0].title).toBe('Unassigned');
-    });
-
     it('reports duplicate groups count', () => {
-      ts.createTask({ orgId: 'org-1', title: 'Dup Task', description: '' });
-      ts.createTask({ orgId: 'org-1', title: 'Dup Task', description: '' });
+      ts.createTask(createDefaults({ title: 'Dup Task' }) as any);
+      ts.createTask(createDefaults({ title: 'Dup Task' }) as any);
 
       const health = ts.getTaskBoardHealth('org-1') as any;
       expect(health.duplicateGroups).toBe(1);

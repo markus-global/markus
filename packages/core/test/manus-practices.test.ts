@@ -246,7 +246,7 @@ describe('Manus Best Practices Integration', () => {
   });
 
   describe('Serialization Diversity', () => {
-    it('should use varied summary templates to break few-shot patterns', () => {
+    it('should use varied summary templates to break few-shot patterns', async () => {
       const engine = new ContextEngine();
 
       // Create messages that simulate multiple tool-call turns
@@ -265,7 +265,7 @@ describe('Manus Best Practices Integration', () => {
       }
       messages.push({ role: 'user' as const, content: 'Now do the task' });
 
-      const prepared = engine.prepareMessages({
+      const prepared = await engine.prepareMessages({
         systemPrompt: 'You are a test agent.',
         sessionMessages: messages,
         memory: new MemoryStore(tempDir),
@@ -276,7 +276,7 @@ describe('Manus Best Practices Integration', () => {
       });
 
       // Extract compacted summaries (non-system, non-user messages)
-      const summaries = prepared
+      const summaries = prepared.messages
         .filter(m => m.role === 'assistant' && m.content.includes('['))
         .map(m => m.content);
 
@@ -289,7 +289,7 @@ describe('Manus Best Practices Integration', () => {
       }
     });
 
-    it('should preserve error details in compacted summaries', () => {
+    it('should preserve error details in compacted summaries', async () => {
       const engine = new ContextEngine();
 
       const messages = [
@@ -306,7 +306,7 @@ describe('Manus Best Practices Integration', () => {
         { role: 'user' as const, content: 'Fix the issue' },
       ];
 
-      const prepared = engine.prepareMessages({
+      const prepared = await engine.prepareMessages({
         systemPrompt: 'You are a test agent.',
         sessionMessages: messages,
         memory: new MemoryStore(tempDir),
@@ -316,7 +316,7 @@ describe('Manus Best Practices Integration', () => {
         toolDefinitions: [],
       });
 
-      const compactedMsg = prepared.find(
+      const compactedMsg = prepared.messages.find(
         m => m.role === 'assistant' && m.content.includes('ERROR')
       );
 
