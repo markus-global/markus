@@ -867,13 +867,13 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                               ))}
                             </div>
                           )}
-                          {(skillDetail.toolDetails ?? skillDetail.tools).length > 0 && (
+                          {(skillDetail.toolDetails ?? skillDetail.tools ?? []).length > 0 && (
                             <div>
                               <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-2">
-                                Tools ({(skillDetail.toolDetails ?? skillDetail.tools).length})
+                                Tools ({(skillDetail.toolDetails ?? skillDetail.tools ?? []).length})
                               </div>
                               <div className="space-y-1.5">
-                                {(skillDetail.toolDetails ?? skillDetail.tools).map(tool => (
+                                {(skillDetail.toolDetails ?? skillDetail.tools ?? []).map(tool => (
                                   <div key={tool.name} className="px-3 py-2 bg-surface-secondary/50 rounded border border-border-default/20">
                                     <div className="text-xs font-medium text-brand-300">{tool.name}</div>
                                     {tool.description && <div className="text-[10px] text-gray-500 mt-0.5">{tool.description}</div>}

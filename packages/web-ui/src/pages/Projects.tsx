@@ -553,7 +553,7 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   };
 
   const commentInput = (
-    <div className="border-t border-border-default px-4 py-3">
+    <div className="border-t border-border-default px-4 py-3 sticky bottom-0 bg-surface-secondary z-10">
       {imageAttachments.length > 0 && (
         <div className="flex gap-2 mb-2 flex-wrap">
           {imageAttachments.map((att, i) => (
@@ -3036,7 +3036,7 @@ function RequirementDetailModal({
             {req.approvedBy && (
               <div className="bg-surface-elevated/60 rounded-lg p-2.5">
                 <span className="text-[10px] text-gray-500 block mb-1">Approved by</span>
-                <span className="text-gray-300"><AgentNameLink agentId={req.approvedBy} agents={agents} /></span>
+                <span className="text-gray-300">{resolveActorName(req.approvedBy, agents, users) ?? req.approvedBy.slice(0, 12)}</span>
                 {req.approvedAt && <span className="text-[10px] text-gray-500 ml-1">{new Date(req.approvedAt).toLocaleDateString()}</span>}
               </div>
             )}
@@ -3082,10 +3082,7 @@ function RequirementDetailModal({
               <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-sm rounded-lg font-medium transition-colors">Reject</button>
             </>
           )}
-          {canCancel && !needsReview && (
-            <button onClick={() => onCancel(req.id)} className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors">Cancel Requirement</button>
-          )}
-          {!needsReview && onStatusChange && (
+          {!needsReview && onStatusChange && !isTerminal && (
             <select
               value={req.status}
               onChange={e => { if (e.target.value !== req.status) onStatusChange(req.id, e.target.value); }}
@@ -3097,11 +3094,13 @@ function RequirementDetailModal({
               })}
             </select>
           )}
-          <div className="flex-1" />
           {isTerminal && onStatusChange && (
-            <button onClick={() => onStatusChange(req.id, 'approved')} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200">Reopen</button>
+            <button onClick={() => onStatusChange(req.id, 'approved')} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200 transition-colors">Reopen</button>
           )}
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Close</button>
+          <div className="flex-1" />
+          {canCancel && !needsReview && (
+            <button onClick={() => onCancel(req.id)} className="px-3 py-1.5 text-xs text-red-400/70 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">Cancel Requirement</button>
+          )}
         </div>
       </div>
     </div>
