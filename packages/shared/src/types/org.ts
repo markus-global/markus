@@ -28,9 +28,7 @@ export interface Team {
   orgId: string;
   name: string;
   description?: string;
-  leadAgentId?: string;
   memberAgentIds: string[];
-  // Extended fields for full team management
   managerId?: string;
   managerType?: 'human' | 'agent';
   humanMemberIds?: string[];

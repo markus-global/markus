@@ -251,32 +251,6 @@ export class ProjectService {
     return iter;
   }
 
-  // ─── Team-Project Associations ─────────────────────────────────────────────
-
-  getProjectsForTeam(teamId: string): Project[] {
-    return [...this.projects.values()].filter(p => p.teamIds.includes(teamId));
-  }
-
-  getTeamsForProject(projectId: string): string[] {
-    return this.projects.get(projectId)?.teamIds ?? [];
-  }
-
-  addTeamToProject(projectId: string, teamId: string): void {
-    const project = this.projects.get(projectId);
-    if (!project) throw new Error(`Project not found: ${projectId}`);
-    if (!project.teamIds.includes(teamId)) {
-      project.teamIds.push(teamId);
-      project.updatedAt = new Date().toISOString();
-    }
-  }
-
-  removeTeamFromProject(projectId: string, teamId: string): void {
-    const project = this.projects.get(projectId);
-    if (!project) return;
-    project.teamIds = project.teamIds.filter(t => t !== teamId);
-    project.updatedAt = new Date().toISOString();
-  }
-
   // ─── Agent Onboarding ──────────────────────────────────────────────────────
 
   async onboardAgent(agentId: string, projectId: string): Promise<string> {

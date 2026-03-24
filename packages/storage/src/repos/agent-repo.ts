@@ -86,12 +86,13 @@ export class AgentRepo {
     }).where(eq(agents.id, id));
   }
 
-  async updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; heartbeatIntervalMs?: number }): Promise<void> {
+  async updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }): Promise<void> {
     const sets: Record<string, unknown> = { updatedAt: new Date() };
     if (data.name !== undefined) sets.name = data.name;
     if (data.agentRole !== undefined) sets.agentRole = data.agentRole;
     if (data.skills !== undefined) sets.skills = data.skills;
     if (data.llmConfig !== undefined) sets.llmConfig = data.llmConfig;
+    if (data.computeConfig !== undefined) sets.computeConfig = data.computeConfig;
     if (data.heartbeatIntervalMs !== undefined) sets.heartbeatIntervalMs = data.heartbeatIntervalMs;
     await this.db.update(agents).set(sets).where(eq(agents.id, id));
   }

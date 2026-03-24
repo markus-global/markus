@@ -550,6 +550,10 @@ export class OrganizationService {
 
     if (request.agentRole === 'manager' && org) {
       org.managerAgentId = agent.id;
+      if (this.storage?.orgRepo?.updateManagerAgentId) {
+        this.storage.orgRepo.updateManagerAgentId(request.orgId, agent.id)
+          .catch((err: unknown) => log.warn('Failed to persist managerAgentId', { error: String(err) }));
+      }
     }
 
     this.refreshIdentityContextsForOrg(request.orgId);
@@ -581,6 +585,10 @@ export class OrganizationService {
     for (const org of this.orgs.values()) {
       if (org.managerAgentId === agentId) {
         org.managerAgentId = undefined;
+        if (this.storage?.orgRepo?.updateManagerAgentId) {
+          this.storage.orgRepo.updateManagerAgentId(org.id, null)
+            .catch((err: unknown) => log.warn('Failed to clear managerAgentId', { error: String(err) }));
+        }
       }
     }
 
@@ -650,6 +658,19 @@ export class OrganizationService {
     if (!this.storage) return;
 
     log.info('Loading data from DB...', { orgId });
+
+    // 0. Restore org-level fields from DB
+    try {
+      const orgRow = this.storage.orgRepo.findOrgById?.(orgId);
+      if (orgRow) {
+        const org = this.orgs.get(orgId);
+        if (org && orgRow.managerAgentId) {
+          org.managerAgentId = orgRow.managerAgentId;
+        }
+      }
+    } catch (error) {
+      log.warn('Failed to restore org fields from DB', { error: String(error) });
+    }
 
     // 1. Restore teams
     try {

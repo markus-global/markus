@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   owner_id TEXT NOT NULL,
   plan TEXT NOT NULL DEFAULT 'free',
   max_agents INTEGER NOT NULL DEFAULT 5,
+  manager_agent_id TEXT,
   settings TEXT DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -456,6 +457,7 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'artifact_type', sql: "ALTER TABLE deliverables ADD COLUMN artifact_type TEXT" },
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
+    { table: 'organizations', column: 'manager_agent_id', sql: "ALTER TABLE organizations ADD COLUMN manager_agent_id TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -531,9 +533,20 @@ export class SqliteOrgRepo {
     >[];
   }
 
+  async updateManagerAgentId(orgId: string, managerAgentId: string | null) {
+    this.db
+      .prepare('UPDATE organizations SET manager_agent_id = ?, updated_at = ? WHERE id = ?')
+      .run(managerAgentId, now(), orgId);
+  }
+
   private _mapOrg(r: Record<string, unknown>) {
     return {
-      ...r,
+      id: r['id'] as string,
+      name: r['name'] as string,
+      ownerId: r['owner_id'] as string,
+      plan: r['plan'] as string,
+      maxAgents: r['max_agents'] as number,
+      managerAgentId: r['manager_agent_id'] as string | null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -631,13 +644,14 @@ export class SqliteAgentRepo {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
 
-  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; heartbeatIntervalMs?: number }) {
+  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: unknown[] = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
     if (data.agentRole !== undefined) { sets.push('agent_role = ?'); vals.push(data.agentRole); }
     if (data.skills !== undefined) { sets.push('skills = ?'); vals.push(toJson(data.skills)); }
     if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
+    if (data.computeConfig !== undefined) { sets.push('compute_config = ?'); vals.push(toJson(data.computeConfig)); }
     if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
     vals.push(id);
     this.db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -1870,7 +1884,6 @@ export class SqliteTeamRepo {
       orgId: r['org_id'],
       name: r['name'],
       description: r['description'],
-      leadAgentId: r['lead_agent_id'],
       managerId: r['manager_id'],
       managerType: r['manager_type'],
       createdAt: toDate(r['created_at'] as string),

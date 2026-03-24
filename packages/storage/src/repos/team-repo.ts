@@ -7,7 +7,6 @@ export interface TeamRow {
   orgId: string;
   name: string;
   description: string | null;
-  leadAgentId: string | null;
   managerId: string | null;
   managerType: string | null;
   createdAt: Date;
