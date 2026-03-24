@@ -1319,6 +1319,7 @@ export class Agent {
             messages: updatedMessages,
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
           }, this.getEffectiveProvider()),
           'Chat LLM continuation',
         );
@@ -1467,6 +1468,8 @@ export class Agent {
     const messages = preparedStream.messages;
     log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
 
+    const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
+
     // Link cancelToken to an AbortController so we can abort in-flight LLM calls
     const abortController = new AbortController();
     let cancelPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -1483,7 +1486,7 @@ export class Agent {
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
           onEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -1609,7 +1612,7 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId) },
+            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
             onEvent,
             this.getEffectiveProvider(),
             abortController.signal,
@@ -1951,7 +1954,9 @@ export class Agent {
     });
 
     const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
+    const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
+    let taskToolIterations = 0;
 
     const flushText = () => {
       if (textBuffer.trim()) {
@@ -1979,7 +1984,7 @@ export class Agent {
       log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
 
       let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId) },
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
         event => {
           if (event.type === 'text_delta' && event.text) {
             textBuffer += event.text;
@@ -1993,6 +1998,7 @@ export class Agent {
       this.calibrateTokenCounter(response.usage.inputTokens);
 
       while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+        taskToolIterations++;
         if (cancelToken?.cancelled) {
           flushText();
           emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
@@ -2013,7 +2019,8 @@ export class Agent {
           emit('tool_start', tc.name, { arguments: tc.arguments });
           const toolStart = Date.now();
           try {
-            const result = await this.executeTool(tc);
+            let result = await this.executeTool(tc);
+            result = this.offloadLargeResult(tc.name, result);
             const isErr = isErrorResult(result);
             const durationMs = Date.now() - toolStart;
             emit('tool_end', tc.name, {
@@ -2046,6 +2053,24 @@ export class Agent {
           return;
         }
 
+        // Re-inject critical task completion reminder every 10 tool iterations
+        // to prevent "lost in the middle" — the original task_submit_review
+        // instruction drifts away from recent context as tool calls accumulate.
+        if (taskToolIterations > 0 && taskToolIterations % 10 === 0) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: [
+              `[SYSTEM REMINDER — Task ${taskId}]`,
+              'You have completed multiple tool call rounds. Remember:',
+              '- When ALL your work is done, you MUST call `task_submit_review` with summary and deliverables.',
+              '- If you are stuck or blocked, update the task status to `blocked` with an explanation.',
+              '- Do NOT just stop — the task is NOT complete until you call `task_submit_review`.',
+              '- Use `task_note` to record progress before submitting.',
+            ].join('\n'),
+          });
+          log.debug('Injected task completion reminder', { taskId, iteration: taskToolIterations });
+        }
+
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: this.memory.getRecentMessages(sessionId, 200),
@@ -2060,6 +2085,7 @@ export class Agent {
             messages: preparedTaskCont.messages,
             tools: llmTools.length > 0 ? llmTools : undefined,
             metadata: this.getLLMMetadata(sessionId),
+            compaction: useCompaction,
           },
           event => {
             if (event.type === 'text_delta' && event.text) {

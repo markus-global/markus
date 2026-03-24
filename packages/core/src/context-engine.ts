@@ -611,10 +611,12 @@ export class ContextEngine {
 
     let messages = opts.sessionMessages;
 
+    // ── Stage 1: Count-based summarization (too many messages) ──────────
     if (messages.length > 60) {
       messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 40);
     }
 
+    // ── Stage 2: Per-message size cap (shrink oversized individual messages) ─
     const perMessageCap = Math.max(2000, Math.floor(messageBudget / 8));
     messages = this.shrinkOversizedMessages(messages, perMessageCap);
     messages = this.sanitizeMessageSequence(messages);
@@ -626,24 +628,45 @@ export class ContextEngine {
     const effectiveBudget = contextWindow - maxOutput;
     const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
 
+    // ── Stage 3: Token-budget-driven compression ────────────────────────
+    // Progressive compression: try lighter methods first, escalate as needed.
     if (totalTokens > messageBudget) {
-      if (preCompressionPct > 90 && messages.length > 20) {
-        log.warn('Context usage >90%, forcing aggressive summarization', {
-          usagePercent: preCompressionPct.toFixed(1),
-          messageCount: messages.length,
-        });
-        messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 15);
-        messages = this.sanitizeMessageSequence(messages);
-        totalTokens = this.sumTokens(messages);
-      }
-
-      if (totalTokens > messageBudget) {
-        const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
-        messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
-        totalTokens = this.sumTokens(messages);
-      }
+      // 3a: Compact old tool-call blocks into summaries
+      const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
+      messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
+      messages = this.sanitizeMessageSequence(messages);
+      totalTokens = this.sumTokens(messages);
     }
 
+    if (totalTokens > messageBudget && messages.length > 15) {
+      // 3b: LLM-powered or heuristic summarization of older messages.
+      // This is the generic compression path — works for ALL providers.
+      const keepCount = Math.max(10, Math.min(20, Math.floor(messages.length * 0.4)));
+      log.info('Triggering generic compression (token budget exceeded)', {
+        usagePercent: preCompressionPct.toFixed(1),
+        messageCount: messages.length,
+        keepLast: keepCount,
+      });
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount);
+      messages = this.sanitizeMessageSequence(messages);
+      totalTokens = this.sumTokens(messages);
+    }
+
+    if (totalTokens > messageBudget && messages.length > 10) {
+      // 3c: Aggressive summarization — keep fewer messages
+      log.warn('Context still over budget, aggressive summarization', {
+        totalTokens,
+        messageBudget,
+        messageCount: messages.length,
+      });
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, Math.max(6, Math.floor(messages.length * 0.3)));
+      messages = this.sanitizeMessageSequence(messages);
+      // Re-shrink after summarization in case the summary itself is large
+      messages = this.shrinkOversizedMessages(messages, perMessageCap);
+      totalTokens = this.sumTokens(messages);
+    }
+
+    // ── Stage 4: Last-resort trimming ───────────────────────────────────
     if (totalTokens > messageBudget) {
       messages = this.trimToFitBudget(messages, messageBudget);
       totalTokens = this.sumTokens(messages);
@@ -692,6 +715,9 @@ export class ContextEngine {
    * Attempt LLM-powered summarization, falling back to heuristic truncation.
    * When an LLM summarizer is available, the older messages are summarized
    * by the model into a concise summary that preserves key decisions and context.
+   *
+   * The first user message is protected if it contains task instructions
+   * (TASK EXECUTION marker) — it gets preserved verbatim before the summary.
    */
   private async smartSummarizeAndTruncate(
     memory: IMemoryStore,
@@ -701,46 +727,133 @@ export class ContextEngine {
   ): Promise<LLMMessage[]> {
     if (messages.length <= keepLast) return messages;
 
+    // Protect the first message if it's a task prompt
+    const firstMsg = messages[0];
+    const isTaskPrompt = firstMsg?.role === 'user' &&
+      (getTextContent(firstMsg.content).includes('TASK EXECUTION') ||
+       getTextContent(firstMsg.content).includes('task_submit_review'));
+    const protectedPrefix: LLMMessage[] = isTaskPrompt ? [firstMsg] : [];
+    const compactableMessages = isTaskPrompt ? messages.slice(1) : messages;
+
+    if (compactableMessages.length <= keepLast) {
+      return [...protectedPrefix, ...compactableMessages];
+    }
+
     if (this.llmSummarizer) {
       try {
-        const older = messages.slice(0, -keepLast);
-        const retained = messages.slice(-keepLast);
+        const older = compactableMessages.slice(0, -keepLast);
+        const retained = compactableMessages.slice(-keepLast);
         const summary = await this.llmSummarizer(older);
         if (summary && summary.length > 0) {
           log.info('LLM-powered summarization succeeded', {
             sessionId,
             compactedMessages: older.length,
             summaryLength: summary.length,
+            taskPromptPreserved: isTaskPrompt,
           });
           const summaryMessage: LLMMessage = {
             role: 'user',
             content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
           };
           memory.writeDailyLog(sessionId, summary);
-          return [summaryMessage, ...retained];
+          return [...protectedPrefix, summaryMessage, ...retained];
         }
       } catch (err) {
         log.warn('LLM summarization failed, falling back to heuristic', { error: String(err) });
       }
     }
 
-    return memory.summarizeAndTruncate(sessionId, keepLast);
+    // Heuristic fallback: build a simple summary from older messages
+    const older = compactableMessages.slice(0, -keepLast);
+    const retained = compactableMessages.slice(-keepLast);
+    const heuristicSummary = this.buildHeuristicSummary(older);
+    if (heuristicSummary) {
+      const summaryMessage: LLMMessage = {
+        role: 'user',
+        content: `[Conversation history summary — ${older.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
+      };
+      return [...protectedPrefix, summaryMessage, ...retained];
+    }
+
+    // Last resort: try memory store's summarizeAndTruncate (may not preserve task prompt)
+    if (!isTaskPrompt) {
+      return memory.summarizeAndTruncate(sessionId, keepLast);
+    }
+    return [...protectedPrefix, ...retained];
+  }
+
+  /**
+   * Build a heuristic summary from a list of messages.
+   * Extracts key information without requiring an LLM call.
+   */
+  private buildHeuristicSummary(messages: LLMMessage[]): string | null {
+    if (messages.length === 0) return null;
+
+    const parts: string[] = [];
+    let toolCallCount = 0;
+    const toolNames = new Set<string>();
+    const errors: string[] = [];
+    const keyDecisions: string[] = [];
+
+    for (const msg of messages) {
+      const text = getTextContent(msg.content);
+      if (msg.role === 'assistant') {
+        if (msg.toolCalls?.length) {
+          for (const tc of msg.toolCalls) {
+            toolCallCount++;
+            toolNames.add(tc.name);
+          }
+        }
+        // Extract short assistant reasoning (non-tool-call text)
+        const trimmed = text.trim();
+        if (trimmed.length > 20 && trimmed.length < 500 && !msg.toolCalls?.length) {
+          keyDecisions.push(trimmed.slice(0, 200));
+        }
+      } else if (msg.role === 'tool') {
+        if (text.startsWith('Error:') || text.includes('"status":"error"')) {
+          errors.push(text.slice(0, 150));
+        }
+      }
+    }
+
+    if (toolCallCount > 0) {
+      parts.push(`Executed ${toolCallCount} tool calls: ${[...toolNames].join(', ')}`);
+    }
+    if (errors.length > 0) {
+      parts.push(`Errors encountered (${errors.length}):`);
+      for (const e of errors.slice(0, 3)) {
+        parts.push(`  - ${e}`);
+      }
+    }
+    if (keyDecisions.length > 0) {
+      parts.push('Key points:');
+      for (const d of keyDecisions.slice(0, 5)) {
+        parts.push(`  - ${d}`);
+      }
+    }
+
+    return parts.length > 0 ? parts.join('\n') : null;
   }
 
   /**
    * Shrink any individual message whose content exceeds `maxChars`.
-   * Tool results get a short preview; user/assistant messages get tail-trimmed.
+   * Tool results get head+tail preview; user/assistant messages get tail-trimmed.
    */
   private shrinkOversizedMessages(messages: LLMMessage[], maxChars: number): LLMMessage[] {
     return messages.map(m => {
       const text = getTextContent(m.content);
       if (text.length <= maxChars) return m;
       if (m.role === 'tool') {
-        const previewSize = Math.min(1000, maxChars);
-        const preview = text.slice(0, previewSize);
+        // Keep both head and tail: the beginning often has status/structure info,
+        // the end often has the final result or error summary.
+        const headSize = Math.min(Math.floor(maxChars * 0.6), 1500);
+        const tailSize = Math.min(Math.floor(maxChars * 0.3), 800);
+        const head = text.slice(0, headSize);
+        const tail = text.slice(-tailSize);
+        const omitted = text.length - headSize - tailSize;
         return {
           ...m,
-          content: `[Tool result compacted for context budget: showing first ${previewSize} of ${text.length} chars. This is NOT the full output — the complete result was available when the tool ran.]\n${preview}\n[... ${text.length - previewSize} more chars omitted ...]`,
+          content: `[Tool result compacted: showing ${headSize} head + ${tailSize} tail of ${text.length} chars. Full output was available at execution time.]\n${head}\n[... ${omitted} chars omitted ...]\n${tail}`,
         };
       }
       if (Array.isArray(m.content)) return m;
@@ -767,6 +880,8 @@ export class ContextEngine {
    * Compact historical tool-call blocks (before currentTurnStart) into summaries.
    * Each block = assistant(toolCalls) + tool results → replaced with a single
    * assistant message summarizing what happened.
+   * The first block is protected if it's a task prompt (user message with
+   * TASK EXECUTION marker) — it's always kept verbatim.
    */
   private compactOldTurns(
     messages: LLMMessage[],
@@ -779,22 +894,29 @@ export class ContextEngine {
     const currentTurnTokens = this.sumTokens(currentTurn);
     const historyBudget = budget - currentTurnTokens;
 
-    // Parse history into "blocks": a tool-call block is [assistant+toolCalls, tool, tool, ...]
-    // Everything else is a standalone message.
     const blocks = this.parseIntoBlocks(history);
 
-    // Process from oldest to newest: compact the oldest blocks first
     const compactedBlocks: LLMMessage[][] = [];
     let usedTokens = 0;
 
-    // First pass: estimate what fits without compaction
-    for (const block of blocks) {
+    for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+      const block = blocks[blockIdx]!;
       const blockTokens = this.sumTokens(block);
+
+      // Protect the first block if it's a task prompt
+      if (blockIdx === 0 && block.length === 1 && block[0]!.role === 'user') {
+        const text = getTextContent(block[0]!.content);
+        if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
+          compactedBlocks.push(block);
+          usedTokens += blockTokens;
+          continue;
+        }
+      }
+
       if (usedTokens + blockTokens <= historyBudget) {
         compactedBlocks.push(block);
         usedTokens += blockTokens;
       } else {
-        // This block doesn't fit; compact it
         const summary = this.summarizeToolBlock(block);
         const summaryTokens = estimateMessageTokens(summary, this.tokenCounter);
         if (usedTokens + summaryTokens <= historyBudget) {
@@ -900,10 +1022,42 @@ export class ContextEngine {
   }
 
   /**
-   * Last-resort trimming: drop oldest messages to fit the budget.
-   * Keeps at least the last 4 messages.
+   * Last-resort trimming: drop old messages to fit the budget.
+   * Protects index 0 (often the task description with critical instructions like
+   * task_submit_review) and keeps at least 4 recent messages.
+   * When index 0 is a user message (task prompt), it is preserved and a
+   * compacted version is used if the original is too large.
    */
   private trimToFitBudget(messages: LLMMessage[], budget: number): LLMMessage[] {
+    if (messages.length <= 4 || this.sumTokens(messages) <= budget) return messages;
+
+    // Preserve the first message if it looks like a task prompt (user role)
+    const firstMsg = messages[0]!;
+    const protectFirst = firstMsg.role === 'user' &&
+      (getTextContent(firstMsg.content).includes('TASK EXECUTION') ||
+       getTextContent(firstMsg.content).includes('task_submit_review'));
+
+    if (protectFirst) {
+      // Keep first message + trim from position 1 onward
+      let middle = messages.slice(1);
+      while (middle.length > 3 && this.sumTokens([firstMsg, ...middle]) > budget) {
+        middle = middle.slice(1);
+      }
+      const result = [firstMsg, ...middle];
+      // If still over budget, compact the first message itself
+      if (this.sumTokens(result) > budget) {
+        const text = getTextContent(firstMsg.content);
+        const maxFirstChars = Math.max(800, Math.floor(budget * 2));
+        const compactedFirst: LLMMessage = {
+          ...firstMsg,
+          content: text.slice(0, maxFirstChars) + '\n\n[... task description trimmed. REMEMBER: Call `task_submit_review` when done.]',
+        };
+        return [compactedFirst, ...middle];
+      }
+      return result;
+    }
+
+    // Default: drop from the oldest end
     let result = messages;
     while (result.length > 4 && this.sumTokens(result) > budget) {
       result = result.slice(1);
