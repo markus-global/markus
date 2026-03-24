@@ -360,22 +360,80 @@ export class TaskService {
 
     const lines: string[] = [];
     lines.push('## Previous Execution Context');
+    lines.push('');
+
+    // Current time context — helps the agent understand temporal relationships
+    const now = new Date();
+    lines.push(`**Current time:** ${formatLocalTimestamp(now)}`);
+
+    // Current round context
+    const currentExecutionRound = task?.executionRound ?? (totalRounds + 1);
+    lines.push(`**Current execution round:** #${currentExecutionRound} (starting now)`);
+    if (totalRounds > 0) {
+      lines.push(`**Previous rounds:** ${totalRounds} round(s) of execution history exist below`);
+    }
+    lines.push('');
+
+    // Scheduled task context — explain what this task is and why it's running again
+    const isScheduledTask = task?.taskType === 'scheduled' && task?.scheduleConfig;
+    if (isScheduledTask) {
+      const config = task!.scheduleConfig!;
+      lines.push('### Scheduled Task Context');
+      lines.push('');
+      lines.push('This is a **recurring scheduled task** that runs automatically on a schedule.');
+      if (config.every) {
+        lines.push(`- **Schedule:** Every ${config.every}`);
+      } else if (config.cron) {
+        lines.push(`- **Schedule:** Cron \`${config.cron}\``);
+      }
+      if (config.timezone) {
+        lines.push(`- **Timezone:** ${config.timezone}`);
+      }
+      lines.push(`- **Total runs so far:** ${config.currentRuns ?? 0}`);
+      if (config.lastRunAt) {
+        lines.push(`- **Last run:** ${config.lastRunAt}`);
+      }
+      if (config.maxRuns !== undefined) {
+        lines.push(`- **Max runs:** ${config.maxRuns}`);
+      }
+      lines.push('');
+
+      // Determine the nature of this new round for scheduled tasks
+      // Look at the last round's terminal status to decide context
+      const lastRoundLogs = logs.filter(l => (l as any).executionRound === (currentExecutionRound - 1));
+      const lastRoundTerminal = lastRoundLogs.find(l =>
+        l.type === 'status' && ['completed', 'failed', 'cancelled', 'execution_finished'].includes(l.content)
+      );
+      const lastRoundStatus = lastRoundTerminal?.content;
+
+      if (lastRoundStatus === 'completed' || lastRoundStatus === 'execution_finished') {
+        lines.push('**This is a new scheduled run.** The previous round completed successfully.');
+        lines.push('You should execute the task fresh with up-to-date information. Reference previous rounds for continuity but do NOT simply repeat them — produce a new, current result.');
+      } else if (lastRoundStatus === 'failed') {
+        lines.push('**⚠ The previous round FAILED.** This is a new scheduled run, but you should learn from the previous failure.');
+        lines.push('Review the error details from the previous round below and use a different approach to avoid the same failure.');
+      } else if (lastRoundStatus === 'cancelled') {
+        lines.push('**The previous round was cancelled.** This is a new scheduled run.');
+        lines.push('Execute the task fresh. The cancellation may have been intentional.');
+      } else {
+        lines.push('**This is a new scheduled run.** Execute the task and produce current, up-to-date results.');
+      }
+      lines.push('');
+    }
 
     if (latestRevision) {
-      lines.push('');
       lines.push('### 🔴 REVISION REQUIRED — Your previous work was REJECTED by the reviewer');
       lines.push('');
       lines.push('**Reviewer feedback:**');
-      // Strip the "**Revision Requested (Round N)**\n\n" prefix to get the raw reason
       const rawReason = latestRevision.content.replace(/^\*\*Revision Requested[^*]*\*\*\s*/, '');
       lines.push(`> ${rawReason.replace(/\n/g, '\n> ')}`);
       lines.push('');
       lines.push('**You MUST address the reviewer\'s feedback above before doing anything else.**');
       lines.push('Review the previous execution details below to understand what was done, then fix the issues identified by the reviewer.');
       lines.push('');
-    } else if (totalRounds > 1) {
+    } else if (!isScheduledTask && totalRounds > 1) {
       lines.push(`This task has been through ${totalRounds} execution rounds. Below are the task notes and execution details.`);
-    } else {
+    } else if (!isScheduledTask) {
       lines.push('This task was previously worked on. Below is the execution context.');
     }
     lines.push('**CRITICAL: Pay close attention to human comments — they contain instructions, feedback, and accumulated knowledge.**');
@@ -435,10 +493,13 @@ export class TaskService {
           if (inRound) lines.push('');
           currentRound = entryRound;
           if (currentRound >= showFromRound) {
+            const entryTime = entry.createdAt instanceof Date
+              ? entry.createdAt : new Date(entry.createdAt as any);
+            const timeStr = formatLocalTimestamp(entryTime);
             if (totalRounds > 1) {
-              lines.push(`### Execution Round #${currentRound}`);
+              lines.push(`### Execution Round #${currentRound} (started ${timeStr})`);
             } else {
-              lines.push('### Execution Details');
+              lines.push(`### Execution Details (started ${timeStr})`);
             }
           }
         }
@@ -453,10 +514,13 @@ export class TaskService {
       if (currentRound < showFromRound) continue;
 
       if (entry.type === 'status') {
+        const statusTime = entry.createdAt instanceof Date
+          ? entry.createdAt : new Date(entry.createdAt as any);
+        const statusTimeStr = formatLocalTimestamp(statusTime);
         if (entry.content === 'execution_finished' || entry.content === 'completed') {
-          lines.push('[execution finished]');
+          lines.push(`[execution finished at ${statusTimeStr}]`);
         } else if (entry.content === 'failed' || entry.content === 'cancelled') {
-          lines.push(`[${entry.content}]`);
+          lines.push(`[${entry.content} at ${statusTimeStr}]`);
         }
         lines.push('');
         continue;
@@ -624,6 +688,24 @@ export class TaskService {
       notesSection = noteLines.join('\n');
     }
 
+    // For first-run scheduled tasks (no prevContext), include schedule awareness
+    let scheduleSection = '';
+    if (!prevContext && task.taskType === 'scheduled' && task.scheduleConfig) {
+      const config = task.scheduleConfig;
+      const schedLines: string[] = [
+        '## Scheduled Task Info',
+        '',
+        `**Current time:** ${formatLocalTimestamp(new Date())}`,
+        `**Execution round:** #${task.executionRound ?? 1}`,
+      ];
+      if (config.every) schedLines.push(`**Schedule:** Every ${config.every}`);
+      else if (config.cron) schedLines.push(`**Schedule:** Cron \`${config.cron}\``);
+      if (config.timezone) schedLines.push(`**Timezone:** ${config.timezone}`);
+      schedLines.push(`**Run #:** ${config.currentRuns ?? 1}`);
+      schedLines.push('', 'This task runs on a recurring schedule. Produce fresh, up-to-date results for each run.', '', '---', '');
+      scheduleSection = schedLines.join('\n');
+    }
+
     // Add explicit retry notice so agent knows to continue, not restart
     let retryNotice = '';
     if (_retryAttempt > 0 && prevContext) {
@@ -660,7 +742,7 @@ export class TaskService {
 
     const taskDescription = prevContext
       ? `${retryNotice}${prevContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`
-      : `${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
+      : `${scheduleSection}${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
     // Workspace management is delegated to the agent — the agent creates and
     // manages its own worktree/branch during execution. Task-service only

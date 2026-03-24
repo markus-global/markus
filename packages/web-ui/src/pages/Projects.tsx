@@ -510,10 +510,10 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   }, [rounds.length]);
 
   useEffect(() => {
-    if (isVisible && isExecuting && projAtBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    if (isVisible && isExecuting) {
+      topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [logs, streamingText, isVisible, isExecuting]);
+  }, [rounds.length, isVisible, isExecuting]);
 
   const toggleRound = useCallback((roundId: number) => {
     setExpandedRounds(prev => {
@@ -596,10 +596,11 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   const totalRoundPages = Math.ceil(rounds.length / ROUNDS_PAGE_SIZE);
   const pageEndOffset = roundsPage * ROUNDS_PAGE_SIZE;
   const pageStartOffset = (roundsPage - 1) * ROUNDS_PAGE_SIZE;
+  // Select rounds for this page (newest first within page), then reverse for descending display
   const pagedRounds = rounds.slice(
     Math.max(0, rounds.length - pageEndOffset),
     rounds.length - pageStartOffset,
-  );
+  ).slice().reverse();
 
   return (
     <div>
@@ -607,25 +608,25 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
         <div className="flex items-center justify-between px-4 py-2 border-b border-border-default">
           <span className="text-[10px] text-gray-500">{rounds.length} rounds total</span>
           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-            <button disabled={roundsPage >= totalRoundPages} onClick={() => setRoundsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Older</button>
+            <button disabled={roundsPage <= 1} onClick={() => setRoundsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Newer</button>
             <span>{roundsPage}/{totalRoundPages}</span>
-            <button disabled={roundsPage <= 1} onClick={() => setRoundsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Newer →</button>
+            <button disabled={roundsPage >= totalRoundPages} onClick={() => setRoundsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Older →</button>
           </div>
         </div>
       )}
       <div className="py-1">
         <div ref={topRef} />
         {pagedRounds.map(round => {
-          const isLastRound = round.id === rounds[rounds.length - 1]?.id;
+          const isLatestRound = round.id === rounds[rounds.length - 1]?.id;
           return (
             <RoundSection
               key={round.id}
               round={round}
               expanded={expandedRounds.has(round.id)}
               onToggle={() => toggleRound(round.id)}
-              isLive={isLastRound && isExecuting}
-              streamingText={isLastRound ? streamingText : undefined}
-              isExecuting={isLastRound ? isExecuting : false}
+              isLive={isLatestRound && isExecuting}
+              streamingText={isLatestRound ? streamingText : undefined}
+              isExecuting={isLatestRound ? isExecuting : false}
               totalRounds={rounds.length}
             />
           );
