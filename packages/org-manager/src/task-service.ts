@@ -932,12 +932,14 @@ export class TaskService {
           };
           return (map[s] ?? s) as TaskStatus;
         };
+        const migrated = migrateStatus(row.status);
+        const needsMigration = migrated !== row.status;
         const task: Task = {
           id: row.id,
           orgId: row.orgId,
           title: row.title,
           description: row.description ?? '',
-          status: migrateStatus(row.status),
+          status: migrated,
           priority: (row.priority ?? 'medium') as TaskPriority,
           executionMode: (row.executionMode as Task['executionMode']) ?? undefined,
           assignedAgentId: row.assignedAgentId ?? (row as any).assigned_agent_id ?? '',
@@ -964,6 +966,10 @@ export class TaskService {
           scheduleConfig: ((row as any).scheduleConfig ?? (row as any).schedule_config ?? undefined) as Task['scheduleConfig'],
         };
         this.tasks.set(task.id, task);
+        if (needsMigration && this.taskRepo) {
+          this.taskRepo.updateStatus(task.id, migrated)
+            .catch(err => log.warn('Failed to persist migrated status', { taskId: task.id, from: row.status, to: migrated, error: String(err) }));
+        }
       }
 
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
@@ -1083,6 +1089,11 @@ export class TaskService {
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
     }
 
+    // ── Link task to its requirement (auto-transitions approved → in_progress) ──
+    if (task.requirementId && this.requirementService) {
+      this.requirementService.linkTask(task.requirementId, task.id);
+    }
+
     this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId: task.assignedAgentId });
     this.emitTaskEvent({
       type: 'created',
@@ -1181,9 +1192,18 @@ export class TaskService {
    * @param _skipAutoStart - suppress auto-start when entering in_progress
    *                         (used by retryTaskFresh which starts runTaskFresh instead)
    */
+  private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
+    'pending_approval', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'cancelled', 'archived',
+  ]);
+
   updateTaskStatus(id: string, status: TaskStatus, updatedBy?: string, _internal = false, _skipAutoStart = false): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+
+    // Guard: reject invalid status values (e.g. LLM hallucinated "accepted")
+    if (!TaskService.VALID_STATUSES.has(status)) {
+      throw new Error(`Invalid task status "${status}". Valid values: ${[...TaskService.VALID_STATUSES].join(', ')}`);
+    }
 
     // Guard: pending_approval can only be changed via approveTask/rejectTask
     if (!_internal && task.status === 'pending_approval' && status !== 'pending_approval') {
@@ -1270,6 +1290,15 @@ export class TaskService {
     // ── Side effect: check dependent tasks on terminal ──
     if (status === 'completed' || status === 'failed' || status === 'cancelled') {
       this.checkDependentTasks(task);
+
+      // Check if the linked requirement is now fully completed
+      if (task.requirementId && this.requirementService) {
+        const taskStatuses = new Map<string, string>();
+        for (const [tid, t] of this.tasks) {
+          taskStatuses.set(tid, t.status);
+        }
+        this.requirementService.checkCompletion(task.requirementId, taskStatuses);
+      }
     }
 
     // ── Broadcast + events ──
@@ -1321,6 +1350,11 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${id}`);
     task.assignedAgentId = agentId;
     task.updatedAt = new Date().toISOString();
+
+    if (this.taskRepo) {
+      this.taskRepo.assign(id, agentId)
+        .catch(err => log.warn('Failed to persist task assignment to DB', { error: String(err) }));
+    }
 
     this.ws?.broadcastTaskUpdate(id, task.status, { title: task.title, assignedAgentId: agentId });
     log.info(`Task assigned`, { taskId: id, agentId });
@@ -1532,9 +1566,10 @@ export class TaskService {
 
     if (this.taskRepo) {
       const { blockedBy: _bb, ...rest } = data;
-      if (Object.keys(rest).length > 0) {
+      const persistData = updatedBy ? { ...rest, updatedBy } : rest;
+      if (Object.keys(persistData).length > 0) {
         this.taskRepo
-          .update(id, rest)
+          .update(id, persistData)
           .catch(err => log.warn('Failed to persist task update to DB', { error: String(err) }));
       }
     }
@@ -1645,6 +1680,10 @@ export class TaskService {
 
       log.info(`Cascade-cancelling task ${task.id} (dependency ${cancelledTask.id} was cancelled)`);
       task.notes = [...(task.notes ?? []), `Auto-cancelled: dependency "${cancelledTask.title}" (${cancelledTask.id}) was cancelled`];
+      if (this.taskRepo) {
+        this.taskRepo.update(task.id, { notes: task.notes })
+          .catch(err => log.warn('Failed to persist cascade-cancel notes', { error: String(err) }));
+      }
       this.updateTaskStatus(task.id, 'cancelled', undefined, true);
       this.cascadeCancelDependents(task);
     }
@@ -1850,10 +1889,14 @@ export class TaskService {
       task.reviewerAgentId = reviewerAgentId;
     }
 
-    // Persist deliverables to DB (status persisted by updateTaskStatus below)
+    // Persist deliverables (and reviewerAgentId if changed) to DB
     if (this.taskRepo) {
       this.taskRepo.updateDeliverables(task.id, task.deliverables)
         .catch(err => log.warn('Failed to persist deliverables to DB', { taskId: task.id, error: String(err) }));
+      if (reviewerAgentId) {
+        this.taskRepo.update(task.id, { reviewerAgentId })
+          .catch(err => log.warn('Failed to persist reviewer change to DB', { taskId: task.id, error: String(err) }));
+      }
     }
 
     // Persist each task deliverable as a standalone Deliverable entity (skip branch — it's task metadata)
@@ -2182,6 +2225,8 @@ export class TaskService {
     if (this.taskRepo) {
       (this.taskRepo as any).updateExecutionRound?.(task.id, task.executionRound)
         ?.catch?.((err: Error) => log.warn('Failed to persist execution round', { taskId: task.id, error: String(err) }));
+      this.taskRepo.update(task.id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist revision notes', { error: String(err) }));
     }
 
     // Await comment persistence so runTask can read it when building context
@@ -2463,8 +2508,10 @@ export class TaskService {
     task.notes.push(`[${formatLocalTimestamp(new Date())}] Fresh retry requested (round ${task.executionRound}) — starting without previous execution context`);
 
     if (this.taskRepo) {
-      (this.taskRepo as any).updateExecutionRound?.(task.id, task.executionRound)
-        ?.catch?.((err: Error) => log.warn('Failed to persist execution round', { taskId: task.id, error: String(err) }));
+      (this.taskRepo as any).clearForRerun?.(task.id, task.executionRound)
+        ?.catch?.((err: Error) => log.warn('Failed to persist fresh retry reset', { taskId: task.id, error: String(err) }));
+      this.taskRepo.update(task.id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist retry notes', { error: String(err) }));
     }
 
     // Transition via updateTaskStatus (skip auto-start; we'll start runTaskFresh instead)
@@ -2668,8 +2715,8 @@ export class TaskService {
     task.completedAt = undefined;
 
     if (this.taskRepo) {
-      (this.taskRepo as any).updateExecutionRound?.(task.id, task.executionRound)
-        ?.catch?.((err: Error) => log.warn('Failed to persist execution round', { taskId: task.id, error: String(err) }));
+      (this.taskRepo as any).clearForRerun?.(task.id, task.executionRound)
+        ?.catch?.((err: Error) => log.warn('Failed to persist rerun reset', { taskId: task.id, error: String(err) }));
     }
 
     // Transition to in_progress — auto-start is handled by updateTaskStatus

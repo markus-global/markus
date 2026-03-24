@@ -283,6 +283,8 @@ CREATE TABLE IF NOT EXISTS deliverables (
   requirement_id TEXT,
   diff_stats TEXT,
   test_results TEXT,
+  artifact_type TEXT,
+  artifact_data TEXT,
   access_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -452,6 +454,8 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
+    { table: 'deliverables', column: 'artifact_type', sql: "ALTER TABLE deliverables ADD COLUMN artifact_type TEXT" },
+    { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -755,7 +759,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -795,11 +799,31 @@ export class SqliteTaskRepo {
       sets.push('schedule_config = ?');
       vals.push(data.scheduleConfig ? toJson(data.scheduleConfig) : null);
     }
+    if (data.reviewerAgentId !== undefined) {
+      sets.push('reviewer_agent_id = ?');
+      vals.push(data.reviewerAgentId);
+    }
+    if (data.updatedBy !== undefined) {
+      sets.push('updated_by = ?');
+      vals.push(data.updatedBy);
+    }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     vals.push(now());
     vals.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  async updateExecutionRound(id: string, round: number) {
+    this.db
+      .prepare('UPDATE tasks SET execution_round = ?, updated_at = ? WHERE id = ?')
+      .run(round, now(), id);
+  }
+
+  async clearForRerun(id: string, executionRound: number) {
+    this.db
+      .prepare('UPDATE tasks SET execution_round = ?, result = NULL, started_at = NULL, completed_at = NULL, updated_at = ? WHERE id = ?')
+      .run(executionRound, now(), id);
   }
 
   async setResult(id: string, result: unknown) {
@@ -2591,13 +2615,14 @@ export class SqliteDeliverableRepo {
     tags?: string[]; status?: string; taskId?: string; agentId?: string;
     projectId?: string; requirementId?: string;
     diffStats?: Record<string, number>; testResults?: Record<string, number>;
+    artifactType?: string; artifactData?: Record<string, unknown>;
   }) {
     const n = now();
     this.db.prepare(`
       INSERT INTO deliverables (id, type, title, summary, reference, tags, status,
         task_id, agent_id, project_id, requirement_id, diff_stats, test_results,
-        access_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        artifact_type, artifact_data, access_count, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
       data.id, data.type, data.title, data.summary, data.reference ?? '',
       toJson(data.tags ?? []), data.status ?? 'active',
@@ -2605,6 +2630,8 @@ export class SqliteDeliverableRepo {
       data.requirementId ?? null,
       data.diffStats ? toJson(data.diffStats) : null,
       data.testResults ? toJson(data.testResults) : null,
+      data.artifactType ?? null,
+      data.artifactData ? toJson(data.artifactData) : null,
       n, n,
     );
     return this.findById(data.id);
@@ -2638,6 +2665,9 @@ export class SqliteDeliverableRepo {
     if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status); }
     if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
     if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference); }
+    if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type); }
+    if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType); }
+    if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
     vals.push(id);
     this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
     return this.findById(id);
@@ -2680,6 +2710,8 @@ export class SqliteDeliverableRepo {
       requirementId: r['requirement_id'] as string | null,
       diffStats: fromJson<Record<string, number>>(r['diff_stats'] as string),
       testResults: fromJson<Record<string, number>>(r['test_results'] as string),
+      artifactType: r['artifact_type'] as string | null,
+      artifactData: r['artifact_data'] ? fromJson<Record<string, unknown>>(r['artifact_data'] as string) : null,
       accessCount: (r['access_count'] as number) ?? 0,
       createdAt: r['created_at'] ? new Date(r['created_at'] as string) : new Date(),
       updatedAt: r['updated_at'] ? new Date(r['updated_at'] as string) : new Date(),

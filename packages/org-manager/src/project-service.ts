@@ -85,6 +85,8 @@ export class ProjectService {
               goal: r.goal ?? undefined,
               startDate: r.startDate ?? undefined,
               endDate: r.endDate ?? undefined,
+              metrics: r.metrics ?? undefined,
+              reviewReport: r.reviewReport ?? undefined,
               createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(r.createdAt).toISOString(),
               updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : new Date(r.updatedAt).toISOString(),
             };

@@ -77,7 +77,11 @@ export class ScheduledTaskRunner {
 
     await this.taskService.advanceScheduleConfig(task.id);
 
-    if (['completed', 'cancelled', 'failed'].includes(task.status)) {
+    const resettableStatuses = ['completed', 'cancelled', 'failed'];
+    if (resettableStatuses.includes(task.status)) {
+      await this.taskService.resetTaskForRerun(task.id);
+    } else if (!['in_progress', 'review', 'blocked', 'pending_approval'].includes(task.status)) {
+      log.warn('Scheduled task has unexpected status, resetting for rerun', { taskId: task.id, status: task.status });
       await this.taskService.resetTaskForRerun(task.id);
     }
 

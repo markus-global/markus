@@ -213,14 +213,16 @@ export class RequirementService {
     }
 
     if (this.requirementRepo) {
-      this.requirementRepo
-        .updateStatus(id, newStatus)
-        .catch((e: unknown) =>
-          log.error('Failed to persist requirement status update', {
-            id,
-            error: String(e),
-          })
-        );
+      const persistErr = (e: unknown) =>
+        log.error('Failed to persist requirement status update', { id, error: String(e) });
+
+      if (newStatus === 'approved' && oldStatus !== 'approved') {
+        this.requirementRepo.approve(id, req.approvedBy ?? 'unknown').catch(persistErr);
+      } else if (newStatus === 'rejected') {
+        this.requirementRepo.reject(id, req.rejectedReason ?? '').catch(persistErr);
+      } else {
+        this.requirementRepo.updateStatus(id, newStatus).catch(persistErr);
+      }
     }
 
     this.broadcast('requirement:updated', req);

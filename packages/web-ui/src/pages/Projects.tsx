@@ -2935,6 +2935,9 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           onApprove={id => { handleApproveReq(id); setSelectedReq(null); }}
           onReject={id => { setRejectReqId(id); setSelectedReq(null); }}
           onCancel={id => { handleDeleteReq(id); setSelectedReq(null); }}
+          onStatusChange={async (id, status) => {
+            try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+          }}
         />
       )}
     </div>
@@ -2944,7 +2947,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailModal({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -2955,11 +2958,13 @@ function RequirementDetailModal({
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
   onCancel: (id: string) => void;
+  onStatusChange?: (id: string, status: string) => void;
 }) {
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-gray-400' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
   const canCancel = req.status === 'draft' || req.status === 'approved';
+  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -3051,21 +3056,34 @@ function RequirementDetailModal({
         </div>
 
         {/* Actions */}
-        {(needsReview || canCancel) && (
-          <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
-            {needsReview && (
-              <>
-                <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg font-medium transition-colors">Approve</button>
-                <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-sm rounded-lg font-medium transition-colors">Reject</button>
-              </>
-            )}
-            {canCancel && !needsReview && (
-              <button onClick={() => onCancel(req.id)} className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors">Cancel Requirement</button>
-            )}
-            <div className="flex-1" />
-            <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Close</button>
-          </div>
-        )}
+        <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
+          {needsReview && (
+            <>
+              <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded-lg font-medium transition-colors">Approve</button>
+              <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-400 text-sm rounded-lg font-medium transition-colors">Reject</button>
+            </>
+          )}
+          {canCancel && !needsReview && (
+            <button onClick={() => onCancel(req.id)} className="px-4 py-2 text-gray-500 hover:text-red-400 text-sm transition-colors">Cancel Requirement</button>
+          )}
+          {!needsReview && onStatusChange && (
+            <select
+              value={req.status}
+              onChange={e => { if (e.target.value !== req.status) onStatusChange(req.id, e.target.value); }}
+              className="px-2 py-1.5 text-xs bg-surface-elevated border border-border-default rounded-lg text-gray-300 cursor-pointer hover:border-gray-500 transition-colors"
+            >
+              {ALL_REQ_STATUSES.map(s => {
+                const b = REQ_STATUS_BADGE[s];
+                return <option key={s} value={s}>{b?.label ?? s}</option>;
+              })}
+            </select>
+          )}
+          <div className="flex-1" />
+          {isTerminal && onStatusChange && (
+            <button onClick={() => onStatusChange(req.id, 'approved')} className="px-3 py-1.5 text-xs bg-surface-overlay hover:bg-gray-600 rounded-lg text-gray-200">Reopen</button>
+          )}
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-gray-300">Close</button>
+        </div>
       </div>
     </div>
   );

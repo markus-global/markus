@@ -80,20 +80,37 @@ export class TaskRepo {
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
+  async assign(id: string, agentId: string) {
+    await this.db.update(tasks).set({ assignedAgentId: agentId, updatedAt: new Date() }).where(eq(tasks.id, id));
+  }
+
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null }
+    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
     if (data.description !== undefined) updates['description'] = data.description;
     if (data.priority !== undefined) updates['priority'] = data.priority;
     if (data.notes !== undefined) updates['notes'] = data.notes;
+    if (data.blockedBy !== undefined) updates['blockedBy'] = data.blockedBy;
     if (data.projectId !== undefined) updates['projectId'] = data.projectId;
     if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
     if (data.requirementId !== undefined) updates['requirementId'] = data.requirementId;
     if (data.scheduleConfig !== undefined) updates['scheduleConfig'] = data.scheduleConfig;
+    if (data.reviewerAgentId !== undefined) updates['reviewerAgentId'] = data.reviewerAgentId;
+    if (data.updatedBy !== undefined) updates['updatedBy'] = data.updatedBy;
     await this.db.update(tasks).set(updates).where(eq(tasks.id, id));
+  }
+
+  async clearForRerun(id: string, executionRound: number) {
+    await this.db.update(tasks).set({
+      executionRound,
+      result: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: new Date(),
+    }).where(eq(tasks.id, id));
   }
 
   async setResult(id: string, result: unknown) {
