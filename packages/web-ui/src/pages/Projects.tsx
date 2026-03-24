@@ -2564,6 +2564,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             tasks={filterTasks(Object.values(board).flat(), true)}
             requirements={filteredReqs}
             agents={agents}
+            showArchived={showArchived}
+            onShowArchivedChange={setShowArchived}
             onTaskClick={(task) => setSelectedTask(task)}
             onReqClick={(req) => setSelectedReq(req)}
             onDependencyChange={refreshBoard}

@@ -233,6 +233,8 @@ interface TaskDAGProps {
   tasks: TaskInfo[];
   requirements?: RequirementInfo[];
   agents: AgentInfo[];
+  showArchived?: boolean;
+  onShowArchivedChange?: (show: boolean) => void;
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
   onDependencyChange?: () => void;
@@ -253,11 +255,21 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const isArchivedTask = (t: TaskInfo) =>
   t.status === 'completed' && t.updatedAt && (Date.now() - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
-export function TaskDAG({ tasks, requirements = [], agents, onTaskClick, onReqClick, onDependencyChange }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange }: TaskDAGProps) {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
-  const [showArchived, setShowArchived] = useState(false);
+  const [localShowArchived, setLocalShowArchived] = useState(showArchivedProp ?? false);
+  const showArchived = showArchivedProp ?? localShowArchived;
+  const setShowArchived = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    const next = typeof v === 'function' ? v(showArchived) : v;
+    setLocalShowArchived(next);
+    onShowArchivedChange?.(next);
+  }, [showArchived, onShowArchivedChange]);
+
+  useEffect(() => {
+    if (showArchivedProp !== undefined) setLocalShowArchived(showArchivedProp);
+  }, [showArchivedProp]);
 
   const archivedCount = useMemo(() => tasks.filter(t => isArchivedTask(t)).length, [tasks]);
 
