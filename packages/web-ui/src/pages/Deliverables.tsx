@@ -57,6 +57,7 @@ export function DeliverablesPage() {
 
   // File preview
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
@@ -192,24 +193,27 @@ export function DeliverablesPage() {
 
   const loadPreview = async (d: DeliverableInfo) => {
     if (!d.reference) return;
-    const ext = d.reference.split('.').pop()?.toLowerCase() ?? '';
-    const previewable = ['md', 'txt', 'json', 'yaml', 'yml', 'toml', 'xml', 'csv', 'log', 'html', 'css', 'js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'java', 'sh', 'bash', 'zsh'].includes(ext);
-    if ((d.type === 'file' && previewable) || d.type === 'document' || d.type === 'text') {
-      if (d.type === 'file') {
-        setPreviewLoading(true);
-        try {
-          const { content } = await api.files.preview(d.reference);
-          setPreviewContent(content);
-        } catch { setPreviewContent(null); }
-        setPreviewLoading(false);
+    if (d.type === 'directory') { setShowCopyPath(true); return; }
+    if (d.type === 'url') return;
+
+    setPreviewLoading(true);
+    try {
+      const resp = await api.files.preview(d.reference);
+      if (resp.type === 'image' && resp.mimeType) {
+        setPreviewImage({ src: `data:${resp.mimeType};base64,${resp.content}`, name: resp.name });
+      } else {
+        setPreviewContent(resp.content);
       }
-    } else if (d.type === 'file' || d.type === 'directory') {
-      setShowCopyPath(true);
+    } catch {
+      setPreviewContent(null);
+      if (d.type === 'file') setShowCopyPath(true);
     }
+    setPreviewLoading(false);
   };
 
   useEffect(() => {
     setPreviewContent(null);
+    setPreviewImage(null);
     setShowCopyPath(false);
     setCopyMenuOpen(false);
     if (selected) loadPreview(selected);
@@ -545,6 +549,11 @@ export function DeliverablesPage() {
                   <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline text-sm break-all">{selected.reference}</a>
                 ) : previewLoading ? (
                   <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
+                ) : previewImage ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
+                    <span className="text-xs text-gray-500">{previewImage.name}</span>
+                  </div>
                 ) : previewContent ? (
                   renderMarkdownPreview(previewContent)
                 ) : showCopyPath ? (
