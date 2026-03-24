@@ -1356,6 +1356,18 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   const [streamingText, setStreamingText] = useState('');
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  const logAtBottomRef = useRef(true);
+
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      logAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
 
   useEffect(() => {
     setLoading(true); setStreamingText('');
@@ -1379,7 +1391,10 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     return () => { unsubLog(); unsubDelta(); };
   }, [taskId, isLive]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs, streamingText]);
+  useEffect(() => {
+    if (!logAtBottomRef.current) return;
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs, streamingText]);
 
   if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading...</div>;
   if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
@@ -1387,7 +1402,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   const entries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
 
   return (
-    <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
+    <div ref={logScrollRef} className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
       {entries.map((entry, i) => <ExecEntryRow key={`e-${i}`} entry={entry} showTime />)}
       {streamingText && <StreamingText content={streamingText} />}
       <div ref={endRef} />

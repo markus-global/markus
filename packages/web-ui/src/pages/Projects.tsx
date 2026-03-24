@@ -399,6 +399,23 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const projAtBottomRef = useRef(true);
+
+  useEffect(() => {
+    const sentinel = endRef.current;
+    if (!sentinel) return;
+    let scrollParent: HTMLElement | null = sentinel.parentElement;
+    while (scrollParent && scrollParent.scrollHeight <= scrollParent.clientHeight) {
+      scrollParent = scrollParent.parentElement;
+    }
+    if (!scrollParent) return;
+    const el = scrollParent;
+    const handleScroll = () => {
+      projAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 
@@ -492,9 +509,8 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     }
   }, [rounds.length]);
 
-  // Scroll to keep live content visible (newest round is at bottom)
   useEffect(() => {
-    if (isVisible && isExecuting) {
+    if (isVisible && isExecuting && projAtBottomRef.current) {
       endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   }, [logs, streamingText, isVisible, isExecuting]);

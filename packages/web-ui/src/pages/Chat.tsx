@@ -518,10 +518,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     : undefined;
 
   const messagesEnd = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(text?: string) => Promise<void>>(undefined);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
+  /** Tracks whether user is at/near the bottom of the chat scroll container */
+  const userAtBottomRef = useRef(true);
 
   // Close history panel on click outside
   useEffect(() => {
@@ -627,14 +630,26 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Snap to bottom immediately after DOM updates.
-  // Use `instant` so there's no scroll animation — the bottom is simply the initial position.
-  // When `loadMore` prepends older messages we set skipScrollRef so the view doesn't jump.
+  // Track whether the user is at the bottom of the chat scroll container.
+  // When the user scrolls up manually, we stop auto-scrolling until they scroll back down.
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const threshold = 80;
+      userAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Snap to bottom after DOM updates, but only if user hasn't scrolled up.
   useLayoutEffect(() => {
     if (skipScrollRef.current) {
       skipScrollRef.current = false;
       return;
     }
+    if (!userAtBottomRef.current) return;
     messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
   }, [messages, activities]);
 
@@ -899,6 +914,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
+    userAtBottomRef.current = true;
 
     // If agent is currently streaming, interrupt it first then proceed
     if (sending) {
@@ -1672,7 +1688,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         )}
 
         {/* Chat Tab: Messages */}
-        <div className={`flex-1 overflow-y-auto p-5 space-y-3 ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto p-5 space-y-3 ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {hasMore && (
             <div className="flex justify-center py-2">
               <button
@@ -2044,6 +2060,19 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
   const [activityLogs, setActivityLogs] = useState<AgentActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
+  const modalScrollRef = useRef<HTMLDivElement>(null);
+  const modalAtBottomRef = useRef(true);
+
+  useEffect(() => {
+    const el = modalScrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const threshold = 80;
+      modalAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Fetch logs on mount
   useEffect(() => {
@@ -2097,8 +2126,8 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
     return unsub;
   }, [agent.id, activity, currentTask]);
 
-  // Auto-scroll
   useEffect(() => {
+    if (!modalAtBottomRef.current) return;
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [taskLogs, activityLogs]);
 
@@ -2150,7 +2179,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
         </div>
 
         {/* Logs — unified rendering for both task logs and activity logs */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
+        <div ref={modalScrollRef} className="flex-1 overflow-y-auto p-4 space-y-1.5">
           {loading ? (
             <div className="text-center py-8 text-xs text-gray-600">Loading logs…</div>
           ) : currentTask && taskLogs.length > 0 ? (

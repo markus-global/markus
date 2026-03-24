@@ -368,7 +368,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
                 {argEntries.map(({ key, value }) => (
                   <div key={key}>
                     <div className="text-[11px] text-brand-400 font-medium mb-0.5">{key}</div>
-                    <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{value}</pre>
+                    <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all font-mono">{value}</pre>
                   </div>
                 ))}
               </div>
@@ -377,7 +377,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           {info.result && (
             <div>
               <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-60 whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
+              <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {info.error && (
