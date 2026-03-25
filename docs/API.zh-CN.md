@@ -1,6 +1,6 @@
 # Markus API 参考文档
 
-基础 URL：`http://localhost:3001`
+基础 URL：`http://localhost:8056`
 
 所有请求均需认证，支持以下方式之一：
 - **JWT Cookie**：`markus_token`（登录后自动设置）
@@ -154,7 +154,7 @@
 
 ## WebSocket
 
-**连接**：`ws://localhost:3001`
+**连接**：`ws://localhost:8056`
 
 | 事件 | 说明 |
 |-------|-------------|

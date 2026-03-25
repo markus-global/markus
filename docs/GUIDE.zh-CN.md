@@ -12,6 +12,7 @@
 - [Web UI 使用](#web-ui-使用)
 - [REST API 参考](#rest-api-参考)
 - [角色模板](#角色模板)
+- [远程访问](#远程访问)
 - [常见问题](#常见问题)
 
 ---
@@ -59,7 +60,7 @@ cp markus.json.example ~/.markus/markus.json
 node packages/cli/dist/index.js start
 ```
 
-后端 API 启动后会显示 `API server listening on port 3001`。
+后端 API 启动后会显示 `API server listening on port 8056`。
 
 ### 5. 启动前端开发服务器
 
@@ -70,8 +71,8 @@ pnpm --filter @markus/web-ui dev
 ```
 
 默认端口：
-- Web UI：`http://localhost:3000`（Vite 开发服务器，自动代理 `/api` 到后端）
-- API Server：`http://localhost:3001`
+- Web UI：`http://localhost:8057`（Vite 开发服务器，自动代理 `/api` 到后端）
+- API Server：`http://localhost:8056`
 
 > **注意**：前端 Vite 开发服务器是独立进程，必须单独启动。`node packages/cli/dist/index.js start` 仅启动后端 API 服务，不包含前端。
 
@@ -98,8 +99,8 @@ docker compose up -d
 | `DATABASE_URL` | 可选 | SQLite 路径覆盖（默认 `~/.markus/data.db`，格式：`sqlite:/path/to/db`） |
 | `JWT_SECRET` | 建议生产 | JWT 签名密钥 |
 | `AUTH_ENABLED` | 可选 | 是否启用登录（默认 true） |
-| `API_PORT` | 可选 | API 端口（默认 3001） |
-| `WEB_PORT` | 可选 | Web UI 端口（默认 3000） |
+| `API_PORT` | 可选 | API 端口（默认 8056） |
+| `WEB_PORT` | 可选 | Web UI 端口（默认 8057） |
 | `LLM_DEFAULT_PROVIDER` | 可选 | 默认 LLM Provider（openai/anthropic/deepseek） |
 | `LLM_DEFAULT_MODEL` | 可选 | 默认模型（如 gpt-4o-mini） |
 
@@ -324,6 +325,12 @@ templates/roles/my-role/
 ```
 
 创建后可通过 API 或 Web UI 的「Hire Agent」按钮雇佣该角色的 Agent。
+
+---
+
+## 远程访问
+
+如需从外网访问 Markus（远程团队协作、外部 Agent 接入、移动端访问），请参阅 **[远程访问指南](./REMOTE-ACCESS.zh-CN.md)**，涵盖 Cloudflare Tunnel、Tailscale、FRP、ngrok 及安全最佳实践。
 
 ---
 

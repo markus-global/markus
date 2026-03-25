@@ -94,8 +94,8 @@ pnpm dev
 ```
 
 **Open your browser:**
-- Web UI: [http://localhost:3000](http://localhost:3000)
-- API: [http://localhost:3001](http://localhost:3001)
+- Web UI: [http://localhost:8057](http://localhost:8057)
+- API: [http://localhost:8056](http://localhost:8056)
 
 **Default login:** `admin@markus.local` / `markus123`
 

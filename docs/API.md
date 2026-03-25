@@ -1,6 +1,6 @@
 # Markus API Reference
 
-Base URL: `http://localhost:3001`
+Base URL: `http://localhost:8056`
 
 All requests require authentication via one of:
 - **JWT Cookie**: `markus_token` (set automatically on login)
@@ -154,7 +154,7 @@ All requests require authentication via one of:
 
 ## WebSocket
 
-**Connection**: `ws://localhost:3001`
+**Connection**: `ws://localhost:8056`
 
 | Event | Description |
 |-------|-------------|

@@ -64,9 +64,9 @@ cp markus.json.example ~/.markus/markus.json
 pnpm dev
 ```
 
-在浏览器中打开 **http://localhost:3000**。使用 `admin@markus.local` / `markus123` 登录（首次登录会要求修改密码）。
+在浏览器中打开 **http://localhost:8057**。使用 `admin@markus.local` / `markus123` 登录（首次登录会要求修改密码）。
 
-API 服务运行在 `http://localhost:3001`。
+API 服务运行在 `http://localhost:8056`。
 
 <details>
 <summary>Docker Compose 部署</summary>

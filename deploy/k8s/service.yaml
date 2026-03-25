@@ -8,11 +8,11 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: 3001
-      targetPort: 3001
+    - port: 8056
+      targetPort: 8056
       name: api
-    - port: 3002
-      targetPort: 3002
+    - port: 8058
+      targetPort: 8058
       name: comm
     - port: 9000
       targetPort: 9000

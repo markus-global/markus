@@ -52,9 +52,9 @@ const DEFAULT_CONFIG: MarkusConfig = {
     defaultModel: 'claude-opus-4-6',
     providers: {},
   },
-  server: { apiPort: 3001, webPort: 3000 },
+  server: { apiPort: 8056, webPort: 8057 },
   security: { adminPassword: 'markus123', gatewaySecret: 'markus-gateway-default-secret-change-me' },
-  hub: { url: 'http://localhost:3003' },
+  hub: { url: 'http://localhost:8059' },
 };
 
 export function getDefaultConfigPath(): string {

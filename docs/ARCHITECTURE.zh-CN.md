@@ -386,7 +386,7 @@ audit_logs (id, org_id, agent_id, task_id, project_id, event_type,
 
 ## 七、WebSocket 实时推送
 
-连接地址：`ws://localhost:3001`
+连接地址：`ws://localhost:8056`
 
 | 事件类型 | 触发时机 |
 |---------|---------|
@@ -447,7 +447,7 @@ cp markus.json.example ~/.markus/markus.json   # 填入 API key
 node packages/cli/dist/index.js start
 ```
 
-访问：`http://localhost:3000`（Web UI）/ `http://localhost:3001`（API）
+访问：`http://localhost:8057`（Web UI）/ `http://localhost:8056`（API）
 
 ### Docker Compose
 

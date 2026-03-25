@@ -8,8 +8,8 @@ services:
     container_name: markus-server
     restart: unless-stopped
     ports:
-      - "${API_PORT:-3001}:3001"
-      - "${COMM_PORT:-3002}:3002"
+      - "${API_PORT:-8056}:8056"
+      - "${COMM_PORT:-8058}:8058"
       - "${FEISHU_WEBHOOK_PORT:-9000}:9000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

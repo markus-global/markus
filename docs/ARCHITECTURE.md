@@ -381,7 +381,7 @@ audit_logs (id, org_id, agent_id, task_id, project_id, event_type,
 
 ## 7. WebSocket Events
 
-Connection: `ws://localhost:3001`
+Connection: `ws://localhost:8056`
 
 | Event | Trigger |
 |-------|---------|
@@ -442,7 +442,7 @@ cp markus.json.example ~/.markus/markus.json   # Add API keys
 node packages/cli/dist/index.js start
 ```
 
-Visit: `http://localhost:3000` (Web UI) / `http://localhost:3001` (API)
+Visit: `http://localhost:8057` (Web UI) / `http://localhost:8056` (API)
 
 ### Docker Compose
 

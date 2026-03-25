@@ -16,11 +16,11 @@ export class WebUIAdapter implements CommAdapter {
   private handlers: IncomingMessageHandler[] = [];
   private server?: ReturnType<typeof createServer>;
   private connected = false;
-  private port = 3002;
+  private port = 8058;
   private outbox: Array<{ channelId: string; content: string; timestamp: string }> = [];
 
   async connect(config: CommAdapterConfig): Promise<void> {
-    this.port = (config['port'] as number) ?? 3002;
+    this.port = (config['port'] as number) ?? 8058;
 
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.server.listen(this.port, () => {

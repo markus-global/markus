@@ -12,6 +12,7 @@
 - [Web UI Usage](#web-ui-usage)
 - [REST API Reference](#rest-api-reference)
 - [Custom Role Templates](#custom-role-templates)
+- [Remote Access](#remote-access)
 - [FAQ](#faq)
 
 ---
@@ -59,7 +60,7 @@ In a **first terminal**, run:
 node packages/cli/dist/index.js start
 ```
 
-When the backend API is ready, it will display `API server listening on port 3001`.
+When the backend API is ready, it will display `API server listening on port 8056`.
 
 ### 5. Start the Frontend Dev Server
 
@@ -70,8 +71,8 @@ pnpm --filter @markus/web-ui dev
 ```
 
 Default ports:
-- Web UI: `http://localhost:3000` (Vite dev server; proxies `/api` to the backend)
-- API Server: `http://localhost:3001`
+- Web UI: `http://localhost:8057` (Vite dev server; proxies `/api` to the backend)
+- API Server: `http://localhost:8056`
 
 > **Note:** The frontend Vite dev server is a separate process and must be started independently. `node packages/cli/dist/index.js start` runs only the backend API, not the frontend.
 
@@ -98,8 +99,8 @@ This starts the Markus services automatically.
 | `DATABASE_URL` | Optional | SQLite path override (default: `~/.markus/data.db`, format: `sqlite:/path/to/db`) |
 | `JWT_SECRET` | Recommended for production | JWT signing secret |
 | `AUTH_ENABLED` | Optional | Enable login (default: true) |
-| `API_PORT` | Optional | API port (default: 3001) |
-| `WEB_PORT` | Optional | Web UI port (default: 3000) |
+| `API_PORT` | Optional | API port (default: 8056) |
+| `WEB_PORT` | Optional | Web UI port (default: 8057) |
 | `LLM_DEFAULT_PROVIDER` | Optional | Default LLM provider (openai/anthropic/deepseek) |
 | `LLM_DEFAULT_MODEL` | Optional | Default model (e.g. gpt-4o-mini) |
 
@@ -324,6 +325,12 @@ You are a legal assistant focused on corporate compliance and contract review fo
 ```
 
 After creating the role, you can hire Agents with that role via the API or the Web UI "Hire Agent" button.
+
+---
+
+## Remote Access
+
+To access Markus from the internet (remote teams, external agents, mobile), see the dedicated **[Remote Access Guide](./REMOTE-ACCESS.md)** which covers Cloudflare Tunnel, Tailscale, FRP, ngrok, and security best practices.
 
 ---
 

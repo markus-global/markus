@@ -40,6 +40,6 @@ COPY --from=build /app/packages/web-ui ./packages/web-ui
 COPY --from=build /app/templates ./templates
 
 ENV NODE_ENV=production
-EXPOSE 3001 3002 9000
+EXPOSE 8056 8058 9000
 
 CMD ["node", "packages/cli/dist/index.js", "start"]

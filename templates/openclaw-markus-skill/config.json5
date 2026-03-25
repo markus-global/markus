@@ -39,6 +39,6 @@
   },
 
   // Environment variables to configure
-  // MARKUS_URL:   Base URL of your Markus instance (e.g., http://localhost:3001)
+  // MARKUS_URL:   Base URL of your Markus instance (e.g., http://localhost:8056)
   // MARKUS_TOKEN: Bearer token from /api/gateway/auth
 }

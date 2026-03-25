@@ -188,7 +188,7 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
             <div className="text-center py-16">
               <div className="text-fg-tertiary text-3xl mb-3">🏪</div>
               <p className="text-sm text-fg-tertiary">No agents found on Markus Hub</p>
-              <p className="text-xs text-fg-tertiary mt-1">Hub may be offline or empty. Start the hub server at port 3003.</p>
+              <p className="text-xs text-fg-tertiary mt-1">Hub may be offline or empty. Start the hub server at port 8059.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

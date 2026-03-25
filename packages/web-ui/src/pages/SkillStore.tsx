@@ -859,7 +859,7 @@ export function SkillStore() {
             <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3">🏪</div>
               <div>No skills found on Markus Hub</div>
-              <div className="text-xs mt-1">Hub may be offline or empty. Run the hub server at port 3003.</div>
+              <div className="text-xs mt-1">Hub may be offline or empty. Run the hub server at port 8059.</div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

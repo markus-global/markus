@@ -16,8 +16,8 @@ pnpm build
 pnpm dev
 ```
 
-- API 服务：`http://localhost:3001`
-- Web UI：`http://localhost:3000`
+- API 服务：`http://localhost:8056`
+- Web UI：`http://localhost:8057`
 - 默认管理员：`admin@markus.local` / `markus123`
 
 数据库：默认使用 SQLite（零配置）。可选 PostgreSQL。

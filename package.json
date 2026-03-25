@@ -7,10 +7,10 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm build && concurrently -n api,ui -c blue,green \"node packages/cli/dist/index.js start\" \"wait-on tcp:3001 && pnpm --filter @markus/web-ui dev\"",
+    "dev": "pnpm build && concurrently -n api,ui -c blue,green \"node packages/cli/dist/index.js start\" \"node scripts/wait-for-api.mjs && pnpm --filter @markus/web-ui dev\"",
     "dev:api": "node packages/cli/dist/index.js start",
     "dev:ui": "pnpm --filter @markus/web-ui dev",
-    "dev:watch": "pnpm build && concurrently -n tsc,api,ui -c gray,blue,green \"pnpm -r --parallel --filter=!@markus/web-ui dev\" \"node packages/cli/dist/index.js start\" \"wait-on tcp:3001 && pnpm --filter @markus/web-ui dev\"",
+    "dev:watch": "pnpm build && concurrently -n tsc,api,ui -c gray,blue,green \"pnpm -r --parallel --filter=!@markus/web-ui dev\" \"node packages/cli/dist/index.js start\" \"node scripts/wait-for-api.mjs && pnpm --filter @markus/web-ui dev\"",
     "lint": "eslint packages/*/src/",
     "test": "vitest run",
     "test:watch": "vitest",

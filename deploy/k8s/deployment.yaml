@@ -22,9 +22,9 @@ spec:
         - name: markus
           image: markus:latest
           ports:
-            - containerPort: 3001
+            - containerPort: 8056
               name: api
-            - containerPort: 3002
+            - containerPort: 8058
               name: comm
             - containerPort: 9000
               name: feishu-webhook

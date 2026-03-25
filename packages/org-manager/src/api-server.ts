@@ -202,7 +202,7 @@ export class APIServer {
   constructor(
     private orgService: OrganizationService,
     private taskService: TaskService,
-    private port: number = 3001
+    private port: number = 8056
   ) {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
@@ -738,7 +738,7 @@ export class APIServer {
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

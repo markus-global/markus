@@ -81,7 +81,7 @@ Commands:
 
 Options:
   --config, -c    Path to markus.json config file
-  --port, -p      API server port (default: 3001)
+  --port, -p      API server port (default: 8056)
   --name, -n      Name for agent:create or skill:init
   --dir, -d       Directory for skill:init output
   --template, -t  Team template name for team:deploy
@@ -700,7 +700,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     }
   });
 
-  await messageRouter.connectAll([{ platform: 'webui', port: 3002 }]);
+  const commPort = apiPort + 2;
+  await messageRouter.connectAll([{ platform: 'webui', port: commPort }]);
 
   // Check for Feishu config
   const feishuAppId = config.integrations?.feishu?.appId ?? process.env['FEISHU_APP_ID'];
@@ -718,12 +719,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     console.log('  Feishu integration enabled');
   }
 
+  const webPort = config.server.webPort;
   console.log(`
   Markus is running!
 
   API Server:  http://localhost:${apiPort}
-  Web UI:      http://localhost:3000  (run: pnpm --filter @markus/web-ui dev)
-  WebUI Comm:  http://localhost:3002
+  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)
+  WebUI Comm:  http://localhost:${commPort}
 
   Press Ctrl+C to stop.
   `);
@@ -1514,7 +1516,7 @@ async function quickInit() {
   }
 
   // --- Step 4: API port ---
-  const port = await ask('\n  API Port', '3001');
+  const port = await ask('\n  API Port', '8056');
   rl.close();
 
   // --- Step 5: Save config ---
@@ -1524,7 +1526,7 @@ async function quickInit() {
       defaultModel: MODEL_MAP[defaultProvider] ?? MODEL_MAP.anthropic,
       providers,
     },
-    server: { apiPort: parseInt(port), webPort: parseInt(port) - 1 },
+    server: { apiPort: parseInt(port), webPort: parseInt(port) + 1 },
   };
 
   try {
