@@ -669,7 +669,7 @@ export class Agent {
   private estimateMessagesTokens(messages: LLMMessage[]): number {
     const counter = (() => {
       try {
-        const { getDefaultTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
+        const { getDefaultTokenCounter } = require('./token-counter.js');
         return getDefaultTokenCounter();
       } catch { return null; }
     })();
@@ -685,7 +685,7 @@ export class Agent {
   private calibrateTokenCounter(actualInputTokens: number): void {
     if (this.lastEstimatedInputTokens > 0 && actualInputTokens > 0) {
       try {
-        const { getDefaultTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
+        const { getDefaultTokenCounter } = require('./token-counter.js');
         const counter = getDefaultTokenCounter();
         if ('calibrate' in counter) {
           (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);

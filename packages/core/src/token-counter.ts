@@ -17,7 +17,7 @@ function cjkRatio(text: string): number {
 
 type TiktokenEncoding = { encode: (text: string) => number[] | Uint32Array; free?: () => void };
 
-let tiktokenCache: Map<string, TiktokenEncoding> = new Map();
+const tiktokenCache: Map<string, TiktokenEncoding> = new Map();
 
 async function loadTiktokenEncoding(encoding: string): Promise<TiktokenEncoding | null> {
   if (tiktokenCache.has(encoding)) return tiktokenCache.get(encoding)!;
