@@ -149,7 +149,7 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
               <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
               <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? 'worker'}</div>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-amber-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
@@ -179,7 +179,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-amber-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
 
   return (
@@ -1952,7 +1952,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-amber-400 animate-pulse' : 'bg-green-400';
+  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
   const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
 
   const activityLabel = activity
@@ -2014,7 +2014,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                 activity?.type === 'heartbeat' ? 'bg-blue-400 animate-pulse'
                 : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
-                : 'bg-amber-400 animate-pulse'
+                : 'bg-blue-400 animate-pulse'
               }`} />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-fg-secondary">{activityLabel}</div>
@@ -2149,7 +2149,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
             <span className={`w-2 h-2 rounded-full shrink-0 ${
               activity?.type === 'heartbeat' ? 'bg-blue-400 animate-pulse'
               : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
-              : 'bg-brand-400 animate-pulse'
+              : 'bg-blue-400 animate-pulse'
             }`} />
             <div className="min-w-0">
               <div className="flex items-center gap-2">

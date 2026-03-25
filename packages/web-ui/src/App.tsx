@@ -141,7 +141,11 @@ export function App() {
   }
 
   if (showOnboarding) {
-    return <Onboarding onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); checkLlmConfig(); }} />;
+    return <Onboarding
+      theme={theme.mode}
+      onThemeChange={theme.setMode}
+      onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); checkLlmConfig(); }}
+    />;
   }
 
   return (

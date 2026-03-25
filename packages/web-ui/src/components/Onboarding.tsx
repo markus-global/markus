@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
+import type { ThemeMode } from '../hooks/useTheme.ts';
 
 interface Props {
   onComplete: () => void;
+  theme: ThemeMode;
+  onThemeChange: (mode: ThemeMode) => void;
 }
 
 interface EnvModelDetected {
@@ -11,7 +14,9 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 interface OpenClawPreview { found: boolean; summary: { configPath: string; models?: { providerCount: number; providers: Array<{ name: string; modelCount: number; baseUrl?: string }> } } }
 
-export function Onboarding({ onComplete }: Props) {
+const LLM_STEP = 2;
+
+export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const [step, setStep] = useState(0);
 
   // LLM setup state
@@ -30,7 +35,6 @@ export function Onboarding({ onComplete }: Props) {
     Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
   });
 
-  // Check if LLM is already configured
   useEffect(() => {
     fetch('/api/settings/llm')
       .then(r => r.ok ? r.json() : null)
@@ -42,9 +46,8 @@ export function Onboarding({ onComplete }: Props) {
       .catch(() => {});
   }, []);
 
-  // Auto-detect env vars when entering the LLM setup step
   useEffect(() => {
-    if (step === 1 && !envDetected.current && !llmConfigured) {
+    if (step === LLM_STEP && !envDetected.current && !llmConfigured) {
       envDetected.current = true;
       void detectEnvModels();
     }
@@ -122,6 +125,12 @@ export function Onboarding({ onComplete }: Props) {
     finally { setOpenclawLoading(false); }
   };
 
+  const themeOptions: Array<{ value: ThemeMode; label: string; icon: string; desc: string }> = [
+    { value: 'system', label: 'System', icon: '💻', desc: 'Follow your OS setting' },
+    { value: 'light', label: 'Light', icon: '☀️', desc: 'Always light background' },
+    { value: 'dark', label: 'Dark', icon: '🌙', desc: 'Always dark background' },
+  ];
+
   const steps = [
     // Step 0: Welcome
     {
@@ -146,7 +155,31 @@ export function Onboarding({ onComplete }: Props) {
         </div>
       ),
     },
-    // Step 1: LLM Setup
+    // Step 1: Appearance
+    {
+      title: 'Choose Your Theme',
+      subtitle: 'You can change this anytime in Settings',
+      content: (
+        <div className="grid grid-cols-3 gap-3">
+          {themeOptions.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => onThemeChange(opt.value)}
+              className={`flex flex-col items-center gap-2 rounded-xl border-2 p-5 transition-all ${
+                theme === opt.value
+                  ? 'border-brand-500 bg-brand-500/10'
+                  : 'border-border-default hover:border-fg-tertiary bg-surface-elevated/30'
+              }`}
+            >
+              <span className="text-2xl">{opt.icon}</span>
+              <span className="text-sm font-medium text-fg-primary">{opt.label}</span>
+              <span className="text-[11px] text-fg-tertiary leading-tight text-center">{opt.desc}</span>
+            </button>
+          ))}
+        </div>
+      ),
+    },
+    // Step 2: LLM Setup
     {
       title: 'Configure LLM',
       subtitle: 'Agents need an LLM to think and act',
@@ -160,7 +193,6 @@ export function Onboarding({ onComplete }: Props) {
         </div>
       ) : (
         <div className="space-y-4">
-          {/* Env var detection */}
           <div className="space-y-2">
             <div className="text-xs text-fg-secondary uppercase tracking-wider">From Environment Variables</div>
             {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">Detecting API keys...</div>}
@@ -192,14 +224,12 @@ export function Onboarding({ onComplete }: Props) {
             )}
           </div>
 
-          {/* Divider */}
           <div className="flex items-center gap-3">
             <div className="flex-1 h-px bg-border-default" />
             <span className="text-xs text-fg-tertiary">or</span>
             <div className="flex-1 h-px bg-border-default" />
           </div>
 
-          {/* OpenClaw */}
           <div className="space-y-2">
             <div className="text-xs text-fg-secondary uppercase tracking-wider">From OpenClaw</div>
             {!openclawPreview ? (
@@ -230,7 +260,7 @@ export function Onboarding({ onComplete }: Props) {
         </div>
       ),
     },
-    // Step 2: Quick tour
+    // Step 3: Done
     {
       title: 'You\'re All Set',
       subtitle: 'Here\'s what you can do',
@@ -240,7 +270,7 @@ export function Onboarding({ onComplete }: Props) {
             ['Chat', 'Talk to agents or use Smart Route to auto-pick the best one'],
             ['Projects', 'Create tasks and track progress on kanban boards'],
             ['Builder', 'Create and customize agents, teams, and prompts'],
-            ['Settings', 'Manage LLM providers, toggle models, import configs'],
+            ['Settings', 'Manage LLM providers, themes, and import configs'],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
               <div className="text-brand-500 mt-0.5 shrink-0">&#x2192;</div>
@@ -264,8 +294,6 @@ export function Onboarding({ onComplete }: Props) {
   };
 
   const current = steps[step]!;
-
-  const canProceed = step !== 1 || llmConfigured;
 
   return (
     <div className="min-h-screen bg-surface-primary flex items-center justify-center p-4">
@@ -293,14 +321,14 @@ export function Onboarding({ onComplete }: Props) {
               </button>
             )}
             <div className="flex items-center gap-3">
-              {step === 1 && !llmConfigured && (
+              {step === LLM_STEP && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
                   Skip for now
                 </button>
               )}
               <button
                 onClick={handleNext}
-                className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${canProceed ? 'bg-brand-600 hover:bg-brand-500' : 'bg-brand-600 hover:bg-brand-500'}`}
+                className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-xl transition-colors"
               >
                 {step === steps.length - 1 ? 'Get Started' : 'Next'}
               </button>

@@ -348,7 +348,7 @@ export function ChatTeamSidebar({
   const renderAgentItem = (a: AgentInfo, teamId?: string) => {
     const selected = chatMode === 'direct' && selectedAgent === a.id;
     const isExt = externalMarkusIds.has(a.id);
-    const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-amber-500 animate-pulse' : a.status === 'error' ? 'bg-red-500' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
+    const statusColor = a.status === 'idle' ? 'bg-green-500' : a.status === 'working' ? 'bg-blue-500 animate-pulse' : a.status === 'error' ? 'bg-red-500' : a.status === 'paused' ? 'bg-amber-500' : 'bg-gray-600';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
