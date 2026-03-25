@@ -493,6 +493,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const oldestMsgId = useRef<string | null>(null);
+  const loadingSessionRef = useRef<string | null>(null);
 
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string }>>([]);
@@ -672,17 +673,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Load session messages from DB → store in buffer + update display
   const loadSessionMessages = useCallback(async (sessionId: string, convKey: string) => {
+    loadingSessionRef.current = sessionId;
     try {
       const result = await api.sessions.getMessages(sessionId, 50);
       const msgs = result.messages.map(dbMsgToChat);
       msgBuffers.current.set(convKey, msgs);
-      if (currentConvKeyRef.current === convKey) {
+      if (currentConvKeyRef.current === convKey && loadingSessionRef.current === sessionId) {
         setMessages(msgs);
         setHasMore(result.hasMore);
         oldestMsgId.current = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
       }
     } catch {
-      if (currentConvKeyRef.current === convKey) { setMessages([]); setHasMore(false); oldestMsgId.current = null; }
+      if (currentConvKeyRef.current === convKey && loadingSessionRef.current === sessionId) { setMessages([]); setHasMore(false); oldestMsgId.current = null; }
     }
   }, []);
 
@@ -1264,35 +1266,33 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       }
 
       // Fallback: if the agent message is empty (SSE connection may have dropped),
-      // poll the latest session messages to recover the persisted reply.
-      // Skip if user aborted — no need to poll.
+      // poll the session messages to recover the persisted reply.
+      // Use the actual session ID from the stream result (or activeSessionId) instead
+      // of blindly fetching the "latest" session which could be a different conversation.
       const currentMsgs = msgBuffers.current.get(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
-      if (agentMsg && !agentMsg.text && chatMode === 'direct' && selectedAgent && !abortCtrl.signal.aborted) {
+      const pollSessionId = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+      if (agentMsg && !agentMsg.text && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
         const pollForReply = async (retries: number, delayMs: number) => {
           for (let i = 0; i < retries; i++) {
             await new Promise(r => setTimeout(r, delayMs));
             try {
-              const sess = await api.sessions.listByAgent(selectedAgent, 1);
-              if (sess.sessions.length > 0) {
-                const latestSession = sess.sessions[0]!;
-                const result = await api.sessions.getMessages(latestSession.id, 2);
-                const assistantMsg = result.messages.find(m => m.role === 'assistant');
-                if (assistantMsg?.content) {
-                  updateConvMsgs(sendKey, prev => {
-                    const u = [...prev];
-                    const idx = u.findIndex(m => m.id === agentMsgId);
-                    if (idx >= 0) {
-                      u[idx] = {
-                        ...u[idx]!,
-                        text: assistantMsg.content,
-                        segments: [{ type: 'text', content: assistantMsg.content }],
-                      };
-                    }
-                    return u;
-                  });
-                  return;
-                }
+              const result = await api.sessions.getMessages(pollSessionId, 2);
+              const assistantMsg = result.messages.find(m => m.role === 'assistant');
+              if (assistantMsg?.content) {
+                updateConvMsgs(sendKey, prev => {
+                  const u = [...prev];
+                  const idx = u.findIndex(m => m.id === agentMsgId);
+                  if (idx >= 0) {
+                    u[idx] = {
+                      ...u[idx]!,
+                      text: assistantMsg.content,
+                      segments: [{ type: 'text', content: assistantMsg.content }],
+                    };
+                  }
+                  return u;
+                });
+                return;
               }
             } catch { /* retry */ }
           }

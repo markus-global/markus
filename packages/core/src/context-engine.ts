@@ -225,6 +225,25 @@ export class ContextEngine {
       parts.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
     }
 
+    // ── Shared User Profile (loaded from shared workspace USER.md) ─────
+    // Like OpenClaw's USER.md: loaded every session for every agent.
+    // Secretary maintains this file; all agents benefit from knowing the owner.
+    if (opts.agentWorkspace?.sharedWorkspace) {
+      const userMdPath = `${opts.agentWorkspace.sharedWorkspace}/USER.md`;
+      try {
+        if (existsSync(userMdPath)) {
+          const userProfile = readFileSync(userMdPath, 'utf-8').trim();
+          if (userProfile) {
+            parts.push('\n## About the Owner');
+            parts.push(userProfile.slice(0, 1500));
+            parts.push('\n_This profile is maintained by the Secretary. If you notice new preferences or patterns from the owner, mention them to the Secretary via `agent_send_message`._');
+          }
+        }
+      } catch {
+        // Silently ignore — file may not exist yet
+      }
+    }
+
     // ── Governance: Trust Level (P2 priority) ──────────────────────────
     if (opts.trustLevel) {
       parts.push('\n## Your Trust Level');
@@ -357,25 +376,13 @@ export class ContextEngine {
     }
 
     parts.push('');
-    parts.push(
-      '**Task Rule:** All work must be linked to a task. Worker flow: `task_create` (with `reviewer_agent_id`) → task auto-starts after approval → decompose with `subtask_create` → work through subtasks → **call `task_submit_review`** with summary and deliverables when done. Calling `task_submit_review` is MANDATORY — the task will NOT enter review without it. The system auto-fills task_id, reviewer, and branch. Workers MUST NOT set status to `completed` — only the reviewer can. Reviewer flow: `task_update(status: "completed")` to approve, or `task_update(note: "what needs to change")` to reject — rejection auto-restarts execution. Scheduled tasks return to pending after acceptance, awaiting the next scheduled run. Check `task_list` before creating duplicates.'
-    );
-    parts.push(
-      '**Subtask Rule:** Subtasks are embedded checklist items within a task. For any complex task, decompose it into subtasks using `subtask_create` with the task ID BEFORE starting work. Mark each done with `subtask_complete` as you progress. Use `subtask_list` to check progress. Only submit the task for review when all subtasks are complete.'
-    );
-    parts.push(
-      '**Assignee Rule:** Every task MUST have an assignee (`assigned_agent_id`). Call `team_list` first to identify the right agent by role and skills. Only create an unassigned task when it is genuinely unclear who should own it — in that case you MUST provide `reason_unassigned`.'
-    );
-
-    parts.push('\n## Work Discovery');
-    parts.push(
-      'Navigate: `list_projects` → `requirement_list` → `task_list`. Never browse the filesystem to discover project structure.'
-    );
-
-    parts.push('\n## Memory & Deliverables');
-    parts.push(
-      'Use memory tools for personal notes; use deliverable tools for shared team outputs. See your role guidelines for details.'
-    );
+    parts.push('### Task Workflow');
+    parts.push('- **Create**: `task_create` (with `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
+    parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` (MANDATORY). System auto-fills task_id/reviewer/branch.');
+    parts.push('- **Review**: Reviewer approves `task_update(status:"completed")` or rejects `task_update(note:"...")` (auto-restarts). Workers MUST NOT set status=completed.');
+    parts.push('- **DAG decomposition**: For complex goals, create multiple tasks with `blocked_by` dependencies to form a directed acyclic graph. Assign each task to the most appropriate team member based on their role and skills. Use `team_list` to identify the right agent.');
+    parts.push('- **Manager coordination**: If the goal requires synthesized output from multiple tasks, create a final summarization task assigned to a manager or senior agent, blocked by all prerequisite tasks. The manager task reviews deliverables from dependencies and produces the consolidated output.');
+    parts.push('- **Work Discovery**: `list_projects`→`requirement_list`→`task_list`. Use memory tools for personal notes; deliverable tools for shared outputs.');
 
     if (opts.environment) {
       parts.push(this.buildEnvironmentSection(opts.environment));
@@ -401,26 +408,8 @@ export class ContextEngine {
       }
     }
 
-    // --- Manus-inspired: Attention Recitation ---
-    // For complex multi-step tasks, maintaining a running plan prevents
-    // "lost-in-the-middle" issues and keeps the model focused on its goals.
     parts.push('\n## Working Strategy');
-    parts.push('For complex tasks requiring multiple steps:');
-    parts.push(
-      '1. **Plan first**: Before acting, outline your approach. For long tasks, create a `todo.md` in the workspace to track progress.'
-    );
-    parts.push(
-      '2. **Update progress**: After completing each step, update your plan — check off done items, note blockers.'
-    );
-    parts.push(
-      '3. **Recite objectives**: Before each action, briefly restate what you are trying to achieve. This keeps your focus sharp.'
-    );
-    parts.push(
-      '4. **Learn from errors**: If a tool call fails, analyze why before retrying. Do NOT repeat the exact same action — try a different approach.'
-    );
-    parts.push(
-      '5. **Offload large data**: If a tool returns very large output, save it to a file and reference the file path instead of keeping it all in context.'
-    );
+    parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files.');
 
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
@@ -446,51 +435,89 @@ export class ContextEngine {
 
     switch (scenario) {
       case 'chat':
-        lines.push('You are in a **human conversation**. Follow these behavioral rules:');
-        lines.push('- Be conversational, responsive, and helpful.');
-        lines.push('- Focus on understanding intent and providing clear, concise answers.');
-        lines.push('- **Do NOT execute long-running work inline.** If a request requires more than ~3 tool calls or significant work (writing code, running tests, file modifications), create a task via `task_create` and let the task execution handle it.');
-        lines.push('- After creating a task, briefly explain what was created and that the agent will work on it asynchronously.');
-        lines.push('- Quick lookups, simple questions, and short status checks are fine to handle inline.');
-        lines.push('- Report progress and results proactively when the human asks about ongoing work.');
+        lines.push('You are in a **human chat session**. This context is for CONVERSATION ONLY — not for executing complex work.');
+        lines.push('');
+        lines.push('**What to do inline** (directly in this conversation):');
+        lines.push('- Answer questions, explain concepts, provide status updates');
+        lines.push('- Quick lookups: check task status, read a file, simple searches (≤3 tool calls)');
+        lines.push('- If your **role instructions** define a specific chat-mode workflow (e.g. builder agents creating artifacts), follow that workflow');
+        lines.push('');
+        lines.push('**What MUST become a task** (NEVER do these inline):');
+        lines.push('- Any work requiring research, code changes, file modifications, or >3 tool calls');
+        lines.push('- Any request the user describes as a "task", "project", or multi-step work');
+        lines.push('- Any work that would benefit from subtask decomposition or team collaboration');
+        lines.push('');
+        lines.push('**How to create tasks from chat:**');
+        lines.push('1. Analyze the user\'s request and identify the work needed');
+        lines.push('2. If the work is complex, decompose into multiple tasks forming a DAG (use `blocked_by` for dependencies)');
+        lines.push('3. Assign each task to the most appropriate team member (use `team_list` to find agents by role/skills)');
+        lines.push('4. If the goal requires consolidated output, create a final summarization task assigned to a manager agent, blocked by all prerequisite tasks');
+        lines.push('5. Create the tasks via `task_create`. Then STOP — do NOT start executing the work yourself.');
+        lines.push('6. Reply to the user with a summary: what tasks were created, who they are assigned to, and their dependency structure');
+        lines.push('7. Tell the user: "Please review and approve the tasks. Once approved, they will execute automatically in the task execution context."');
+        lines.push('');
+        lines.push('**CRITICAL — STOP AFTER CREATING TASKS:**');
+        lines.push('After calling `task_create`, your job in this chat is DONE for that request. Do NOT:');
+        lines.push('- Call tools to start executing the task work (no file_read, file_write, web_search, etc. for the task itself)');
+        lines.push('- Try to "help" by doing part of the task inline');
+        lines.push('- Continue with research or implementation related to the created task');
+        lines.push('The task will execute in its own isolated context AFTER the user approves it. The user will see execution progress in the task execution view, NOT here.');
+        lines.push('');
+        lines.push('**IMPORTANT**: The user sees this chat context. They should NOT see raw tool calls, long research outputs, or complex agent operations here. Keep chat responses concise and human-friendly.');
         break;
 
       case 'task_execution':
-        lines.push('You are in **task execution** mode. Follow these behavioral rules:');
-        lines.push('- **Check dependencies first**: If your task has dependency tasks, review their deliverables and notes BEFORE starting work. Use `file_read` on deliverable file paths and `task_get` to retrieve full context.');
-        lines.push('- Be thorough and methodical — this is your dedicated work time.');
-        lines.push('- **Decompose with subtasks**: For any non-trivial task, break it into subtasks using `subtask_create` BEFORE starting work. This gives visibility into progress. Use `subtask_list` to check existing subtasks (each has a `sub_`-prefixed ID). Mark each done with `subtask_complete` (requires both `task_id` and `subtask_id`). Do NOT use `task_update` to complete subtasks — `task_update` changes the *parent task* status and will fail on pending_approval tasks.');
-        lines.push('- Update task notes with progress after each significant step using `task_note`.');
-        lines.push('- Use all available tools to deliver high-quality output.');
-        lines.push('- **MANDATORY**: When your work is complete, you MUST call `task_submit_review` with a summary and list of deliverable files. The task is NOT considered complete until you do this. The system auto-fills task_id, reviewer, and branch for you.');
-        lines.push('- If you discover blockers, update the task status to `blocked` with a clear explanation.');
-        lines.push('- Stay focused on the assigned task — do not wander into unrelated work.');
+        lines.push('You are in **task execution mode**. This is your dedicated workspace for focused, thorough work.');
+        lines.push('');
+        lines.push('**Context awareness:**');
+        lines.push('- This session is ISOLATED from chat — the user monitors your progress through task logs and the execution view');
+        lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach accordingly');
+        lines.push('- If there are dependency tasks, review ALL their deliverables before starting (use `file_read` + `task_get`)');
+        lines.push('');
+        lines.push('**Execution protocol:**');
+        lines.push('1. **Decompose first**: Use `subtask_create` to break the task into concrete steps BEFORE starting work. Each subtask should be a verifiable unit of work.');
+        lines.push('2. **Work systematically**: Execute subtasks in order. Mark each done with `subtask_complete`. Record progress via `task_note` after significant steps.');
+        lines.push('3. **Stay focused**: Do NOT wander into unrelated work. Do NOT create new top-level tasks — only subtasks within your assigned task.');
+        lines.push('4. **Handle blockers**: If you cannot proceed, set status to `blocked` with a clear explanation.');
+        lines.push('5. **Submit for review**: When ALL subtasks are complete, call `task_submit_review` with summary + deliverables (MANDATORY — the task does NOT complete without this).');
+        lines.push('');
+        lines.push('**Quality standards:**');
+        lines.push('- Use all available tools to produce thorough, high-quality output');
+        lines.push('- If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action');
+        lines.push('- Large outputs should be saved to files and referenced by path in deliverables');
         break;
 
       case 'heartbeat':
-        lines.push('You are in **heartbeat** mode — a brief periodic check-in.');
-        lines.push('- Be concise. This is monitoring, not a work session.');
-        lines.push('- Compare current state against your last heartbeat summary. Skip unchanged items.');
-        lines.push('- Do NOT create new tasks or start non-review work during heartbeat.');
-        lines.push('- **Review duty (IMPORTANT)**: Use `task_list` to check for tasks in `review` status where YOU are the designated reviewer (`reviewer_agent_id` matches your agent ID). For each such task:');
-        lines.push('  1. Call `task_get` to inspect deliverables and notes');
-        lines.push('  2. Use `file_read` to examine the actual work artifacts');
-        lines.push('  3. Either approve via `task_update(task_id, status: "completed")` with a review note, or reject via `task_update(task_id, note: "what needs to change")` — rejection auto-restarts execution');
-        lines.push('  4. Review is your PRIMARY responsibility — unreviewed tasks block the entire team');
-        lines.push('- If you see a `review` task assigned to you, you MUST review it in this heartbeat — do not defer.');
-        lines.push('- If nothing needs attention, respond with exactly: HEARTBEAT_OK');
+        lines.push('You are in **heartbeat mode** — a brief periodic check-in. This is NOT a work session.');
+        lines.push('');
+        lines.push('**Priority actions (in order):**');
+        lines.push('1. **Review duty**: Check `task_list` for tasks in `review` status where you are the reviewer. For each:');
+        lines.push('   - `task_get` → inspect deliverables/notes → `file_read` on artifacts');
+        lines.push('   - Approve: `task_update(status:"completed")` with review note');
+        lines.push('   - Reject: `task_update(note:"what needs to change")` — auto-restarts execution');
+        lines.push('   - Unreviewed tasks block the team — review is your #1 responsibility');
+        lines.push('2. **Status check**: Compare current state against last heartbeat. Report only changes.');
+        lines.push('3. **Failed task recovery**: If any task assigned to you is in `failed` status, retry it via `task_update(status:"in_progress")` with a note — this auto-restarts execution.');
+        lines.push('4. **Daily report (managers, after 20:00)**: If the prompt includes a "Daily Report Required" section, produce the report as your top priority after reviews.');
+        lines.push('5. **Self-evolution**: Reflect briefly — record specific, actionable lessons learned since last heartbeat.');
+        lines.push('6. **Do NOT**: Create new tasks, start work, or do research during heartbeat (exception: daily report creation and failed task retry).');
+        lines.push('');
+        lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
 
       case 'a2a':
-        lines.push('You are in an **agent-to-agent conversation**. Follow these behavioral rules:');
-        lines.push('- Be concise and structured — your colleague agent needs actionable information.');
-        lines.push('- Focus on the specific request or question from your colleague.');
-        lines.push('- Respond with clear, factual information. Avoid conversational filler.');
-        lines.push('- **Always include absolute file paths** when referencing content from files, documents, or deliverables. Your colleague can then use `file_read` to read the full content directly. Never use relative paths — always provide the full absolute path.');
-        lines.push('- **Do NOT start long tasks inline.** If substantial work is needed, create a requirement via `requirement_propose` and/or a task via `task_create` — then inform your colleague of the ID. Never attempt complex multi-step work inside a chat reply.');
-        lines.push('- **Distinguish messages from work requests**: A2A messages are for status notifications, quick coordination, and simple questions. If you need another agent to perform substantial work (multiple steps, file changes, extended execution), create a task assigned to them — do NOT just send a message asking them to do it.');
-        lines.push('- If you cannot help, explain why clearly and suggest who might be able to help.');
-        lines.push('- Keep responses focused on collaboration and coordination.');
+        lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
+        lines.push('');
+        lines.push('**Communication rules:**');
+        lines.push('- Be concise and structured — your colleague needs actionable information');
+        lines.push('- Always use **absolute file paths** when referencing files or deliverables');
+        lines.push('- Respond with clear facts. No conversational filler.');
+        lines.push('');
+        lines.push('**Work delegation:**');
+        lines.push('- A2A messages are for: status updates, quick coordination, simple questions, sharing file references');
+        lines.push('- For substantial work requests: create a `task_create` assigned to the target agent — do NOT ask them to do complex work via chat');
+        lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
+        lines.push('- If you cannot help, explain why and suggest who can');
         break;
     }
 
@@ -844,16 +871,20 @@ export class ContextEngine {
       const text = getTextContent(m.content);
       if (text.length <= maxChars) return m;
       if (m.role === 'tool') {
-        // Keep both head and tail: the beginning often has status/structure info,
-        // the end often has the final result or error summary.
-        const headSize = Math.min(Math.floor(maxChars * 0.6), 1500);
-        const tailSize = Math.min(Math.floor(maxChars * 0.3), 800);
+        // Research tool results (web_search, browser snapshots) carry information
+        // the agent needs for reasoning. Give them a higher cap than generic tools.
+        const isResearch = m.toolCallId && this.isResearchToolResult(text);
+        const effectiveCap = isResearch ? Math.max(maxChars, 6000) : maxChars;
+        if (text.length <= effectiveCap) return m;
+
+        const headSize = Math.min(Math.floor(effectiveCap * 0.65), isResearch ? 4000 : 1500);
+        const tailSize = Math.min(Math.floor(effectiveCap * 0.25), isResearch ? 1500 : 800);
         const head = text.slice(0, headSize);
         const tail = text.slice(-tailSize);
         const omitted = text.length - headSize - tailSize;
         return {
           ...m,
-          content: `[Tool result compacted: showing ${headSize} head + ${tailSize} tail of ${text.length} chars. Full output was available at execution time.]\n${head}\n[... ${omitted} chars omitted ...]\n${tail}`,
+          content: `[Tool result compacted: showing ${headSize} head + ${tailSize} tail of ${text.length} chars.]\n${head}\n[... ${omitted} chars omitted ...]\n${tail}`,
         };
       }
       if (Array.isArray(m.content)) return m;
@@ -863,6 +894,17 @@ export class ContextEngine {
           text.slice(0, maxChars) + `\n\n[... content trimmed from ${text.length} chars]`,
       };
     });
+  }
+
+  private isResearchToolResult(content: string): boolean {
+    const markers = [
+      'search_results', 'web_search', 'SearchResult',
+      'browser_snapshot', 'browser_navigate', 'page_content',
+      '<title>', '<meta', 'README', '```markdown',
+      'http://', 'https://',
+    ];
+    const prefix = content.slice(0, 500).toLowerCase();
+    return markers.some(m => prefix.includes(m.toLowerCase()));
   }
 
   /**
@@ -975,6 +1017,12 @@ export class ContextEngine {
       summaryParts.push(assistantText.trim());
     }
 
+    const RESEARCH_TOOLS = new Set([
+      'web_search', 'browser_navigate', 'browser_snapshot',
+      'browser_click', 'browser_type', 'browser_scroll',
+      'file_read',
+    ]);
+
     // Manus: serialization diversity — vary summary templates to avoid few-shot ruts
     const templates = [
       (name: string, args: string, res: string) => `[Called ${name}(${args})${res}]`,
@@ -987,10 +1035,11 @@ export class ContextEngine {
     for (let i = 0; i < toolCalls.length; i++) {
       const tc = toolCalls[i]!;
       const result = toolResults[i];
+      const isResearch = RESEARCH_TOOLS.has(tc.name);
       // Deterministic serialization: sorted keys prevent cache-busting from key order differences
       const argsStr = JSON.stringify(tc.arguments, Object.keys(tc.arguments ?? {}).sort()).slice(
         0,
-        100
+        isResearch ? 200 : 100
       );
       let resultSummary = '';
       if (result) {
@@ -999,9 +1048,12 @@ export class ContextEngine {
           content.startsWith('Error:') ||
           (content.startsWith('{') && content.includes('"status":"error"'))
         ) {
-          // Preserve error details for self-correction (don't just say "error")
           const errorPreview = content.slice(0, 200);
           resultSummary = ` → ERROR: ${errorPreview}`;
+        } else if (isResearch) {
+          // Research tools: preserve key findings so the agent retains knowledge
+          const previewLen = Math.min(content.length, 500);
+          resultSummary = ` → ${content.slice(0, previewLen)}${content.length > previewLen ? '...' : ''}`;
         } else if (content.length <= 120) {
           resultSummary = ` → ${content}`;
         } else {
@@ -1109,9 +1161,19 @@ export class ContextEngine {
         }
       } else {
         flushPending(pendingIds.size > 0);
-        // Merge consecutive same-role messages (e.g. two user messages from retry)
+        // Merge consecutive user messages only if neither is system-injected.
+        // System injections (loop warnings, reminders) start with "[SYSTEM]" or
+        // "[Conversation history summary" and must stay separate to avoid confusing
+        // the model about what the human actually said.
         const prev = result[result.length - 1];
-        if (prev && prev.role === msg.role && msg.role === 'user') {
+        const msgText = typeof msg.content === 'string' ? msg.content : '';
+        const prevText = prev ? (typeof prev.content === 'string' ? prev.content : '') : '';
+        const isSystemInjected = (t: string) =>
+          t.startsWith('[SYSTEM]') || t.startsWith('[Conversation history summary');
+        if (
+          prev && prev.role === msg.role && msg.role === 'user' &&
+          !isSystemInjected(msgText) && !isSystemInjected(prevText)
+        ) {
           prev.content = prev.content + '\n\n' + msg.content;
         } else {
           result.push(msg);

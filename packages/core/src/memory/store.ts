@@ -241,30 +241,34 @@ export class MemoryStore implements IMemoryStore {
   // --- Disk persistence ---
 
   private checkAndCompact(session: ConversationSession): void {
-    if (session.messages.length <= 40) return; // nothing to compact yet
+    // Only shrink tool results in-place when the session is very large.
+    // The context-engine already handles per-message compression when preparing
+    // LLM calls, so aggressive early mutation here permanently destroys data
+    // the agent may still need (e.g. research results from web_search / browser).
+    // Threshold raised: only compact tool results when we're about to summarize
+    // the session anyway (> 80 messages), and keep more content (2000 chars).
+    if (session.messages.length <= 80) return;
 
-    // Shrink oversized tool results in-place: any tool message > 4KB
-    // gets replaced with a short summary. This prevents individual messages
-    // from accumulating unbounded content in the session history.
     let shrunk = 0;
-    for (const m of session.messages) {
+    const recentBoundary = session.messages.length - 40;
+    for (let i = 0; i < recentBoundary; i++) {
+      const m = session.messages[i]!;
       const text = getTextContent(m.content);
-      if (m.role === 'tool' && text.length > 4000) {
+      if (m.role === 'tool' && text.length > 20_000) {
         const origLen = text.length;
-        const preview = text.slice(0, 500);
-        m.content = `[Old tool result compacted for session storage: ${origLen} chars → 500 char preview. Full result was available at execution time.]\n${preview}\n[... ${origLen - 500} more chars omitted ...]`;
+        const headSize = Math.min(1500, Math.floor(origLen * 0.3));
+        const tailSize = Math.min(500, Math.floor(origLen * 0.1));
+        const head = text.slice(0, headSize);
+        const tail = text.slice(-tailSize);
+        m.content = `[Tool result compacted: ${origLen} chars → ${headSize + tailSize} char preview]\n${head}\n[... ${origLen - headSize - tailSize} chars omitted ...]\n${tail}`;
         shrunk++;
       }
     }
 
-    if (session.messages.length > 80) {
-      log.info('Auto-compacting session by count', {
-        sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
-      });
-      this.compactSession(session.id, 40);
-    } else if (shrunk > 0) {
-      this.debouncedSaveSession(session);
-    }
+    log.info('Auto-compacting session by count', {
+      sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
+    });
+    this.compactSession(session.id, 40);
   }
 
   private loadFromDisk(): void {

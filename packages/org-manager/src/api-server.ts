@@ -1227,12 +1227,35 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
-        // When no sessionId is provided (user clicked "New Chat"), start a fresh agent session
         if (!sessionId) {
           agent.startNewSession();
+        } else if (this.storage) {
+          // Restore agent memory context from DB session history so the agent
+          // has full conversation context when replying to an existing chat.
+          try {
+            const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+            agent.restoreSessionFromHistory(
+              sessionId,
+              histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
+            );
+          } catch (err) {
+            log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
+            agent.startNewSession();
+          }
         }
 
         const userText = body['text'] as string;
+
+        // Wrap persistUserMessage to bind DB session → memory session on first message
+        const bindingPersist = async (
+          aId: string, text: string, sId?: string, imgs?: string[], sessId?: string,
+        ): Promise<string | null> => {
+          const dbSessId = await this.persistUserMessage(aId, text, sId, imgs, sessId);
+          if (dbSessId && !sessId) {
+            agent.bindDbSession(dbSessId);
+          }
+          return dbSessId;
+        };
 
         if (stream) {
           const sseHandler = new SSEHandler({
@@ -1244,13 +1267,13 @@ export class APIServer {
             senderInfo,
             sessionId,
             wsBroadcaster: this.ws,
-            persistUserMessage: this.persistUserMessage.bind(this),
+            persistUserMessage: bindingPersist,
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
           });
 
           await sseHandler.handle(res);
         } else {
-          const userMsgPersisted = await this.persistUserMessage(agentId!, userText, senderId, images, sessionId);
+          const userMsgPersisted = await bindingPersist(agentId!, userText, senderId, images, sessionId);
           let reply: string;
           try {
             reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
@@ -1278,6 +1301,10 @@ export class APIServer {
 
     if (path.match(/^\/api\/agents\/[^/]+$/) && req.method === 'DELETE') {
       const agentId = path.split('/')[3]!;
+      if (this.orgService.isProtectedAgent(agentId)) {
+        this.json(res, 403, { error: 'The Secretary agent is a protected system agent and cannot be deleted.' });
+        return;
+      }
       if (this.gateway) {
         const extReg = this.gateway.listRegistrations().find(r => r.markusAgentId === agentId);
         if (extReg) {
@@ -5070,6 +5097,152 @@ export class APIServer {
           }
         );
         this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Toggle provider enabled/disabled
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/toggle$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      const body = await this.readBody(req);
+      const { enabled } = body as { enabled: boolean };
+      if (typeof enabled !== 'boolean') {
+        this.json(res, 400, { error: 'enabled (boolean) is required' });
+        return;
+      }
+      try {
+        this.llmRouter.setProviderEnabled(providerName, enabled);
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const providers = { ...currentConfig.llm.providers };
+          if (providers[providerName]) {
+            providers[providerName] = { ...providers[providerName], enabled };
+          } else {
+            providers[providerName] = { enabled };
+          }
+          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist provider enabled state', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Detect model configs from environment variables
+    if (path === '/api/settings/env-models' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+
+      const ENV_MODEL_MAP: Array<{
+        provider: string;
+        displayName: string;
+        keyEnv: string;
+        modelEnv?: string;
+        baseUrlEnv?: string;
+        defaultModel: string;
+        defaultBaseUrl?: string;
+      }> = [
+        { provider: 'anthropic', displayName: 'Anthropic', keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
+        { provider: 'openai', displayName: 'OpenAI', keyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
+        { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
+        { provider: 'siliconflow', displayName: 'SiliconFlow', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
+        { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
+      ];
+
+      const detected: Array<{
+        provider: string;
+        displayName: string;
+        apiKeySet: boolean;
+        apiKeyPreview: string;
+        model: string;
+        baseUrl?: string;
+        envVars: Record<string, string>;
+      }> = [];
+
+      for (const def of ENV_MODEL_MAP) {
+        const apiKey = process.env[def.keyEnv];
+        if (!apiKey) continue;
+
+        const model = def.modelEnv ? (process.env[def.modelEnv] ?? def.defaultModel) : def.defaultModel;
+        const baseUrl = def.baseUrlEnv ? (process.env[def.baseUrlEnv] ?? def.defaultBaseUrl) : def.defaultBaseUrl;
+        const envVars: Record<string, string> = { [def.keyEnv]: '***' + apiKey.slice(-4) };
+        if (def.modelEnv && process.env[def.modelEnv]) envVars[def.modelEnv] = process.env[def.modelEnv]!;
+        if (def.baseUrlEnv && process.env[def.baseUrlEnv]) envVars[def.baseUrlEnv] = process.env[def.baseUrlEnv]!;
+
+        detected.push({
+          provider: def.provider,
+          displayName: def.displayName,
+          apiKeySet: true,
+          apiKeyPreview: '***' + apiKey.slice(-4),
+          model,
+          baseUrl,
+          envVars,
+        });
+      }
+
+      const timeoutMs = process.env['LLM_TIMEOUT_MS'];
+      this.json(res, 200, {
+        detected,
+        timeoutMs: timeoutMs ? Number(timeoutMs) : undefined,
+      });
+      return;
+    }
+
+    // Settings — Apply env model configs to markus.json
+    if (path === '/api/settings/env-models' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const { providers: providerUpdates } = body as {
+        providers: Array<{
+          provider: string;
+          model: string;
+          baseUrl?: string;
+          enabled?: boolean;
+        }>;
+      };
+      if (!Array.isArray(providerUpdates) || providerUpdates.length === 0) {
+        this.json(res, 400, { error: 'providers array is required' });
+        return;
+      }
+      try {
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const currentConfig = loadCfg(this.markusConfigPath);
+        const updatedProviders = { ...currentConfig.llm.providers };
+        const applied: string[] = [];
+        for (const pu of providerUpdates) {
+          const envKeyMap: Record<string, string> = {
+            anthropic: 'ANTHROPIC_API_KEY',
+            openai: 'OPENAI_API_KEY',
+            google: 'GOOGLE_API_KEY',
+            siliconflow: 'SILICONFLOW_API_KEY',
+            minimax: 'MINIMAX_API_KEY',
+          };
+          const apiKey = process.env[envKeyMap[pu.provider] ?? ''];
+          if (!apiKey) continue;
+          updatedProviders[pu.provider] = {
+            ...updatedProviders[pu.provider],
+            apiKey,
+            model: pu.model,
+            ...(pu.baseUrl ? { baseUrl: pu.baseUrl } : {}),
+            enabled: pu.enabled !== false,
+          };
+          applied.push(pu.provider);
+        }
+        saveConfig({ llm: { providers: updatedProviders } } as any, this.markusConfigPath);
+        this.json(res, 200, { applied, message: `Updated ${applied.length} provider(s) in markus.json` });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }

@@ -36,6 +36,7 @@ export interface EnhancedProviderSettings {
   model: string;
   baseUrl?: string;
   configured: boolean;
+  enabled: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
   cost?: ModelCostConfig;

@@ -64,6 +64,7 @@ export class LLMRouter {
   private fallbackOrder: string[] = [];
   private health = new Map<string, ProviderHealth>();
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
+  private disabledProviders = new Set<string>();
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -146,6 +147,7 @@ export class LLMRouter {
   }
 
   private isAvailable(name: string): boolean {
+    if (this.disabledProviders.has(name)) return false;
     const h = this.getHealth(name);
     if (!h.degraded) return true;
     const resetMs = h.resetMs ?? this.CIRCUIT_RESET_MS;
@@ -456,6 +458,7 @@ export class LLMRouter {
         displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
         model: p.model,
         configured: true,
+        enabled: this.isProviderEnabled(name),
         contextWindow: customModels?.contextWindow ?? modelDef?.contextWindow,
         maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
         cost: customModels?.cost ?? modelDef?.cost,
@@ -470,6 +473,7 @@ export class LLMRouter {
           displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
           model: '',
           configured: false,
+          enabled: this.isProviderEnabled(name),
           models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
         };
       }
@@ -484,6 +488,19 @@ export class LLMRouter {
       ...config,
     });
     log.info(`Updated model config for ${providerName}`, config);
+  }
+
+  setProviderEnabled(providerName: string, enabled: boolean): void {
+    if (enabled) {
+      this.disabledProviders.delete(providerName);
+    } else {
+      this.disabledProviders.add(providerName);
+    }
+    log.info(`Provider ${providerName} ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  isProviderEnabled(providerName: string): boolean {
+    return !this.disabledProviders.has(providerName);
   }
 
   getModelCatalog(): ModelDefinition[] {

@@ -158,6 +158,24 @@ export class TaskService {
     this.sharedDataDir = dir;
     mkdirSync(join(dir, 'tasks'), { recursive: true });
     mkdirSync(join(dir, 'knowledge'), { recursive: true });
+
+    // Seed USER.md if it doesn't exist (OpenClaw-inspired shared user profile)
+    const userMdPath = join(dir, 'USER.md');
+    if (!existsSync(userMdPath)) {
+      writeFileSync(userMdPath, [
+        '# About the Owner',
+        '',
+        '- Name:',
+        '- What to call them:',
+        '- Timezone:',
+        '',
+        '## Context',
+        '',
+        '(What do they care about? What projects are they working on? What annoys them?',
+        'Build this over time. The Secretary agent maintains this file.)',
+        '',
+      ].join('\n'));
+    }
   }
 
   getSharedDataDir(): string | undefined {
@@ -617,10 +635,10 @@ export class TaskService {
 
     // Load previous execution history + comments so the agent can resume
     let prevContext = '';
+    let prevComments: TaskCommentRow[] = [];
     if (this.taskLogRepo) {
       try {
         const prevLogs = await this.taskLogRepo.getByTask(taskId);
-        let prevComments: TaskCommentRow[] = [];
         if (this.taskCommentRepo) {
           try { prevComments = await this.taskCommentRepo.getByTask(taskId); } catch { /* ignore */ }
         }
@@ -712,6 +730,9 @@ export class TaskService {
       retryNotice = [
         '## ⚠ RETRY — CONTINUE FROM WHERE YOU LEFT OFF',
         '',
+        `**Current time:** ${formatLocalTimestamp(new Date())}`,
+        `**Retry attempt:** ${_retryAttempt + 1}`,
+        '',
         'Your previous attempt was interrupted by a transient error (network issue, timeout, etc.).',
         '**You MUST NOT start over.** Review the execution details below and continue from where you stopped.',
         '- Do NOT re-read files you already read in the previous attempt',
@@ -786,6 +807,33 @@ export class TaskService {
         const maxSeq = await taskLogRepo.getMaxSeq(taskId);
         seq = maxSeq + 1;
       } catch { /* start from 0 on error */ }
+    }
+
+    // When resuming with previous work, user comments embedded in prevContext
+    // are lost because _executeTaskInternal skips the full taskPrompt on retry
+    // (it only appends a short "continue" message to the existing session).
+    // Inject the latest human comments directly into the session so the agent sees them.
+    if (prevContext && prevComments.length > 0) {
+      const humanComments = prevComments.filter(c =>
+        c.authorType === 'human' || c.authorType === 'owner'
+      );
+      if (humanComments.length > 0) {
+        const sessionId = `task_${taskId}_r${executionRound}`;
+        const recentFeedback = humanComments.slice(-3);
+        const feedbackLines = recentFeedback.map(c => {
+          const ts = c.createdAt instanceof Date
+            ? c.createdAt.toISOString().slice(0, 19).replace('T', ' ')
+            : String(c.createdAt);
+          return `**${c.authorName}** (${ts}):\n${c.content}`;
+        });
+        agent.injectUserMessage(sessionId, [
+          '⚠ **USER FEEDBACK — YOU MUST ADDRESS THIS BEFORE CONTINUING:**',
+          '',
+          ...feedbackLines,
+          '',
+          'Read the feedback above carefully. Adjust your approach and work based on this feedback.',
+        ].join('\n'));
+      }
     }
 
     // Fire and forget — runs concurrently
@@ -2684,7 +2732,20 @@ export class TaskService {
       subtaskSection = subLines.join('\n');
     }
 
-    const taskDescription = `${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
+    const freshRetryHeader = [
+      '## Fresh Retry',
+      '',
+      `**Current time:** ${formatLocalTimestamp(new Date())}`,
+      `**Execution round:** #${executionRound}`,
+      '',
+      'This is a fresh retry — previous execution context has been discarded.',
+      'Start the task from scratch using only the description, notes, and dependency context below.',
+      '',
+      '---',
+      '',
+    ].join('\n');
+
+    const taskDescription = `${freshRetryHeader}${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
@@ -2766,7 +2827,10 @@ export class TaskService {
    */
   injectCommentIntoRunningTask(taskId: string, authorName: string, content: string): void {
     const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'in_progress') return;
+    if (!task) return;
+    // Inject into running tasks. For non-running tasks, comments are picked up
+    // via formatPreviousExecutionContext + direct session injection on next runTask.
+    if (task.status !== 'in_progress') return;
     if (!task.assignedAgentId || !this.agentManager) return;
 
     try {

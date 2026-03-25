@@ -177,12 +177,16 @@ export class OrganizationService {
     const dir = this.getTeamDataDir(teamId);
     mkdirSync(dir, { recursive: true });
     const annPath = join(dir, 'ANNOUNCEMENT.md');
-    if (!existsSync(annPath)) {
-      writeFileSync(annPath, announcements ?? '', 'utf-8');
+    if (announcements) {
+      writeFileSync(annPath, announcements, 'utf-8');
+    } else if (!existsSync(annPath)) {
+      writeFileSync(annPath, '', 'utf-8');
     }
     const normsPath = join(dir, 'NORMS.md');
-    if (!existsSync(normsPath)) {
-      writeFileSync(normsPath, norms ?? '', 'utf-8');
+    if (norms) {
+      writeFileSync(normsPath, norms, 'utf-8');
+    } else if (!existsSync(normsPath)) {
+      writeFileSync(normsPath, '', 'utf-8');
     }
   }
 
@@ -578,7 +582,19 @@ export class OrganizationService {
     return this.hireAgent(request);
   }
 
+  /** Check whether an agent is the protected Secretary (cannot be deleted). */
+  isProtectedAgent(agentId: string): boolean {
+    try {
+      const agent = this.agentManager.getAgent(agentId);
+      return agent.role.name.toLowerCase() === 'secretary';
+    } catch { return false; }
+  }
+
   async fireAgent(agentId: string): Promise<void> {
+    if (this.isProtectedAgent(agentId)) {
+      throw new Error('The Secretary agent is a protected system agent and cannot be deleted.');
+    }
+
     const agentInfo = this.agentManager.listAgents().find(a => a.id === agentId);
     await this.agentManager.removeAgent(agentId);
 
@@ -905,7 +921,7 @@ export class OrganizationService {
       if (!builderNames.has(info.name)) continue;
       try {
         const agent = this.agentManager.getAgent(info.id);
-        agent.addDynamicContextProvider(() => this.buildBuilderDynamicContext(skillRegistry));
+        agent.addDynamicContextProvider(() => this.buildBuilderDynamicContext(skillRegistry), 'builder-context');
       } catch {
         log.warn(`Could not register dynamic context for builder: ${info.name}`);
       }

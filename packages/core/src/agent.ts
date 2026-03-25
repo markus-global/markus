@@ -119,6 +119,7 @@ export class Agent {
     mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
   ) => Promise<AgentToolHandler[]>;
   private currentSessionId?: string;
+  private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private teamDataDir?: string;
@@ -167,7 +168,7 @@ export class Agent {
   /** In-memory activity log buffer (keyed by activity ID) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
-  private dynamicContextProviders: Array<() => string> = [];
+  private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
   private static readonly MAX_CONCURRENT_TASKS = 5;
@@ -352,6 +353,56 @@ export class Agent {
     const session = this.memory.createSession(this.id);
     this.currentSessionId = session.id;
     log.info(`New session started for agent ${this.config.name}: ${session.id}`);
+  }
+
+  /**
+   * Bind the current in-memory session to a DB session ID (ses_*).
+   * Called after persistUserMessage creates a new DB session for a "new chat",
+   * so subsequent messages with that DB sessionId reuse the same memory context.
+   */
+  bindDbSession(dbSessionId: string): void {
+    if (this.currentSessionId) {
+      this.dbSessionMap.set(dbSessionId, this.currentSessionId);
+      log.debug(`Bound DB session ${dbSessionId} → memory session ${this.currentSessionId}`);
+    }
+  }
+
+  /**
+   * Restore the agent's memory context for an existing DB session.
+   * If a mapping exists to a live memory session, switch to it.
+   * Otherwise, create a new memory session populated with the DB messages.
+   */
+  restoreSessionFromHistory(
+    dbSessionId: string,
+    dbMessages: Array<{ role: string; content: string }>,
+  ): void {
+    const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
+    if (existingMemorySessionId) {
+      const session = this.memory.getSession(existingMemorySessionId);
+      if (session) {
+        this.currentSessionId = existingMemorySessionId;
+        log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
+        return;
+      }
+      this.dbSessionMap.delete(dbSessionId);
+    }
+
+    const session = this.memory.createSession(this.id);
+    this.dbSessionMap.set(dbSessionId, session.id);
+
+    for (const msg of dbMessages) {
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        this.memory.appendMessage(session.id, {
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+        });
+      }
+    }
+
+    this.currentSessionId = session.id;
+    log.info(
+      `Restored session context for DB session ${dbSessionId} → memory session ${session.id} (${dbMessages.length} messages)`
+    );
   }
 
   pause(reason?: string): void {
@@ -719,9 +770,11 @@ export class Agent {
     if (!this.teamDataDir) return {};
     const annPath = join(this.teamDataDir, 'ANNOUNCEMENT.md');
     const normsPath = join(this.teamDataDir, 'NORMS.md');
+    const ann = existsSync(annPath) ? readFileSync(annPath, 'utf-8').trim() : '';
+    const norms = existsSync(normsPath) ? readFileSync(normsPath, 'utf-8').trim() : '';
     return {
-      teamAnnouncements: existsSync(annPath) ? readFileSync(annPath, 'utf-8') : undefined,
-      teamNorms: existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : undefined,
+      teamAnnouncements: ann || undefined,
+      teamNorms: norms || undefined,
       teamDataDir: this.teamDataDir,
       isTeamManager: this.config.agentRole === 'manager',
     };
@@ -731,8 +784,9 @@ export class Agent {
     this.identityContext = ctx;
   }
 
-  addDynamicContextProvider(provider: () => string): void {
-    this.dynamicContextProviders.push(provider);
+  addDynamicContextProvider(provider: () => string, key?: string): void {
+    const providerKey = key ?? `provider_${this.dynamicContextProviders.size}`;
+    this.dynamicContextProviders.set(providerKey, provider);
   }
 
   injectSkillInstructions(skillName: string, instructions: string): void {
@@ -749,7 +803,7 @@ export class Agent {
   }
 
   private getDynamicContext(): string | undefined {
-    const parts = this.dynamicContextProviders.map(p => p()).filter(Boolean);
+    const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
     }
@@ -2614,6 +2668,18 @@ export class Agent {
     throw lastError;
   }
 
+  /**
+   * Check whether today's daily report deliverable already exists.
+   * Returns true if a report with today's date tag is found in memory.
+   */
+  private hasTodayDailyReport(): boolean {
+    const todayTag = `daily-report:${new Date().toISOString().slice(0, 10)}`;
+    try {
+      const results = this.memory.search(todayTag);
+      return results.length > 0;
+    } catch { return false; }
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
@@ -2641,18 +2707,77 @@ export class Agent {
 
     const checklist = this.role.heartbeatChecklist || '- Check assigned tasks with `task_list`';
 
+    const now = new Date();
+    const currentHour = now.getHours();
+    const todayDate = now.toISOString().slice(0, 10);
+
+    // --- Failed task recovery section (all agents) ---
+    const failedTaskRecoverySection = [
+      '',
+      '## Failed Task Recovery',
+      'Check `task_list` for tasks assigned to you with status `failed`.',
+      'If you find any, retry them by calling `task_update` with `status: "in_progress"` and a note explaining the retry.',
+      'This will automatically restart task execution with previous context preserved, so the agent can learn from the failure.',
+      'Only retry tasks where you are the `assignedAgentId`. Do NOT retry tasks assigned to others.',
+    ].join('\n');
+
+    // --- Manager daily report logic ---
+    const isManager = this.config.agentRole === 'manager';
+    let dailyReportSection = '';
+    if (isManager && currentHour >= 20 && !this.hasTodayDailyReport()) {
+      dailyReportSection = [
+        '',
+        '## Daily Report Required',
+        `It is now past 20:00 and no daily report exists for ${todayDate}. You MUST produce one now.`,
+        '',
+        '**Report format** — create a deliverable via `deliverable_create`:',
+        `- **title**: "Daily Report — ${todayDate}"`,
+        '- **type**: "report"',
+        '- **Content must be concise, clear, and accurate**:',
+        '  1. **My work today**: What you personally accomplished (tasks reviewed, approved/rejected, decisions made)',
+        '  2. **Team progress**: What each team member accomplished (use `task_list` and `team_status` for data)',
+        '  3. **Blockers & risks**: Anything stalled or at risk',
+        '  4. **Plan for tomorrow**: Top priorities for the next day',
+        '- Keep it under 500 words. No filler. Every sentence must carry information.',
+        `- After creating the deliverable, call \`memory_save\` with key \`daily-report:${todayDate}\` and value "created" to prevent duplicate reports.`,
+        '',
+      ].join('\n');
+    }
+
+    // --- Self-evolution reflection section (all agents) ---
+    const selfEvolutionSection = [
+      '',
+      '## Self-Evolution Reflection',
+      'Before finishing, briefly reflect on your recent work since last heartbeat:',
+      '- **What did I accomplish?** (tasks completed, reviews done, problems solved)',
+      '- **What lessons did I learn?** (gotchas, better approaches, tool tips)',
+      '- **What best practices should I remember?** (patterns that worked well)',
+      '- **What mistakes should I avoid?** (things that failed or wasted time)',
+      '',
+      'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
+      'Skip if nothing meaningful happened since last heartbeat.',
+      'If you have insights, call `memory_save` with key `evolution:lessons` to append them to your long-term memory.',
+      'Format: `[YYYY-MM-DD] lesson-text` — one line per insight, dated for tracking.',
+    ].join('\n');
+
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
       '## Your Checklist',
       checklist,
       lastHeartbeatSummary,
+      failedTaskRecoverySection,
+      dailyReportSection,
+      selfEvolutionSection,
+      '',
       '## Rules',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
       '- For routine checks: max 5 tool calls. This is monitoring, not a work session.',
       '- **Exception — review duty**: If you find tasks in `review` where you are the reviewer, you MUST review them now. Reviews may require more tool calls (task_get, file_read, task_note, task_update). Complete the review fully.',
+      '- **Exception — failed tasks**: If you find tasks assigned to you in `failed` status, retry them via `task_update(status: "in_progress")` with a note.',
+      '- **Exception — daily report**: If the Daily Report Required section is present above, you MUST produce the report. This may require additional tool calls.',
       '- At the end, call `memory_save` with key `heartbeat:summary` — one line per finding.',
-      '- If nothing needs attention, respond with exactly: HEARTBEAT_OK',
+      '- If nothing needs attention and no daily report is due, respond with exactly: HEARTBEAT_OK',
     ].join('\n');
 
     const baseTools = [
@@ -2661,36 +2786,57 @@ export class Agent {
       'requirement_propose', 'requirement_list',
       'memory_save', 'memory_search', 'discover_tools',
     ];
-    if (this.config.agentRole === 'manager') {
-      baseTools.push('task_board_health', 'task_cleanup_duplicates', 'task_assign');
+    if (isManager) {
+      baseTools.push(
+        'task_board_health', 'task_cleanup_duplicates', 'task_assign',
+        'team_status', 'deliverable_create', 'deliverable_search',
+      );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);
 
-    try {
-      const reply = await this.withNetworkRetry(
-        () => this.handleMessage(prompt, undefined, undefined, {
+    const HEARTBEAT_MAX_RETRIES = 3;
+    const HEARTBEAT_RETRY_BASE_MS = 3000;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= HEARTBEAT_MAX_RETRIES; attempt++) {
+      try {
+        const reply = await this.handleMessage(prompt, undefined, undefined, {
           ephemeral: true,
           maxHistory: 30,
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
-        }),
-        'Heartbeat',
-      );
-      this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true);
+        });
+        this.state.lastHeartbeat = new Date().toISOString();
+        this.metricsCollector.recordHeartbeat(true);
 
-      const isOk = reply?.trim() === 'HEARTBEAT_OK';
-      if (reply && !isOk && reply.length > 20) {
-        this.emitActivityLog(activityId, 'text', reply);
-        this.memory.writeDailyLog(this.id, `[Heartbeat] ${reply}`);
+        const isOk = reply?.trim() === 'HEARTBEAT_OK';
+        if (reply && !isOk && reply.length > 20) {
+          this.emitActivityLog(activityId, 'text', reply);
+          this.memory.writeDailyLog(this.id, `[Heartbeat] ${reply}`);
+        }
+        this.endActivity(activityId);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < HEARTBEAT_MAX_RETRIES) {
+          const delay = HEARTBEAT_RETRY_BASE_MS * Math.pow(2, attempt);
+          log.warn(`Heartbeat attempt ${attempt + 1}/${HEARTBEAT_MAX_RETRIES + 1} failed, retrying in ${delay}ms`, {
+            agentId: this.id,
+            error: String(error).slice(0, 200),
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
-      this.endActivity(activityId);
-    } catch (error) {
-      this.emitActivityLog(activityId, 'error', String(error));
-      this.endActivity(activityId);
-      this.metricsCollector.recordHeartbeat(false);
-      log.error('Heartbeat failed after retries', { error: String(error) });
     }
+
+    this.emitActivityLog(activityId, 'error', String(lastError));
+    this.endActivity(activityId);
+    this.metricsCollector.recordHeartbeat(false);
+    log.error('Heartbeat failed after all retries', {
+      agentId: this.id,
+      attempts: HEARTBEAT_MAX_RETRIES + 1,
+      error: String(lastError),
+    });
   }
 
   /**

@@ -289,6 +289,13 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 
   const llmRouter = LLMRouter.createDefault(providerConfigs, defaultProvider);
 
+  // Apply enabled/disabled state from config
+  for (const [name, provCfg] of Object.entries(config.llm.providers)) {
+    if (provCfg.enabled === false) {
+      llmRouter.setProviderEnabled(name, false);
+    }
+  }
+
   // Wire LLM audit logging
   const llmLogger = new LLMLogger();
   llmRouter.setLogCallback((entry: LLMLogEntry) => llmLogger.log(entry));
@@ -1358,7 +1365,7 @@ async function showAuditSummary(config: ReturnType<typeof loadConfig>) {
 
 async function quickInit() {
   const { writeFileSync, mkdirSync } = await import('node:fs');
-  const { join } = await import('node:path');
+  const { join: pathJoin } = await import('node:path');
   const readline = await import('node:readline');
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -1367,56 +1374,175 @@ async function quickInit() {
       rl.question(`${q}${def ? ` [${def}]` : ''}: `, ans => r(ans.trim() || def || ''))
     );
 
-  console.log('\n  Welcome to Markus Quick Setup\n');
-  console.log('  This will configure ~/.markus/markus.json and create default templates.\n');
-
-  const provider = await ask('  LLM Provider (anthropic/openai/google/minimax/ollama)', 'anthropic');
-
-  const modelMap: Record<string, string> = {
+  const MODEL_MAP: Record<string, string> = {
     anthropic: 'claude-opus-4-6',
     openai: 'gpt-5.4',
     google: 'gemini-3-1-pro',
     minimax: 'MiniMax-M2.7',
+    siliconflow: 'Qwen/Qwen3.5-35B-A3B',
     ollama: 'llama3',
   };
 
-  let apiKey = '';
-  if (provider !== 'ollama') {
-    apiKey = await ask(`  ${provider.charAt(0).toUpperCase() + provider.slice(1)} API Key`) ?? '';
+  const ENV_KEY_MAP: Array<{ provider: string; label: string; envKey: string; baseUrl?: string }> = [
+    { provider: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY' },
+    { provider: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY' },
+    { provider: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY' },
+    { provider: 'siliconflow', label: 'SiliconFlow', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1' },
+    { provider: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1' },
+  ];
+
+  console.log('\n  Markus Setup\n');
+
+  // --- Step 1: Auto-detect available sources ---
+  const envProviders: Array<{ provider: string; label: string; key: string; baseUrl?: string }> = [];
+  for (const def of ENV_KEY_MAP) {
+    const key = process.env[def.envKey];
+    if (key) envProviders.push({ provider: def.provider, label: def.label, key, baseUrl: def.baseUrl });
   }
 
-  const port = await ask('  API Port', '3001');
+  let openclawPath = '';
+  const openclawCandidates = [
+    pathJoin(homedir(), '.openclaw', 'openclaw.json'),
+    pathJoin(homedir(), '.openclaw', 'openclaw.json5'),
+  ];
+  for (const p of openclawCandidates) {
+    if (existsSync(p)) { openclawPath = p; break; }
+  }
 
+  // --- Step 2: Show detected sources and let user choose ---
+  const sources: string[] = [];
+  if (envProviders.length > 0) {
+    console.log(`  Found ${envProviders.length} API key(s) in environment variables:`);
+    for (const ep of envProviders) console.log(`    - ${ep.label} (${ep.provider})`);
+    sources.push('env');
+  }
+  if (openclawPath) {
+    console.log(`  Found OpenClaw config: ${openclawPath}`);
+    sources.push('openclaw');
+  }
+  if (sources.length === 0) {
+    console.log('  No API keys detected in environment or OpenClaw config.');
+  }
+  console.log('');
+
+  let mode: string;
+  if (sources.length > 0) {
+    const options = [
+      ...sources.map(s => s === 'env' ? 'env (use environment variables)' : 'openclaw (import from OpenClaw)'),
+      'manual (enter API key manually)',
+    ];
+    mode = await ask(`  Config source? ${options.join(' / ')}`, sources[0]);
+    if (!['env', 'openclaw', 'manual'].includes(mode)) mode = sources[0];
+  } else {
+    mode = 'manual';
+  }
+
+  // --- Step 3: Build provider configs based on chosen source ---
+  const providers: Record<string, { apiKey?: string; baseUrl?: string; model?: string; enabled?: boolean }> = {};
+  let defaultProvider = '';
+
+  if (mode === 'env') {
+    for (const ep of envProviders) {
+      const model = process.env[`${ep.provider.toUpperCase()}_MODEL`] ?? MODEL_MAP[ep.provider] ?? '';
+      providers[ep.provider] = {
+        apiKey: ep.key,
+        model,
+        ...(ep.baseUrl ? { baseUrl: ep.baseUrl } : {}),
+        enabled: true,
+      };
+    }
+    defaultProvider = envProviders[0].provider;
+    console.log(`\n  Importing ${envProviders.length} provider(s) from environment variables.`);
+    if (envProviders.length > 1) {
+      const choices = envProviders.map(e => e.provider).join('/');
+      defaultProvider = await ask(`  Default provider? (${choices})`, defaultProvider);
+      if (!providers[defaultProvider]) defaultProvider = envProviders[0].provider;
+    }
+  } else if (mode === 'openclaw') {
+    try {
+      const raw = readFileSync(openclawPath, 'utf-8');
+      const cleaned = raw
+        .replace(/\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/,\s*([\]}])/g, '$1');
+      const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      const modelsSection = parsed.models as { providers?: Record<string, { baseUrl?: string; models?: Array<{ id: string; name: string }> }> } | undefined;
+      if (modelsSection?.providers) {
+        const provNames = Object.keys(modelsSection.providers);
+        console.log(`\n  Found ${provNames.length} provider(s) in OpenClaw config.`);
+        for (const [name, cfg] of Object.entries(modelsSection.providers)) {
+          providers[name] = {
+            ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
+            model: cfg.models?.[0]?.id,
+            enabled: true,
+          };
+        }
+        if (provNames.length > 0) defaultProvider = provNames[0];
+        if (provNames.length > 1) {
+          defaultProvider = await ask(`  Default provider? (${provNames.join('/')})`, defaultProvider);
+          if (!providers[defaultProvider]) defaultProvider = provNames[0];
+        }
+      } else {
+        console.log('\n  No model providers found in OpenClaw config, switching to manual mode.');
+        mode = 'manual';
+      }
+    } catch (e) {
+      console.log(`\n  Failed to parse OpenClaw config: ${e}\n  Switching to manual mode.`);
+      mode = 'manual';
+    }
+  }
+
+  if (mode === 'manual') {
+    const provider = await ask('  LLM provider (anthropic/openai/google/minimax/siliconflow/ollama)', 'anthropic');
+    defaultProvider = provider;
+    let apiKey = '';
+    if (provider !== 'ollama') {
+      apiKey = await ask(`  ${provider} API Key`) ?? '';
+    }
+    if (apiKey || provider === 'ollama') {
+      const baseUrlMap: Record<string, string> = {
+        minimax: 'https://api.minimax.io/v1',
+        siliconflow: 'https://api.siliconflow.cn/v1',
+      };
+      providers[provider] = {
+        ...(apiKey ? { apiKey } : {}),
+        model: MODEL_MAP[provider],
+        ...(baseUrlMap[provider] ? { baseUrl: baseUrlMap[provider] } : {}),
+        enabled: true,
+      };
+    }
+  }
+
+  // --- Step 4: API port ---
+  const port = await ask('\n  API Port', '3001');
   rl.close();
 
+  // --- Step 5: Save config ---
   const configUpdates: Record<string, unknown> = {
     llm: {
-      defaultProvider: provider,
-      defaultModel: modelMap[provider] ?? modelMap.anthropic,
-      providers: apiKey ? { [provider]: { apiKey } } : {},
+      defaultProvider,
+      defaultModel: MODEL_MAP[defaultProvider] ?? MODEL_MAP.anthropic,
+      providers,
     },
     server: { apiPort: parseInt(port), webPort: parseInt(port) - 1 },
   };
 
-  if (provider === 'minimax') {
-    (configUpdates.llm as Record<string, unknown>).providers = {
-      minimax: { apiKey, baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M2.7' },
-    };
-  }
-
   try {
     saveConfig(configUpdates as any);
-    console.log(`\n  Configuration saved to ${getDefaultConfigPath()}`);
+    console.log(`\n  Config saved to ${getDefaultConfigPath()}`);
+    if (Object.keys(providers).length > 0) {
+      console.log(`  Providers: ${Object.keys(providers).join(', ')} (default: ${defaultProvider})`);
+    }
   } catch (e) {
     console.error(`\n  Failed to save config: ${e}`);
   }
 
   // Ensure templates/roles directory exists with a default developer role
-  const rolesDir = join(process.cwd(), 'templates', 'roles', 'developer');
+  const rolesDir = pathJoin(process.cwd(), 'templates', 'roles', 'developer');
   if (!existsSync(rolesDir)) {
     mkdirSync(rolesDir, { recursive: true });
     writeFileSync(
-      join(rolesDir, 'ROLE.md'),
+      pathJoin(rolesDir, 'ROLE.md'),
       [
         '---',
         'name: Developer',

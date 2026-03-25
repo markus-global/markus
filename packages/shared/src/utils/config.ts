@@ -14,6 +14,7 @@ export interface MarkusConfig {
       apiKey?: string;
       baseUrl?: string;
       model?: string;
+      enabled?: boolean;
     }>;
     /** Request timeout in ms for all LLM providers (default: 90s) */
     timeoutMs?: number;

@@ -48,6 +48,8 @@ export function App() {
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
+  const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
     const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : (p as string) === 'templates' ? 'agents' : p;
@@ -60,10 +62,23 @@ export function App() {
     navBus.setHandler((p) => navigate(p as PageId));
   }, [navigate]);
 
+  const checkLlmConfig = useCallback(() => {
+    fetch('/api/settings/llm')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.providers) {
+          const configured = Object.values(d.providers as Record<string, { configured: boolean }>).some(p => p.configured);
+          setLlmConfigured(configured);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     api.auth.me()
       .then(({ user }) => {
         setAuthUser(user);
+        checkLlmConfig();
         prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
         prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
         prefetch(PREFETCH_KEYS.builderHubMyItems, () => hubApi.myItems());
@@ -82,6 +97,7 @@ export function App() {
     };
     window.addEventListener('hashchange', onHash);
     return () => { wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
@@ -123,7 +139,7 @@ export function App() {
   }
 
   if (showOnboarding) {
-    return <Onboarding onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); }} />;
+    return <Onboarding onComplete={() => { localStorage.setItem('markus_onboarded', '1'); setShowOnboarding(false); checkLlmConfig(); }} />;
   }
 
   return (
@@ -164,6 +180,17 @@ export function App() {
       )}
 
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+        {llmConfigured === false && !llmBannerDismissed && page !== 'settings' && (
+          <div className="flex items-center justify-between px-4 py-2 bg-amber-900/30 border-b border-amber-700/40 text-amber-300 text-sm shrink-0">
+            <span>No LLM provider configured — agents cannot process requests.</span>
+            <div className="flex items-center gap-3">
+              <button onClick={() => { navigate('settings'); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
+                Go to Settings
+              </button>
+              <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-300 text-xs">Dismiss</button>
+            </div>
+          </div>
+        )}
         <main className="flex-1 overflow-hidden flex flex-col">
           {(Object.keys(pageElements) as PageId[]).map(id => (
             mountedPages.has(id) ? (
