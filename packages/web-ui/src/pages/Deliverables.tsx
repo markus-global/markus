@@ -5,30 +5,33 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { navBus } from '../navBus.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
-  file:      { icon: '\u{1F4C4}', color: 'bg-emerald-900/40 text-emerald-400' },
-  document:  { icon: '\u{1F4DD}', color: 'bg-blue-900/40 text-blue-400' },
-  report:    { icon: '\u{1F4CA}', color: 'bg-amber-900/40 text-amber-400' },
-  directory: { icon: '\u{1F4C1}', color: 'bg-cyan-900/40 text-cyan-400' },
-  url:       { icon: '\u{1F517}', color: 'bg-pink-900/40 text-pink-400' },
-  text:      { icon: '\u{1F4AC}', color: 'bg-surface-overlay text-gray-400' },
+  file:      { icon: '\u{1F4C4}', color: 'bg-green-500/10 text-green-600' },
+  document:  { icon: '\u{1F4DD}', color: 'bg-blue-500/10 text-blue-600' },
+  report:    { icon: '\u{1F4CA}', color: 'bg-amber-500/10 text-amber-600' },
+  directory: { icon: '\u{1F4C1}', color: 'bg-blue-500/10 text-blue-600' },
+  url:       { icon: '\u{1F517}', color: 'bg-brand-500/10 text-brand-500' },
+  text:      { icon: '\u{1F4AC}', color: 'bg-surface-overlay text-fg-secondary' },
 };
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
-  active:   { label: 'Active',   color: 'text-emerald-400 bg-emerald-900/30' },
-  verified: { label: 'Verified', color: 'text-blue-400 bg-blue-900/30' },
-  outdated: { label: 'Outdated', color: 'text-red-400 bg-red-900/30' },
+  active:   { label: 'Active',   color: 'text-green-600 bg-green-500/10' },
+  verified: { label: 'Verified', color: 'text-blue-600 bg-blue-500/10' },
+  outdated: { label: 'Outdated', color: 'text-red-500 bg-red-500/10' },
 };
 
 const ALL_TYPES = ['file', 'document', 'report', 'directory', 'url', 'text'] as const;
 
 const ARTIFACT_META: Record<string, { icon: string; label: string; color: string }> = {
-  agent: { icon: '\u2726', label: 'Agent', color: 'bg-purple-900/40 text-purple-400' },
-  team:  { icon: '\u25C8', label: 'Team',  color: 'bg-cyan-900/40 text-cyan-400' },
-  skill: { icon: '\u2B21', label: 'Skill', color: 'bg-amber-900/40 text-amber-400' },
+  agent: { icon: '\u2726', label: 'Agent', color: 'bg-brand-500/10 text-brand-500' },
+  team:  { icon: '\u25C8', label: 'Team',  color: 'bg-blue-500/10 text-blue-600' },
+  skill: { icon: '\u2B21', label: 'Skill', color: 'bg-amber-500/10 text-amber-600' },
 };
 
 export function DeliverablesPage() {
+  const PAGE_SIZE = 100;
   const [items, setItems] = useState<DeliverableInfo[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +49,7 @@ export function DeliverablesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Create form
   const [newType, setNewType] = useState<string>('document');
@@ -84,21 +88,35 @@ export function DeliverablesPage() {
     return () => clearTimeout(debounceRef.current);
   }, [searchQuery]);
 
+  const searchParams = useMemo(() => ({
+    q: debouncedQuery || undefined,
+    projectId: filterProject || undefined,
+    agentId: filterAgent || undefined,
+    type: filterType || undefined,
+    status: filterStatus || undefined,
+    artifactType: filterArtifact || undefined,
+  }), [debouncedQuery, filterProject, filterAgent, filterType, filterStatus, filterArtifact]);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const { results } = await api.deliverables.search({
-        q: debouncedQuery || undefined,
-        projectId: filterProject || undefined,
-        agentId: filterAgent || undefined,
-        type: filterType || undefined,
-        status: filterStatus || undefined,
-        artifactType: filterArtifact || undefined,
-      });
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: PAGE_SIZE });
       setItems(results);
-    } catch { setItems([]); }
+      setTotalCount(total);
+    } catch { setItems([]); setTotalCount(0); }
     setLoading(false);
-  }, [debouncedQuery, filterProject, filterAgent, filterType, filterStatus, filterArtifact]);
+  }, [searchParams]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || items.length >= totalCount) return;
+    setLoadingMore(true);
+    try {
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: items.length, limit: PAGE_SIZE });
+      setItems(prev => [...prev, ...results]);
+      setTotalCount(total);
+    } catch { /* keep existing items */ }
+    setLoadingMore(false);
+  }, [searchParams, items.length, totalCount, loadingMore]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -106,6 +124,28 @@ export function DeliverablesPage() {
     const unsub = wsClient.on('deliverable:created', () => refresh());
     return unsub;
   }, [refresh]);
+
+  const checkNeedMore = useCallback(() => {
+    const el = listRef.current;
+    if (!el || loading || loadingMore || items.length >= totalCount) return;
+    if (el.scrollHeight <= el.clientHeight + 100) {
+      loadMore();
+    }
+  }, [loading, loadingMore, items.length, totalCount, loadMore]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+        loadMore();
+      }
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, [loadMore]);
+
+  useEffect(() => { checkNeedMore(); }, [checkNeedMore, collapsedGroups]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, { label: string; items: DeliverableInfo[] }>();
@@ -251,7 +291,7 @@ export function DeliverablesPage() {
       >
         <button
           onClick={() => setCopyMenuOpen(o => !o)}
-          className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-gray-400 hover:text-gray-200 backdrop-blur-sm border border-border-default/50 transition-all"
+          className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
           title="复制内容"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -262,21 +302,21 @@ export function DeliverablesPage() {
           <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
             <button
               onClick={() => { navigator.clipboard.writeText(content); flashMsg('success', 'Markdown 原文已复制'); setCopyMenuOpen(false); }}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
-              <span className="w-4 text-center text-gray-500 shrink-0 font-mono text-[10px]">Md</span>
+              <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">Md</span>
               复制 Markdown 原文
             </button>
             <button
               onClick={() => copyAsHtml('light', content)}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">☀️</span>
               复制 HTML（亮色）
             </button>
             <button
               onClick={() => copyAsHtml('dark', content)}
-              className="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-surface-overlay hover:text-white transition-colors flex items-center gap-2"
+              className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">🌙</span>
               复制 HTML（暗色）
@@ -285,7 +325,7 @@ export function DeliverablesPage() {
         )}
       </div>
       <div ref={previewRef}>
-        <MarkdownMessage content={content} className="text-gray-300 text-sm" />
+        <MarkdownMessage content={content} className="text-fg-secondary text-sm" />
       </div>
     </div>
   );
@@ -320,20 +360,25 @@ export function DeliverablesPage() {
       <div className="w-96 border-r border-border-default flex flex-col bg-surface-primary shrink-0">
         <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-300">Deliverables</h2>
+            <h2 className="text-sm font-semibold text-fg-secondary">
+              Deliverables{totalCount > 0 && <span className="ml-1.5 text-fg-tertiary font-normal">({totalCount})</span>}
+            </h2>
             <button onClick={openContributeForm} className="text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create</button>
           </div>
           <input
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search deliverables..."
-            className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors"
+            className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
           />
-          {/* Type filter */}
+          {/* Type filter (includes artifact types) */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-            <FilterPill label="All types" value="" current={filterType} onClick={setFilterType} />
+            <FilterPill label="All types" value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
             {ALL_TYPES.map(t => (
-              <FilterPill key={t} label={`${TYPE_META[t]?.icon ?? ''} ${t}`} value={t} current={filterType} onClick={setFilterType} />
+              <FilterPill key={t} label={`${TYPE_META[t]?.icon ?? ''} ${t}`} value={t} current={filterType} onClick={v => { setFilterType(v); setFilterArtifact(''); }} />
+            ))}
+            {(['agent', 'team', 'skill'] as const).map(a => (
+              <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${ARTIFACT_META[a].label}`} value={a} current={filterArtifact} onClick={v => { setFilterArtifact(v); setFilterType(''); }} />
             ))}
           </div>
           {/* Project filter */}
@@ -349,26 +394,19 @@ export function DeliverablesPage() {
             <FilterPill label="Verified" value="verified" current={filterStatus} onClick={setFilterStatus} />
             <FilterPill label="Outdated" value="outdated" current={filterStatus} onClick={setFilterStatus} />
           </div>
-          {/* Builder artifact filter */}
-          <div className="flex gap-1 overflow-x-auto scrollbar-hide">
-            <FilterPill label="All" value="" current={filterArtifact} onClick={setFilterArtifact} />
-            {(['agent', 'team', 'skill'] as const).map(a => (
-              <FilterPill key={a} label={`${ARTIFACT_META[a].icon} ${ARTIFACT_META[a].label}`} value={a} current={filterArtifact} onClick={setFilterArtifact} />
-            ))}
-          </div>
           {/* Group by */}
           <div className="flex gap-1.5 items-center">
-            <span className="text-[10px] text-gray-500">Group:</span>
+            <span className="text-[10px] text-fg-tertiary">Group:</span>
             {(['date', 'project', 'agent', 'type'] as const).map(g => (
               <button key={g} onClick={() => { setGroupBy(g); setCollapsedGroups(new Set()); }}
-                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-gray-400 hover:bg-surface-overlay'}`}>
+                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'}`}>
                 {g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
             {grouped.length > 1 && (
               <button
                 onClick={toggleAllGroups}
-                className="ml-auto px-1.5 py-1 rounded text-[10px] text-gray-500 hover:text-gray-300 hover:bg-surface-elevated transition-colors"
+                className="ml-auto px-1.5 py-1 rounded text-[10px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated transition-colors"
                 title={collapsedGroups.size === grouped.length ? 'Expand all' : 'Collapse all'}
               >
                 {collapsedGroups.size === grouped.length ? '▶ Expand' : '▼ Collapse'}
@@ -378,10 +416,10 @@ export function DeliverablesPage() {
         </div>
 
         {flash && (
-          <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-red-900/50 text-red-300'}`}>{flash.text}</div>
+          <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>{flash.text}</div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1">
           {loading ? (
             <div className="p-4 space-y-3">
               {[1, 2, 3].map(i => (
@@ -393,11 +431,11 @@ export function DeliverablesPage() {
             </div>
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-              <svg className="w-12 h-12 text-gray-700 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+              <svg className="w-12 h-12 text-fg-muted mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
-              <p className="text-sm text-gray-400">No deliverables yet</p>
-              <p className="text-xs text-gray-600 mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
+              <p className="text-sm text-fg-secondary">No deliverables yet</p>
+              <p className="text-xs text-fg-tertiary mt-1 mb-3">Deliverables are created when tasks complete or manually</p>
               <button onClick={openContributeForm} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ Create first</button>
             </div>
           ) : grouped.map(([key, group]) => {
@@ -409,36 +447,45 @@ export function DeliverablesPage() {
                   className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-surface-elevated/50 transition-colors group/header"
                 >
                   <svg
-                    className={`w-3 h-3 text-gray-600 transition-transform duration-200 shrink-0 ${isCollapsed ? '' : 'rotate-90'}`}
+                    className={`w-3 h-3 text-fg-tertiary transition-transform duration-200 shrink-0 ${isCollapsed ? '' : 'rotate-90'}`}
                     fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
                   >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
-                  <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider truncate">{group.label}</span>
-                  <span className="text-[10px] text-gray-600 shrink-0">({group.items.length})</span>
+                  <span className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider truncate">{group.label}</span>
+                  <span className="text-[10px] text-fg-tertiary shrink-0">({group.items.length})</span>
                 </button>
                 {!isCollapsed && group.items.map(item => (
                   <button key={item.id} onClick={() => setSelected(item)}
                     className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
-                    <div className="text-sm font-medium text-gray-200 truncate">{item.title}</div>
+                    <div className="text-sm font-medium text-fg-primary truncate">{item.title}</div>
                     <div className="flex items-center gap-2 mt-1">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${ARTIFACT_META[item.artifactType].color}`}>
                           {ARTIFACT_META[item.artifactType].icon} {ARTIFACT_META[item.artifactType].label}
                         </span>
                       ) : (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-gray-400'}`}>{item.type}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium uppercase ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{item.type}</span>
                       )}
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-gray-500'}`}>{item.status}</span>
-                      {item.agentId && <span className="text-[10px] text-gray-600 truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${STATUS_META[item.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{item.status}</span>
+                      {item.agentId && <span className="text-[10px] text-fg-tertiary truncate">{agentMap.get(item.agentId)?.name ?? 'Agent'}</span>}
                     </div>
                   </button>
                 ))}
               </div>
             );
           })}
+          {loadingMore && (
+            <div className="flex items-center justify-center gap-2 py-3 text-fg-tertiary">
+              <Spinner /> <span className="text-[10px]">Loading more...</span>
+            </div>
+          )}
           {!loading && items.length > 0 && (
-            <div className="text-center text-[10px] text-gray-600 py-2">{items.length} deliverables</div>
+            <div className="text-center text-[10px] text-fg-tertiary py-2">
+              {items.length < totalCount
+                ? `${items.length} / ${totalCount} deliverables`
+                : `${totalCount} deliverables`}
+            </div>
           )}
         </div>
       </div>
@@ -447,8 +494,8 @@ export function DeliverablesPage() {
       <div className="flex-1 overflow-y-auto">
         {!selected ? (
           <div className="flex-1 flex items-center justify-center h-full">
-            <div className="text-center text-gray-600 space-y-2">
-              <svg className="w-12 h-12 mx-auto text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+            <div className="text-center text-fg-tertiary space-y-2">
+              <svg className="w-12 h-12 mx-auto text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
               <p className="text-sm">Select a deliverable to view details</p>
@@ -458,28 +505,28 @@ export function DeliverablesPage() {
           <div className="p-6 space-y-5">
             {/* Header */}
             <div>
-              <h2 className="text-xl font-semibold text-white">{selected.title}</h2>
+              <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
               <div className="flex items-center gap-2 mt-2">
                 {selected.status !== 'verified' && (
                   <button onClick={() => handleVerify(selected)} disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 disabled:opacity-50 transition-colors">
+                    className="px-3 py-1.5 text-xs rounded-lg bg-green-600/20 text-green-600 hover:bg-green-600/30 disabled:opacity-50 transition-colors">
                     {actionLoading === 'verify' ? 'Verifying...' : 'Verify'}
                   </button>
                 )}
                 {selected.status !== 'outdated' && (
                   <button onClick={() => handleFlagOutdated(selected)} disabled={!!actionLoading}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-400 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
+                    className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 text-amber-600 hover:bg-amber-600/30 disabled:opacity-50 transition-colors">
                     {actionLoading === 'flag' ? 'Flagging...' : 'Flag Outdated'}
                   </button>
                 )}
                 <button onClick={() => handleRemove(selected)} disabled={!!actionLoading}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
+                  className="px-3 py-1.5 text-xs rounded-lg bg-red-600/20 text-red-500 hover:bg-red-600/30 disabled:opacity-50 transition-colors">
                   {actionLoading === 'remove' ? 'Removing...' : 'Remove'}
                 </button>
               </div>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-gray-400'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
-                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-gray-500'}`}>{selected.status}</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${TYPE_META[selected.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[selected.type]?.icon ?? ''} {selected.type}</span>
+                <span className={`px-2 py-0.5 rounded text-xs ${STATUS_META[selected.status]?.color ?? 'bg-surface-elevated text-fg-tertiary'}`}>{selected.status}</span>
                 {selected.artifactType && ARTIFACT_META[selected.artifactType] && (
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${ARTIFACT_META[selected.artifactType].color}`}>
                     {ARTIFACT_META[selected.artifactType].icon} Builder {ARTIFACT_META[selected.artifactType].label}
@@ -490,29 +537,29 @@ export function DeliverablesPage() {
                 <div className="flex items-center gap-2 mt-2 bg-surface-secondary/60 border border-border-default rounded-lg px-3 py-2">
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
-                    className="text-xs font-mono text-brand-400 hover:text-brand-300 hover:underline truncate flex-1 text-left cursor-pointer"
+                    className="text-xs font-mono text-brand-500 hover:text-brand-500 hover:underline truncate flex-1 text-left cursor-pointer"
                     title="Open in file browser"
                   >{selected.reference}</button>
                   <button
                     onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', 'Failed to open file browser')); }}
-                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-400 hover:bg-brand-600/30 transition-colors shrink-0"
+                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
                     title="Reveal in Finder"
                   >Open</button>
                   <button
                     onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
-                    className="px-2 py-1 text-[10px] rounded bg-surface-overlay/50 text-gray-400 hover:bg-surface-overlay transition-colors shrink-0"
+                    className="px-2 py-1 text-[10px] rounded bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay transition-colors shrink-0"
                     title="Copy path to clipboard"
                   >Copy</button>
                 </div>
               )}
               {selected.reference && selected.type === 'url' && (
                 <div className="mt-2">
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-400 hover:underline break-all">{selected.reference}</a>
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 hover:underline break-all">{selected.reference}</a>
                 </div>
               )}
               {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && selected.type !== 'url' && (
                 <div className="mt-2">
-                  <span className="text-xs text-gray-500 font-mono break-all">{selected.reference}</span>
+                  <span className="text-xs text-fg-tertiary font-mono break-all">{selected.reference}</span>
                 </div>
               )}
             </div>
@@ -525,8 +572,8 @@ export function DeliverablesPage() {
                 </div>
                 {selected.reference && (
                   <div className="px-3 py-2 bg-surface-secondary/50 border border-border-default rounded-lg">
-                    <span className="text-[10px] text-gray-500 uppercase tracking-wider block mb-1">Artifact Directory</span>
-                    <span className="text-xs text-gray-400 font-mono break-all">{selected.reference}</span>
+                    <span className="text-[10px] text-fg-tertiary uppercase tracking-wider block mb-1">Artifact Directory</span>
+                    <span className="text-xs text-fg-secondary font-mono break-all">{selected.reference}</span>
                   </div>
                 )}
                 <div className="flex gap-2">
@@ -539,42 +586,42 @@ export function DeliverablesPage() {
                 </div>
                 {selected.summary && (
                   <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                    <MarkdownMessage content={selected.summary} className="text-gray-300 text-sm" />
+                    <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
                   </div>
                 )}
               </div>
             ) : (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 {selected.type === 'url' && selected.reference ? (
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline text-sm break-all">{selected.reference}</a>
+                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:underline text-sm break-all">{selected.reference}</a>
                 ) : previewLoading ? (
-                  <div className="flex items-center gap-2 text-gray-500 text-sm"><Spinner /> Loading preview...</div>
+                  <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> Loading preview...</div>
                 ) : previewImage ? (
                   <div className="flex flex-col items-center gap-2">
                     <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
-                    <span className="text-xs text-gray-500">{previewImage.name}</span>
+                    <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
                   </div>
                 ) : previewContent ? (
                   renderMarkdownPreview(previewContent)
                 ) : showCopyPath ? (
                   <div className="space-y-3">
-                    <p className="text-sm text-gray-400">This {selected.type} cannot be previewed in the browser.</p>
+                    <p className="text-sm text-fg-secondary">This {selected.type} cannot be previewed in the browser.</p>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-400 hover:text-brand-300 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
+                        className="text-xs bg-surface-elevated px-3 py-2 rounded text-brand-500 hover:text-brand-500 hover:underline flex-1 truncate text-left cursor-pointer font-mono"
                         title="Open in file browser"
                       >{selected.reference}</button>
                       <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-400 hover:bg-brand-600/30 transition-colors shrink-0">Open</button>
+                        className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">Open</button>
                       <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-surface-overlay/50 text-gray-400 hover:bg-surface-overlay transition-colors shrink-0">Copy</button>
+                        className="px-3 py-2 text-xs rounded-lg bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay transition-colors shrink-0">Copy</button>
                     </div>
                   </div>
                 ) : selected.summary ? (
                   renderMarkdownPreview(selected.summary)
                 ) : (
-                  <p className="text-sm text-gray-600 italic">No content</p>
+                  <p className="text-sm text-fg-tertiary italic">No content</p>
                 )}
               </div>
             )}
@@ -584,21 +631,21 @@ export function DeliverablesPage() {
               <div className="flex gap-4 flex-wrap">
                 {selected.diffStats && (
                   <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-gray-500 font-medium">Diff Stats</div>
+                    <div className="text-fg-tertiary font-medium">Diff Stats</div>
                     <div className="flex gap-3">
-                      <span className="text-gray-400">{selected.diffStats.filesChanged} files</span>
-                      <span className="text-emerald-400">+{selected.diffStats.additions}</span>
-                      <span className="text-red-400">-{selected.diffStats.deletions}</span>
+                      <span className="text-fg-secondary">{selected.diffStats.filesChanged} files</span>
+                      <span className="text-green-600">+{selected.diffStats.additions}</span>
+                      <span className="text-red-500">-{selected.diffStats.deletions}</span>
                     </div>
                   </div>
                 )}
                 {selected.testResults && (
                   <div className="bg-surface-secondary border border-border-default rounded-lg px-4 py-3 text-xs space-y-1">
-                    <div className="text-gray-500 font-medium">Tests</div>
+                    <div className="text-fg-tertiary font-medium">Tests</div>
                     <div className="flex gap-3">
-                      <span className="text-emerald-400">{selected.testResults.passed} passed</span>
-                      <span className="text-red-400">{selected.testResults.failed} failed</span>
-                      <span className="text-gray-400">{selected.testResults.skipped} skipped</span>
+                      <span className="text-green-600">{selected.testResults.passed} passed</span>
+                      <span className="text-red-500">{selected.testResults.failed} failed</span>
+                      <span className="text-fg-secondary">{selected.testResults.skipped} skipped</span>
                     </div>
                   </div>
                 )}
@@ -609,30 +656,30 @@ export function DeliverablesPage() {
             {selected.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {selected.tags.map(tag => (
-                  <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-gray-400 rounded">{tag}</span>
+                  <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
                 ))}
               </div>
             )}
 
             {/* Association links */}
             <div className="border-t border-border-default pt-4 space-y-2">
-              <div className="text-xs text-gray-500 font-medium">Links</div>
+              <div className="text-xs text-fg-tertiary font-medium">Links</div>
               <div className="flex gap-3 flex-wrap">
                 {selected.taskId && (
                   <button onClick={() => navBus.navigate('projects', { openTask: selected.taskId! })}
-                    className="text-xs text-brand-400 hover:underline bg-brand-900/20 px-2.5 py-1 rounded">
+                    className="text-xs text-brand-500 hover:underline bg-brand-500/10 px-2.5 py-1 rounded">
                     Task: {selected.taskId.slice(0, 12)}...
                   </button>
                 )}
                 {selected.agentId && (
                   <button onClick={() => navBus.navigate('team', { selectAgent: selected.agentId! })}
-                    className="text-xs text-cyan-400 hover:underline bg-cyan-900/20 px-2.5 py-1 rounded">
+                    className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
                     Agent: {agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12)}
                   </button>
                 )}
                 {selected.projectId && (
                   <button onClick={() => navBus.navigate('projects', { projectId: selected.projectId! })}
-                    className="text-xs text-blue-400 hover:underline bg-blue-900/20 px-2.5 py-1 rounded">
+                    className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
                     Project: {projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12)}
                   </button>
                 )}
@@ -640,13 +687,13 @@ export function DeliverablesPage() {
             </div>
 
             {/* Metadata */}
-            <div className="text-xs text-gray-600 space-y-1 border-t border-border-default pt-4">
+            <div className="text-xs text-fg-tertiary space-y-1 border-t border-border-default pt-4">
               <div className="flex gap-6 flex-wrap">
-                <span>Created: <span className="text-gray-400">{new Date(selected.createdAt).toLocaleString()}</span></span>
-                <span>Updated: <span className="text-gray-400">{new Date(selected.updatedAt).toLocaleString()}</span></span>
-                <span>Accessed: <span className="text-gray-400">{selected.accessCount}x</span></span>
+                <span>Created: <span className="text-fg-secondary">{new Date(selected.createdAt).toLocaleString()}</span></span>
+                <span>Updated: <span className="text-fg-secondary">{new Date(selected.updatedAt).toLocaleString()}</span></span>
+                <span>Accessed: <span className="text-fg-secondary">{selected.accessCount}x</span></span>
               </div>
-              <div className="text-gray-700 select-all">ID: {selected.id}</div>
+              <div className="text-fg-muted select-all">ID: {selected.id}</div>
             </div>
           </div>
         )}
@@ -656,45 +703,45 @@ export function DeliverablesPage() {
       {showCreate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => !creating && setShowCreate(false)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[36rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-white">Create Deliverable</h3>
+            <h3 className="text-base font-semibold text-fg-primary">Create Deliverable</h3>
 
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Type</label>
+              <label className="text-xs text-fg-tertiary block mb-1">Type</label>
               <select value={newType} onChange={e => setNewType(e.target.value)}
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200">
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
                 {ALL_TYPES.map(t => <option key={t} value={t}>{TYPE_META[t]?.icon ?? ''} {t}</option>)}
               </select>
             </div>
 
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Title <span className="text-red-400">*</span></label>
+              <label className="text-xs text-fg-tertiary block mb-1">Title <span className="text-red-500">*</span></label>
               <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Clear, searchable title"
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
             </div>
 
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Reference <span className="text-gray-600">(file path, URL, branch name)</span></label>
+              <label className="text-xs text-fg-tertiary block mb-1">Reference <span className="text-fg-tertiary">(file path, URL, branch name)</span></label>
               <input value={newReference} onChange={e => setNewReference(e.target.value)} placeholder="/path/to/file or https://..."
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors font-mono" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div>
-              <label className="text-xs text-gray-500 block mb-1">Summary <span className="text-red-400">*</span> <span className="text-gray-600">(Markdown)</span></label>
+              <label className="text-xs text-fg-tertiary block mb-1">Summary <span className="text-red-500">*</span> <span className="text-fg-tertiary">(Markdown)</span></label>
               <textarea value={newSummary} onChange={e => setNewSummary(e.target.value)}
                 placeholder="Describe the deliverable..."
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 h-36 resize-none focus:border-brand-500 focus:outline-none transition-colors font-mono" />
+                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary h-36 resize-none focus:border-brand-500 focus:outline-none transition-colors font-mono" />
             </div>
 
             <div className="flex gap-4">
               <div className="flex-1">
-                <label className="text-xs text-gray-500 block mb-1">Tags <span className="text-gray-600">(comma separated)</span></label>
+                <label className="text-xs text-fg-tertiary block mb-1">Tags <span className="text-fg-tertiary">(comma separated)</span></label>
                 <input value={newTags} onChange={e => setNewTags(e.target.value)} placeholder="react, api, docs"
-                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-brand-500 focus:outline-none transition-colors" />
+                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors" />
               </div>
               <div className="flex-1">
-                <label className="text-xs text-gray-500 block mb-1">Project</label>
+                <label className="text-xs text-fg-tertiary block mb-1">Project</label>
                 <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)}
-                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-gray-200">
+                  className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary">
                   <option value="">None</option>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -703,7 +750,7 @@ export function DeliverablesPage() {
 
             <div className="flex justify-end gap-3 pt-1 border-t border-border-default">
               <button onClick={() => setShowCreate(false)} disabled={creating}
-                className="text-sm text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors py-2">Cancel</button>
+                className="text-sm text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors py-2">Cancel</button>
               <button onClick={handleCreate}
                 disabled={creating || !newTitle.trim() || !newSummary.trim()}
                 className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50 flex items-center gap-2 transition-colors">
@@ -793,7 +840,7 @@ function FilterPill({ label, value, current, onClick }: { label: string; value: 
     <button
       onClick={() => onClick(current === value ? '' : value)}
       className={`px-2 py-1 rounded text-xs whitespace-nowrap shrink-0 transition-colors ${
-        current === value ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-gray-400 hover:bg-surface-overlay'
+        current === value ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'
       }`}
     >
       {label}

@@ -35,17 +35,17 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
       <div className="w-full max-w-sm relative z-10">
         <div className="text-center mb-8">
           <img src="/logo.png" alt="Markus" className="w-14 h-14 mx-auto mb-3 rounded-xl shadow-lg shadow-black/40" />
-          <div className="text-2xl font-extrabold tracking-tight text-white mb-1">Markus</div>
-          <div className="text-sm text-gray-500">AI Digital Employee Platform</div>
+          <div className="text-2xl font-extrabold tracking-tight text-fg-primary mb-1">Markus</div>
+          <div className="text-sm text-fg-tertiary">AI Digital Employee Platform</div>
         </div>
 
         <form onSubmit={submit} className="bg-surface-secondary/80 backdrop-blur-sm border border-border-default rounded-2xl p-8 space-y-5 shadow-2xl shadow-black/30">
           <div>
-            <h2 className="text-lg font-semibold text-white text-center">
+            <h2 className="text-lg font-semibold text-fg-primary text-center">
               {isFirstTime ? 'Set Your Password' : 'Change Password'}
             </h2>
             {isFirstTime && (
-              <p className="text-xs text-amber-400/80 text-center mt-2">
+              <p className="text-xs text-amber-600/80 text-center mt-2">
                 You're using the default password. Please set a new one before continuing.
               </p>
             )}
@@ -53,44 +53,44 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
 
           {!isFirstTime && (
             <div className="space-y-1">
-              <label className="text-xs text-gray-500 font-medium">Current Password</label>
+              <label className="text-xs text-fg-tertiary font-medium">Current Password</label>
               <input
                 type="password"
                 value={current}
                 onChange={e => setCurrent(e.target.value)}
                 autoComplete="current-password"
-                className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
+                className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               />
             </div>
           )}
 
           <div className="space-y-1">
-            <label className="text-xs text-gray-500 font-medium">New Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">New Password</label>
             <input
               type="password"
               value={next}
               onChange={e => setNext(e.target.value)}
               autoComplete="new-password"
-              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               required
               minLength={6}
             />
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-gray-500 font-medium">Confirm New Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">Confirm New Password</label>
             <input
               type="password"
               value={confirm}
               onChange={e => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               required
             />
           </div>
 
           {error && (
-            <div className="px-3 py-2 bg-red-900/30 border border-red-700/50 rounded-lg text-xs text-red-400">
+            <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
               {error}
             </div>
           )}

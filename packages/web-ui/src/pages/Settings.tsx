@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api.ts';
+import type { ThemeMode } from '../hooks/useTheme.ts';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -15,7 +16,7 @@ interface EnvModelDetected {
 }
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 
-export function Settings() {
+export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void } = {}) {
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -198,14 +199,39 @@ export function Settings() {
 
       <div className="p-7 space-y-10 max-w-4xl">
 
+        {/* ───── Appearance ───── */}
+        <Section title="Appearance">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Theme</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Choose light, dark, or follow your system preference</div>
+              </div>
+              <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
+                {([['system', 'System'], ['light', 'Light'], ['dark', 'Dark']] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => onThemeChange?.(val)}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      theme === val ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Section>
+
         {/* ───── First-Run Setup Guide ───── */}
         {showSetupGuide && (
-          <div className="relative bg-gradient-to-br from-brand-900/40 to-surface-secondary border border-brand-700/40 rounded-2xl p-6 space-y-5">
+          <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
             <button onClick={() => setSetupDismissed(true)}
-              className="absolute top-4 right-4 text-gray-500 hover:text-gray-300 text-xs">Skip</button>
+              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">Skip</button>
             <div>
-              <h3 className="text-base font-semibold text-gray-100">Welcome — Configure Your LLM</h3>
-              <p className="text-sm text-gray-400 mt-1">Markus needs at least one LLM provider to work. Choose a way to get started:</p>
+              <h3 className="text-base font-semibold text-fg-primary">Welcome — Configure Your LLM</h3>
+              <p className="text-sm text-fg-secondary mt-1">Markus needs at least one LLM provider to work. Choose a way to get started:</p>
             </div>
 
             {/* Option 1: Environment variables (auto-detected) */}
@@ -215,7 +241,7 @@ export function Settings() {
               description="Automatically detected API keys from .env or system environment."
               active={!!(envModels && envModels.detected.length > 0)}
             >
-              {envLoading && <div className="text-xs text-gray-500">Detecting...</div>}
+              {envLoading && <div className="text-xs text-fg-tertiary">Detecting...</div>}
               {envModels && envModels.detected.length > 0 && (
                 <div className="space-y-2">
                   {envModels.detected.map(d => (
@@ -224,10 +250,10 @@ export function Settings() {
                         onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
                         className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
                       <div className="flex-1 min-w-0">
-                        <span className="text-sm text-gray-200">{d.displayName}</span>
-                        <span className="text-xs text-gray-500 ml-2">{d.model}</span>
+                        <span className="text-sm text-fg-primary">{d.displayName}</span>
+                        <span className="text-xs text-fg-tertiary ml-2">{d.model}</span>
                       </div>
-                      <code className="text-[10px] text-gray-600">{d.apiKeyPreview}</code>
+                      <code className="text-[10px] text-fg-tertiary">{d.apiKeyPreview}</code>
                     </label>
                   ))}
                   <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
@@ -237,7 +263,7 @@ export function Settings() {
                 </div>
               )}
               {envModels && envModels.detected.length === 0 && (
-                <div className="text-xs text-gray-500">No API keys found. Set environment variables like <code className="text-gray-400">ANTHROPIC_API_KEY</code> or <code className="text-gray-400">OPENAI_API_KEY</code> and restart the server.</div>
+                <div className="text-xs text-fg-tertiary">No API keys found. Set environment variables like <code className="text-fg-secondary">ANTHROPIC_API_KEY</code> or <code className="text-fg-secondary">OPENAI_API_KEY</code> and restart the server.</div>
               )}
               {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
             </SetupCard>
@@ -250,14 +276,14 @@ export function Settings() {
             >
               {!openclawPreview ? (
                 <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                  className="px-4 py-2 bg-surface-overlay hover:bg-gray-600 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                  className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
                   {openclawLoading ? 'Detecting...' : 'Detect OpenClaw'}
                 </button>
               ) : openclawPreview.found ? (
                 <div className="space-y-2">
-                  <div className="text-xs text-green-400">Found: <code className="text-gray-400">{openclawPreview.summary.configPath}</code></div>
+                  <div className="text-xs text-green-600">Found: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                   {openclawPreview.summary.models && (
-                    <div className="text-xs text-gray-400">{openclawPreview.summary.models.providerCount} providers, {openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0)} models</div>
+                    <div className="text-xs text-fg-secondary">{openclawPreview.summary.models.providerCount} providers, {openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0)} models</div>
                   )}
                   <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                     className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
@@ -265,7 +291,7 @@ export function Settings() {
                   </button>
                 </div>
               ) : (
-                <div className="text-xs text-gray-500">No OpenClaw config found.</div>
+                <div className="text-xs text-fg-tertiary">No OpenClaw config found.</div>
               )}
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </SetupCard>
@@ -274,7 +300,7 @@ export function Settings() {
             <SetupCard
               step="3"
               title="Manual Configuration"
-              description={<>Edit <code className="text-gray-400">~/.markus/markus.json</code> directly, then restart the server.</>}
+              description={<>Edit <code className="text-fg-secondary">~/.markus/markus.json</code> directly, then restart the server.</>}
             />
           </div>
         )}
@@ -287,7 +313,7 @@ export function Settings() {
               <InfoCard label="Version" value={health.version} color="indigo" />
               <InfoCard label="Active Agents" value={String(health.agents)} color="purple" />
             </div>
-          ) : <div className="text-sm text-gray-500">Loading...</div>}
+          ) : <div className="text-sm text-fg-tertiary">Loading...</div>}
         </Section>
 
         {/* ───── Default Provider ───── */}
@@ -296,7 +322,7 @@ export function Settings() {
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium">Primary Provider</div>
-                <div className="text-xs text-gray-500 mt-0.5">Used for all agent interactions unless overridden</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Used for all agent interactions unless overridden</div>
               </div>
               <div className="flex items-center gap-3">
                 {llm ? (
@@ -304,7 +330,7 @@ export function Settings() {
                     className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
                     {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">No providers configured</option>}
                   </select>
-                ) : <div className="text-xs text-gray-500">Loading...</div>}
+                ) : <div className="text-xs text-fg-tertiary">Loading...</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
                     className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
@@ -324,14 +350,14 @@ export function Settings() {
               <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 opacity-60'}`}>
                 <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => setExpandedProvider(expandedProvider === name ? null : name)}>
                   <div className="flex items-center gap-3">
-                    <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-yellow-400' : 'bg-gray-600'}`} />
+                    <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{info.displayName ?? name}</span>
-                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-900/50 text-brand-400 px-1.5 py-0.5 rounded">default</span>}
-                        {info.configured && !info.enabled && <span className="text-[10px] bg-yellow-900/50 text-yellow-400 px-1.5 py-0.5 rounded">disabled</span>}
+                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">default</span>}
+                        {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">disabled</span>}
                       </div>
-                      <div className="text-xs text-gray-500 mt-0.5">{info.model || 'Not configured'}</div>
+                      <div className="text-xs text-fg-tertiary mt-0.5">{info.model || 'Not configured'}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
@@ -345,9 +371,9 @@ export function Settings() {
                         <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${info.enabled ? 'translate-x-4' : 'translate-x-1'}`} />
                       </button>
                     )}
-                    {info.contextWindow && <span className="text-[10px] text-gray-500">{(info.contextWindow / 1000).toFixed(0)}K ctx</span>}
-                    {info.cost && <span className="text-[10px] text-gray-500">${info.cost.input}/{info.cost.output} per 1M</span>}
-                    <span className="text-gray-600 text-xs">{expandedProvider === name ? '▲' : '▼'}</span>
+                    {info.contextWindow && <span className="text-[10px] text-fg-tertiary">{(info.contextWindow / 1000).toFixed(0)}K ctx</span>}
+                    {info.cost && <span className="text-[10px] text-fg-tertiary">${info.cost.input}/{info.cost.output} per 1M</span>}
+                    <span className="text-fg-tertiary text-xs">{expandedProvider === name ? '▲' : '▼'}</span>
                   </div>
                 </div>
 
@@ -364,7 +390,7 @@ export function Settings() {
 
                     {info.cost && (
                       <div className="bg-surface-elevated/40 rounded-lg p-3">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Pricing (per 1M tokens)</div>
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">Pricing (per 1M tokens)</div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                           <MiniStat label="Input" value={`$${info.cost.input}`} />
                           <MiniStat label="Output" value={`$${info.cost.output}`} />
@@ -376,16 +402,16 @@ export function Settings() {
 
                     {info.models && info.models.length > 0 && (
                       <div>
-                        <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Available Models</div>
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">Available Models</div>
                         <div className="space-y-1.5">
                           {info.models.map(m => (
                             <div key={m.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-elevated/30 text-xs">
                               <div className="flex items-center gap-2">
-                                <span className="text-gray-300">{m.name}</span>
-                                {m.reasoning && <span className="text-[9px] bg-amber-900/40 text-amber-400 px-1 py-0.5 rounded">reasoning</span>}
-                                {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-900/40 text-blue-400 px-1 py-0.5 rounded">vision</span>}
+                                <span className="text-fg-secondary">{m.name}</span>
+                                {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">reasoning</span>}
+                                {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">vision</span>}
                               </div>
-                              <div className="flex items-center gap-3 text-gray-500">
+                              <div className="flex items-center gap-3 text-fg-tertiary">
                                 <span>{(m.contextWindow / 1000).toFixed(0)}K ctx</span>
                                 <span>${m.cost.input}/${m.cost.output}</span>
                               </div>
@@ -396,8 +422,8 @@ export function Settings() {
                     )}
 
                     {!info.configured && (
-                      <div className="text-xs text-gray-500">
-                        Configure the API key in <code className="text-gray-400">~/.markus/markus.json</code> or environment variables to enable this provider.
+                      <div className="text-xs text-fg-tertiary">
+                        Configure the API key in <code className="text-fg-secondary">~/.markus/markus.json</code> or environment variables to enable this provider.
                       </div>
                     )}
                   </div>
@@ -406,8 +432,8 @@ export function Settings() {
             ))}
           </div>
 
-          <div className="text-xs text-gray-600 px-1 mt-3">
-            Configure API keys in <code className="text-gray-500">~/.markus/markus.json</code> or environment variables
+          <div className="text-xs text-fg-tertiary px-1 mt-3">
+            Configure API keys in <code className="text-fg-tertiary">~/.markus/markus.json</code> or environment variables
           </div>
         </Section>
 
@@ -416,16 +442,16 @@ export function Settings() {
         {/* ───── Environment Variable Config ───── */}
         <Section title="Environment Variable Configuration">
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-gray-400">Detect model API keys from environment variables and write them to the config file.</div>
+            <div className="text-sm text-fg-secondary">Detect model API keys from environment variables and write them to the config file.</div>
             <button onClick={() => void detectEnvModels()} disabled={envLoading}
-              className="px-4 py-2 bg-surface-overlay hover:bg-gray-600 disabled:opacity-40 text-white text-sm rounded-lg transition-colors flex items-center gap-2">
+              className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors flex items-center gap-2">
               <svg className={`w-4 h-4 ${envLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
               {envLoading ? 'Detecting...' : 'Refresh Environment Variables'}
             </button>
 
             {envModels && envModels.detected.length > 0 && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-gray-500 uppercase tracking-wider">Detected Providers — select to apply:</div>
+                <div className="text-xs text-fg-tertiary uppercase tracking-wider">Detected Providers — select to apply:</div>
                 {envModels.detected.map(d => (
                   <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
                     <div className="flex items-center gap-3">
@@ -433,22 +459,22 @@ export function Settings() {
                         onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
                         className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
                       <div>
-                        <div className="text-sm text-gray-200 font-medium">{d.displayName}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          Key: <code className="text-gray-400">{d.apiKeyPreview}</code>
-                          {' / '}Model: <code className="text-gray-400">{d.model}</code>
-                          {d.baseUrl && <>{' / '}URL: <code className="text-gray-400">{d.baseUrl}</code></>}
+                        <div className="text-sm text-fg-primary font-medium">{d.displayName}</div>
+                        <div className="text-xs text-fg-tertiary mt-0.5">
+                          Key: <code className="text-fg-secondary">{d.apiKeyPreview}</code>
+                          {' / '}Model: <code className="text-fg-secondary">{d.model}</code>
+                          {d.baseUrl && <>{' / '}URL: <code className="text-fg-secondary">{d.baseUrl}</code></>}
                         </div>
                       </div>
                     </div>
-                    <div className="text-xs text-gray-600">
+                    <div className="text-xs text-fg-tertiary">
                       {Object.keys(d.envVars).map(k => <div key={k}><code>{k}</code></div>)}
                     </div>
                   </label>
                 ))}
                 {envModels.timeoutMs && (
-                  <div className="text-xs text-gray-500">
-                    LLM Timeout: <code className="text-gray-400">{envModels.timeoutMs}ms</code> (from <code>LLM_TIMEOUT_MS</code>)
+                  <div className="text-xs text-fg-tertiary">
+                    LLM Timeout: <code className="text-fg-secondary">{envModels.timeoutMs}ms</code> (from <code>LLM_TIMEOUT_MS</code>)
                   </div>
                 )}
                 <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
@@ -464,25 +490,25 @@ export function Settings() {
         {/* ───── Import from OpenClaw ───── */}
         <Section title="Import from OpenClaw">
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-gray-400">Detect and import LLM configurations from an existing OpenClaw installation.</div>
+            <div className="text-sm text-fg-secondary">Detect and import LLM configurations from an existing OpenClaw installation.</div>
             <div className="flex gap-3">
               <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
-                className="px-4 py-2 bg-surface-overlay hover:bg-gray-600 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
                 {openclawLoading ? 'Detecting...' : 'Detect OpenClaw Config'}
               </button>
             </div>
 
             {openclawPreview && openclawPreview.found && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-green-400">Found OpenClaw config at: <code className="text-gray-400">{openclawPreview.summary.configPath}</code></div>
+                <div className="text-xs text-green-600">Found OpenClaw config at: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                 {openclawPreview.summary.models && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 mb-2">{openclawPreview.summary.models.providerCount} model providers found:</div>
+                    <div className="text-xs text-fg-tertiary mb-2">{openclawPreview.summary.models.providerCount} model providers found:</div>
                     <div className="space-y-1">
                       {openclawPreview.summary.models.providers.map(p => (
                         <div key={p.name} className="flex items-center justify-between text-xs">
-                          <span className="text-gray-300">{p.name}</span>
-                          <span className="text-gray-500">{p.modelCount} models {p.baseUrl ? `(${p.baseUrl})` : ''}</span>
+                          <span className="text-fg-secondary">{p.name}</span>
+                          <span className="text-fg-tertiary">{p.modelCount} models {p.baseUrl ? `(${p.baseUrl})` : ''}</span>
                         </div>
                       ))}
                     </div>
@@ -490,7 +516,7 @@ export function Settings() {
                 )}
                 {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-gray-500 mb-1">Channels: {openclawPreview.summary.channels.join(', ')}</div>
+                    <div className="text-xs text-fg-tertiary mb-1">Channels: {openclawPreview.summary.channels.join(', ')}</div>
                   </div>
                 )}
                 <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
@@ -519,12 +545,12 @@ function SetupCard({ step, title, description, active, children }: {
   children?: React.ReactNode;
 }) {
   return (
-    <div className={`rounded-xl border p-4 space-y-3 transition-colors ${active ? 'border-brand-500/60 bg-brand-900/20' : 'border-border-default bg-surface-secondary/60'}`}>
+    <div className={`rounded-xl border p-4 space-y-3 transition-colors ${active ? 'border-brand-500/60 bg-brand-500/10' : 'border-border-default bg-surface-secondary/60'}`}>
       <div className="flex items-start gap-3">
-        <span className="flex-none w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center text-xs font-bold text-gray-400">{step}</span>
+        <span className="flex-none w-6 h-6 rounded-full bg-surface-overlay flex items-center justify-center text-xs font-bold text-fg-secondary">{step}</span>
         <div className="min-w-0">
-          <div className="text-sm font-medium text-gray-200">{title}</div>
-          <div className="text-xs text-gray-500 mt-0.5">{description}</div>
+          <div className="text-sm font-medium text-fg-primary">{title}</div>
+          <div className="text-xs text-fg-tertiary mt-0.5">{description}</div>
         </div>
       </div>
       {children && <div className="pl-9">{children}</div>}
@@ -534,7 +560,7 @@ function SetupCard({ step, title, description, active, children }: {
 
 function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   return (
-    <div className={`text-xs px-3 py-2 rounded-lg ${type === 'ok' ? 'bg-green-900/30 text-green-400 border border-green-800/40' : 'bg-red-900/20 text-red-400 border border-red-800/40'}`}>
+    <div className={`text-xs px-3 py-2 rounded-lg ${type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/30' : 'bg-red-500/10 text-red-500 border border-red-500/30'}`}>
       {text}
     </div>
   );
@@ -543,14 +569,14 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">{title}</h3>
+      <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
       <div className="space-y-4">{children}</div>
     </section>
   );
 }
 
 function InfoCard({ label, value, color }: { label: string; value: string; color: string }) {
-  const bg = color === 'green' ? 'bg-green-500/10 text-green-400' : color === 'indigo' ? 'bg-brand-500/10 text-brand-400' : 'bg-purple-500/10 text-purple-400';
+  const bg = color === 'green' ? 'bg-green-500/10 text-green-600' : color === 'indigo' ? 'bg-brand-500/10 text-brand-500' : 'bg-brand-500/10 text-brand-500';
   return (
     <div className={`rounded-xl px-5 py-4 ${bg}`}>
       <div className="text-2xl font-bold">{value}</div>
@@ -562,8 +588,8 @@ function InfoCard({ label, value, color }: { label: string; value: string; color
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] text-gray-500 uppercase">{label}</div>
-      <div className="text-xs text-gray-300 mt-0.5 truncate">{value}</div>
+      <div className="text-[10px] text-fg-tertiary uppercase">{label}</div>
+      <div className="text-xs text-fg-secondary mt-0.5 truncate">{value}</div>
     </div>
   );
 }

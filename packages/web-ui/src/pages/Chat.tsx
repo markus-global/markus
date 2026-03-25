@@ -136,24 +136,24 @@ function ChatAgentLink({ name, agentId, agents, onViewProfile }: { name: string;
 
   return (
     <span ref={ref} className="relative inline-block">
-      <button onClick={() => setOpen(!open)} className="text-gray-500 hover:text-brand-400 cursor-pointer transition-colors">
+      <button onClick={() => setOpen(!open)} className="text-fg-tertiary hover:text-brand-500 cursor-pointer transition-colors">
         {name}
       </button>
       {open && (
         <div className="absolute left-0 top-full mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-56 p-3 space-y-2">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-brand-600/30 flex items-center justify-center text-[10px] font-bold text-brand-300">
+            <div className="w-7 h-7 rounded-full bg-brand-500/15 flex items-center justify-center text-[10px] font-bold text-brand-600">
               {agentInitials(agent.name)}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-xs text-gray-200 font-medium truncate">{agent.name}</div>
-              <div className="text-[10px] text-gray-500">{agent.role} · {agent.agentRole ?? 'worker'}</div>
+              <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
+              <div className="text-[10px] text-fg-tertiary">{agent.role} · {agent.agentRole ?? 'worker'}</div>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
+            <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-amber-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
-            className="w-full text-center text-[10px] text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
           </button>
@@ -179,7 +179,7 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-yellow-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-amber-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
 
   return (
@@ -189,22 +189,22 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
       style={{ top: anchorRect.top + 40, left: anchorRect.left }}
     >
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-brand-600/30 flex items-center justify-center text-sm font-bold text-brand-300">
+        <div className="w-10 h-10 rounded-full bg-brand-500/15 flex items-center justify-center text-sm font-bold text-brand-600">
           {agentInitials(agent.name)}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm text-gray-200 font-medium truncate">{agent.name}</div>
-          <div className="text-[11px] text-gray-500">{agent.role}</div>
+          <div className="text-sm text-fg-primary font-medium truncate">{agent.name}</div>
+          <div className="text-[11px] text-fg-tertiary">{agent.role}</div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
-            <span className="text-[10px] text-gray-400">{statusLabel}</span>
-            {agent.agentRole && <span className="text-[10px] text-gray-600">· {agent.agentRole}</span>}
+            <span className="text-[10px] text-fg-secondary">{statusLabel}</span>
+            {agent.agentRole && <span className="text-[10px] text-fg-tertiary">· {agent.agentRole}</span>}
           </div>
         </div>
       </div>
       <button
         onClick={() => { onClose(); onViewProfile(agent.id); }}
-        className="w-full py-1.5 text-xs text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
+        className="w-full py-1.5 text-xs text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg transition-colors text-center"
       >
         View Profile →
       </button>
@@ -266,7 +266,7 @@ function MessageActions({
       {/* Copy */}
       <button
         onClick={() => onCopy(msg)}
-        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-gray-500 hover:text-gray-200 hover:bg-surface-overlay/60 transition-colors"
+        className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
         title="Copy"
       >
         {isCopied ? (
@@ -280,7 +280,7 @@ function MessageActions({
       {isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-400 hover:text-brand-300 hover:bg-brand-900/30 transition-colors"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-500 hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
           title="Re-ask"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
@@ -291,7 +291,7 @@ function MessageActions({
       {isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-400 hover:text-amber-300 hover:bg-amber-900/30 transition-colors"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
           title="Retry"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
@@ -344,13 +344,13 @@ function AgentMessageBody({
           <div className="mb-2">
             <button
               onClick={() => setExpandedThinking(e => !e)}
-              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-400 transition-colors"
+              className="flex items-center gap-1 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors"
             >
               <span className={`transition-transform ${expandedThinking ? 'rotate-90' : ''}▶`} style={{ fontSize: 8 }} />
               <span>思考过程 ({allThinking.length} 字符)</span>
             </button>
             {expandedThinking && (
-              <div className="mt-1 pl-3 border-l-2 border-brand-500/50 text-xs text-gray-400 whitespace-pre-wrap max-h-60 overflow-y-auto">
+              <div className="mt-1 pl-3 border-l-2 border-brand-500/50 text-xs text-fg-secondary whitespace-pre-wrap max-h-60 overflow-y-auto">
                 {allThinking}
               </div>
             )}
@@ -387,7 +387,7 @@ function AgentMessageBody({
 
         {/* Stopped indicator */}
         {isStopped && (
-          <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-gray-500">
+          <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
             <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
             <span>Stopped</span>
           </div>
@@ -409,7 +409,7 @@ function AgentMessageBody({
       )}
       {msg.text ? <MarkdownMessage content={msg.text} /> : null}
       {isStopped && (
-        <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-gray-500">
+        <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
           <span>Stopped</span>
         </div>
@@ -1514,15 +1514,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           {/* Top row: tabs left + actions right */}
           <div className="flex items-center px-6 h-14 gap-3">
             {/* Left: agent title + status + main tabs */}
-            <span className="font-semibold text-sm">{modeTitle}</span>
+            <span className="font-semibold text-sm truncate">{modeTitle}</span>
             {chatMode === 'direct' && currentAgent && (
               <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
             )}
             {(chatMode === 'channel' || chatMode === 'dm') && (
-              <span className="text-xs text-gray-500">{messages.length} messages</span>
+              <span className="text-xs text-fg-tertiary">{messages.length} messages</span>
             )}
             {chatMode === 'dm' && (
-              <span className="text-xs text-gray-600 ml-1">
+              <span className="text-xs text-fg-tertiary ml-1">
                 {isSelfDm ? '· Private notepad' : `· Direct message with ${activeDmUser?.name ?? ''}`}
               </span>
             )}
@@ -1533,8 +1533,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   onClick={() => setMainTab('chat')}
                   className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                     mainTab === 'chat'
-                      ? 'border-brand-500 text-brand-300'
-                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                      ? 'border-brand-500 text-brand-500'
+                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
                   }`}
                 >
                   Chat
@@ -1543,8 +1543,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   onClick={() => setMainTab('profile')}
                   className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                     mainTab === 'profile'
-                      ? 'border-brand-500 text-brand-300'
-                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                      ? 'border-brand-500 text-brand-500'
+                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
                   }`}
                 >
                   {chatMode === 'channel' ? 'Team' : 'Profile'}
@@ -1557,14 +1557,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <div className="ml-auto flex items-center gap-1.5">
                 <button
                   onClick={newConversation}
-                  className="text-xs text-brand-400 hover:text-brand-300 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                  className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
                 >
                   + New Chat
                 </button>
                 <button
                   ref={historyBtnRef}
                   onClick={() => setShowSessions(!showSessions)}
-                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-surface-elevated'}`}
+                  className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
                   title="History"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -1583,8 +1583,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   key={s.id}
                   className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
-                      ? 'border-brand-500 text-brand-300 bg-brand-500/5'
-                      : 'border-transparent text-gray-500 hover:text-gray-300 hover:bg-surface-elevated/50'
+                      ? 'border-brand-500 text-brand-500 bg-brand-500/5'
+                      : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                   }`}
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
@@ -1600,7 +1600,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.title || 'Conversation')}</span>
                   <button
                     onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
-                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity shrink-0"
+                    className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
                   >
                     ✕
                   </button>
@@ -1616,12 +1616,12 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
             >
               <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">History</span>
-                <button onClick={() => setShowSessions(false)} className="text-gray-600 hover:text-gray-300 text-xs">✕</button>
+                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">History</span>
+                <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {sessions.length === 0 && (
-                  <div className="text-xs text-gray-600 text-center py-6">No conversations yet</div>
+                  <div className="text-xs text-fg-tertiary text-center py-6">No conversations yet</div>
                 )}
                 {(() => {
                   const now = new Date();
@@ -1646,17 +1646,17 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   if (older.length > 0) groups.push({ label: 'Older', items: older });
                   return groups.map(g => (
                     <div key={g.label} className="mb-2">
-                      <div className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-3 py-1.5">{g.label}</div>
+                      <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-3 py-1.5">{g.label}</div>
                       {g.items.map(s => (
                         <button
                           key={s.id}
                           onClick={() => void switchSession(s)}
                           className={`w-full text-left px-3 py-2.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-300' : 'text-gray-400 hover:bg-surface-elevated'
+                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
                           }`}
                         >
                           <div className="truncate font-medium">{s.title || 'Conversation'}</div>
-                          <div className="text-gray-600 text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
+                          <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
                         </button>
                       ))}
                     </div>
@@ -1694,7 +1694,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               <button
                 onClick={() => void loadMore()}
                 disabled={loadingMore}
-                className="text-xs text-brand-400 hover:text-brand-300 disabled:opacity-50 px-4 py-1.5 border border-brand-800/50 rounded-lg"
+                className="text-xs text-brand-500 hover:text-brand-500 disabled:opacity-50 px-4 py-1.5 border border-brand-500/30 rounded-lg"
               >
                 {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
               </button>
@@ -1702,7 +1702,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           )}
 
           {messages.length === 0 && !sending && (
-            <div className="flex flex-col items-center justify-center h-full text-gray-600 text-sm space-y-2">
+            <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
               <div className="opacity-20">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   {chatMode === 'channel'
@@ -1722,7 +1722,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 <div key={msg.id} className="group/msg flex gap-3">
                   <div
                     className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer ${
-                      msg.sender === 'user' ? 'bg-brand-600' : 'bg-surface-overlay hover:ring-1 hover:ring-brand-500/40'
+                      msg.sender === 'user' ? 'bg-brand-600 text-white' : 'bg-brand-500/15 text-brand-600 hover:ring-1 hover:ring-brand-500/40'
                     }`}
                     onClick={(e) => {
                       if (msg.sender === 'agent' && msg.agentId) {
@@ -1735,18 +1735,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="text-sm font-medium text-white">
+                      <span className="text-sm font-medium text-fg-primary">
                         {msg.sender === 'user' ? (currentUserName ?? 'You') : msg.agentName ?? 'Agent'}
                       </span>
-                      <span className="text-xs text-gray-600">{msg.time}</span>
+                      <span className="text-xs text-fg-tertiary">{msg.time}</span>
                     </div>
                     <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                       ? 'mt-0.5 px-3 py-2 rounded-lg border-b-2 border-red-500/60'
                       : 'mt-0.5'
                     }>
                       {msg.sender === 'agent'
-                        ? <MarkdownMessage content={msg.text} className="text-sm text-gray-300" />
-                        : <div className="text-sm text-gray-300 whitespace-pre-wrap">
+                        ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
+                        : <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
@@ -1772,7 +1772,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 return (
                   <div key={msg.id} className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className="max-w-[75%]">
-                      <div className="text-xs text-gray-500 mb-1">
+                      <div className="text-xs text-fg-tertiary mb-1">
                         {msg.sender === 'user'
                           ? (currentUserName ?? 'You')
                           : <ChatAgentLink
@@ -1787,8 +1787,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                         msg.sender === 'user'
                           ? 'bg-brand-600 text-white rounded-br-sm'
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                            ? 'bg-surface-elevated text-gray-200 rounded-bl-sm border-b-2 border-red-500/60'
-                            : 'bg-surface-elevated text-gray-200 rounded-bl-sm'
+                            ? 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm border-b-2 border-red-500/60'
+                            : 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm'
                       }`}>
                         {msg.sender === 'user'
                           ? <>
@@ -1819,7 +1819,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               })
           }
           {chatMode === 'channel' && sending && (
-            <div className="text-xs text-gray-500 animate-pulse ml-11">Agent is thinking…</div>
+            <div className="text-xs text-fg-tertiary animate-pulse ml-11">Agent is thinking…</div>
           )}
           <div ref={messagesEnd} />
         </div>
@@ -1846,11 +1846,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 <button
                   key={a.id}
                   onClick={() => insertMention(a.name)}
-                  className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-surface-overlay flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-sm text-fg-secondary hover:bg-surface-overlay flex items-center gap-2"
                 >
-                  <span className="text-brand-400">@</span>
+                  <span className="text-brand-500">@</span>
                   {a.name}
-                  <span className="text-xs text-gray-500 ml-auto">{a.role}</span>
+                  <span className="text-xs text-fg-tertiary ml-auto">{a.role}</span>
                 </button>
               ))}
             </div>
@@ -1862,7 +1862,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                   <img src={img.dataUrl} alt={img.name} className="w-16 h-16 rounded-lg object-cover border border-border-default" />
                   <button
                     onClick={() => removeImage(img.id)}
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-surface-secondary border border-gray-600 rounded-full flex items-center justify-center text-gray-400 hover:text-red-400 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-surface-secondary border border-gray-600 rounded-full flex items-center justify-center text-fg-secondary hover:text-red-500 hover:border-red-500 text-xs opacity-0 group-hover/img:opacity-100 transition-opacity"
                   >
                     ×
                   </button>
@@ -1871,7 +1871,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               {pendingImages.length < MAX_IMAGES && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-16 h-16 rounded-lg border border-dashed border-gray-600 flex items-center justify-center text-gray-500 hover:text-gray-300 hover:border-gray-400 transition-colors shrink-0"
+                  className="w-16 h-16 rounded-lg border border-dashed border-gray-600 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary hover:border-gray-400 transition-colors shrink-0"
                   title="Add more images"
                 >
                   <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" /></svg>
@@ -1884,7 +1884,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && !selectedAgent}
-              className="px-2.5 py-2.5 text-gray-500 hover:text-gray-300 disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
+              className="px-2.5 py-2.5 text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
               title="Attach images"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -1952,7 +1952,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-yellow-400 animate-pulse' : 'bg-green-400';
+  const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-amber-400 animate-pulse' : 'bg-green-400';
   const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
 
   const activityLabel = activity
@@ -1967,27 +1967,27 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       <button
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking ? 'bg-yellow-500/10 border border-yellow-500/20 hover:bg-yellow-500/20'
+          isWorking ? 'bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
           : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
           : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
         }`}
       >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-400' : isWorking ? 'text-yellow-400' : 'text-green-400'}`}>{label}</span>
+        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-amber-600' : 'text-green-600'}`}>{label}</span>
       </button>
 
       {open && isError && (
         <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-red-400 uppercase font-semibold">Error Details</p>
+          <p className="text-[10px] text-red-500 uppercase font-semibold">Error Details</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
-            <pre className="text-[10px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
+            <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
               {agent.lastError || 'Agent encountered an error. Check profile for details.'}
             </pre>
-            {agent.lastErrorAt && <div className="text-[9px] text-red-400/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
+            {agent.lastErrorAt && <div className="text-[9px] text-red-500/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
-            className="w-full text-center text-[10px] text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
+            className="w-full text-center text-[10px] text-red-500 hover:text-red-500 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
           >
             View Agent Profile →
           </button>
@@ -1996,29 +1996,29 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
 
       {open && isWorking && (
         <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-gray-500 uppercase font-semibold">Current Activity</p>
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">Current Activity</p>
           {currentTask ? (
             <div
-              className="flex items-center gap-2 p-2 rounded-lg bg-brand-900/20 border border-brand-700/30 cursor-pointer hover:bg-brand-900/30 transition-colors"
+              className="flex items-center gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/30 cursor-pointer hover:bg-brand-500/10 transition-colors"
               onClick={() => { setOpen(false); navBus.navigate('tasks', { openTask: currentTask.id }); }}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-brand-300 truncate">{currentTask.title}</div>
-                <div className="text-[10px] text-gray-500">Working on task · Click to view</div>
+                <div className="text-xs text-brand-500 truncate">{currentTask.title}</div>
+                <div className="text-[10px] text-fg-tertiary">Working on task · Click to view</div>
               </div>
-              <span className="text-[10px] text-gray-600">→</span>
+              <span className="text-[10px] text-fg-tertiary">→</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 p-2 rounded-lg bg-surface-elevated/50">
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
+                activity?.type === 'heartbeat' ? 'bg-blue-400 animate-pulse'
                 : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
-                : 'bg-yellow-400 animate-pulse'
+                : 'bg-amber-400 animate-pulse'
               }`} />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-gray-300">{activityLabel}</div>
-                <div className="text-[10px] text-gray-500">
+                <div className="text-xs text-fg-secondary">{activityLabel}</div>
+                <div className="text-[10px] text-fg-tertiary">
                   {activity?.type === 'heartbeat' ? 'Periodic check-in task'
                    : activity?.type === 'chat' ? 'Responding to conversation'
                    : 'Agent is thinking or communicating'}
@@ -2028,7 +2028,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           )}
           <button
             onClick={() => { setOpen(false); setShowActivityModal(true); }}
-            className="w-full text-center text-[10px] text-brand-400 hover:text-brand-300 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
             View Execution Log →
           </button>
@@ -2136,9 +2136,9 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
     : activity?.type === 'task' ? 'Task Execution'
     : 'Processing';
 
-  const activityTypeColor = activity?.type === 'heartbeat' ? 'text-cyan-400'
-    : activity?.type === 'chat' ? 'text-blue-400'
-    : 'text-brand-400';
+  const activityTypeColor = activity?.type === 'heartbeat' ? 'text-blue-600'
+    : activity?.type === 'chat' ? 'text-blue-600'
+    : 'text-brand-500';
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
@@ -2147,7 +2147,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border-default">
           <div className="flex items-center gap-3 min-w-0">
             <span className={`w-2 h-2 rounded-full shrink-0 ${
-              activity?.type === 'heartbeat' ? 'bg-cyan-400 animate-pulse'
+              activity?.type === 'heartbeat' ? 'bg-blue-400 animate-pulse'
               : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
               : 'bg-brand-400 animate-pulse'
             }`} />
@@ -2158,11 +2158,11 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
                   {activityTypeLabel}
                 </span>
               </div>
-              <div className="text-xs text-gray-400 truncate mt-0.5">
+              <div className="text-xs text-fg-secondary truncate mt-0.5">
                 {activity?.label ?? currentTask?.title ?? 'Processing...'}
               </div>
               {activity?.startedAt && (
-                <div className="text-[10px] text-gray-600 mt-0.5">
+                <div className="text-[10px] text-fg-tertiary mt-0.5">
                   Started {new Date(activity.startedAt).toLocaleTimeString()}
                 </div>
               )}
@@ -2174,14 +2174,14 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
                 Go to Task →
               </button>
             )}
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none px-1">×</button>
+            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg leading-none px-1">×</button>
           </div>
         </div>
 
         {/* Logs — unified rendering for both task logs and activity logs */}
         <div ref={modalScrollRef} className="flex-1 overflow-y-auto p-4 space-y-1.5">
           {loading ? (
-            <div className="text-center py-8 text-xs text-gray-600">Loading logs…</div>
+            <div className="text-center py-8 text-xs text-fg-tertiary">Loading logs…</div>
           ) : currentTask && taskLogs.length > 0 ? (
             <>
               {filterCompletedStarts(taskLogs.slice(-60).map(taskLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
@@ -2196,11 +2196,11 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
             </>
           ) : agent.status === 'working' ? (
             <div className="text-center py-8 space-y-2">
-              <div className="text-xs text-gray-500">Agent just started processing...</div>
-              <div className="text-[10px] text-gray-600">Execution logs will appear here as the agent makes progress.</div>
+              <div className="text-xs text-fg-tertiary">Agent just started processing...</div>
+              <div className="text-[10px] text-fg-tertiary">Execution logs will appear here as the agent makes progress.</div>
             </div>
           ) : (
-            <div className="text-center py-8 text-xs text-gray-600">No execution logs available.</div>
+            <div className="text-center py-8 text-xs text-fg-tertiary">No execution logs available.</div>
           )}
 
           {agent.status === 'working' && <ThinkingDots label="Working" />}

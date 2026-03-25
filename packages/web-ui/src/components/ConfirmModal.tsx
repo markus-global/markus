@@ -29,11 +29,11 @@ export function ConfirmModal({ title, message, confirmLabel = 'Confirm', checkbo
         onClick={e => e.stopPropagation()}
       >
         <h3 className="font-semibold text-base mb-2">{title}</h3>
-        <p className="text-sm text-gray-400 mb-4 leading-relaxed">{message}</p>
+        <p className="text-sm text-fg-secondary mb-4 leading-relaxed">{message}</p>
         {checkboxes && checkboxes.length > 0 && (
           <div className="mb-4 space-y-2">
             {checkboxes.map(cb => (
-              <label key={cb.id} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+              <label key={cb.id} className="flex items-center gap-2 text-sm text-fg-secondary cursor-pointer">
                 <input
                   type="checkbox"
                   checked={checks[cb.id] ?? false}

@@ -18,6 +18,7 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
+import { useTheme } from './hooks/useTheme.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 
 const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'deliverables', 'reports'];
@@ -37,6 +38,7 @@ export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
     defaultWidth: 240,
@@ -104,7 +106,7 @@ export function App() {
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => ({
     dashboard: <Dashboard />,
     chat: <Chat authUser={currentUser} />,
-    settings: <Settings />,
+    settings: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
     skills: <SkillStore />,
     agents: <TemplateMarketplace authUser={currentUser} />,
     teams: <TeamsStore />,
@@ -114,12 +116,12 @@ export function App() {
     deliverables: <DeliverablesPage />,
     reports: <ReportsPage />,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [currentUser?.id]);
+  }), [currentUser?.id, theme.mode]);
 
   if (authUser === 'loading') {
     return (
       <div className="min-h-screen bg-surface-primary flex items-center justify-center">
-        <div className="text-gray-600 text-sm animate-pulse">Loading…</div>
+        <div className="text-fg-tertiary text-sm animate-pulse">Loading…</div>
       </div>
     );
   }
@@ -143,10 +145,10 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen bg-surface-primary text-gray-100">
+    <div className="flex h-screen bg-surface-primary text-fg-primary">
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="md:hidden fixed top-3 left-3 z-50 p-2 bg-surface-elevated rounded-lg text-gray-300"
+        className="md:hidden fixed top-3 left-3 z-50 p-2 bg-surface-elevated rounded-lg text-fg-secondary"
       >
         {sidebarOpen ? '✕' : '☰'}
       </button>
@@ -181,13 +183,13 @@ export function App() {
 
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {llmConfigured === false && !llmBannerDismissed && page !== 'settings' && (
-          <div className="flex items-center justify-between px-4 py-2 bg-amber-900/30 border-b border-amber-700/40 text-amber-300 text-sm shrink-0">
+          <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span>No LLM provider configured — agents cannot process requests.</span>
             <div className="flex items-center gap-3">
               <button onClick={() => { navigate('settings'); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
                 Go to Settings
               </button>
-              <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-300 text-xs">Dismiss</button>
+              <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">Dismiss</button>
             </div>
           </div>
         )}

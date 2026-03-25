@@ -1701,9 +1701,10 @@ export class APIServer {
       const type = url.searchParams.get('type') as any ?? undefined;
       const status = url.searchParams.get('status') as any ?? undefined;
       const artifactType = url.searchParams.get('artifactType') as any ?? undefined;
+      const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : undefined;
       const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-      const results = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, limit });
-      this.json(res, 200, { results });
+      const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, offset, limit });
+      this.json(res, 200, { results, total });
       return;
     }
 
@@ -2996,7 +2997,7 @@ export class APIServer {
         const q = url.searchParams.get('q') ?? undefined;
         const projectId = url.searchParams.get('projectId') ?? undefined;
         const type = url.searchParams.get('type') as any ?? undefined;
-        const results = this.deliverableService.search({ query: q, projectId, type });
+        const { results } = this.deliverableService.search({ query: q, projectId, type });
         this.json(res, 200, { results });
       } catch (err) {
         if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
@@ -6604,7 +6605,7 @@ export class APIServer {
     if (path === '/api/knowledge/search' && req.method === 'GET') {
       if (!this.deliverableService) { this.json(res, 200, { results: [] }); return; }
       const query = url.searchParams.get('query') ?? undefined;
-      const results = this.deliverableService.search({ query });
+      const { results } = this.deliverableService.search({ query });
       this.json(res, 200, { results });
       return;
     }

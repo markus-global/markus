@@ -29,9 +29,9 @@ const BUILDERS = [
     roleId: 'team-factory',
     roleName: 'Team Factory',
     icon: '◈',
-    color: 'from-cyan-500 to-blue-600',
-    borderColor: 'border-cyan-500/30 hover:border-cyan-400/50',
-    bgColor: 'bg-cyan-500/10',
+    color: 'from-blue-500 to-blue-600',
+    borderColor: 'border-blue-500/30 hover:border-blue-400/50',
+    bgColor: 'bg-blue-500/10',
     desc: 'AI Team Composer',
     detail: 'Compose optimal agent teams for any project. Describe your goal and Team Factory will design the lineup with the right mix of managers, developers, reviewers, and specialists.',
     examples: [
@@ -44,9 +44,9 @@ const BUILDERS = [
     roleId: 'skill-architect',
     roleName: 'Skill Architect',
     icon: '⬡',
-    color: 'from-emerald-500 to-teal-600',
-    borderColor: 'border-emerald-500/30 hover:border-emerald-400/50',
-    bgColor: 'bg-emerald-500/10',
+    color: 'from-green-500 to-green-600',
+    borderColor: 'border-green-500/30 hover:border-green-400/50',
+    bgColor: 'bg-green-500/10',
     desc: 'AI Skill Designer',
     detail: 'Create new agent skills and tool definitions. Describe the capability you want and Skill Architect will design the complete skill manifest with tools, schemas, and permissions.',
     examples: [
@@ -66,9 +66,9 @@ interface BuilderArtifact {
 }
 
 const TYPE_STYLES: Record<string, { icon: string; color: string; bg: string }> = {
-  agent: { icon: '✦', color: 'text-brand-400', bg: 'bg-brand-500/10' },
-  team: { icon: '◈', color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-  skill: { icon: '⬡', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+  agent: { icon: '✦', color: 'text-brand-500', bg: 'bg-brand-500/10' },
+  team: { icon: '◈', color: 'text-blue-600', bg: 'bg-blue-500/10' },
+  skill: { icon: '⬡', color: 'text-green-600', bg: 'bg-green-500/10' },
 };
 
 interface InstalledInfo {
@@ -83,17 +83,17 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
       <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-full bg-red-500/15 flex items-center justify-center shrink-0">
-            <svg className="w-5 h-5 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="w-5 h-5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
             </svg>
           </div>
           <div>
-            <div className="text-sm font-medium text-gray-200">Confirm Delete</div>
-            <div className="text-xs text-gray-400 mt-0.5">{message}</div>
+            <div className="text-sm font-medium text-fg-primary">Confirm Delete</div>
+            <div className="text-xs text-fg-secondary mt-0.5">{message}</div>
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-gray-400 hover:text-gray-200 border border-border-default hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
+          <button onClick={onCancel} className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">Cancel</button>
           <button onClick={onConfirm} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors">Delete</button>
         </div>
       </div>
@@ -283,8 +283,8 @@ export function AgentBuilder() {
       <div className="max-w-4xl px-6 py-10">
         {/* Builder cards */}
         <div className="mb-10">
-          <h1 className="text-2xl font-bold text-gray-100">Builder</h1>
-          <p className="text-sm text-gray-500 mt-2">
+          <h1 className="text-2xl font-bold text-fg-primary">Builder</h1>
+          <p className="text-sm text-fg-tertiary mt-2">
             Create agents, teams, and skills through AI-powered conversations.
             Choose a builder to get started.
           </p>
@@ -306,21 +306,21 @@ export function AgentBuilder() {
                     <h3 className={`text-lg font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
                       {b.roleName}
                     </h3>
-                    <span className="text-[10px] text-gray-600 font-medium uppercase tracking-wider">{b.desc}</span>
+                    <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{b.desc}</span>
                     {agents.find(a => a.role === b.roleName || a.name === b.roleName) && (
                       <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Agent online" />
                     )}
                   </div>
-                  <p className="text-sm text-gray-400 leading-relaxed">{b.detail}</p>
+                  <p className="text-sm text-fg-secondary leading-relaxed">{b.detail}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {b.examples.map((ex, i) => (
-                      <span key={i} className="text-[11px] text-gray-600 bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default">
+                      <span key={i} className="text-[11px] text-fg-tertiary bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default">
                         &ldquo;{ex}&rdquo;
                       </span>
                     ))}
                   </div>
                 </div>
-                <svg className="w-5 h-5 text-gray-700 group-hover:text-gray-400 transition-colors shrink-0 mt-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg className="w-5 h-5 text-fg-muted group-hover:text-fg-secondary transition-colors shrink-0 mt-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
               </div>
@@ -329,7 +329,7 @@ export function AgentBuilder() {
         </div>
 
         {agents.length > 0 && !agents.some(a => BUILDERS.some(b => a.role === b.roleName || a.name === b.roleName)) && (
-          <div className="mt-8 p-4 rounded-lg border border-amber-800/30 bg-amber-900/10 text-amber-400 text-xs">
+          <div className="mt-8 p-4 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-600 text-xs">
             Builder agents have not been created yet. They will be automatically seeded on next server restart.
           </div>
         )}
@@ -338,12 +338,12 @@ export function AgentBuilder() {
         <div className="mt-14 mb-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-gray-200">My Creations</h2>
-              <p className="text-xs text-gray-500 mt-1">Saved builder artifacts — install to deploy, or share to Markus Hub.</p>
+              <h2 className="text-lg font-semibold text-fg-primary">My Creations</h2>
+              <p className="text-xs text-fg-tertiary mt-1">Saved builder artifacts — install to deploy, or share to Markus Hub.</p>
             </div>
             <button
               onClick={loadAll}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-3 py-1.5 rounded-lg border border-border-default hover:border-gray-600"
+              className="text-xs text-fg-tertiary hover:text-fg-secondary transition-colors px-3 py-1.5 rounded-lg border border-border-default hover:border-gray-600"
             >
               Refresh
             </button>
@@ -356,8 +356,8 @@ export function AgentBuilder() {
                 onClick={() => setFilterType(t)}
                 className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
                   filterType === t
-                    ? 'border-gray-600 bg-surface-elevated text-gray-200'
-                    : 'border-border-default text-gray-500 hover:text-gray-400 hover:border-gray-600'
+                    ? 'border-gray-600 bg-surface-elevated text-fg-primary'
+                    : 'border-border-default text-fg-tertiary hover:text-fg-secondary hover:border-gray-600'
                 }`}
               >
                 {t === 'all' ? 'All' : t.charAt(0).toUpperCase() + t.slice(1) + 's'}
@@ -367,11 +367,11 @@ export function AgentBuilder() {
         </div>
 
         {loading && artifacts.length === 0 ? (
-          <div className="text-center text-gray-600 py-12 text-sm">Loading artifacts...</div>
+          <div className="text-center text-fg-tertiary py-12 text-sm">Loading artifacts...</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-12">
-            <div className="text-gray-600 text-sm">No artifacts found.</div>
-            <div className="text-gray-700 text-xs mt-1">Use a builder above to create agents, teams, or skills.</div>
+            <div className="text-fg-tertiary text-sm">No artifacts found.</div>
+            <div className="text-fg-muted text-xs mt-1">Use a builder above to create agents, teams, or skills.</div>
           </div>
         ) : (
           <div className="grid gap-3">
@@ -393,14 +393,14 @@ export function AgentBuilder() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-sm font-medium text-gray-200 truncate">{displayName}</span>
+                        <span className="text-sm font-medium text-fg-primary truncate">{displayName}</span>
                         <span className={`text-[10px] font-medium uppercase tracking-wider ${style.color}`}>{art.type}</span>
                       </div>
-                      {description && <p className="text-xs text-gray-500 line-clamp-2">{description}</p>}
-                      <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
+                      {description && <p className="text-xs text-fg-tertiary line-clamp-2">{description}</p>}
+                      <div className="flex items-center gap-3 mt-2 text-[10px] text-fg-tertiary">
                         <button
                           onClick={(e) => { e.stopPropagation(); api.system.openPath(art.path).catch(() => {}); }}
-                          className="hover:text-gray-400 transition-colors truncate max-w-[280px]"
+                          className="hover:text-fg-secondary transition-colors truncate max-w-[280px]"
                           title={art.path}
                         >{shortenPath(art.path)}</button>
                         <span className="shrink-0">{new Date(art.updatedAt).toLocaleDateString()}</span>
@@ -411,7 +411,7 @@ export function AgentBuilder() {
                         <button
                           onClick={() => handleUninstall(art)}
                           disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-emerald-600/30 text-emerald-400 hover:bg-red-900/20 hover:text-red-400 hover:border-red-500/30 transition-colors disabled:opacity-50"
+                          className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50"
                         >
                           {busy ? 'Uninstalling...' : 'Uninstall'}
                         </button>
@@ -429,7 +429,7 @@ export function AgentBuilder() {
                           <button
                             onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })}
                             disabled={busy}
-                            className="text-xs px-3 py-1.5 rounded-lg border border-teal-600/30 text-teal-400 hover:text-red-400 hover:border-red-500/30 hover:bg-red-900/10 transition-colors disabled:opacity-50"
+                            className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50"
                             title="Remove from Markus Hub"
                           >
                             Shared
@@ -445,7 +445,7 @@ export function AgentBuilder() {
                                 setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000);
                               }).catch(() => {});
                             }}
-                            className="text-xs px-2 py-1.5 rounded-lg border border-teal-600/20 text-teal-500 hover:text-teal-300 hover:border-teal-500/40 transition-colors"
+                            className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors"
                             title="Copy Hub link"
                           >
                             {copiedKey === key ? (
@@ -464,7 +464,7 @@ export function AgentBuilder() {
                         <button
                           onClick={() => handleShare(art)}
                           disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-gray-400 hover:text-teal-400 hover:border-teal-500/30 transition-colors disabled:opacity-50"
+                          className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50"
                         >
                           {busy ? 'Sharing...' : 'Share'}
                         </button>
@@ -472,7 +472,7 @@ export function AgentBuilder() {
                       <button
                         onClick={() => setDeleteTarget(art)}
                         disabled={busy}
-                        className="text-xs px-2 py-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-900/20 transition-colors disabled:opacity-50"
+                        className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50"
                         title="Delete"
                       >
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

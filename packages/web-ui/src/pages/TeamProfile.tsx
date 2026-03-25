@@ -96,7 +96,7 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
     reload();
   };
 
-  if (!team) return <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Loading team...</div>;
+  if (!team) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">Loading team...</div>;
 
   const managerMember = team.members.find(m => m.agentRole === 'manager');
   const onlineCount = teamStatuses.filter(s => s.status !== 'offline').length;
@@ -106,16 +106,16 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
       {/* Header */}
       <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-lg font-bold shrink-0">
+          <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center text-lg font-bold shrink-0">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{team.name}</h2>
-              <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-400 rounded font-medium">{team.members.length} members</span>
-              <span className="px-1.5 py-0.5 text-[10px] bg-green-500/15 text-green-400 rounded font-medium">{onlineCount} online</span>
+              <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{team.members.length} members</span>
+              <span className="px-1.5 py-0.5 text-[10px] bg-green-500/15 text-green-600 rounded font-medium">{onlineCount} online</span>
             </div>
-            <div className="text-xs text-gray-500 truncate">{team.description || 'No description'}</div>
+            <div className="text-xs text-fg-tertiary truncate">{team.description || 'No description'}</div>
           </div>
           <button onClick={async () => {
             if (!team) return;
@@ -144,13 +144,13 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
               await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config, files });
               alert(`Published "${team.name}" to Markus Hub`);
             } catch (e) { alert(`Failed to publish: ${e}`); }
-          }} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
-          {inline && <button onClick={onBack} className="p-1.5 text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>}
+          }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
+          {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`px-3 py-1.5 text-xs rounded-t-lg whitespace-nowrap transition-colors ${tab === t.key ? 'bg-surface-primary text-white border border-border-default border-b-gray-950' : 'text-gray-500 hover:text-gray-300'}`}
+              className={`px-3 py-1.5 text-xs rounded-t-lg whitespace-nowrap transition-colors ${tab === t.key ? 'bg-surface-primary text-fg-primary border border-border-default border-b-gray-950' : 'text-fg-tertiary hover:text-fg-secondary'}`}
             >{t.icon} {t.label}</button>
           ))}
         </div>
@@ -162,24 +162,24 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                <div className="text-xs text-gray-500 mb-1">Manager</div>
+                <div className="text-xs text-fg-tertiary mb-1">Manager</div>
                 <div className="text-sm font-medium">{managerMember?.name ?? team.managerName ?? 'None'}</div>
               </div>
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                <div className="text-xs text-gray-500 mb-1">Team ID</div>
-                <div className="text-sm font-mono text-gray-400 truncate">{team.id}</div>
+                <div className="text-xs text-fg-tertiary mb-1">Team ID</div>
+                <div className="text-sm font-mono text-fg-secondary truncate">{team.id}</div>
               </div>
             </div>
 
             {announcements.trim() && (
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                <div className="text-xs text-gray-500 mb-2 font-medium">Latest Announcement</div>
-                <div className="text-sm text-gray-300 whitespace-pre-wrap">{announcements.slice(0, 500)}{announcements.length > 500 ? '...' : ''}</div>
+                <div className="text-xs text-fg-tertiary mb-2 font-medium">Latest Announcement</div>
+                <div className="text-sm text-fg-secondary whitespace-pre-wrap">{announcements.slice(0, 500)}{announcements.length > 500 ? '...' : ''}</div>
               </div>
             )}
 
             <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-              <div className="text-xs text-gray-500 mb-2 font-medium">Members</div>
+              <div className="text-xs text-fg-tertiary mb-2 font-medium">Members</div>
               <div className="space-y-2">
                 {team.members.map(m => {
                   const st = teamStatuses.find(s => s.id === m.id);
@@ -188,8 +188,8 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
                     <div key={m.id} className="flex items-center gap-2 text-sm">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
                       <span className="font-medium">{m.name}</span>
-                      <span className="text-gray-500">{m.role}</span>
-                      {m.agentRole === 'manager' && <span className="text-[10px] px-1 py-0.5 bg-amber-500/15 text-amber-400 rounded">Manager</span>}
+                      <span className="text-fg-tertiary">{m.role}</span>
+                      {m.agentRole === 'manager' && <span className="text-[10px] px-1 py-0.5 bg-amber-500/15 text-amber-600 rounded">Manager</span>}
                     </div>
                   );
                 })}
@@ -211,15 +211,15 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{m.name}</span>
                       <span className={`w-2 h-2 rounded-full ${dot}`} />
-                      <span className="text-xs text-gray-500">{st?.status ?? 'offline'}</span>
-                      {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded font-medium">Manager</span>}
+                      <span className="text-xs text-fg-tertiary">{st?.status ?? 'offline'}</span>
+                      {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded font-medium">Manager</span>}
                     </div>
-                    <div className="text-xs text-gray-500">{m.role} · {m.type}</div>
+                    <div className="text-xs text-fg-tertiary">{m.role} · {m.type}</div>
                   </div>
                 </div>
               );
             })}
-            {team.members.length === 0 && <div className="text-sm text-gray-500 text-center py-8">No members</div>}
+            {team.members.length === 0 && <div className="text-sm text-fg-tertiary text-center py-8">No members</div>}
           </div>
         )}
 
@@ -227,16 +227,16 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
         {tab === 'announcements' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-gray-400">Team Announcements</h3>
+              <h3 className="text-sm font-medium text-fg-secondary">Team Announcements</h3>
               {!editingAnn && (
                 <button onClick={() => { setAnnDraft(announcements); setEditingAnn(true); }}
-                  className="px-3 py-1 text-xs bg-surface-elevated hover:bg-surface-overlay text-gray-300 rounded-lg transition-colors">Edit</button>
+                  className="px-3 py-1 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors">Edit</button>
               )}
             </div>
             {editingAnn ? (
               <div className="space-y-3">
                 <textarea value={annDraft} onChange={e => setAnnDraft(e.target.value)}
-                  className="w-full h-64 bg-surface-secondary border border-border-default rounded-xl p-3 text-sm text-gray-200 resize-y focus:outline-none focus:border-brand-500 font-mono"
+                  className="w-full h-64 bg-surface-secondary border border-border-default rounded-xl p-3 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500 font-mono"
                   placeholder="Write team announcements here (Markdown supported)..."
                 />
                 <div className="flex gap-2">
@@ -245,15 +245,15 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
                     {saving ? 'Saving...' : 'Save'}
                   </button>
                   <button onClick={() => setEditingAnn(false)}
-                    className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-gray-300 rounded-lg transition-colors">Cancel</button>
+                    className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors">Cancel</button>
                 </div>
               </div>
             ) : (
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default min-h-[120px]">
                 {announcements.trim() ? (
-                  <div className="text-sm text-gray-300 whitespace-pre-wrap">{announcements}</div>
+                  <div className="text-sm text-fg-secondary whitespace-pre-wrap">{announcements}</div>
                 ) : (
-                  <div className="text-sm text-gray-600 italic">No announcements yet. Click Edit to add.</div>
+                  <div className="text-sm text-fg-tertiary italic">No announcements yet. Click Edit to add.</div>
                 )}
               </div>
             )}
@@ -264,16 +264,16 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
         {tab === 'norms' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-gray-400">Team Working Norms</h3>
+              <h3 className="text-sm font-medium text-fg-secondary">Team Working Norms</h3>
               {!editingNorms && (
                 <button onClick={() => { setNormsDraft(norms); setEditingNorms(true); }}
-                  className="px-3 py-1 text-xs bg-surface-elevated hover:bg-surface-overlay text-gray-300 rounded-lg transition-colors">Edit</button>
+                  className="px-3 py-1 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors">Edit</button>
               )}
             </div>
             {editingNorms ? (
               <div className="space-y-3">
                 <textarea value={normsDraft} onChange={e => setNormsDraft(e.target.value)}
-                  className="w-full h-64 bg-surface-secondary border border-border-default rounded-xl p-3 text-sm text-gray-200 resize-y focus:outline-none focus:border-brand-500 font-mono"
+                  className="w-full h-64 bg-surface-secondary border border-border-default rounded-xl p-3 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500 font-mono"
                   placeholder="Define team norms and working agreements (Markdown supported)..."
                 />
                 <div className="flex gap-2">
@@ -282,15 +282,15 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
                     {saving ? 'Saving...' : 'Save'}
                   </button>
                   <button onClick={() => setEditingNorms(false)}
-                    className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-gray-300 rounded-lg transition-colors">Cancel</button>
+                    className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors">Cancel</button>
                 </div>
               </div>
             ) : (
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default min-h-[120px]">
                 {norms.trim() ? (
-                  <div className="text-sm text-gray-300 whitespace-pre-wrap">{norms}</div>
+                  <div className="text-sm text-fg-secondary whitespace-pre-wrap">{norms}</div>
                 ) : (
-                  <div className="text-sm text-gray-600 italic">No norms defined yet. Click Edit to add.</div>
+                  <div className="text-sm text-fg-tertiary italic">No norms defined yet. Click Edit to add.</div>
                 )}
               </div>
             )}
@@ -302,48 +302,48 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
           <div className="space-y-5">
             <div className="p-4 bg-surface-secondary rounded-xl border border-border-default space-y-4">
               <div>
-                <div className="text-xs text-gray-500 mb-1">Team Name</div>
+                <div className="text-xs text-fg-tertiary mb-1">Team Name</div>
                 {editName ? (
                   <div className="flex gap-2 items-center">
                     <input ref={nameRef} value={nameDraft} onChange={e => setNameDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRename()}
-                      className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-brand-500" autoFocus />
+                      className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary focus:outline-none focus:border-brand-500" autoFocus />
                     <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
-                    <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-gray-300">Cancel</button>
+                    <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{team.name}</span>
-                    <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-gray-500 hover:text-gray-300">Edit</button>
+                    <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
                   </div>
                 )}
               </div>
               <div>
-                <div className="text-xs text-gray-500 mb-1">Description</div>
+                <div className="text-xs text-fg-tertiary mb-1">Description</div>
                 {editDesc ? (
                   <div className="space-y-2">
                     <textarea value={descDraft} onChange={e => setDescDraft(e.target.value)}
-                      className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-gray-200 resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
+                      className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
                     <div className="flex gap-2">
                       <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
-                      <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-gray-300">Cancel</button>
+                      <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                     </div>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-gray-400">{team.description || 'No description'}</span>
-                    <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-gray-500 hover:text-gray-300">Edit</button>
+                    <span className="text-sm text-fg-secondary">{team.description || 'No description'}</span>
+                    <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
                   </div>
                 )}
               </div>
             </div>
 
             <div className="p-4 bg-surface-secondary rounded-xl border border-red-900/30 space-y-3">
-              <div className="text-sm font-medium text-red-400">Danger Zone</div>
+              <div className="text-sm font-medium text-red-500">Danger Zone</div>
               <button onClick={async () => {
                 if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
                 await api.teams.delete(teamId, false);
                 onBack();
-              }} className="px-4 py-1.5 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded-lg transition-colors border border-red-800/50">
+              }} className="px-4 py-1.5 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-500 rounded-lg transition-colors border border-red-500/30">
                 Delete Team
               </button>
             </div>

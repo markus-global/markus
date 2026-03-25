@@ -51,7 +51,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
     return unsub;
   }, [agentId, reload]);
 
-  if (!agent) return <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Loading agent...</div>;
+  if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">Loading agent...</div>;
 
   const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
 
@@ -59,16 +59,16 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
     <div className="flex-1 overflow-y-auto bg-surface-primary">
       <div className="px-5 py-3.5 border-b border-border-default bg-surface-secondary sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-600 flex items-center justify-center text-lg font-bold shrink-0">{agent.name.charAt(0)}</div>
+          <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center text-lg font-bold shrink-0">{agent.name.charAt(0)}</div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{agent.name}</h2>
               <span className={`w-2 h-2 rounded-full ${statusDot}`} />
-              <span className="text-xs text-gray-500">{agent.state.status}</span>
-              {externalInfo && <span className="px-1.5 py-0.5 text-[10px] bg-purple-500/15 text-purple-400 rounded font-medium">External</span>}
-              {agent.agentRole === 'manager' && <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-400 rounded font-medium">Manager</span>}
+              <span className="text-xs text-fg-tertiary">{agent.state.status}</span>
+              {externalInfo && <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">External</span>}
+              {agent.agentRole === 'manager' && <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-600 rounded font-medium">Manager</span>}
             </div>
-            <div className="text-xs text-gray-500 truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
+            <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
             <button onClick={() => navBus.navigate('chat', { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
@@ -91,15 +91,15 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
                 await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: config.description, category: 'general', config, files: filesMap });
                 alert(`Published "${agent.name}" to Markus Hub`);
               } catch (e) { alert(`Failed to publish: ${e}`); }
-            }} className="px-3 py-1.5 text-xs bg-teal-600 hover:bg-teal-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
-            {inline && <button onClick={onBack} className="p-1.5 text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>}
+            }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
+            {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
           {TABS.filter(t => !externalInfo || ['overview', 'tasks'].includes(t.key)).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
-                tab === t.key ? 'bg-surface-primary text-white border-border-default' : 'text-gray-500 border-transparent hover:text-gray-300 hover:bg-surface-elevated/50'
+                tab === t.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
               }`}
             ><span className="mr-1">{t.icon}</span>{t.label}</button>
           ))}
@@ -197,7 +197,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <KV label="Name">{agent.name}</KV>
             <KV label="Agent Role">
-              <span className={agent.agentRole === 'manager' ? 'text-amber-400' : 'text-cyan-400'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>
+              <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>
             </KV>
             <KV label="Role Template">{agent.role}</KV>
             <KV label="Markus Agent ID" mono>{agent.id}</KV>
@@ -228,8 +228,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="space-y-1.5">
             {SYNC_CONTEXT_FIELDS.map(f => (
               <div key={f.field} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
-                <span className="font-mono text-[10px] text-brand-400 shrink-0 pt-0.5">{f.field}</span>
-                <span className="text-[10px] text-gray-500">{f.desc}</span>
+                <span className="font-mono text-[10px] text-brand-500 shrink-0 pt-0.5">{f.field}</span>
+                <span className="text-[10px] text-fg-tertiary">{f.desc}</span>
               </div>
             ))}
           </div>
@@ -239,22 +239,22 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="space-y-1.5">
             {GATEWAY_ENDPOINTS.map(ep => (
               <div key={ep.path} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 border border-border-default/30">
-                <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-400' : 'text-green-400'}`}>{ep.method}</span>
-                <span className="font-mono text-[10px] text-gray-300 shrink-0 pt-0.5">{ep.path}</span>
-                <span className="text-[10px] text-gray-600 ml-auto">{ep.desc}</span>
+                <span className={`text-[10px] font-semibold shrink-0 pt-0.5 ${ep.method === 'POST' ? 'text-amber-600' : 'text-green-600'}`}>{ep.method}</span>
+                <span className="font-mono text-[10px] text-fg-secondary shrink-0 pt-0.5">{ep.path}</span>
+                <span className="text-[10px] text-fg-tertiary ml-auto">{ep.desc}</span>
               </div>
             ))}
           </div>
         </Card>
 
         {recentTasks.length > 0 && (
-          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-gray-600 hover:text-gray-400">View all →</button>}>
+          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
             <div className="divide-y divide-gray-800/50 -mx-5">
               {recentTasks.map(t => (
                 <div key={t.id} className="flex items-center gap-2.5 px-5 py-2.5">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
-                  <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
-                  <span className="text-[10px] text-gray-600 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                  <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
+                  <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
                 </div>
               ))}
             </div>
@@ -269,19 +269,19 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       <Card title="Identity" action={
         editing
           ? <div className="flex gap-2">
-              <button onClick={() => setEditing(false)} className="text-xs text-gray-500 hover:text-gray-300">Cancel</button>
-              <button onClick={save} disabled={saving} className="text-xs text-brand-400 hover:text-brand-300">{saving ? 'Saving...' : 'Save'}</button>
+              <button onClick={() => setEditing(false)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Cancel</button>
+              <button onClick={save} disabled={saving} className="text-xs text-brand-500 hover:text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
             </div>
-          : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
+          : <button onClick={() => { setEditing(true); setEditName(agent.name); setEditRole(agent.agentRole); setEditModelMode((agent.config?.llmConfig as Record<string, unknown>)?.modelMode as 'default' | 'custom' ?? 'default'); setEditModel(agent.config?.llmConfig.primary ?? ''); setEditFallback(agent.config?.llmConfig.fallback ?? ''); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
       }>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3">
           <KV label="Name">{editing ? <input className="input-sm" value={editName} onChange={e => setEditName(e.target.value)} /> : agent.name}</KV>
           <KV label="Agent Role">
             {editing
               ? <div className="flex gap-1.5">{(['worker', 'manager'] as const).map(r => (
-                  <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30') : 'bg-surface-elevated text-gray-500 border-border-default'}`}>{r}</button>
+                  <button key={r} onClick={() => setEditRole(r)} className={`px-2 py-1 text-[10px] rounded border transition-colors capitalize ${editRole === r ? (r === 'manager' ? 'bg-amber-500/15 text-amber-600 border-amber-500/30' : 'bg-blue-500/15 text-blue-600 border-blue-500/30') : 'bg-surface-elevated text-fg-tertiary border-border-default'}`}>{r}</button>
                 ))}</div>
-              : <span className={agent.agentRole === 'manager' ? 'text-amber-400' : 'text-cyan-400'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>}
+              : <span className={agent.agentRole === 'manager' ? 'text-amber-600' : 'text-blue-600'}>{agent.agentRole === 'manager' ? '★ Manager' : '◆ Worker'}</span>}
           </KV>
           <KV label="Role Template">{agent.role}</KV>
           <KV label="Agent ID" mono>{agent.id}</KV>
@@ -302,10 +302,10 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-              <span className="text-xs font-medium text-red-400">Error Details</span>
-              {agent.state.lastErrorAt && <span className="text-[10px] text-red-400/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
+              <span className="text-xs font-medium text-red-500">Error Details</span>
+              {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
-            <pre className="text-[11px] text-red-300/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
+            <pre className="text-[11px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
               {agent.state.lastError || 'Agent encountered an error. Check logs for more details.'}
             </pre>
           </div>
@@ -315,15 +315,15 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
           <div className="mt-3 bg-brand-500/10 border border-brand-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="w-2 h-2 rounded-full bg-brand-400 animate-pulse" />
-              <span className="text-xs font-medium text-brand-400">Currently Working</span>
-              <span className="text-[10px] text-brand-400/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
+              <span className="text-xs font-medium text-brand-500">Currently Working</span>
+              <span className="text-[10px] text-brand-500/50 ml-auto">{agent.state.activeTaskIds!.length} active task{agent.state.activeTaskIds!.length > 1 ? 's' : ''}</span>
             </div>
             <div className="space-y-1">
               {recentTasks.filter(t => agent.state.activeTaskIds?.includes(t.id)).map(t => (
                 <div key={t.id} className="flex items-center gap-2 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
-                  <span className="text-gray-300 truncate flex-1">{t.title}</span>
-                  <span className="text-gray-500 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                  <span className="text-fg-secondary truncate flex-1">{t.title}</span>
+                  <span className="text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
                 </div>
               ))}
             </div>
@@ -359,13 +359,13 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                       <button key={m} onClick={() => setEditModelMode(m)}
                         className={`px-2.5 py-1 text-[10px] rounded border transition-colors capitalize ${
                           editModelMode === m
-                            ? (m === 'default' ? 'bg-brand-500/15 text-brand-400 border-brand-500/30' : 'bg-amber-500/15 text-amber-400 border-amber-500/30')
-                            : 'bg-surface-elevated text-gray-500 border-border-default'
+                            ? (m === 'default' ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'bg-amber-500/15 text-amber-600 border-amber-500/30')
+                            : 'bg-surface-elevated text-fg-tertiary border-border-default'
                         }`}
                       >{m === 'default' ? 'System Default' : 'Custom'}</button>
                     ))}
                   </div>
-                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-400' : 'text-brand-400'}`}>
+                : <span className={`text-xs ${currentModelMode === 'custom' ? 'text-amber-600' : 'text-brand-500'}`}>
                     {currentModelMode === 'custom' ? '⚙ Custom' : '◎ System Default'}
                   </span>}
             </KV>
@@ -376,11 +376,11 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                       {configuredModels.map(m => <option key={m} value={m}>{m} ({providers[m]?.model})</option>)}
                       {!configuredModels.includes(editModel) && editModel && <option value={editModel}>{editModel}</option>}
                     </select>
-                  : <span className="text-xs text-gray-400 italic">follows system default ({defaultProvider || '...'})</span>
+                  : <span className="text-xs text-fg-secondary italic">follows system default ({defaultProvider || '...'})</span>
                 : <span className="font-mono text-xs">
                     {currentModelMode === 'custom'
                       ? (agent.config?.llmConfig.primary ?? '—')
-                      : <span className="text-gray-400">{defaultProvider || agent.config?.llmConfig.primary || '—'} <span className="text-gray-600">(system default)</span></span>}
+                      : <span className="text-fg-secondary">{defaultProvider || agent.config?.llmConfig.primary || '—'} <span className="text-fg-tertiary">(system default)</span></span>}
                   </span>}
             </KV>
             <KV label="Fallback">
@@ -398,7 +398,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (
-        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-gray-600 hover:text-gray-400">View all →</button>}>
+        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentTasks.map(t => {
               const isExpanded = expandedTaskId === t.id;
@@ -410,9 +410,9 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     className={`w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}
                   >
                     <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_DOT[t.status] ?? 'bg-gray-500'}`} />
-                    <span className="text-xs text-gray-300 flex-1 truncate">{t.title}</span>
-                    <span className="text-[10px] text-gray-600 capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
-                    {hasLogs && <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
+                    <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
+                    <span className="text-[10px] text-fg-tertiary capitalize shrink-0">{t.status.replace(/_/g, ' ')}</span>
+                    {hasLogs && <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
                   </button>
                   {isExpanded && (
                     <div className="border-t border-border-default/60 bg-surface-primary/40">
@@ -428,7 +428,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
       {/* Recent Heartbeats */}
       {recentActivities.filter(a => a.type === 'heartbeat').length > 0 && (
-        <Card title="Recent Heartbeats" action={<span className="text-[10px] text-gray-600">{recentActivities.filter(a => a.type === 'heartbeat').length} runs</span>}>
+        <Card title="Recent Heartbeats" action={<span className="text-[10px] text-fg-tertiary">{recentActivities.filter(a => a.type === 'heartbeat').length} runs</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentActivities.filter(a => a.type === 'heartbeat').map(act => {
               const isExpanded = expandedActivityId === act.id;
@@ -438,10 +438,10 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
                     className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
-                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-green-400" />
+                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                   </button>
                   {isExpanded && (
                     <div className="border-t border-border-default/60 bg-surface-primary/40">
@@ -457,7 +457,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
       {/* Recent A2A Communications */}
       {recentActivities.filter(a => a.type === 'chat').length > 0 && (
-        <Card title="Recent A2A Communications" action={<span className="text-[10px] text-gray-600">{recentActivities.filter(a => a.type === 'chat').length} conversations</span>}>
+        <Card title="Recent A2A Communications" action={<span className="text-[10px] text-fg-tertiary">{recentActivities.filter(a => a.type === 'chat').length} conversations</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentActivities.filter(a => a.type === 'chat').map(act => {
               const isExpanded = expandedActivityId === act.id;
@@ -468,9 +468,9 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
                     className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
-                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                   </button>
                   {isExpanded && (
                     <div className="border-t border-border-default/60 bg-surface-primary/40">
@@ -557,7 +557,7 @@ function FilesTab({ agentId }: { agentId: string }) {
     } catch { /* */ }
   };
 
-  if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading files...</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading files...</div>;
 
   const FILE_LABELS: Record<string, string> = {
     'ROLE.md': 'System Prompt / Role Definition',
@@ -574,11 +574,11 @@ function FilesTab({ agentId }: { agentId: string }) {
     <div className="space-y-4">
       {hasUpdates && (
         <div className="bg-amber-500/8 border border-amber-500/25 rounded-xl p-4 flex items-start gap-3">
-          <span className="text-amber-400 text-sm mt-0.5">↻</span>
+          <span className="text-amber-600 text-sm mt-0.5">↻</span>
           <div className="flex-1 min-w-0">
-            <div className="text-xs text-amber-300 font-medium">Template Update Available</div>
-            <div className="text-[11px] text-amber-400/70 mt-0.5">
-              {staleFiles.length} file{staleFiles.length > 1 ? 's' : ''} differ from the <code className="px-1 py-0.5 bg-amber-500/10 rounded text-amber-300">{roleStatus!.templateId}</code> template:
+            <div className="text-xs text-amber-600 font-medium">Template Update Available</div>
+            <div className="text-[11px] text-amber-600/70 mt-0.5">
+              {staleFiles.length} file{staleFiles.length > 1 ? 's' : ''} differ from the <code className="px-1 py-0.5 bg-amber-500/10 rounded text-amber-600">{roleStatus!.templateId}</code> template:
               {' '}{staleFiles.map(f => f.file).join(', ')}
             </div>
           </div>
@@ -592,12 +592,12 @@ function FilesTab({ agentId }: { agentId: string }) {
         roleStatus?.hasTemplate
           ? <div className="flex items-center gap-2">
               <span className={`inline-block w-1.5 h-1.5 rounded-full ${roleStatus.isUpToDate ? 'bg-green-400' : 'bg-amber-400'}`} />
-              <span className="text-[10px] text-gray-500">
-                Template: <span className="text-gray-400">{roleStatus.templateId}</span>
+              <span className="text-[10px] text-fg-tertiary">
+                Template: <span className="text-fg-secondary">{roleStatus.templateId}</span>
                 {roleStatus.isUpToDate ? ' (up to date)' : ' (updates available)'}
               </span>
             </div>
-          : <div className="text-[10px] text-gray-600">Custom agent — no linked template</div>
+          : <div className="text-[10px] text-fg-tertiary">Custom agent — no linked template</div>
       }>
         <div className="flex gap-2 mb-4 flex-wrap">
           {files.map(f => {
@@ -605,7 +605,7 @@ function FilesTab({ agentId }: { agentId: string }) {
             return (
               <button key={f.name} onClick={() => selectFile(f.name)}
                 className={`px-3 py-1.5 text-xs rounded-lg border transition-colors relative ${
-                  selected === f.name ? 'bg-brand-600/15 border-brand-500/40 text-brand-300' : 'border-border-default text-gray-500 hover:text-gray-300'
+                  selected === f.name ? 'bg-brand-600/15 border-brand-500/40 text-brand-500' : 'border-border-default text-fg-tertiary hover:text-fg-secondary'
                 }`}
               >
                 {f.name}
@@ -618,11 +618,11 @@ function FilesTab({ agentId }: { agentId: string }) {
         {selected && (
           <div>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs text-gray-400">{FILE_LABELS[selected] ?? selected}</div>
+              <div className="text-xs text-fg-secondary">{FILE_LABELS[selected] ?? selected}</div>
               <div className="flex gap-2 items-center">
                 {selectedFileStale && (
                   <>
-                    <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
+                    <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-600 hover:text-amber-600 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
                       {diffView?.file === selected ? 'Hide Diff' : 'View Diff'}
                     </button>
                     <button onClick={() => syncFromTemplate(selected)} disabled={syncing}
@@ -630,22 +630,22 @@ function FilesTab({ agentId }: { agentId: string }) {
                     >{syncing ? 'Syncing...' : 'Sync This File'}</button>
                   </>
                 )}
-                {dirty && <span className="text-[10px] text-amber-400">unsaved</span>}
+                {dirty && <span className="text-[10px] text-amber-600">unsaved</span>}
                 <button onClick={saveFile} disabled={saving || !dirty}
-                  className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-brand-600 hover:bg-brand-500 text-white' : 'bg-surface-elevated text-gray-600 cursor-default'}`}
+                  className={`px-3 py-1 text-xs rounded-lg transition-colors ${dirty ? 'bg-brand-600 hover:bg-brand-500 text-white' : 'bg-surface-elevated text-fg-tertiary cursor-default'}`}
                 >{saving ? 'Saving...' : 'Save'}</button>
               </div>
             </div>
 
             {diffView?.file === selected && (
               <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
-                <div className="grid grid-cols-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider bg-surface-elevated/80">
+                <div className="grid grid-cols-2 text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider bg-surface-elevated/80">
                   <div className="px-3 py-2 border-r border-border-default">Current (Agent)</div>
                   <div className="px-3 py-2">Template ({roleStatus?.templateId})</div>
                 </div>
                 <div className="grid grid-cols-2 max-h-60 overflow-y-auto">
-                  <pre className="px-3 py-2 text-[11px] font-mono text-red-300/70 bg-red-500/5 border-r border-border-default whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
-                  <pre className="px-3 py-2 text-[11px] font-mono text-green-300/70 bg-green-500/5 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.template}</pre>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-red-500/70 bg-red-500/5 border-r border-border-default whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
+                  <pre className="px-3 py-2 text-[11px] font-mono text-green-600/70 bg-green-500/5 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.template}</pre>
                 </div>
               </div>
             )}
@@ -653,11 +653,11 @@ function FilesTab({ agentId }: { agentId: string }) {
             <textarea
               value={editContent}
               onChange={e => { setEditContent(e.target.value); setDirty(true); }}
-              className="w-full h-80 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none"
+              className="w-full h-80 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none"
               spellCheck={false}
             />
             {selected === 'ROLE.md' && (
-              <div className="text-[10px] text-gray-600 mt-2">Changes to ROLE.md will update the agent's runtime system prompt immediately.</div>
+              <div className="text-[10px] text-fg-tertiary mt-2">Changes to ROLE.md will update the agent's runtime system prompt immediately.</div>
             )}
           </div>
         )}
@@ -712,7 +712,7 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
   const groups = categorizeTools(tools);
   return (
     <div className="space-y-4">
-      <div className="text-xs text-gray-500">{tools.length} tools registered</div>
+      <div className="text-xs text-fg-tertiary">{tools.length} tools registered</div>
       {groups.map(g => (
         <Card key={g.category} title={g.category}>
           <div className="grid grid-cols-2 gap-2">
@@ -721,14 +721,14 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
                 <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium font-mono">{t.name}</div>
-                  <div className="text-[10px] text-gray-600 truncate">{t.description}</div>
+                  <div className="text-[10px] text-fg-tertiary truncate">{t.description}</div>
                 </div>
               </div>
             ))}
           </div>
         </Card>
       ))}
-      {tools.length === 0 && <div className="text-center py-12 text-gray-600 text-sm">No tools registered</div>}
+      {tools.length === 0 && <div className="text-center py-12 text-fg-tertiary text-sm">No tools registered</div>}
     </div>
   );
 }
@@ -785,16 +785,16 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
   const importable = availableSkills.filter(s => !agent.skills.includes(s.name) && s.name.toLowerCase().includes(search.toLowerCase()));
 
   const CATEGORY_COLORS: Record<string, string> = {
-    development: 'bg-blue-500/15 text-blue-400', devops: 'bg-orange-500/15 text-orange-400',
-    communication: 'bg-green-500/15 text-green-400', data: 'bg-purple-500/15 text-purple-400',
-    productivity: 'bg-amber-500/15 text-amber-400', browser: 'bg-cyan-500/15 text-cyan-400',
-    custom: 'bg-gray-500/15 text-gray-400',
+    development: 'bg-blue-500/15 text-blue-600', devops: 'bg-amber-500/15 text-amber-600',
+    communication: 'bg-green-500/15 text-green-600', data: 'bg-brand-500/15 text-brand-500',
+    productivity: 'bg-amber-500/15 text-amber-600', browser: 'bg-blue-500/15 text-blue-600',
+    custom: 'bg-gray-500/15 text-fg-secondary',
   };
 
   return (
     <div className="space-y-4">
       <Card title={`Assigned Skills (${agent.skills.length})`} action={
-        <button onClick={() => setShowImport(!showImport)} className="text-xs text-brand-400 hover:text-brand-300">
+        <button onClick={() => setShowImport(!showImport)} className="text-xs text-brand-500 hover:text-brand-500">
           {showImport ? 'Close' : '+ Add Skill'}
         </button>
       }>
@@ -802,9 +802,9 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
           <div className="mb-4 p-3 bg-surface-elevated/40 rounded-lg border border-border-default/40">
             <input className="input-sm mb-2" placeholder="Search skills..." value={search} onChange={e => setSearch(e.target.value)} />
             <div className="space-y-1 max-h-40 overflow-y-auto">
-              {importable.length === 0 ? <div className="text-[10px] text-gray-600 py-2 text-center">No additional skills available</div> : importable.map(s => (
+              {importable.length === 0 ? <div className="text-[10px] text-fg-tertiary py-2 text-center">No additional skills available</div> : importable.map(s => (
                 <div key={s.name} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-elevated/30 hover:bg-surface-overlay/40 transition-colors">
-                  <span className="text-xs text-gray-300 flex-1">{s.name} <span className="text-gray-600">v{s.version}</span></span>
+                  <span className="text-xs text-fg-secondary flex-1">{s.name} <span className="text-fg-tertiary">v{s.version}</span></span>
                   <button onClick={() => addSkill(s.name)} className="px-2 py-0.5 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded">Add</button>
                 </div>
               ))}
@@ -821,62 +821,62 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                 <div key={skill}>
                   <div
                     className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border cursor-pointer transition-all ${
-                      isExpanded ? 'bg-brand-900/15 border-brand-500/40' : 'bg-surface-elevated/30 border-border-default/30 hover:border-gray-600/50'
+                      isExpanded ? 'bg-brand-500/10 border-brand-500/40' : 'bg-surface-elevated/30 border-border-default/30 hover:border-gray-600/50'
                     }`}
                     onClick={() => toggleDetail(skill)}
                   >
                     <span className={`text-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium">{skill}</div>
-                      {prof && <div className="text-[10px] text-gray-500 mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
+                      {prof && <div className="text-[10px] text-fg-tertiary mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
                     </div>
                     {rate !== null && (
                       <div className="flex items-center gap-2 shrink-0">
                         <div className="w-16 h-1.5 bg-surface-overlay rounded-full overflow-hidden">
                           <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
                         </div>
-                        <span className="text-[10px] text-gray-500 w-8 text-right">{rate}%</span>
+                        <span className="text-[10px] text-fg-tertiary w-8 text-right">{rate}%</span>
                       </div>
                     )}
-                    <button onClick={e => { e.stopPropagation(); removeSkill(skill); }} className="text-gray-600 hover:text-red-400 text-xs transition-colors" title="Remove skill">✕</button>
+                    <button onClick={e => { e.stopPropagation(); removeSkill(skill); }} className="text-fg-tertiary hover:text-red-500 text-xs transition-colors" title="Remove skill">✕</button>
                   </div>
 
                   {isExpanded && (
                     <div className="ml-6 mt-1 mb-2 p-4 bg-surface-elevated/30 rounded-lg border border-border-default/20 space-y-3">
                       {detailLoading ? (
-                        <div className="text-[10px] text-gray-600 py-3 text-center">Loading skill details…</div>
+                        <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading skill details…</div>
                       ) : skillDetail ? (
                         <>
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${CATEGORY_COLORS[skillDetail.category] ?? CATEGORY_COLORS['custom']}`}>
                               {skillDetail.category}
                             </span>
-                            <span className="text-[10px] text-gray-500">v{skillDetail.version}</span>
-                            {skillDetail.author && <span className="text-[10px] text-gray-500">by {skillDetail.author}</span>}
+                            <span className="text-[10px] text-fg-tertiary">v{skillDetail.version}</span>
+                            {skillDetail.author && <span className="text-[10px] text-fg-tertiary">by {skillDetail.author}</span>}
                             {skillDetail.requiredPermissions?.map(p => (
-                              <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-400 text-[10px] rounded">{p}</span>
+                              <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-600 text-[10px] rounded">{p}</span>
                             ))}
                           </div>
                           {skillDetail.description && (
-                            <p className="text-xs text-gray-400 leading-relaxed">{skillDetail.description}</p>
+                            <p className="text-xs text-fg-secondary leading-relaxed">{skillDetail.description}</p>
                           )}
                           {skillDetail.tags && skillDetail.tags.length > 0 && (
                             <div className="flex gap-1 flex-wrap">
                               {skillDetail.tags.map(tag => (
-                                <span key={tag} className="px-1.5 py-0.5 bg-surface-overlay/40 text-gray-500 text-[10px] rounded">#{tag}</span>
+                                <span key={tag} className="px-1.5 py-0.5 bg-surface-overlay/40 text-fg-tertiary text-[10px] rounded">#{tag}</span>
                               ))}
                             </div>
                           )}
                           {(skillDetail.toolDetails ?? skillDetail.tools ?? []).length > 0 && (
                             <div>
-                              <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider mb-2">
+                              <div className="text-[10px] text-fg-tertiary font-semibold uppercase tracking-wider mb-2">
                                 Tools ({(skillDetail.toolDetails ?? skillDetail.tools ?? []).length})
                               </div>
                               <div className="space-y-1.5">
                                 {(skillDetail.toolDetails ?? skillDetail.tools ?? []).map(tool => (
                                   <div key={tool.name} className="px-3 py-2 bg-surface-secondary/50 rounded border border-border-default/20">
-                                    <div className="text-xs font-medium text-brand-300">{tool.name}</div>
-                                    {tool.description && <div className="text-[10px] text-gray-500 mt-0.5">{tool.description}</div>}
+                                    <div className="text-xs font-medium text-brand-500">{tool.name}</div>
+                                    {tool.description && <div className="text-[10px] text-fg-tertiary mt-0.5">{tool.description}</div>}
                                   </div>
                                 ))}
                               </div>
@@ -884,7 +884,7 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                           )}
                         </>
                       ) : (
-                        <div className="text-[10px] text-gray-600 py-3 text-center">
+                        <div className="text-[10px] text-fg-tertiary py-3 text-center">
                           Skill details not available (skill may not be registered in the store)
                         </div>
                       )}
@@ -943,8 +943,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
     loadData();
   };
 
-  if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading memory...</div>;
-  if (!data) return <div className="text-xs text-gray-600 py-8 text-center">Failed to load memory data</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading memory...</div>;
+  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">Failed to load memory data</div>;
 
   const sectionTabs = [
     { key: 'entries' as const, label: `Recent (${data.entries.length})` },
@@ -958,7 +958,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
       <div className="flex gap-2">
         {sectionTabs.map(s => (
           <button key={s.key} onClick={() => setSection(s.key)}
-            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${section === s.key ? 'bg-brand-600/15 border-brand-500/40 text-brand-300' : 'border-border-default text-gray-500 hover:text-gray-300'}`}
+            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${section === s.key ? 'bg-brand-600/15 border-brand-500/40 text-brand-500' : 'border-border-default text-fg-tertiary hover:text-fg-secondary'}`}
           >{s.label}</button>
         ))}
       </div>
@@ -975,22 +975,22 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       onClick={() => setExpandedEntryIdx(isExpanded ? null : i)}
                       className="w-full flex gap-2 px-3 py-2 rounded-lg bg-surface-elevated/20 text-xs text-left hover:bg-surface-elevated/40 transition-colors cursor-pointer"
                     >
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-400' : e.type === 'task' ? 'bg-green-500/15 text-green-400' : e.type === 'note' ? 'bg-purple-500/15 text-purple-400' : 'bg-surface-overlay text-gray-400'}`}>{e.type}</span>
-                      <span className={`text-gray-300 flex-1 min-w-0 ${isExpanded ? '' : 'line-clamp-2'}`}>{e.content}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 ${e.type === 'fact' ? 'bg-blue-500/15 text-blue-600' : e.type === 'task' ? 'bg-green-500/15 text-green-600' : e.type === 'note' ? 'bg-brand-500/15 text-brand-500' : 'bg-surface-overlay text-fg-secondary'}`}>{e.type}</span>
+                      <span className={`text-fg-secondary flex-1 min-w-0 ${isExpanded ? '' : 'line-clamp-2'}`}>{e.content}</span>
                       <div className="flex items-center gap-2 shrink-0">
                         {e.importance != null && (
-                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${e.importance >= 7 ? 'bg-red-500/15 text-red-400' : e.importance >= 4 ? 'bg-amber-500/15 text-amber-400' : 'bg-surface-overlay text-gray-500'}`}>
+                          <span className={`px-1 py-0.5 rounded text-[9px] font-medium ${e.importance >= 7 ? 'bg-red-500/15 text-red-500' : e.importance >= 4 ? 'bg-amber-500/15 text-amber-600' : 'bg-surface-overlay text-fg-tertiary'}`}>
                             P{e.importance}
                           </span>
                         )}
-                        <span className="text-gray-600 text-[10px]">{new Date(e.timestamp).toLocaleTimeString()}</span>
-                        <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                        <span className="text-fg-tertiary text-[10px]">{new Date(e.timestamp).toLocaleTimeString()}</span>
+                        <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                       </div>
                     </button>
                     {isExpanded && (
                       <div className="mx-3 mt-1 mb-2 p-3 bg-surface-elevated/30 rounded-lg border border-border-default/20">
-                        <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed break-words">{e.content}</pre>
-                        <div className="flex gap-3 mt-2 pt-2 border-t border-border-default/30 text-[10px] text-gray-600">
+                        <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed break-words">{e.content}</pre>
+                        <div className="flex gap-3 mt-2 pt-2 border-t border-border-default/30 text-[10px] text-fg-tertiary">
                           <span>Type: {e.type}</span>
                           {e.importance != null && <span>Importance: {e.importance}</span>}
                           <span>{new Date(e.timestamp).toLocaleString()}</span>
@@ -1027,17 +1027,17 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       onClick={toggleSession}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg bg-surface-elevated/20 hover:bg-surface-elevated/40 transition-colors cursor-pointer text-left"
                     >
-                      <div className="text-xs text-gray-400 font-mono flex-1 truncate">{s.id}</div>
-                      <span className="text-[10px] text-gray-500">{s.messageCount} msgs</span>
-                      <span className="text-[10px] text-gray-600">{new Date(s.updatedAt).toLocaleDateString()}</span>
-                      <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
+                      <div className="text-xs text-fg-secondary font-mono flex-1 truncate">{s.id}</div>
+                      <span className="text-[10px] text-fg-tertiary">{s.messageCount} msgs</span>
+                      <span className="text-[10px] text-fg-tertiary">{new Date(s.updatedAt).toLocaleDateString()}</span>
+                      <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                     </button>
                     {isExpanded && (
                       <div className="mx-3 mt-1 mb-2 bg-surface-elevated/30 rounded-lg border border-border-default/20 max-h-96 overflow-y-auto">
                         {sessionLoading ? (
-                          <div className="text-[10px] text-gray-600 py-3 text-center">Loading messages...</div>
+                          <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading messages...</div>
                         ) : sessionMessages.length === 0 ? (
-                          <div className="text-[10px] text-gray-600 py-3 text-center">No messages in this session</div>
+                          <div className="text-[10px] text-fg-tertiary py-3 text-center">No messages in this session</div>
                         ) : (() => {
                           const toolResultMap = new Map<string, string>();
                           for (const m of sessionMessages) {
@@ -1049,16 +1049,16 @@ function MemoryTab({ agentId }: { agentId: string }) {
                                 <div key={i} className="px-3 py-2">
                                   {(m.role === 'user' || m.role === 'system') && (
                                     <div>
-                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-400' : 'bg-surface-overlay text-gray-400'}`}>{m.role}</span>
-                                      <div className="text-xs text-gray-300"><MarkdownMessage content={m.content} className="text-xs text-gray-300" /></div>
+                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-600' : 'bg-surface-overlay text-fg-secondary'}`}>{m.role}</span>
+                                      <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
                                     </div>
                                   )}
                                   {m.role === 'assistant' && (
                                     <div className="space-y-1">
                                       {m.content && (
                                         <div>
-                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-400">assistant</span>
-                                          <div className="text-xs text-gray-300"><MarkdownMessage content={m.content} className="text-xs text-gray-300" /></div>
+                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-600">assistant</span>
+                                          <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
                                         </div>
                                       )}
                                       {m.toolCalls && m.toolCalls.length > 0 && (
@@ -1097,16 +1097,16 @@ function MemoryTab({ agentId }: { agentId: string }) {
         <Card title="Daily Logs" action={
           editingDaily
             ? <div className="flex gap-2">
-                <button onClick={() => setEditingDaily(false)} className="text-xs text-gray-500">Cancel</button>
-                <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-400">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditingDaily(false)} className="text-xs text-fg-tertiary">Cancel</button>
+                <button onClick={saveDaily} disabled={saving} className="text-xs text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
               </div>
-            : <button onClick={() => setEditingDaily(true)} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
+            : <button onClick={() => setEditingDaily(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
         }>
           {editingDaily ? (
             <textarea value={dailyContent} onChange={e => setDailyContent(e.target.value)}
-              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none" />
+              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.recentDailyLogs ? (
-            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
+            <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.recentDailyLogs}</pre>
           ) : <Empty text="No daily logs" />}
         </Card>
       )}
@@ -1115,16 +1115,16 @@ function MemoryTab({ agentId }: { agentId: string }) {
         <Card title="Long-term Memory" action={
           editingLong
             ? <div className="flex gap-2">
-                <button onClick={() => setEditingLong(false)} className="text-xs text-gray-500">Cancel</button>
-                <button onClick={saveLong} disabled={saving} className="text-xs text-brand-400">{saving ? 'Saving...' : 'Save'}</button>
+                <button onClick={() => setEditingLong(false)} className="text-xs text-fg-tertiary">Cancel</button>
+                <button onClick={saveLong} disabled={saving} className="text-xs text-brand-500">{saving ? 'Saving...' : 'Save'}</button>
               </div>
-            : <button onClick={() => setEditingLong(true)} className="text-xs text-gray-600 hover:text-gray-400">Edit</button>
+            : <button onClick={() => setEditingLong(true)} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
         }>
           {editingLong ? (
             <textarea value={longContent} onChange={e => setLongContent(e.target.value)}
-              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-gray-300 leading-relaxed resize-y focus:border-brand-500 outline-none" />
+              className="w-full h-64 bg-surface-elevated/60 border border-border-default rounded-lg p-4 text-xs font-mono text-fg-secondary leading-relaxed resize-y focus:border-brand-500 outline-none" />
           ) : data.longTermMemory ? (
-            <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
+            <pre className="text-xs text-fg-secondary whitespace-pre-wrap font-mono leading-relaxed bg-surface-elevated/30 rounded-lg p-4 max-h-96 overflow-y-auto">{data.longTermMemory}</pre>
           ) : <Empty text="No long-term memory stored" />}
         </Card>
       )}
@@ -1177,8 +1177,8 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     setTriggering(false);
   };
 
-  if (loading) return <div className="text-xs text-gray-600 py-8 text-center">Loading heartbeat data...</div>;
-  if (!data) return <div className="text-xs text-gray-600 py-8 text-center">No heartbeat data available</div>;
+  if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">Loading heartbeat data...</div>;
+  if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">No heartbeat data available</div>;
 
   const formatDuration = (ms?: number) => {
     if (!ms) return null;
@@ -1206,13 +1206,13 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
       {/* Scheduler + Controls */}
       <Card title="Heartbeat Scheduler" action={
         <div className="flex items-center gap-2">
-          <button onClick={refresh} className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+          <button onClick={refresh} className="text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors">
             Refresh
           </button>
           <button
             onClick={handleTrigger}
             disabled={triggering || !data.running}
-            className="text-[10px] px-2.5 py-1 rounded-md bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 border border-cyan-500/30 transition-colors disabled:opacity-40"
+            className="text-[10px] px-2.5 py-1 rounded-md bg-blue-600/20 text-blue-600 hover:bg-blue-600/30 border border-blue-500/30 transition-colors disabled:opacity-40"
           >
             {triggering ? 'Triggering...' : 'Trigger Now'}
           </button>
@@ -1225,7 +1225,7 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           <StatBox label="Next Run" value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? '—' : data.running ? 'Pending' : '—'} />
         </div>
         {triggerMsg && (
-          <div className="mt-3 text-[11px] text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2">
+          <div className="mt-3 text-[11px] text-blue-600 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
             {triggerMsg}
           </div>
         )}
@@ -1234,17 +1234,17 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
       {/* Last Heartbeat Summary */}
       {data.lastSummary && (
         <Card title="Last Heartbeat Summary" action={
-          data.lastSummaryAt ? <span className="text-[10px] text-gray-600">{new Date(data.lastSummaryAt).toLocaleString()}</span> : undefined
+          data.lastSummaryAt ? <span className="text-[10px] text-fg-tertiary">{new Date(data.lastSummaryAt).toLocaleString()}</span> : undefined
         }>
           <div className="bg-surface-primary/50 rounded-lg px-4 py-3">
-            <MarkdownMessage content={data.lastSummary} className="text-xs text-gray-300 leading-relaxed" />
+            <MarkdownMessage content={data.lastSummary} className="text-xs text-fg-secondary leading-relaxed" />
           </div>
         </Card>
       )}
 
       {/* Recent Runs */}
       {recentRuns.length > 0 ? (
-        <Card title="Recent Runs" action={<span className="text-[10px] text-gray-600">{recentRuns.length} runs this session</span>}>
+        <Card title="Recent Runs" action={<span className="text-[10px] text-fg-tertiary">{recentRuns.length} runs this session</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {[...recentRuns].reverse().map(act => {
               const isExpanded = expandedRunId === act.id;
@@ -1254,11 +1254,11 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
                     onClick={() => setExpandedRunId(isExpanded ? null : act.id)}
                     className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
                   >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-cyan-400" />
-                    <span className="text-xs text-gray-300 flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-gray-500 shrink-0">{act.logCount} actions</span>
-                    <span className="text-[10px] text-gray-600 shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <svg className={`w-3 h-3 text-gray-600 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="currentColor">
+                    <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
+                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{act.logCount} actions</span>
+                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+                    <svg className={`w-3 h-3 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 12 12" fill="currentColor">
                       <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                     </svg>
                   </button>
@@ -1276,15 +1276,15 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
         <Card title="Recent Runs">
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="text-xl mb-2 opacity-40">♡</div>
-            <p className="text-xs text-gray-500">No heartbeat runs yet this session.</p>
-            <p className="text-[10px] text-gray-600 mt-1">
+            <p className="text-xs text-fg-tertiary">No heartbeat runs yet this session.</p>
+            <p className="text-[10px] text-fg-tertiary mt-1">
               {data.running
                 ? `First heartbeat will trigger in ~${formatDuration(data.intervalMs - data.uptimeMs % data.intervalMs) ?? 'soon'}.`
                 : 'Heartbeat scheduler is stopped.'}
             </p>
             {data.running && (
               <button onClick={handleTrigger} disabled={triggering}
-                className="mt-3 text-[10px] px-3 py-1.5 rounded-md bg-cyan-600/15 text-cyan-400 hover:bg-cyan-600/25 border border-cyan-500/25 transition-colors disabled:opacity-40">
+                className="mt-3 text-[10px] px-3 py-1.5 rounded-md bg-blue-600/15 text-blue-600 hover:bg-blue-600/25 border border-blue-500/25 transition-colors disabled:opacity-40">
                 {triggering ? 'Triggering...' : 'Run First Heartbeat Now'}
               </button>
             )}
@@ -1319,7 +1319,7 @@ function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: 
 
   return (
     <div className="space-y-4">
-      <Card title="Tasks" action={<span className="text-xs text-gray-600">{sorted.length} total</span>}>
+      <Card title="Tasks" action={<span className="text-xs text-fg-tertiary">{sorted.length} total</span>}>
         {sorted.length === 0 ? <Empty text="No tasks assigned" /> : (
           <div className="divide-y divide-gray-800/50 -mx-5">
             {sorted.map(task => {
@@ -1332,11 +1332,11 @@ function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: 
                     className={`w-full flex items-center gap-3 px-5 py-3 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}>
                     <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_STATUS_DOT[task.status] ?? 'bg-gray-500'}`} />
                     <div className="flex-1 min-w-0">
-                      <div className={`text-xs font-medium truncate ${TERMINAL.has(task.status) ? 'text-gray-500' : 'text-gray-200'}`}>{task.title}</div>
-                      <div className="text-[10px] text-gray-600 mt-0.5 capitalize">{task.status.replace(/_/g, ' ')}</div>
+                      <div className={`text-xs font-medium truncate ${TERMINAL.has(task.status) ? 'text-fg-tertiary' : 'text-fg-primary'}`}>{task.title}</div>
+                      <div className="text-[10px] text-fg-tertiary mt-0.5 capitalize">{task.status.replace(/_/g, ' ')}</div>
                     </div>
                     {isExecuting && <span className="w-3 h-3 border-2 border-brand-400 border-t-transparent rounded-full animate-spin shrink-0" />}
-                    {hasLogs && <span className="text-gray-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
+                    {hasLogs && <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
                   </button>
                   {isExpanded && <div className="border-t border-border-default/60 bg-surface-primary/40"><TaskLog taskId={task.id} isLive={isExecuting} /></div>}
                 </div>
@@ -1396,8 +1396,8 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, streamingText]);
 
-  if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading...</div>;
-  if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-gray-600">No execution logs yet.</div>;
+  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
+  if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-fg-tertiary">No execution logs yet.</div>;
 
   const entries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
 
@@ -1424,8 +1424,8 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
       .catch(() => setLoading(false));
   }, [agentId, activityId]);
 
-  if (loading) return <div className="px-4 py-3 text-xs text-gray-600">Loading...</div>;
-  if (logs.length === 0) return <div className="px-4 py-3 text-xs text-gray-600">No activity logs available.</div>;
+  if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
+  if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
 
   const entries = filterCompletedStarts(logs.map(activityLogToEntry).filter((e): e is ExecEntry => e != null));
 
@@ -1442,7 +1442,7 @@ function Card({ title, action, children }: { title: string; action?: React.React
   return (
     <div className="bg-surface-secondary/60 border border-border-default rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">{title}</h3>
+        <h3 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{title}</h3>
         {action}
       </div>
       {children}
@@ -1451,14 +1451,14 @@ function Card({ title, action, children }: { title: string; action?: React.React
 }
 
 function KV({ label, mono, children }: { label: string; mono?: boolean; children: React.ReactNode }) {
-  return (<div className="flex flex-col gap-0.5"><span className="text-[10px] text-gray-600">{label}</span><span className={`text-xs text-gray-300 ${mono ? 'font-mono text-[10px]' : ''}`}>{children}</span></div>);
+  return (<div className="flex flex-col gap-0.5"><span className="text-[10px] text-fg-tertiary">{label}</span><span className={`text-xs text-fg-secondary ${mono ? 'font-mono text-[10px]' : ''}`}>{children}</span></div>);
 }
 
 function StatBox({ label, value, color }: { label: string; value: string; color?: string }) {
-  const c = color === 'green' ? 'text-green-400' : color === 'indigo' ? 'text-brand-400' : color === 'red' ? 'text-red-400' : 'text-gray-300';
-  return (<div className="text-center"><div className={`text-lg font-semibold ${c}`}>{value}</div><div className="text-[10px] text-gray-600 mt-0.5">{label}</div></div>);
+  const c = color === 'green' ? 'text-green-600' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-500' : 'text-fg-secondary';
+  return (<div className="text-center"><div className={`text-lg font-semibold ${c}`}>{value}</div><div className="text-[10px] text-fg-tertiary mt-0.5">{label}</div></div>);
 }
 
 function Empty({ text }: { text: string }) {
-  return <div className="text-xs text-gray-600 py-6 text-center">{text}</div>;
+  return <div className="text-xs text-fg-tertiary py-6 text-center">{text}</div>;
 }

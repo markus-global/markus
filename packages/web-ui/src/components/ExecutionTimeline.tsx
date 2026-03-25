@@ -233,7 +233,7 @@ export function filterCompletedStarts(entries: ExecEntry[]): ExecEntry[] {
 
 export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
   return (
-    <div className="flex items-center gap-1.5 text-xs text-gray-400 py-0.5">
+    <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
       <span>{label}</span>
       <span className="flex gap-0.5">
         {[0, 150, 300].map(d => (
@@ -250,7 +250,7 @@ export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
 export function StreamingText({ content, className }: { content: string; className?: string }) {
   return (
     <div className="bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
-      <MarkdownMessage content={content} className={className ?? 'text-sm text-gray-300'} />
+      <MarkdownMessage content={content} className={className ?? 'text-sm text-fg-secondary'} />
       <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-middle" />
     </div>
   );
@@ -294,36 +294,36 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
       onMouseLeave={() => onHover(false)}
     >
       <div className="px-3 py-2 border-b border-border-default flex items-center justify-between shrink-0">
-        <span className="font-medium text-gray-200">{meta.label}</span>
+        <span className="font-medium text-fg-primary">{meta.label}</span>
         <div className="flex items-center gap-2">
-          {info.durationMs != null && <span className="text-gray-500">{formatDuration(info.durationMs)}</span>}
-          <span className={success ? 'text-green-400' : 'text-red-400'}>{success ? '✓ ok' : '✗ failed'}</span>
+          {info.durationMs != null && <span className="text-fg-tertiary">{formatDuration(info.durationMs)}</span>}
+          <span className={success ? 'text-green-600' : 'text-red-500'}>{success ? '✓ ok' : '✗ failed'}</span>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0">
         {argSummary && (
           <div className="px-3 py-1.5 border-b border-border-default">
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Arguments</div>
-            <div className="text-gray-400 font-mono text-[11px] break-all">{argSummary}</div>
+            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-0.5">Arguments</div>
+            <div className="text-fg-secondary font-mono text-[11px] break-all">{argSummary}</div>
           </div>
         )}
         {info.result && (
           <div className="px-3 py-1.5">
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Result</div>
-            <div className="text-gray-400 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(info.result)}</div>
+            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-0.5">Result</div>
+            <div className="text-fg-secondary font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(info.result)}</div>
           </div>
         )}
         {info.error && (
           <div className="px-3 py-1.5">
             <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-            <div className="text-red-400 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(String(info.error))}</div>
+            <div className="text-red-500 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(String(info.error))}</div>
           </div>
         )}
         {!argSummary && !info.result && !info.error && (
-          <div className="px-3 py-1.5 text-gray-600 italic">No details recorded</div>
+          <div className="px-3 py-1.5 text-fg-tertiary italic">No details recorded</div>
         )}
       </div>
-      <div className="px-3 py-1 border-t border-border-default text-[10px] text-gray-600 shrink-0">Click to expand full details</div>
+      <div className="px-3 py-1 border-t border-border-default text-[10px] text-fg-tertiary shrink-0">Click to expand full details</div>
     </div>,
     document.body,
   );
@@ -350,25 +350,25 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
         <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <span className="opacity-60 text-sm">{meta.icon}</span>
-            <span className={`text-sm font-semibold ${success ? 'text-gray-100' : 'text-red-300'}`}>{meta.label}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded ${success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
+            <span className={`text-sm font-semibold ${success ? 'text-fg-primary' : 'text-red-500'}`}>{meta.label}</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded ${success ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
               {success ? 'Success' : 'Failed'}
             </span>
           </div>
           <div className="flex items-center gap-3">
-            {info.durationMs != null && <span className="text-xs text-gray-500">{formatDuration(info.durationMs)}</span>}
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+            {info.durationMs != null && <span className="text-xs text-fg-tertiary">{formatDuration(info.durationMs)}</span>}
+            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {argEntries.length > 0 && (
             <div>
-              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Arguments</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Arguments</h4>
               <div className="space-y-2">
                 {argEntries.map(({ key, value }) => (
                   <div key={key}>
-                    <div className="text-[11px] text-brand-400 font-medium mb-0.5">{key}</div>
-                    <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all font-mono">{value}</pre>
+                    <div className="text-[11px] text-brand-500 font-medium mb-0.5">{key}</div>
+                    <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all font-mono">{value}</pre>
                   </div>
                 ))}
               </div>
@@ -376,18 +376,18 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           )}
           {info.result && (
             <div>
-              <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-gray-300 bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
+              <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {info.error && (
             <div>
               <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
-              <pre className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
+              <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
           {!argEntries.length && !info.result && !info.error && (
-            <div className="text-sm text-gray-600 italic py-4 text-center">No detailed data recorded for this tool call.</div>
+            <div className="text-sm text-fg-tertiary italic py-4 text-center">No detailed data recorded for this tool call.</div>
           )}
         </div>
       </div>
@@ -441,24 +441,24 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
         onClick={() => isDone && setExpanded(true)}
       >
         {showTime && time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-0.5">{time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-0.5">{time}</span>
         )}
         <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-            info.status === 'running' ? 'border-brand-500 bg-brand-950 animate-pulse'
-            : info.status === 'error' ? 'border-red-600 bg-red-950 text-red-400'
-            : isStopped ? 'border-gray-500 bg-surface-secondary text-gray-500'
-            : 'border-gray-600 bg-surface-elevated text-gray-400'
+            info.status === 'running' ? 'border-brand-500 bg-brand-500/15 animate-pulse'
+            : info.status === 'error' ? 'border-red-500 bg-red-500/15 text-red-500'
+            : isStopped ? 'border-gray-500 bg-surface-secondary text-fg-tertiary'
+            : 'border-green-500 bg-green-500/15 text-green-500'
           }`}>
             {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : isStopped ? '■' : ''}
           </div>
         </div>
         <div className="flex-1 min-w-0">
           <div className={`flex items-center gap-1 text-xs leading-snug ${
-            info.status === 'running' ? 'text-brand-300'
-            : info.status === 'error' ? 'text-red-400 line-through opacity-50'
-            : isStopped ? 'text-gray-500 opacity-60'
-            : 'text-gray-500'
+            info.status === 'running' ? 'text-brand-500'
+            : info.status === 'error' ? 'text-red-500 line-through opacity-50'
+            : isStopped ? 'text-fg-tertiary opacity-60'
+            : 'text-fg-tertiary'
           }`}>
             <span className="opacity-60">{meta.icon}</span>
             <span>{meta.label}{info.status === 'running' ? '…' : ''}</span>
@@ -469,18 +469,18 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
               </svg>
             )}
             {info.durationMs != null && info.status !== 'running' && (
-              <span className="text-[10px] text-gray-600 ml-0.5">{formatDuration(info.durationMs)}</span>
+              <span className="text-[10px] text-fg-tertiary ml-0.5">{formatDuration(info.durationMs)}</span>
             )}
           </div>
           {/* Show shell command being executed */}
           {shellCmd && (
-            <div className={`mt-0.5 font-mono text-[11px] truncate max-w-full ${info.status === 'running' ? 'text-gray-400' : 'text-gray-600'}`} title={shellCmd}>
-              <span className="text-gray-600 select-none">$ </span>{truncate(shellCmd, 120)}
+            <div className={`mt-0.5 font-mono text-[11px] truncate max-w-full ${info.status === 'running' ? 'text-fg-secondary' : 'text-fg-tertiary'}`} title={shellCmd}>
+              <span className="text-fg-tertiary select-none">$ </span>{truncate(shellCmd, 120)}
             </div>
           )}
           {/* Live streaming output */}
           {info.liveOutput && info.status === 'running' && (
-            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-gray-500 bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
+            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-fg-tertiary bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
               {info.liveOutput}
             </pre>
           )}
@@ -508,10 +508,10 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-2.5">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5">{entry.time}</span>
         )}
         <div className="flex-1 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
-          <MarkdownMessage content={entry.content} className="text-sm text-gray-300" />
+          <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary" />
         </div>
       </div>
     );
@@ -520,12 +520,12 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     const isCompleted = entry.content === 'completed' || entry.content === 'execution_finished';
     const isStarted = entry.content === 'started';
     const isResumed = entry.content === 'resumed';
-    const color = isCompleted ? 'text-green-400' : isStarted ? 'text-blue-400' : isResumed ? 'text-amber-400' : 'text-gray-500';
+    const color = isCompleted ? 'text-green-600' : isStarted ? 'text-blue-600' : isResumed ? 'text-amber-600' : 'text-fg-tertiary';
     const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : isResumed ? 'bg-amber-400' : 'bg-gray-500';
     return (
       <div className="flex items-center gap-2 py-0.5 px-1">
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums">{entry.time}</span>
         )}
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
         <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
@@ -536,9 +536,9 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-gray-600 shrink-0 w-24 text-right tabular-nums mt-2">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2">{entry.time}</span>
         )}
-        <div className="flex-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
+        <div className="flex-1 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
           <span className="font-medium">Error:</span> {entry.content}
         </div>
       </div>

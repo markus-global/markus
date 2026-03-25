@@ -312,7 +312,7 @@ export class AgentManager {
           agentId: opts.agentId,
           type: opts.type,
           limit: opts.limit,
-        });
+        }).results;
       },
       deliverableList: async (opts) => {
         return ds.search({
@@ -321,7 +321,7 @@ export class AgentManager {
           type: opts.type,
           status: opts.status,
           limit: opts.limit,
-        });
+        }).results;
       },
       deliverableUpdate: async (id, data) => {
         const tags = data.tags?.split(',').map(t => t.trim()).filter(Boolean);

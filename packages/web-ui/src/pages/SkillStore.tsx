@@ -73,20 +73,20 @@ type TabId = 'installed' | 'builtin' | 'skillhub' | 'skillssh' | 'markus-hub';
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
 const CATEGORY_COLORS: Record<string, string> = {
-  development: 'bg-blue-500/15 text-blue-400',
-  devops: 'bg-orange-500/15 text-orange-400',
-  productivity: 'bg-green-500/15 text-green-400',
-  custom: 'bg-gray-500/15 text-gray-400',
-  browser: 'bg-brand-500/15 text-brand-400',
-  communication: 'bg-emerald-500/15 text-emerald-400',
-  data: 'bg-violet-500/15 text-violet-400',
-  'AI 智能': 'bg-purple-500/15 text-purple-400',
-  '开发工具': 'bg-blue-500/15 text-blue-400',
-  '效率提升': 'bg-green-500/15 text-green-400',
-  '数据分析': 'bg-violet-500/15 text-violet-400',
-  '内容创作': 'bg-pink-500/15 text-pink-400',
-  '安全合规': 'bg-red-500/15 text-red-400',
-  '通讯协作': 'bg-emerald-500/15 text-emerald-400',
+  development: 'bg-blue-500/15 text-blue-600',
+  devops: 'bg-amber-500/15 text-amber-600',
+  productivity: 'bg-green-500/15 text-green-600',
+  custom: 'bg-gray-500/15 text-fg-secondary',
+  browser: 'bg-brand-500/15 text-brand-500',
+  communication: 'bg-green-500/15 text-green-600',
+  data: 'bg-brand-500/15 text-brand-500',
+  'AI 智能': 'bg-brand-500/15 text-brand-500',
+  '开发工具': 'bg-blue-500/15 text-blue-600',
+  '效率提升': 'bg-green-500/15 text-green-600',
+  '数据分析': 'bg-brand-500/15 text-brand-500',
+  '内容创作': 'bg-brand-500/15 text-brand-500',
+  '安全合规': 'bg-red-500/15 text-red-500',
+  '通讯协作': 'bg-green-500/15 text-green-600',
 };
 
 const TABS: Array<{ id: TabId; label: string }> = [
@@ -150,7 +150,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
 
   if (isInstalled) {
     return (
-      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">
+      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">
         Installed{matchedSkill?.version ? ` (v${matchedSkill.version})` : ''}
       </span>
     );
@@ -198,11 +198,11 @@ function AgentAssignModal({
       <div className="bg-surface-secondary border border-border-default rounded-xl w-[480px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="px-6 pt-5 pb-4 border-b border-border-default">
           <h3 className="text-base font-semibold">Assign to Agents</h3>
-          <p className="text-xs text-gray-400 mt-1">Select which agents can use <span className="text-brand-400 font-medium">{skillName}</span></p>
+          <p className="text-xs text-fg-secondary mt-1">Select which agents can use <span className="text-brand-500 font-medium">{skillName}</span></p>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {agents.length === 0 ? (
-            <div className="text-sm text-gray-500 text-center py-8">No agents available</div>
+            <div className="text-sm text-fg-tertiary text-center py-8">No agents available</div>
           ) : (
             <div className="space-y-2">
               {agents.map(agent => (
@@ -215,10 +215,10 @@ function AgentAssignModal({
                   />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{agent.name}</div>
-                    <div className="text-xs text-gray-500">{agent.role} · {agent.status}</div>
+                    <div className="text-xs text-fg-tertiary">{agent.role} · {agent.status}</div>
                   </div>
                   {agent.skills?.includes(skillName) && (
-                    <span className="text-[10px] text-emerald-400 shrink-0">assigned</span>
+                    <span className="text-[10px] text-green-600 shrink-0">assigned</span>
                   )}
                 </label>
               ))}
@@ -226,7 +226,7 @@ function AgentAssignModal({
           )}
         </div>
         <div className="px-6 py-4 border-t border-border-default flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-gray-200 rounded-lg hover:bg-surface-elevated">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-elevated">
             Cancel
           </button>
           <button onClick={() => onConfirm([...selected])} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg">
@@ -470,7 +470,7 @@ export function SkillStore() {
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                tab === t.id ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated'
+                tab === t.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}>
               {t.label}
             </button>
@@ -480,7 +480,7 @@ export function SkillStore() {
 
       {flash && (
         <div className={`mx-7 mt-2 px-3 py-1.5 text-xs rounded-lg shrink-0 ${
-          flash.type === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-emerald-900/50 text-emerald-300'
+          flash.type === 'error' ? 'bg-red-500/10 text-red-500' : 'bg-green-500/10 text-green-600'
         }`}>{flash.text}</div>
       )}
 
@@ -492,15 +492,15 @@ export function SkillStore() {
               value={installedSearch}
               onChange={e => setInstalledSearch(e.target.value)}
               placeholder="Search installed skills..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
             />
-            <span className="text-xs text-gray-500">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
+            <span className="text-xs text-fg-tertiary">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
           </div>
 
           {loadingInstalled ? (
-            <div className="text-center text-gray-500 py-20">Loading...</div>
+            <div className="text-center text-fg-tertiary py-20">Loading...</div>
           ) : filteredInstalled.length === 0 ? (
-            <div className="text-center text-gray-500 py-20">
+            <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3 opacity-30">◆</div>
               <div>No installed skills found.</div>
               <div className="text-xs mt-1">Browse SkillHub or skills.sh to discover and install skills.</div>
@@ -516,31 +516,31 @@ export function SkillStore() {
                         <div className="flex items-center gap-2">
                           <div className="font-semibold text-sm truncate">{skill.name}</div>
                           <span className={`px-1.5 py-0.5 rounded text-[9px] shrink-0 ${
-                            skill.type === 'builtin' ? 'bg-blue-500/15 text-blue-400' :
-                            skill.type === 'filesystem' ? 'bg-emerald-500/15 text-emerald-400' :
-                            'bg-amber-500/15 text-amber-400'
+                            skill.type === 'builtin' ? 'bg-blue-500/15 text-blue-600' :
+                            skill.type === 'filesystem' ? 'bg-green-500/15 text-green-600' :
+                            'bg-amber-500/15 text-amber-600'
                           }`}>{skill.type === 'builtin' ? 'built-in' : skill.type === 'filesystem' ? 'local' : 'imported'}</span>
                         </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
+                        <div className="text-xs text-fg-tertiary mt-0.5">
                           {skill.author ? `by ${skill.author} · ` : ''}{skill.version ? `v${skill.version}` : ''}
-                          {skill.sourcePath && <span className="ml-1 text-gray-600" title={skill.sourcePath}>📁 {skill.sourcePath.replace(/^.*\/\.([^/]+)\/skills\//, '~/.$1/skills/')}</span>}
+                          {skill.sourcePath && <span className="ml-1 text-fg-tertiary" title={skill.sourcePath}>📁 {skill.sourcePath.replace(/^.*\/\.([^/]+)\/skills\//, '~/.$1/skills/')}</span>}
                         </div>
                       </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-gray-400'} capitalize shrink-0 ml-2`}>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-fg-secondary'} capitalize shrink-0 ml-2`}>
                         {skill.category ?? 'custom'}
                       </span>
                     </div>
 
-                    <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
+                    <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
 
                     <div className="flex flex-wrap gap-1.5 mt-2">
-                      {skill.tags?.slice(0, 3).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded-full">{t}</span>)}
+                      {skill.tags?.slice(0, 3).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded-full">{t}</span>)}
                     </div>
 
                     <div className="mt-3 pt-2 border-t border-border-default flex items-center justify-between">
                       <button
                         onClick={() => setAssignModal({ skillName: skill.name, currentAgentIds: skill.agentIds })}
-                        className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-brand-400 transition-colors"
+                        className="flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-brand-500 transition-colors"
                       >
                         <span>
                           {agentNames.length === 0
@@ -550,12 +550,12 @@ export function SkillStore() {
                       </button>
                       <div className="flex items-center gap-2">
                         {skill.tools && skill.tools.length > 0 && (
-                          <span className="text-[10px] text-gray-600">{skill.tools.length} tool{skill.tools.length !== 1 ? 's' : ''}</span>
+                          <span className="text-[10px] text-fg-tertiary">{skill.tools.length} tool{skill.tools.length !== 1 ? 's' : ''}</span>
                         )}
                         {skill.type !== 'builtin' && (
                           <button
                             onClick={() => void uninstallSkill(skill.name)}
-                            className="px-2 py-0.5 text-[10px] text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                            className="px-2 py-0.5 text-[10px] text-red-500 hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
                           >
                             Uninstall
                           </button>
@@ -574,19 +574,19 @@ export function SkillStore() {
       {tab === 'builtin' && (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="flex items-center gap-3 mb-5">
-            <span className="text-xs text-gray-500">{builtinSkills.length} built-in skill{builtinSkills.length !== 1 ? 's' : ''} available</span>
+            <span className="text-xs text-fg-tertiary">{builtinSkills.length} built-in skill{builtinSkills.length !== 1 ? 's' : ''} available</span>
             <button
               onClick={() => void loadBuiltin()}
-              className="text-xs text-brand-400 hover:text-brand-300 transition-colors"
+              className="text-xs text-brand-500 hover:text-brand-500 transition-colors"
             >
               Refresh
             </button>
           </div>
 
           {loadingBuiltin ? (
-            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Loading built-in skills...</div></div>
+            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">Loading built-in skills...</div></div>
           ) : builtinSkills.length === 0 ? (
-            <div className="text-center text-gray-500 py-20">
+            <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3 opacity-30">◇</div>
               <div>No built-in skills found.</div>
               <div className="text-xs mt-1">Built-in skills are provided in templates/skills/.</div>
@@ -600,22 +600,22 @@ export function SkillStore() {
                       <div className="flex items-center gap-2">
                         <div className="font-semibold text-sm truncate">{skill.name}</div>
                         {skill.hasMcpServers && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] bg-cyan-500/15 text-cyan-400 shrink-0">MCP</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-500/15 text-blue-600 shrink-0">MCP</span>
                         )}
                       </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
+                      <div className="text-xs text-fg-tertiary mt-0.5">
                         {skill.author ? `by ${skill.author} · ` : ''}v{skill.version}
                       </div>
                     </div>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-gray-400'} capitalize shrink-0 ml-2`}>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-fg-secondary'} capitalize shrink-0 ml-2`}>
                       {skill.category ?? 'custom'}
                     </span>
                   </div>
 
-                  <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
+                  <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description ?? 'No description'}</p>
 
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {skill.tags.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded-full">{t}</span>)}
+                    {skill.tags.slice(0, 4).map(t => <span key={t} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded-full">{t}</span>)}
                   </div>
 
                   {skill.requiredPermissions.length > 0 && (
@@ -628,7 +628,7 @@ export function SkillStore() {
 
                   <div className="mt-3 pt-2 border-t border-border-default flex items-center justify-between">
                     {skill.installed && skill.installedVersion ? (
-                      <span className="text-[10px] text-gray-500">v{skill.installedVersion}</span>
+                      <span className="text-[10px] text-fg-tertiary">v{skill.installedVersion}</span>
                     ) : <span />}
                     {skill.installed && skill.installedVersion && isNewerVersion(skill.version, skill.installedVersion) ? (
                       <button
@@ -639,12 +639,12 @@ export function SkillStore() {
                         {installing.has(skill.name) ? 'Upgrading...' : `Upgrade → v${skill.version}`}
                       </button>
                     ) : skill.installed ? (
-                      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
+                      <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">Installed</span>
                     ) : (
                       <button
                         onClick={() => void installBuiltin(skill)}
                         disabled={installing.has(skill.name)}
-                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                        className="px-2.5 py-1 text-[10px] bg-green-600 hover:bg-green-500 text-white rounded-lg disabled:opacity-50 transition-colors"
                       >
                         {installing.has(skill.name) ? 'Installing...' : 'Install'}
                       </button>
@@ -665,7 +665,7 @@ export function SkillStore() {
             <select
               value={skillhubCategory}
               onChange={e => { setSkillhubCategory(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: e.target.value || undefined, page: 1 }); }}
-              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-300 outline-none"
+              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-secondary outline-none"
             >
               <option value="">全部分类</option>
               {skillhubCategories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -673,7 +673,7 @@ export function SkillStore() {
             <select
               value={skillhubSort}
               onChange={e => { setSkillhubSort(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1, sort: e.target.value }); }}
-              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-gray-300 outline-none"
+              className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-secondary outline-none"
             >
               <option value="score">综合排序</option>
               <option value="downloads">下载量</option>
@@ -685,7 +685,7 @@ export function SkillStore() {
               onChange={e => setSkillhubSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); } }}
               placeholder="搜索 SkillHub 技能..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-64"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-64"
             />
             <button
               onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
@@ -693,21 +693,21 @@ export function SkillStore() {
             >
               Search
             </button>
-            <span className="text-xs text-gray-500 ml-auto">
-              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300">Visit site →</a>
+            <span className="text-xs text-fg-tertiary ml-auto">
+              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
             </span>
           </div>
 
           {loadingSkillhub ? (
-            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">正在加载 SkillHub 技能...</div></div>
+            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">正在加载 SkillHub 技能...</div></div>
           ) : skillhubSkills.length === 0 ? (
-            <div className="text-center text-gray-500 py-20">
+            <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3 opacity-30">◎</div>
               <div>未找到匹配的技能</div>
             </div>
           ) : (
             <>
-              <div className="text-xs text-gray-500 mb-3">共 {skillhubTotal.toLocaleString()} 个技能</div>
+              <div className="text-xs text-fg-tertiary mb-3">共 {skillhubTotal.toLocaleString()} 个技能</div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {skillhubSkills.map(skill => {
                   const isInstalled = installed.some(s => s.name === skill.name || s.name === skill.slug);
@@ -716,22 +716,22 @@ export function SkillStore() {
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
                           <div className="font-semibold text-sm truncate">{skill.name}</div>
-                          <div className="text-xs text-gray-500 mt-0.5">v{skill.version}</div>
+                          <div className="text-xs text-fg-tertiary mt-0.5">v{skill.version}</div>
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-brand-500/15 text-brand-400') : 'bg-brand-500/15 text-brand-400'}`}>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-brand-500/15 text-brand-500') : 'bg-brand-500/15 text-brand-500'}`}>
                           {skill.tags?.[0] ?? 'SkillHub'}
                         </span>
                       </div>
-                      <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
+                      <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
                       <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
                         <div className="flex items-center gap-3">
-                          {skill.stars > 0 && <span className="text-[10px] text-amber-400">★ {skill.stars.toLocaleString()}</span>}
-                          {skill.downloads > 0 && <span className="text-[10px] text-gray-500">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} 下载</span>}
+                          {skill.stars > 0 && <span className="text-[10px] text-amber-600">★ {skill.stars.toLocaleString()}</span>}
+                          {skill.downloads > 0 && <span className="text-[10px] text-fg-tertiary">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} 下载</span>}
                         </div>
                         <div className="flex items-center gap-2">
-                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-400 hover:text-brand-300">View →</a>
+                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-500">View →</a>
                           {isInstalled ? (
-                            <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
+                            <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">Installed</span>
                           ) : (
                             <button
                               onClick={() => void installSkillhub(skill)}
@@ -752,14 +752,14 @@ export function SkillStore() {
                   <button
                     disabled={skillhubPage <= 1}
                     onClick={() => { const p = skillhubPage - 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
-                    className="px-3 py-1.5 text-xs bg-surface-elevated text-gray-400 rounded-lg hover:bg-surface-overlay disabled:opacity-30">
+                    className="px-3 py-1.5 text-xs bg-surface-elevated text-fg-secondary rounded-lg hover:bg-surface-overlay disabled:opacity-30">
                     ← 上一页
                   </button>
-                  <span className="text-xs text-gray-500">第 {skillhubPage} / {Math.ceil(skillhubTotal / 24)} 页</span>
+                  <span className="text-xs text-fg-tertiary">第 {skillhubPage} / {Math.ceil(skillhubTotal / 24)} 页</span>
                   <button
                     disabled={skillhubPage >= Math.ceil(skillhubTotal / 24)}
                     onClick={() => { const p = skillhubPage + 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
-                    className="px-3 py-1.5 text-xs bg-surface-elevated text-gray-400 rounded-lg hover:bg-surface-overlay disabled:opacity-30">
+                    className="px-3 py-1.5 text-xs bg-surface-elevated text-fg-secondary rounded-lg hover:bg-surface-overlay disabled:opacity-30">
                     下一页 →
                   </button>
                 </div>
@@ -778,7 +778,7 @@ export function SkillStore() {
               onChange={e => setSkillsshSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
               placeholder="Search skills.sh..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
             />
             <button
               onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
@@ -786,15 +786,15 @@ export function SkillStore() {
             >
               Search
             </button>
-            <span className="text-xs text-gray-500 ml-auto">
-              <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:text-brand-300">Visit site →</a>
+            <span className="text-xs text-fg-tertiary ml-auto">
+              <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
             </span>
           </div>
 
           {loadingSkillssh ? (
-            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Searching skills.sh...</div></div>
+            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">Searching skills.sh...</div></div>
           ) : filteredSkillssh.length === 0 ? (
-            <div className="text-center text-gray-500 py-20">
+            <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3 opacity-30">⬡</div>
               <div>Browse 84,000+ skills on skills.sh</div>
               <div className="text-xs mt-1">Top skills are loaded automatically. Search for specific skills above.</div>
@@ -808,19 +808,19 @@ export function SkillStore() {
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm truncate">{skill.name}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">{skill.author} / {skill.repo}</div>
+                        <div className="text-xs text-fg-tertiary mt-0.5">{skill.author} / {skill.repo}</div>
                       </div>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-gray-400 shrink-0 ml-2">skills.sh</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-fg-secondary shrink-0 ml-2">skills.sh</span>
                     </div>
-                    <p className="text-sm text-gray-400 mt-2 line-clamp-2">{skill.description || 'No description'}</p>
+                    <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description || 'No description'}</p>
                     <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {skill.installs && <span className="text-[10px] text-gray-500">{skill.installs} installs</span>}
+                        {skill.installs && <span className="text-[10px] text-fg-tertiary">{skill.installs} installs</span>}
                       </div>
                       <div className="flex items-center gap-2">
-                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-400 hover:text-brand-300">View →</a>
+                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-500">View →</a>
                         {isInstalled ? (
-                          <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-gray-400 rounded-lg">Installed</span>
+                          <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">Installed</span>
                         ) : (
                           <button
                             onClick={() => void installSkillssh(skill)}
@@ -848,15 +848,15 @@ export function SkillStore() {
               value={hubSearch}
               onChange={e => setHubSearch(e.target.value)}
               placeholder="Search Markus Hub skills..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-gray-200 focus:border-brand-500 outline-none w-72"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
             />
-            <span className="text-xs text-gray-500 ml-auto">Community skills from Markus Hub</span>
+            <span className="text-xs text-fg-tertiary ml-auto">Community skills from Markus Hub</span>
           </div>
 
           {loadingHub ? (
-            <div className="text-center text-gray-500 py-20"><div className="animate-pulse">Loading from Hub...</div></div>
+            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">Loading from Hub...</div></div>
           ) : hubSkills.length === 0 ? (
-            <div className="text-center text-gray-500 py-20">
+            <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3">🏪</div>
               <div>No skills found on Markus Hub</div>
               <div className="text-xs mt-1">Hub may be offline or empty. Run the hub server at port 3003.</div>
@@ -868,14 +868,14 @@ export function SkillStore() {
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold text-sm truncate">{item.name}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
+                      <div className="text-xs text-fg-tertiary mt-0.5">by {item.author?.displayName ?? item.author?.username}</div>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-teal-500/15 text-teal-400 shrink-0 ml-2">Hub</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-500/15 text-green-600 shrink-0 ml-2">Hub</span>
                   </div>
-                  <p className="text-sm text-gray-400 mt-2 line-clamp-2">{item.description}</p>
-                  <div className="mt-2 text-xs text-amber-400">
+                  <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{item.description}</p>
+                  <div className="mt-2 text-xs text-amber-600">
                     {'★'.repeat(Math.round(parseFloat(item.avgRating)))}{'☆'.repeat(5 - Math.round(parseFloat(item.avgRating)))}
-                    <span className="text-gray-500 ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
+                    <span className="text-fg-tertiary ml-1">({item.ratingCount}) · ↓ {item.downloadCount}</span>
                   </div>
                   <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-end gap-2">
                     <HubSkillInstallButton item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} />

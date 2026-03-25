@@ -91,11 +91,11 @@ export function ReportsPage() {
       <div className="max-w-5xl p-6 space-y-6">
         {/* Header with inline filters */}
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-white">Reports</h1>
+          <h1 className="text-xl font-semibold text-fg-primary">Reports</h1>
           <select
             value={period}
             onChange={e => setPeriod(e.target.value as Period)}
-            className="bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-gray-200"
+            className="bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary"
           >
             <option value="daily">Daily</option>
             <option value="weekly">Weekly</option>
@@ -106,59 +106,59 @@ export function ReportsPage() {
         {/* Usage Overview */}
         {usageSummary && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-brand-400" />
-            <UsageCard label="Tool Calls (today)" value={formatNumber(usageSummary.toolCalls)} color="text-blue-400" />
-            <UsageCard label="Messages (today)" value={formatNumber(usageSummary.messages)} color="text-emerald-400" />
-            <UsageCard label="Storage" value={formatBytes(usageSummary.storageBytes)} color="text-amber-400" />
+            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
+            <UsageCard label="Tool Calls (today)" value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
+            <UsageCard label="Messages (today)" value={formatNumber(usageSummary.messages)} color="text-green-600" />
+            <UsageCard label="Storage" value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
           </div>
         )}
 
         {/* Period Report Data */}
         {loading ? (
-          <div className="flex items-center justify-center h-32 text-gray-500 text-sm">Loading…</div>
+          <div className="flex items-center justify-center h-32 text-fg-tertiary text-sm">Loading…</div>
         ) : error ? (
-          <div className="flex items-center justify-center h-32 text-red-400 text-sm">{error}</div>
+          <div className="flex items-center justify-center h-32 text-red-500 text-sm">{error}</div>
         ) : report ? (
           <>
-            <div className="text-xs text-gray-500">
+            <div className="text-xs text-fg-tertiary">
               {periodLabel[period]} · {new Date(report.periodStart).toLocaleDateString()} — {new Date(report.periodEnd).toLocaleDateString()}
             </div>
 
             {/* Task Metrics */}
             {report.metrics && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-gray-400 mb-3">Task Metrics</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Metrics</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label="Completed" value={report.metrics.tasksCompleted} color="text-emerald-400" />
-                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-brand-400" />
-                  <MetricCard label="Created" value={report.metrics.tasksCreated} color="text-blue-400" />
-                  <MetricCard label="Blocked" value={report.metrics.tasksBlocked} color="text-amber-400" />
-                  <MetricCard label="Failed" value={report.metrics.tasksFailed} color="text-red-400" />
+                  <MetricCard label="Completed" value={report.metrics.tasksCompleted} color="text-green-600" />
+                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-brand-500" />
+                  <MetricCard label="Created" value={report.metrics.tasksCreated} color="text-blue-600" />
+                  <MetricCard label="Blocked" value={report.metrics.tasksBlocked} color="text-amber-600" />
+                  <MetricCard label="Failed" value={report.metrics.tasksFailed} color="text-red-500" />
                 </div>
               </section>
             )}
 
             {/* Cost Summary */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-gray-400 mb-3">Cost Overview</h3>
+              <h3 className="text-xs font-semibold text-fg-secondary mb-3">Cost Overview</h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
-                  <div className="text-2xl font-bold text-white">{formatCost(totalCost)}</div>
-                  <div className="text-xs text-gray-500">Est. Cost (all time)</div>
+                  <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCost)}</div>
+                  <div className="text-xs text-fg-tertiary">Est. Cost (all time)</div>
                 </div>
                 <div>
-                  <div className="text-2xl font-bold text-white">{formatNumber(totalTokensToday)}</div>
-                  <div className="text-xs text-gray-500">Tokens Today</div>
+                  <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
+                  <div className="text-xs text-fg-tertiary">Tokens Today</div>
                 </div>
                 {report.costSummary && (
                   <>
                     <div>
-                      <div className="text-2xl font-bold text-white">{report.costSummary.totalTokens.toLocaleString()}</div>
-                      <div className="text-xs text-gray-500">Tokens ({periodLabel[period]})</div>
+                      <div className="text-2xl font-bold text-fg-primary">{report.costSummary.totalTokens.toLocaleString()}</div>
+                      <div className="text-xs text-fg-tertiary">Tokens ({periodLabel[period]})</div>
                     </div>
                     <div>
-                      <div className="text-2xl font-bold text-white">{formatCost(report.costSummary.totalEstimatedCost)}</div>
-                      <div className="text-xs text-gray-500">Cost ({periodLabel[period]})</div>
+                      <div className="text-2xl font-bold text-fg-primary">{formatCost(report.costSummary.totalEstimatedCost)}</div>
+                      <div className="text-xs text-fg-tertiary">Cost ({periodLabel[period]})</div>
                     </div>
                   </>
                 )}
@@ -168,7 +168,7 @@ export function ReportsPage() {
             {/* Task Summary */}
             {report.taskSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-gray-400 mb-3">Task Summary</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
                 <div className="space-y-4">
                   {report.taskSummary.completed.length > 0 && (
                     <TaskSection title={`Completed (${report.taskSummary.completed.length})`} color="emerald" items={report.taskSummary.completed.map(t => ({ label: t.title, sub: t.agent }))} />
@@ -180,7 +180,7 @@ export function ReportsPage() {
                     <TaskSection title={`Blocked (${report.taskSummary.blocked.length})`} color="amber" items={report.taskSummary.blocked.map(t => ({ label: t.title, sub: t.reason || t.agent }))} />
                   )}
                   {report.taskSummary.completed.length === 0 && report.taskSummary.inProgress.length === 0 && report.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-gray-500">No tasks in this period.</p>
+                    <p className="text-sm text-fg-tertiary">No tasks in this period.</p>
                   )}
                 </div>
               </section>
@@ -191,15 +191,15 @@ export function ReportsPage() {
         {/* Per-Agent Breakdown */}
         <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border-default">
-            <h3 className="text-sm font-semibold text-gray-300">Per-Agent Usage</h3>
+            <h3 className="text-sm font-semibold text-fg-secondary">Per-Agent Usage</h3>
           </div>
           {agents.length === 0 ? (
-            <div className="p-8 text-center text-gray-500 text-sm">No agent usage data yet.</div>
+            <div className="p-8 text-center text-fg-tertiary text-sm">No agent usage data yet.</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-border-default text-xs text-gray-500 uppercase tracking-wider">
+                  <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
                     <th className="px-4 py-3 text-left font-medium">Agent</th>
                     <SortHeader label="Total Tokens" col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
                     <SortHeader label="Today" col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
@@ -215,12 +215,12 @@ export function ReportsPage() {
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-border-default bg-surface-elevated/30">
-                    <td className="px-4 py-3 text-sm font-medium text-gray-300">Total ({agents.length} agents)</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{formatNumber(totalTokensToday)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{agents.reduce((s, a) => s + a.requestCount, 0)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-300 tabular-nums">{agents.reduce((s, a) => s + a.toolCalls, 0)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-right text-gray-300 tabular-nums">{formatCost(totalCost)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary">Total ({agents.length} agents)</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumber(agents.reduce((s, a) => s + a.totalTokens, 0))}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{formatNumber(totalTokensToday)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.requestCount, 0)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-fg-secondary tabular-nums">{agents.reduce((s, a) => s + a.toolCalls, 0)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-right text-fg-secondary tabular-nums">{formatCost(totalCost)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -239,7 +239,7 @@ function MetricCard({ label, value, color }: { label: string; value: string | nu
   return (
     <div className="text-center">
       <div className={`text-2xl font-bold ${color}`}>{value}</div>
-      <div className="text-[10px] text-gray-500 mt-0.5">{label}</div>
+      <div className="text-[10px] text-fg-tertiary mt-0.5">{label}</div>
     </div>
   );
 }
@@ -250,10 +250,10 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
       <div className={`text-xs font-medium text-${color}-400 mb-1.5`}>{title}</div>
       <div className="space-y-1">
         {items.map((item, i) => (
-          <div key={i} className="text-sm text-gray-300 flex items-center gap-2">
+          <div key={i} className="text-sm text-fg-secondary flex items-center gap-2">
             <span className={`w-1.5 h-1.5 rounded-full bg-${color}-500 shrink-0`} />
             <span className="truncate">{item.label}</span>
-            {item.sub && item.sub !== 'unassigned' && <span className="text-[10px] text-gray-500 shrink-0">{item.sub}</span>}
+            {item.sub && item.sub !== 'unassigned' && <span className="text-[10px] text-fg-tertiary shrink-0">{item.sub}</span>}
           </div>
         ))}
       </div>
@@ -264,7 +264,7 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
 function UsageCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-      <div className="text-sm text-gray-400 mb-2">{label}</div>
+      <div className="text-sm text-fg-secondary mb-2">{label}</div>
       <div className={`text-2xl font-bold ${color}`}>{value}</div>
     </div>
   );
@@ -276,10 +276,10 @@ function SortHeader({ label, col, current, desc, onSort, align }: {
   label: string; col: SortCol; current: SortCol; desc: boolean; onSort: (c: SortCol) => void; align?: string;
 }) {
   const arrow = current === col ? (desc ? '↓' : '↑') : '↕';
-  const arrowColor = current === col ? 'text-brand-400' : 'text-gray-700';
+  const arrowColor = current === col ? 'text-brand-500' : 'text-fg-muted';
   return (
     <th
-      className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'} font-medium cursor-pointer select-none hover:text-gray-300`}
+      className={`px-4 py-3 ${align === 'right' ? 'text-right' : 'text-left'} font-medium cursor-pointer select-none hover:text-fg-secondary`}
       onClick={() => onSort(col)}
     >
       {label}<span className={`ml-1 ${arrowColor}`}>{arrow}</span>
@@ -301,8 +301,8 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
         <div className="flex items-center gap-2.5">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />
           <div>
-            <div className="text-sm font-medium text-gray-200 hover:text-brand-300 transition-colors">{agent.agentName}</div>
-            <div className="text-xs text-gray-500">{agent.role}</div>
+            <div className="text-sm font-medium text-fg-primary hover:text-brand-500 transition-colors">{agent.agentName}</div>
+            <div className="text-xs text-fg-tertiary">{agent.role}</div>
           </div>
         </div>
       </td>
@@ -311,13 +311,13 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
           <div className="flex-1 bg-surface-elevated rounded-full h-1.5 overflow-hidden max-w-[120px]">
             <div className="h-full bg-brand-500 rounded-full" style={{ width: `${barWidth}%` }} />
           </div>
-          <span className="text-sm text-gray-300 tabular-nums">{formatNumber(agent.totalTokens)}</span>
+          <span className="text-sm text-fg-secondary tabular-nums">{formatNumber(agent.totalTokens)}</span>
         </div>
       </td>
-      <td className="px-4 py-3 text-sm text-gray-300 tabular-nums">{formatNumber(agent.tokensUsedToday)}</td>
-      <td className="px-4 py-3 text-sm text-gray-300 tabular-nums">{agent.requestCount}</td>
-      <td className="px-4 py-3 text-sm text-gray-300 tabular-nums">{agent.toolCalls}</td>
-      <td className="px-4 py-3 text-sm text-right text-gray-300 tabular-nums">{formatCost(agent.estimatedCost)}</td>
+      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{formatNumber(agent.tokensUsedToday)}</td>
+      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.requestCount}</td>
+      <td className="px-4 py-3 text-sm text-fg-secondary tabular-nums">{agent.toolCalls}</td>
+      <td className="px-4 py-3 text-sm text-right text-fg-secondary tabular-nums">{formatCost(agent.estimatedCost)}</td>
     </tr>
   );
 }

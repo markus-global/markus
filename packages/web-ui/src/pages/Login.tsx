@@ -35,8 +35,8 @@ export function Login({ onLogin }: Props) {
         {/* Logo */}
         <div className="text-center mb-8">
           <img src="/logo.png" alt="Markus" className="w-14 h-14 mx-auto mb-3 rounded-xl shadow-lg shadow-black/40" />
-          <div className="text-2xl font-extrabold tracking-tight text-white mb-1">Markus</div>
-          <div className="text-sm text-gray-500">AI Digital Employee Platform</div>
+          <div className="text-2xl font-extrabold tracking-tight text-fg-primary mb-1">Markus</div>
+          <div className="text-sm text-fg-tertiary">AI Digital Employee Platform</div>
         </div>
 
         {/* Card */}
@@ -44,34 +44,34 @@ export function Login({ onLogin }: Props) {
           onSubmit={submit}
           className="bg-surface-secondary/80 backdrop-blur-sm border border-border-default rounded-2xl p-8 space-y-5 shadow-2xl shadow-black/30"
         >
-          <h2 className="text-lg font-semibold text-white text-center">Sign in</h2>
+          <h2 className="text-lg font-semibold text-fg-primary text-center">Sign in</h2>
 
           <div className="space-y-1">
-            <label className="text-xs text-gray-500 font-medium">Email</label>
+            <label className="text-xs text-fg-tertiary font-medium">Email</label>
             <input
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
               autoComplete="email"
-              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               required
             />
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs text-gray-500 font-medium">Password</label>
+            <label className="text-xs text-fg-tertiary font-medium">Password</label>
             <input
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               autoComplete="current-password"
-              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-gray-100 focus:border-brand-500 outline-none transition-colors"
+              className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
               required
             />
           </div>
 
           {error && (
-            <div className="px-3 py-2 bg-red-900/30 border border-red-700/50 rounded-lg text-xs text-red-400">
+            <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
               {error}
             </div>
           )}
@@ -84,7 +84,7 @@ export function Login({ onLogin }: Props) {
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
 
-          <p className="text-center text-xs text-gray-600">
+          <p className="text-center text-xs text-fg-tertiary">
             Default: admin@markus.local / markus123
           </p>
         </form>

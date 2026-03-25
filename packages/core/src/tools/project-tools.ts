@@ -47,8 +47,9 @@ export interface DeliverableServiceBridge {
     taskId?: string;
     type?: string;
     status?: string;
+    offset?: number;
     limit?: number;
-  }): Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>;
+  }): { results: Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>; total: number };
   update(id: string, data: {
     title?: string;
     summary?: string;

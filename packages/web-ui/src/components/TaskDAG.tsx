@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
+import { useMemo, useCallback, useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import {
   ReactFlow,
   Background,
@@ -22,23 +22,23 @@ import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  pending:          { bg: 'bg-blue-900/40',    border: 'border-blue-500/50',   text: 'text-blue-300' },
-  pending_approval: { bg: 'bg-blue-900/30',    border: 'border-blue-400/40',   text: 'text-blue-400' },
-  assigned:         { bg: 'bg-cyan-900/40',     border: 'border-cyan-500/50',   text: 'text-cyan-300' },
-  in_progress:      { bg: 'bg-amber-900/40',   border: 'border-amber-500/50',  text: 'text-amber-300' },
-  blocked:          { bg: 'bg-surface-elevated/60',     border: 'border-gray-600/50',   text: 'text-gray-400' },
-  review:           { bg: 'bg-purple-900/40',   border: 'border-purple-500/50', text: 'text-purple-300' },
-  revision:         { bg: 'bg-orange-900/40',   border: 'border-orange-500/50', text: 'text-orange-300' },
-  accepted:         { bg: 'bg-emerald-900/30',  border: 'border-emerald-500/40',text: 'text-emerald-400' },
-  completed:        { bg: 'bg-emerald-900/40',  border: 'border-emerald-500/50',text: 'text-emerald-300' },
-  failed:           { bg: 'bg-red-900/40',      border: 'border-red-500/50',    text: 'text-red-300' },
-  cancelled:        { bg: 'bg-surface-elevated/40',     border: 'border-border-default/50',   text: 'text-gray-500' },
+  pending:          { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
+  pending_approval: { bg: 'bg-blue-500/8',     border: 'border-blue-400/25',   text: 'text-blue-500' },
+  assigned:         { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
+  in_progress:      { bg: 'bg-amber-500/10',   border: 'border-amber-500/30',  text: 'text-amber-600' },
+  blocked:          { bg: 'bg-red-500/8',      border: 'border-red-500/25',    text: 'text-red-500' },
+  review:           { bg: 'bg-brand-500/10',   border: 'border-brand-500/30',  text: 'text-brand-500' },
+  revision:         { bg: 'bg-amber-500/10',   border: 'border-amber-500/30',  text: 'text-amber-600' },
+  accepted:         { bg: 'bg-green-500/8',    border: 'border-green-500/25',  text: 'text-green-600' },
+  completed:        { bg: 'bg-green-500/10',   border: 'border-green-500/30',  text: 'text-green-600' },
+  failed:           { bg: 'bg-red-500/10',     border: 'border-red-500/30',    text: 'text-red-500' },
+  cancelled:        { bg: 'bg-gray-500/8',     border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
 };
 
 const PRIORITY_INDICATOR: Record<string, string> = {
   critical: 'bg-red-500',
-  high: 'bg-orange-500',
-  medium: 'bg-yellow-500',
+  high: 'bg-amber-500',
+  medium: 'bg-amber-500',
   low: 'bg-blue-500',
 };
 
@@ -49,43 +49,43 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
   const schedLabel = isSched ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? 'Cron' : '') : '';
 
   return (
-    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${isSched ? `${colors.bg} border-cyan-500/40 ring-1 ring-cyan-500/20` : `${colors.bg} ${colors.border}`}`}>
-      <Handle type="target" position={Position.Top} className="!bg-gray-500 !w-2 !h-2" />
+    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`}`}>
+      <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
           {task.status.replace('_', ' ')}
         </span>
         {isSched && (
-          <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/15 text-cyan-400 ml-auto whitespace-nowrap inline-flex items-center gap-0.5"><svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>{schedLabel}</span>
+          <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/15 text-blue-600 ml-auto whitespace-nowrap inline-flex items-center gap-0.5"><svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg>{schedLabel}</span>
         )}
       </div>
-      <div className="text-xs font-medium text-gray-200 leading-snug line-clamp-2 mb-1">
+      <div className="text-xs font-medium text-fg-primary leading-snug line-clamp-2 mb-1">
         {task.title}
       </div>
       {agentName && (
-        <div className="text-[10px] text-gray-500 truncate">
+        <div className="text-[10px] text-fg-tertiary truncate">
           {agentName}
         </div>
       )}
       {task.blockedBy && task.blockedBy.length > 0 && (
-        <div className="text-[10px] text-gray-600 mt-0.5">
+        <div className="text-[10px] text-fg-tertiary mt-0.5">
           {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-gray-500 !w-2 !h-2" />
+      <Handle type="source" position={Position.Bottom} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
 
 const REQ_STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  draft:          { bg: 'bg-surface-elevated/60',    border: 'border-gray-600/50',   text: 'text-gray-400' },
-  pending_review: { bg: 'bg-yellow-900/40',  border: 'border-yellow-500/50', text: 'text-yellow-300' },
-  approved:       { bg: 'bg-blue-900/40',    border: 'border-blue-500/50',   text: 'text-blue-300' },
-  in_progress:    { bg: 'bg-brand-900/40',  border: 'border-brand-500/50', text: 'text-brand-300' },
-  completed:      { bg: 'bg-emerald-900/40', border: 'border-emerald-500/50',text: 'text-emerald-300' },
-  rejected:       { bg: 'bg-red-900/40',     border: 'border-red-500/50',    text: 'text-red-300' },
-  cancelled:      { bg: 'bg-surface-elevated/40',    border: 'border-border-default/50',   text: 'text-gray-500' },
+  draft:          { bg: 'bg-gray-500/8',      border: 'border-gray-500/20',   text: 'text-fg-secondary' },
+  pending_review: { bg: 'bg-amber-500/10',    border: 'border-amber-500/30',  text: 'text-amber-600' },
+  approved:       { bg: 'bg-blue-500/10',     border: 'border-blue-500/30',   text: 'text-blue-500' },
+  in_progress:    { bg: 'bg-brand-500/10',    border: 'border-brand-500/30',  text: 'text-brand-500' },
+  completed:      { bg: 'bg-green-500/10',    border: 'border-green-500/30',  text: 'text-green-600' },
+  rejected:       { bg: 'bg-red-500/10',      border: 'border-red-500/30',    text: 'text-red-500' },
+  cancelled:      { bg: 'bg-gray-500/8',      border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
 };
 
 const REQ_GROUP_MAP: Record<string, string> = {
@@ -100,22 +100,22 @@ function RequirementNode({ data }: { data: { req: RequirementInfo } }) {
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['draft']!;
   return (
     <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border}`}>
-      <Handle type="target" position={Position.Top} className="!bg-gray-500 !w-2 !h-2" />
+      <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-400">REQ</span>
+        <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
         <span className={`text-[10px] font-medium uppercase tracking-wider ${colors.text}`}>
           {req.status.replace('_', ' ')}
         </span>
       </div>
-      <div className="text-xs font-medium text-gray-200 leading-snug line-clamp-2 mb-1">
+      <div className="text-xs font-medium text-fg-primary leading-snug line-clamp-2 mb-1">
         {req.title}
       </div>
       {req.taskIds.length > 0 && (
-        <div className="text-[10px] text-gray-500">
+        <div className="text-[10px] text-fg-tertiary">
           {req.taskIds.length} task{req.taskIds.length > 1 ? 's' : ''}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-gray-500 !w-2 !h-2" />
+      <Handle type="source" position={Position.Bottom} className="!bg-border-default !w-2 !h-2" />
     </div>
   );
 }
@@ -124,6 +124,18 @@ const nodeTypes: NodeTypes = {
   task: TaskNode as unknown as NodeTypes[string],
   requirement: RequirementNode as unknown as NodeTypes[string],
 };
+
+const isLightSnapshot = () =>
+  document.documentElement.classList.contains('light') ||
+  (!document.documentElement.classList.contains('dark') && window.matchMedia('(prefers-color-scheme: light)').matches);
+const subscribeLightMode = (cb: () => void) => {
+  const obs = new MutationObserver(cb);
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  mq.addEventListener('change', cb);
+  return () => { obs.disconnect(); mq.removeEventListener('change', cb); };
+};
+function useIsLight() { return useSyncExternalStore(subscribeLightMode, isLightSnapshot, () => false); }
 
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 80;
@@ -243,10 +255,10 @@ interface TaskDAGProps {
 const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled'] as const;
 
 const DAG_FILTER_GROUPS = [
-  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending_approval', 'pending', 'assigned']),          color: { bg: 'bg-blue-900/40', border: 'border-blue-500/50', text: 'text-blue-300' } },
-  { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-900/40', border: 'border-amber-500/50', text: 'text-amber-300' } },
-  { id: 'review',      label: 'In Review',   statuses: new Set(['review', 'revision', 'accepted']),                   color: { bg: 'bg-purple-900/40', border: 'border-purple-500/50', text: 'text-purple-300' } },
-  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'cancelled']),                 color: { bg: 'bg-emerald-900/40', border: 'border-emerald-500/50', text: 'text-emerald-300' } },
+  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending_approval', 'pending', 'assigned']),          color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
+  { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
+  { id: 'review',      label: 'In Review',   statuses: new Set(['review', 'revision', 'accepted']),                   color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
+  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'cancelled']),                 color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
 const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
@@ -256,6 +268,7 @@ const isArchivedTask = (t: TaskInfo) =>
   t.status === 'completed' && t.updatedAt && (Date.now() - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
 export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange }: TaskDAGProps) {
+  const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
   const [groupFilter, setGroupFilter] = useState<Set<string>>(new Set(ALL_DAG_GROUP_IDS));
@@ -328,14 +341,15 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     return m;
   }, [requirements]);
 
+  const edgeDefault = isLight ? '#94a3b8' : '#6b7280';
   const makeEdge = useCallback((depId: string, taskId: string, status: string): Edge => ({
     id: `${depId}->${taskId}`,
     source: depId,
     target: taskId,
     animated: status === 'blocked',
-    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: status === 'blocked' ? '#ef4444' : '#6b7280' },
-    style: { stroke: status === 'blocked' ? '#ef4444' : '#6b7280', strokeWidth: 1.5, cursor: 'pointer' },
-  }), []);
+    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: status === 'blocked' ? '#ef4444' : edgeDefault },
+    style: { stroke: status === 'blocked' ? '#ef4444' : edgeDefault, strokeWidth: 1.5, cursor: 'pointer' },
+  }), [edgeDefault]);
 
   const { initialNodes, initialEdges } = useMemo(() => {
     const rootTasks = tasks.filter(t => allowedStatuses.has(t.status) && (showArchived || !isArchivedTask(t)));
@@ -481,7 +495,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
   if (tasks.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+      <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">
         No tasks to display
       </div>
     );
@@ -508,10 +522,10 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         proOptions={{ hideAttribution: true }}
         connectionLineStyle={{ stroke: '#818cf8', strokeWidth: 2, strokeDasharray: '6 3' }}
       >
-        <Background color="#374151" gap={20} size={1} />
+        <Background color={isLight ? '#cbd5e1' : '#374151'} gap={20} size={1} />
         <Controls
           showInteractive={false}
-          className="!bg-surface-secondary !border-border-default !shadow-xl [&>button]:!bg-surface-elevated [&>button]:!border-border-default [&>button]:!text-gray-300 [&>button:hover]:!bg-surface-overlay"
+          className="!bg-surface-secondary !border-border-default !shadow-xl [&>button]:!bg-surface-elevated [&>button]:!border-border-default [&>button]:!text-fg-secondary [&>button:hover]:!bg-surface-overlay"
         />
         <MiniMap
           nodeColor={(node) => {
@@ -521,9 +535,9 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             if (status === 'completed' || status === 'accepted') return '#10b981';
             if (status === 'in_progress') return '#f59e0b';
             if (status === 'blocked' || status === 'failed') return '#ef4444';
-            return '#6b7280';
+            return isLight ? '#94a3b8' : '#6b7280';
           }}
-          maskColor="rgba(0,0,0,0.7)"
+          maskColor={isLight ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.7)'}
           className="!bg-surface-secondary !border-border-default"
         />
       </ReactFlow>
@@ -535,30 +549,30 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
             const active = groupFilter.has(g.id);
             return (
               <button key={g.id} onClick={() => toggleGroup(g.id)}
-                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-surface-elevated/50 border-border-default/50 text-gray-600'}`}>
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${active ? `${g.color.bg} ${g.color.border} ${g.color.text}` : 'bg-surface-elevated/50 border-border-default/50 text-fg-tertiary'}`}>
                 {g.label}
               </button>
             );
           })}
           {archivedCount > 0 && (
             <button onClick={() => setShowArchived(v => !v)}
-              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-surface-overlay/60 border-gray-500/50 text-gray-300' : 'bg-surface-elevated/50 border-border-default/50 text-gray-600'}`}>
+              className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${showArchived ? 'bg-surface-overlay/60 border-gray-500/50 text-fg-secondary' : 'bg-surface-elevated/50 border-border-default/50 text-fg-tertiary'}`}>
               Archived {archivedCount}
             </button>
           )}
           {groupFilter.size < ALL_DAG_GROUP_IDS.size && (
-            <button onClick={() => { setGroupFilter(new Set(ALL_DAG_GROUP_IDS)); setShowArchived(false); }} className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Reset</button>
+            <button onClick={() => { setGroupFilter(new Set(ALL_DAG_GROUP_IDS)); setShowArchived(false); }} className="text-[10px] text-fg-tertiary hover:text-fg-secondary px-1">Reset</button>
           )}
         </div>
-        <div className="text-[10px] text-gray-500 select-none">Drag to add dependency · Click edge to remove</div>
+        <div className="text-[10px] text-fg-tertiary select-none">Drag to add dependency · Click edge to remove</div>
       </div>
 
       {/* Toast */}
       {toast && (
         <div className={`absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-xs font-medium shadow-xl border backdrop-blur-sm transition-opacity ${
           toast.type === 'success'
-            ? 'bg-emerald-900/80 border-emerald-600/50 text-emerald-200'
-            : 'bg-red-900/80 border-red-600/50 text-red-200'
+            ? 'bg-green-500/15 border-green-500/30 text-green-600'
+            : 'bg-red-500/15 border-red-500/30 text-red-600'
         }`}>
           {toast.msg}
         </div>
@@ -568,17 +582,17 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       {pendingDelete && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-[2px]" onClick={() => setPendingDelete(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 shadow-2xl max-w-sm" onClick={e => e.stopPropagation()}>
-            <h4 className="text-sm font-semibold text-gray-200 mb-2">Remove dependency?</h4>
-            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
-              <span className="text-gray-300 font-medium">{targetTask?.title ?? pendingDelete.target.slice(-8)}</span>
+            <h4 className="text-sm font-semibold text-fg-primary mb-2">Remove dependency?</h4>
+            <p className="text-xs text-fg-secondary mb-4 leading-relaxed">
+              <span className="text-fg-secondary font-medium">{targetTask?.title ?? pendingDelete.target.slice(-8)}</span>
               {' '}will no longer be blocked by{' '}
-              <span className="text-gray-300 font-medium">{sourceTask?.title ?? pendingDelete.source.slice(-8)}</span>.
+              <span className="text-fg-secondary font-medium">{sourceTask?.title ?? pendingDelete.source.slice(-8)}</span>.
             </p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 bg-surface-elevated rounded-lg border border-border-default hover:border-gray-600 transition-colors">
+              <button onClick={() => setPendingDelete(null)} className="px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary bg-surface-elevated rounded-lg border border-border-default hover:border-gray-600 transition-colors">
                 Cancel
               </button>
-              <button onClick={confirmDeleteEdge} className="px-3 py-1.5 text-xs text-red-200 bg-red-600/20 hover:bg-red-600/30 rounded-lg border border-red-500/40 hover:border-red-500/60 transition-colors">
+              <button onClick={confirmDeleteEdge} className="px-3 py-1.5 text-xs text-red-500 bg-red-600/20 hover:bg-red-600/30 rounded-lg border border-red-500/40 hover:border-red-500/60 transition-colors">
                 Remove
               </button>
             </div>

@@ -46,8 +46,8 @@ function Field({ label, value }: { label: string; value?: string }) {
   if (!value) return null;
   return (
     <div>
-      <span className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</span>
-      <div className="text-xs text-gray-300 mt-0.5">{value}</div>
+      <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">{label}</span>
+      <div className="text-xs text-fg-secondary mt-0.5">{value}</div>
     </div>
   );
 }
@@ -55,15 +55,15 @@ function Field({ label, value }: { label: string; value?: string }) {
 function Badge({ label, value, color }: { label: string; value?: string; color: string }) {
   if (!value) return null;
   const colors: Record<string, string> = {
-    purple: 'bg-purple-500/15 text-purple-400',
-    cyan: 'bg-cyan-500/15 text-cyan-400',
-    indigo: 'bg-brand-500/15 text-brand-400',
-    gray: 'bg-gray-500/15 text-gray-400',
-    emerald: 'bg-emerald-500/15 text-emerald-400',
+    purple: 'bg-brand-500/15 text-brand-500',
+    cyan: 'bg-blue-500/15 text-blue-600',
+    indigo: 'bg-brand-500/15 text-brand-500',
+    gray: 'bg-gray-500/15 text-fg-secondary',
+    emerald: 'bg-green-500/15 text-green-600',
   };
   return (
     <div>
-      <span className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</span>
+      <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">{label}</span>
       <div className={`mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${colors[color] ?? colors.gray} capitalize inline-block`}>{value}</div>
     </div>
   );
@@ -75,18 +75,18 @@ function FilesPreview({ files }: { files: Record<string, string> }) {
   if (names.length === 0) return null;
   return (
     <div>
-      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Files ({names.length})</span>
+      <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Files ({names.length})</span>
       <div className="mt-1 bg-surface-elevated/50 rounded-lg border border-border-default/30 overflow-hidden">
         <div className="flex gap-0.5 px-1.5 py-1 border-b border-border-default/30 overflow-x-auto">
           {names.map(fn => (
             <button key={fn} onClick={() => setActive(fn)}
-              className={`px-2 py-0.5 text-[10px] rounded whitespace-nowrap transition-colors ${active === fn ? 'bg-brand-600/30 text-brand-300' : 'text-gray-500 hover:text-gray-300'}`}>
+              className={`px-2 py-0.5 text-[10px] rounded whitespace-nowrap transition-colors ${active === fn ? 'bg-brand-600/30 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
               {fn}
             </button>
           ))}
         </div>
         {active && files[active] != null && (
-          <pre className="p-2 text-[10px] text-gray-400 max-h-[120px] overflow-auto whitespace-pre-wrap font-mono">{files[active]}</pre>
+          <pre className="p-2 text-[10px] text-fg-secondary max-h-[120px] overflow-auto whitespace-pre-wrap font-mono">{files[active]}</pre>
         )}
       </div>
     </div>
@@ -119,7 +119,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
             {toStringArray(artifact.tags).map(t => (
-              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded">{t}</span>
             ))}
           </div>
         )}
@@ -131,10 +131,10 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         )}
         {envDeps.length > 0 && (
           <div>
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Required Env</span>
+            <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Required Env</span>
             <div className="flex flex-wrap gap-1 mt-1">
               {envDeps.map(e => (
-                <span key={e} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-400 rounded font-mono">{e}</span>
+                <span key={e} className="px-1.5 py-0.5 text-[10px] bg-amber-500/10 text-amber-600 rounded font-mono">{e}</span>
               ))}
             </div>
           </div>
@@ -158,30 +158,30 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
         {toStringArray(artifact.tags).length > 0 && (
           <div className="flex flex-wrap gap-1">
             {toStringArray(artifact.tags).map(t => (
-              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
+              <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded">{t}</span>
             ))}
           </div>
         )}
         {files && <FilesPreview files={files} />}
         <div>
-          <span className="text-[10px] text-gray-500 uppercase tracking-wider">Members ({members.length})</span>
+          <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">Members ({members.length})</span>
           <div className="mt-1.5 space-y-1.5">
             {members.map((m, i) => (
               <div key={i} className="bg-surface-elevated/30 rounded-lg px-2 py-1.5 border border-border-default/20">
                 <div className="flex items-center gap-2">
                   <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${
-                    m.role === 'manager' ? 'bg-purple-500/20 text-purple-400' : 'bg-cyan-500/20 text-cyan-400'
+                    m.role === 'manager' ? 'bg-brand-500/20 text-brand-500' : 'bg-blue-500/20 text-blue-600'
                   }`}>
                     {m.role === 'manager' ? '\u2605' : (i + 1)}
                   </span>
-                  <span className="text-xs text-gray-300 flex-1 truncate">{m.name as string}</span>
-                  {typeof m.roleName === 'string' && m.roleName && <span className="text-[10px] text-brand-400/70 font-mono">{m.roleName}</span>}
-                  <span className="text-[10px] text-gray-500">x{String(m.count ?? 1)}</span>
+                  <span className="text-xs text-fg-secondary flex-1 truncate">{m.name as string}</span>
+                  {typeof m.roleName === 'string' && m.roleName && <span className="text-[10px] text-brand-500/70 font-mono">{m.roleName}</span>}
+                  <span className="text-[10px] text-fg-tertiary">x{String(m.count ?? 1)}</span>
                 </div>
                 {toStringArray(m.skills).length > 0 && (
                   <div className="mt-1 ml-7 flex flex-wrap gap-1">
                     {toStringArray(m.skills).map(s => (
-                      <span key={s} className="px-1 py-0.5 text-[9px] bg-emerald-500/10 text-emerald-400 rounded font-mono">{s}</span>
+                      <span key={s} className="px-1 py-0.5 text-[9px] bg-green-500/10 text-green-600 rounded font-mono">{s}</span>
                     ))}
                   </div>
                 )}
@@ -205,7 +205,7 @@ export function ArtifactPreview({ artifact, mode }: { artifact: Record<string, u
       {toStringArray(artifact.tags).length > 0 && (
         <div className="flex flex-wrap gap-1">
           {toStringArray(artifact.tags).map(t => (
-            <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-gray-500 rounded">{t}</span>
+            <span key={t} className="px-1.5 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded">{t}</span>
           ))}
         </div>
       )}

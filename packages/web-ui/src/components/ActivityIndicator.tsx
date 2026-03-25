@@ -77,7 +77,7 @@ function buildTimeline(activities: ActivityStep[]): ToolItem[] {
 
 function Spinner() {
   return (
-    <svg className="w-3 h-3 animate-spin text-brand-400 shrink-0" viewBox="0 0 24 24" fill="none">
+    <svg className="w-3 h-3 animate-spin text-brand-500 shrink-0" viewBox="0 0 24 24" fill="none">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
@@ -104,10 +104,10 @@ function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total
         {idx > 0 && <div className="w-px h-2 bg-surface-overlay" />}
         <div className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
           item.status === 'running'
-            ? 'border-brand-500 bg-brand-950'
+            ? 'border-brand-500 bg-brand-500/15'
             : item.status === 'error'
-            ? 'border-red-600 bg-red-950 text-red-400'
-            : 'border-gray-600 bg-surface-elevated text-gray-500'
+            ? 'border-red-500 bg-red-500/15 text-red-500'
+            : 'border-gray-600 bg-surface-elevated text-fg-tertiary'
         }`}>
           {item.status === 'done' ? '✓' : item.status === 'error' ? '✗' : ''}
         </div>
@@ -117,10 +117,10 @@ function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total
       {/* Label */}
       <div className={`flex items-center gap-1.5 text-xs ${
         item.status === 'running'
-          ? 'text-brand-300'
+          ? 'text-brand-500'
           : item.status === 'error'
-          ? 'text-red-400 opacity-60'
-          : 'text-gray-500'
+          ? 'text-red-500 opacity-60'
+          : 'text-fg-tertiary'
       }`}>
         <span className="opacity-70">{meta.icon}</span>
         <span>{meta.label}{item.status === 'running' ? '…' : ''}</span>
@@ -161,12 +161,12 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
       <div className="mb-3 border-b border-border-default/50 pb-2">
         <button
           onClick={() => setExpanded(v => !v)}
-          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-400 transition-colors select-none"
+          className="flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors select-none"
         >
           <span className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
           <span className="font-medium">{doneCount} step{doneCount !== 1 ? 's' : ''}</span>
           {errorCount > 0 && (
-            <span className="text-red-400 ml-0.5">· {errorCount} failed</span>
+            <span className="text-red-500 ml-0.5">· {errorCount} failed</span>
           )}
           {/* Mini pill icons */}
           {!expanded && (
@@ -176,7 +176,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
                   {getToolMeta(t.tool).icon}
                 </span>
               ))}
-              {timeline.length > 5 && <span className="text-[10px] text-gray-600">+{timeline.length - 5}</span>}
+              {timeline.length > 5 && <span className="text-[10px] text-fg-tertiary">+{timeline.length - 5}</span>}
             </span>
           )}
         </button>
@@ -200,7 +200,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
 
       {/* Thinking / Writing status */}
       {showThinking && (
-        <div className="flex items-center gap-1.5 text-xs text-gray-400 py-0.5">
+        <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
           <span className="mr-0.5">Thinking</span>
           <PulsingDots />
         </div>
@@ -209,9 +209,9 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
         <div className="flex items-center gap-1.5 py-0.5">
           <div className="flex flex-col items-center self-stretch w-3 shrink-0">
             <div className="w-px h-2 bg-surface-overlay" />
-            <div className="w-2.5 h-2.5 rounded-full border border-brand-500 bg-brand-950 shrink-0" />
+            <div className="w-2.5 h-2.5 rounded-full border border-brand-500 bg-brand-500/15 shrink-0" />
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-brand-300">
+          <div className="flex items-center gap-1.5 text-xs text-brand-500">
             <Spinner />
             <span>Writing response…</span>
           </div>

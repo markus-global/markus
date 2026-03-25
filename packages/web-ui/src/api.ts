@@ -1141,7 +1141,7 @@ export const api = {
 
   // ─── Deliverables (unified) ──────────────────────────────────────────
   deliverables: {
-    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; limit?: number }) => {
+    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; offset?: number; limit?: number }) => {
       const params = new URLSearchParams();
       if (opts?.q) params.set('q', opts.q);
       if (opts?.projectId) params.set('projectId', opts.projectId);
@@ -1150,8 +1150,9 @@ export const api = {
       if (opts?.type) params.set('type', opts.type);
       if (opts?.status) params.set('status', opts.status);
       if (opts?.artifactType) params.set('artifactType', opts.artifactType);
+      if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.limit) params.set('limit', String(opts.limit));
-      return request<{ results: DeliverableInfo[] }>(`/deliverables?${params}`);
+      return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);
     },
     create: (data: Partial<DeliverableInfo>) =>
       request<{ deliverable: DeliverableInfo }>('/deliverables', { method: 'POST', body: JSON.stringify(data) }),

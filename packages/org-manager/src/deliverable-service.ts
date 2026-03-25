@@ -107,29 +107,30 @@ export class DeliverableService {
     type?: Deliverable['type'];
     status?: Deliverable['status'];
     artifactType?: Deliverable['artifactType'];
+    offset?: number;
     limit?: number;
-  }): Deliverable[] {
+  }): { results: Deliverable[]; total: number } {
+    const offset = opts.offset ?? 0;
     const limit = opts.limit ?? 100;
     const queryLower = opts.query?.toLowerCase();
     const keywords = queryLower ? queryLower.split(/\s+/).filter(Boolean) : [];
 
-    let results = [...this.cache.values()];
+    let filtered = [...this.cache.values()];
 
-    if (opts.projectId) results = results.filter(d => d.projectId === opts.projectId);
-    if (opts.agentId) results = results.filter(d => d.agentId === opts.agentId);
-    if (opts.taskId) results = results.filter(d => d.taskId === opts.taskId);
-    if (opts.type) results = results.filter(d => d.type === opts.type);
-    if (opts.status) results = results.filter(d => d.status === opts.status);
-    else results = results.filter(d => d.status !== 'outdated');
-    if (opts.artifactType) results = results.filter(d => d.artifactType === opts.artifactType);
+    if (opts.projectId) filtered = filtered.filter(d => d.projectId === opts.projectId);
+    if (opts.agentId) filtered = filtered.filter(d => d.agentId === opts.agentId);
+    if (opts.taskId) filtered = filtered.filter(d => d.taskId === opts.taskId);
+    if (opts.type) filtered = filtered.filter(d => d.type === opts.type);
+    if (opts.status) filtered = filtered.filter(d => d.status === opts.status);
+    else filtered = filtered.filter(d => d.status !== 'outdated');
+    if (opts.artifactType) filtered = filtered.filter(d => d.artifactType === opts.artifactType);
 
     if (keywords.length === 0) {
-      return results
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-        .slice(0, limit);
+      filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      return { results: filtered.slice(offset, offset + limit), total: filtered.length };
     }
 
-    const scored = results.map(d => {
+    const scored = filtered.map(d => {
       const text = `${d.title} ${d.summary} ${d.tags.join(' ')}`.toLowerCase();
       let score = 0;
       for (const kw of keywords) {
@@ -140,11 +141,14 @@ export class DeliverableService {
       return { d, score };
     });
 
-    return scored
+    const matched = scored
       .filter(s => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map(s => s.d);
+      .sort((a, b) => b.score - a.score);
+
+    return {
+      results: matched.slice(offset, offset + limit).map(s => s.d),
+      total: matched.length,
+    };
   }
 
   async update(id: string, data: Partial<{
@@ -212,7 +216,7 @@ export class DeliverableService {
       ...opts,
       type: opts.type as Deliverable['type'],
       status: opts.status as Deliverable['status'],
-    });
+    }).results;
   }
 
   /**
