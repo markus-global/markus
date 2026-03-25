@@ -12,6 +12,9 @@ import { ProjectsPage } from './pages/Projects.tsx';
 import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
+import { BottomNav } from './components/BottomNav.tsx';
+import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
+import { MobileSettingsTabs } from './components/MobileSettingsTabs.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
@@ -19,6 +22,7 @@ import { api, hubApi, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useTheme } from './hooks/useTheme.ts';
+import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 
 const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'deliverables', 'reports'];
@@ -38,6 +42,7 @@ export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const isMobile = useIsMobile();
   const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
@@ -54,11 +59,15 @@ export function App() {
   const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    const normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : (p as string) === 'templates' ? 'agents' : p;
+    let normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : (p as string) === 'templates' ? 'agents' : p;
+    if (isMobile) {
+      if (normalized === 'agents' || normalized === 'teams' || normalized === 'skills') normalized = 'builder';
+      if (normalized === 'governance' || normalized === 'reports') normalized = 'settings';
+    }
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
     window.location.hash = normalized;
-  }, []);
+  }, [isMobile]);
 
   useEffect(() => {
     navBus.setHandler((p) => navigate(p as PageId));
@@ -103,20 +112,32 @@ export function App() {
   }, []);
 
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
-  const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => ({
-    dashboard: <Dashboard />,
-    chat: <Chat authUser={currentUser} />,
-    settings: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
-    skills: <SkillStore />,
-    agents: <TemplateMarketplace authUser={currentUser} />,
-    teams: <TeamsStore />,
-    builder: <AgentBuilder />,
-    governance: <GovernancePage />,
-    projects: <ProjectsPage authUser={currentUser} />,
-    deliverables: <DeliverablesPage />,
-    reports: <ReportsPage />,
+  const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
+    if (isMobile) {
+      return {
+        dashboard: <Dashboard />,
+        chat: <Chat authUser={currentUser} />,
+        builder: <MobileBuilderTabs authUser={currentUser} />,
+        settings: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} />,
+        projects: <ProjectsPage authUser={currentUser} />,
+        deliverables: <DeliverablesPage />,
+      };
+    }
+    return {
+      dashboard: <Dashboard />,
+      chat: <Chat authUser={currentUser} />,
+      settings: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
+      skills: <SkillStore />,
+      agents: <TemplateMarketplace authUser={currentUser} />,
+      teams: <TeamsStore />,
+      builder: <AgentBuilder />,
+      governance: <GovernancePage />,
+      projects: <ProjectsPage authUser={currentUser} />,
+      deliverables: <DeliverablesPage />,
+      reports: <ReportsPage />,
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [currentUser?.id, theme.mode]);
+  }, [currentUser?.id, theme.mode, isMobile]);
 
   if (authUser === 'loading') {
     return (
@@ -149,46 +170,39 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen bg-surface-primary text-fg-primary">
-      <button
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="md:hidden fixed top-3 left-3 z-50 p-2 bg-surface-elevated rounded-lg text-fg-secondary"
-      >
-        {sidebarOpen ? '✕' : '☰'}
-      </button>
+    <div className={`flex h-screen bg-surface-primary text-fg-primary ${isMobile ? 'flex-col' : ''}`}>
+      {/* Desktop sidebar */}
+      {!isMobile && (
+        <>
+          <div
+            className="relative z-40 shrink-0"
+            style={{ width: sidebar.width }}
+          >
+            <Sidebar
+              currentPage={page}
+              onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
+              authUser={authUser}
+              onLogout={() => setAuthUser(null)}
+              collapsed={sidebar.collapsed}
+              onToggleCollapse={sidebar.toggle}
+            />
+          </div>
 
-      {sidebarOpen && (
-        <div className="md:hidden fixed inset-0 bg-black/50 z-30" onClick={() => setSidebarOpen(false)} />
+          {!sidebar.collapsed && (
+            <div
+              className="w-1 cursor-col-resize shrink-0 group relative z-10"
+              onMouseDown={sidebar.onResizeStart}
+            >
+              <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
+            </div>
+          )}
+        </>
       )}
 
-      <div
-        className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:relative z-40 transition-transform duration-200 shrink-0`}
-        style={{ width: sidebar.width }}
-      >
-        <Sidebar
-          currentPage={page}
-          onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
-          authUser={authUser}
-          onLogout={() => setAuthUser(null)}
-          collapsed={sidebar.collapsed}
-          onToggleCollapse={sidebar.toggle}
-        />
-      </div>
-
-      {/* Resize handle for main sidebar */}
-      {!sidebar.collapsed && (
-        <div
-          className="hidden md:block w-1 cursor-col-resize shrink-0 group relative z-10"
-          onMouseDown={sidebar.onResizeStart}
-        >
-          <div className="absolute inset-y-0 -left-0.5 -right-0.5 group-hover:bg-brand-500/30 group-active:bg-brand-500/50 transition-colors" />
-        </div>
-      )}
-
-      <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== 'settings' && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
-            <span>No LLM provider configured — agents cannot process requests.</span>
+            <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
             <div className="flex items-center gap-3">
               <button onClick={() => { navigate('settings'); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
                 Go to Settings
@@ -211,6 +225,11 @@ export function App() {
           ))}
         </main>
       </div>
+
+      {/* Mobile bottom nav */}
+      {isMobile && (
+        <BottomNav currentPage={page} onNavigate={navigate} />
+      )}
     </div>
   );
 }

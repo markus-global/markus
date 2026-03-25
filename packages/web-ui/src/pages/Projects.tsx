@@ -5,6 +5,7 @@ import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCo
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { navBus } from '../navBus.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string | null {
   if (!id) return null;
@@ -1914,6 +1915,8 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function ProjectsPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
+  const isMobile = useIsMobile();
+  const viewModeRef = useRef<ViewMode>('all');
   // ── State ──
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
@@ -2117,8 +2120,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     setSelectedProjectId(projectId);
     setSelectedIterationId(null);
     setViewMode('project');
+    viewModeRef.current = 'project';
     setShowProjectSettings(false);
-    history.replaceState(null, '', '#projects/' + projectId);
+    if (isMobile) {
+      history.pushState({ mobileDetail: 'projects' }, '', '#projects/' + projectId);
+    } else {
+      history.replaceState(null, '', '#projects/' + projectId);
+    }
   };
 
   const selectAllTasks = () => {
@@ -2126,9 +2134,22 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     setSelectedProjectId(null);
     setSelectedIterationId(null);
     setViewMode('all');
+    viewModeRef.current = 'all';
     setShowProjectSettings(false);
     history.replaceState(null, '', '#projects');
   };
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const handler = () => {
+      if (viewModeRef.current === 'project') {
+        selectAllTasks();
+      }
+    };
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
 
   const handleCreateProject = async () => {
     if (!newProjName.trim()) return;
@@ -2398,6 +2419,52 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">Loading…</div>;
 
+  // Mobile project list: show when in 'all' mode with multiple projects
+  if (isMobile && viewMode === 'all' && projects.length > 1) {
+    return (
+      <div className="flex-1 overflow-hidden flex flex-col">
+        <div className="px-4 h-14 flex items-center border-b border-border-default bg-surface-secondary/80 shrink-0">
+          <h2 className="text-sm font-semibold text-fg-primary">Projects</h2>
+          <button onClick={() => setShowCreateProject(true)} className="ml-auto text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ New</button>
+        </div>
+        {flash && <div className="mx-4 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+          {projects.map(p => {
+            const count = allTaskCounts[p.id] ?? 0;
+            return (
+              <button key={p.id} onClick={() => selectProject(p.id)}
+                className="w-full text-left p-3.5 rounded-xl bg-surface-secondary border border-border-default hover:border-brand-500/30 transition-colors">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-lg bg-brand-600/20 flex items-center justify-center text-sm font-bold text-brand-500 shrink-0">{p.name[0]?.toUpperCase()}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-fg-primary truncate">{p.name}</div>
+                    <div className="text-[11px] text-fg-tertiary">{count} tasks · <StatusPill status={p.status} /></div>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-fg-tertiary shrink-0"><polyline points="9 18 15 12 9 6" /></svg>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Create project modal */}
+        {showCreateProject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateProject(false)}>
+            <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[90vw] max-w-md space-y-4" onClick={e => e.stopPropagation()}>
+              <h3 className="text-base font-semibold">New Project</h3>
+              <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="Project name" className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm focus:border-brand-500 outline-none" />
+              <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="Description" rows={3} className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm focus:border-brand-500 outline-none resize-none" />
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setShowCreateProject(false)} className="text-sm text-fg-tertiary py-2">Cancel</button>
+                <button onClick={handleCreateProject} disabled={!newProjName.trim()} className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50">Create</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* ── Task Board + Project Context ── */}
@@ -2406,7 +2473,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
 
         {/* Top bar */}
-        <div className="flex items-center gap-3 px-6 h-14 border-b border-border-default bg-surface-secondary/80 shrink-0">
+        <div className={`flex items-center gap-3 ${isMobile ? 'px-3' : 'px-6'} h-14 border-b border-border-default bg-surface-secondary/80 shrink-0`}>
+          {/* Mobile back button */}
+          {isMobile && viewMode === 'project' && projects.length > 1 && (
+            <button onClick={() => history.back()} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+          )}
           {/* Project title + settings */}
           {selectedProject ? (
             <div className="flex items-center gap-1 shrink-0">

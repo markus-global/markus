@@ -529,7 +529,7 @@ export function ChatTeamSidebar({
 
   return (
     <>
-      <div className="bg-surface-secondary/60 border-r border-border-default flex flex-col shrink-0" style={{ width: width ?? 224 }}>
+      <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={width != null ? { width } : undefined}>
         {/* Header with title */}
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">Chat</h2>

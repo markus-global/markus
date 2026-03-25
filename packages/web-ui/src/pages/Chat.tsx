@@ -18,6 +18,7 @@ import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
 import { TeamProfile } from './TeamProfile.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -425,6 +426,28 @@ type MainTab = 'chat' | 'profile';
 export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
+  const isMobile = useIsMobile();
+
+  // Mobile: show list vs chat detail
+  const [mobileShowChat, setMobileShowChat] = useState(false);
+  const mobileShowChatRef = useRef(mobileShowChat);
+  mobileShowChatRef.current = mobileShowChat;
+
+  const enterMobileDetail = useCallback(() => {
+    setMobileShowChat(true);
+    history.pushState({ mobileDetail: 'chat' }, '', window.location.hash);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const handler = () => {
+      if (mobileShowChatRef.current) {
+        setMobileShowChat(false);
+      }
+    };
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [isMobile]);
 
   // Tab system: Chat vs Agent Profile
   const [mainTab, setMainTab] = useState<MainTab>('chat');
@@ -1482,37 +1505,52 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     selectedAgent ? 'Type a message…' : 'Select an agent to start chatting';
 
   // ── Render ────────────────────────────────────────────────────────────────────
+  const showSidebarOnMobile = isMobile && !mobileShowChat;
+  const showChatOnMobile = isMobile && mobileShowChat;
+
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* ── Left sidebar (ChatTeamSidebar) ── */}
-      <ChatTeamSidebar
-        authUser={authUser}
-        agents={agents}
-        teams={teams}
-        humans={humans}
-        tasks={tasks}
-        externalAgents={externalAgents}
-        groupChats={groupChats}
-        chatMode={chatMode}
-        selectedAgent={selectedAgent}
-        activeChannel={activeChannel}
-        activeDmUserId={activeDmUserId}
-        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); }}
-        onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); }}
-        onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); }}
-        onRefreshTeams={refreshTeams}
-        onRefreshAgents={refreshAgents}
-        onViewProfile={handleViewProfile}
-        width={chatSidebar.width}
-        onResizeStart={chatSidebar.onResizeStart}
-      />
+      {(!isMobile || showSidebarOnMobile) && (
+        <ChatTeamSidebar
+          authUser={authUser}
+          agents={agents}
+          teams={teams}
+          humans={humans}
+          tasks={tasks}
+          externalAgents={externalAgents}
+          groupChats={groupChats}
+          chatMode={chatMode}
+          selectedAgent={selectedAgent}
+          activeChannel={activeChannel}
+          activeDmUserId={activeDmUserId}
+          onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+          onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+          onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+          onRefreshTeams={refreshTeams}
+          onRefreshAgents={refreshAgents}
+          onViewProfile={handleViewProfile}
+          width={isMobile ? undefined : chatSidebar.width}
+          onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
+        />
+      )}
 
       {/* ── Main area ── */}
+      {(!isMobile || showChatOnMobile) && (
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
         <div className="border-b border-border-default bg-surface-secondary shrink-0 relative">
           {/* Top row: tabs left + actions right */}
           <div className="flex items-center px-6 h-14 gap-3">
+            {/* Mobile back button */}
+            {isMobile && (
+              <button
+                onClick={() => history.back()}
+                className="text-fg-secondary hover:text-fg-primary transition-colors -ml-2 mr-1 p-1"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+              </button>
+            )}
             {/* Left: agent title + status + main tabs */}
             <span className="font-semibold text-sm truncate">{modeTitle}</span>
             {chatMode === 'direct' && currentAgent && (
@@ -1929,6 +1967,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           </div>
         </div>
       </div>
+      )}
 
     </div>
   );

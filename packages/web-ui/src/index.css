@@ -120,3 +120,7 @@ body {
 .text-gradient-brand {
   @apply text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-brand-300;
 }
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

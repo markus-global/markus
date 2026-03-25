@@ -3,6 +3,7 @@ import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo }
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
   file:      { icon: '\u{1F4C4}', color: 'bg-green-500/10 text-green-600' },
@@ -28,6 +29,22 @@ const ARTIFACT_META: Record<string, { icon: string; label: string; color: string
 };
 
 export function DeliverablesPage() {
+  const isMobile = useIsMobile();
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  const mobileShowDetailRef = useRef(mobileShowDetail);
+  mobileShowDetailRef.current = mobileShowDetail;
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const handler = () => {
+      if (mobileShowDetailRef.current) {
+        setMobileShowDetail(false);
+      }
+    };
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [isMobile]);
+
   const PAGE_SIZE = 100;
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -354,10 +371,19 @@ export function DeliverablesPage() {
     setShowCreate(true);
   };
 
+  const handleSelectItem = (item: DeliverableInfo) => {
+    setSelected(item);
+    if (isMobile) {
+      setMobileShowDetail(true);
+      history.pushState({ mobileDetail: 'deliverables' }, '', window.location.hash);
+    }
+  };
+
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar */}
-      <div className="w-96 border-r border-border-default flex flex-col bg-surface-primary shrink-0">
+      {(!isMobile || !mobileShowDetail) && (
+      <div className={`${isMobile ? 'flex-1 min-w-0' : 'w-96 shrink-0'} border-r border-border-default flex flex-col bg-surface-primary`}>
         <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg-secondary">
@@ -456,7 +482,7 @@ export function DeliverablesPage() {
                   <span className="text-[10px] text-fg-tertiary shrink-0">({group.items.length})</span>
                 </button>
                 {!isCollapsed && group.items.map(item => (
-                  <button key={item.id} onClick={() => setSelected(item)}
+                  <button key={item.id} onClick={() => handleSelectItem(item)}
                     className={`w-full text-left p-3 rounded-lg transition-colors ${selected?.id === item.id ? 'bg-brand-600/20 border border-brand-500/30' : 'hover:bg-surface-elevated/60 border border-transparent'}`}>
                     <div className="text-sm font-medium text-fg-primary truncate">{item.title}</div>
                     <div className="flex items-center gap-2 mt-1">
@@ -489,9 +515,22 @@ export function DeliverablesPage() {
           )}
         </div>
       </div>
+      )}
 
       {/* Right detail panel */}
+      {(!isMobile || mobileShowDetail) && (
       <div className="flex-1 overflow-y-auto">
+        {isMobile && (
+          <div className="sticky top-0 z-10 bg-surface-secondary border-b border-border-default px-4 py-2.5 flex items-center gap-2">
+            <button
+              onClick={() => history.back()}
+              className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+            <span className="text-sm font-medium truncate">{selected?.title ?? 'Details'}</span>
+          </div>
+        )}
         {!selected ? (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center text-fg-tertiary space-y-2">
@@ -698,6 +737,7 @@ export function DeliverablesPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* Create Modal */}
       {showCreate && (
