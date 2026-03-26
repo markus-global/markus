@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { api, wsClient, type TeamInfo, type TeamMemberInfo, type TaskLogEntry } from '../api.ts';
-import { ExecEntryRow, ThinkingDots, taskLogToEntry, filterCompletedStarts, type ExecEntry } from './ExecutionTimeline.tsx';
+import { useEffect, useState } from 'react';
+import { api, type TeamInfo, type TeamMemberInfo } from '../api.ts';
 
 // ─── UI Primitives ────────────────────────────────────────────────────────────
 
@@ -277,85 +276,5 @@ Step 3: Accept and execute tasks, report progress, and communicate with teammate
         </>
       )}
     </Modal>
-  );
-}
-
-// ─── Busy Agent Modal ─────────────────────────────────────────────────────────
-
-export function BusyAgentModal({ agentName, taskId, onClose, onGoToTask }: {
-  agentName: string; taskId: string; onClose: () => void; onGoToTask: () => void;
-}) {
-  const [logs, setLogs] = useState<TaskLogEntry[]>([]);
-  const [taskTitle, setTaskTitle] = useState('');
-  const [loading, setLoading] = useState(true);
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setLoading(true);
-    api.tasks.getLogs(taskId).then(d => { setLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
-    api.tasks.board().then(d => {
-      const all = Object.values(d.board).flat();
-      const t = all.find(x => x.id === taskId);
-      if (t) setTaskTitle(t.title);
-    }).catch(() => {});
-  }, [taskId]);
-
-  useEffect(() => {
-    const unsub = wsClient.on('task:log', (event) => {
-      const p = event.payload;
-      if (p.taskId !== taskId) return;
-      const entry: TaskLogEntry = {
-        id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
-        seq: p.seq as number, type: p.logType as string, content: p.content as string,
-        metadata: p.metadata as Record<string, unknown> | undefined, createdAt: p.createdAt as string,
-      };
-      setLogs(prev => {
-        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
-        return [...prev, entry];
-      });
-    });
-    return unsub;
-  }, [taskId]);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-        <div className="bg-surface-secondary border border-border-default rounded-xl w-[620px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border-default">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="w-2 h-2 rounded-full bg-brand-400 animate-pulse shrink-0" />
-            <div className="min-w-0">
-              <span className="text-sm font-medium">{agentName}</span>
-              <span className="text-xs text-fg-tertiary ml-2">is working on</span>
-              {taskTitle && <div className="text-xs text-brand-500 truncate">{taskTitle}</div>}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">
-              Go to Task →
-            </button>
-            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg">×</button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
-          {loading ? (
-            <div className="text-center py-8 text-xs text-fg-tertiary">Loading logs…</div>
-          ) : logs.length === 0 ? (
-            <div className="text-center py-8 text-xs text-fg-tertiary">No execution logs yet.</div>
-          ) : (
-            <>
-              {filterCompletedStarts(logs.slice(-50).map(taskLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
-                <ExecEntryRow key={`e-${i}`} entry={entry} showTime />
-              ))}
-              <ThinkingDots label="Working" />
-            </>
-          )}
-          <div ref={endRef} />
-        </div>
-      </div>
-    </div>
   );
 }

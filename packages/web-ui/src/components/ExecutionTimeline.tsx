@@ -5,7 +5,6 @@
  * - Task execution logs
  * - Agent activity modal (heartbeats, chat responses)
  * - Agent profile task logs
- * - Team busy-agent modal
  */
 import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
 import { createPortal } from 'react-dom';

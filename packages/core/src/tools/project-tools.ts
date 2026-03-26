@@ -398,8 +398,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               type: 'object',
               properties: {
                 query: { type: 'string', description: 'Search keywords or question' },
-                projectId: { type: 'string', description: 'Filter by project ID (optional)' },
-                agentId: { type: 'string', description: 'Filter by agent ID (optional)' },
+                project_id: { type: 'string', description: 'Filter by project ID (optional)' },
+                agent_id: { type: 'string', description: 'Filter by agent ID (optional)' },
                 type: {
                   type: 'string',
                   enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
@@ -413,8 +413,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               try {
                 const results = await ctx.deliverableSearch!({
                   query: args['query'] as string,
-                  projectId: args['projectId'] as string | undefined,
-                  agentId: args['agentId'] as string | undefined,
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
                   limit: args['limit'] as number | undefined,
                 });
@@ -443,8 +443,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             inputSchema: {
               type: 'object',
               properties: {
-                projectId: { type: 'string', description: 'Filter by project ID' },
-                agentId: { type: 'string', description: 'Filter by agent ID' },
+                project_id: { type: 'string', description: 'Filter by project ID' },
+                agent_id: { type: 'string', description: 'Filter by agent ID' },
                 type: {
                   type: 'string',
                   enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
@@ -461,8 +461,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const results = await ctx.deliverableList!({
-                  projectId: args['projectId'] as string | undefined,
-                  agentId: args['agentId'] as string | undefined,
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
                   status: args['status'] as string | undefined,
                   limit: args['limit'] as number | undefined,

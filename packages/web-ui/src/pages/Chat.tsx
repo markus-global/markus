@@ -937,9 +937,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
 
   const createAndLinkTask = async () => {
+    if (!selectedAgent) return;
     const title = newTaskTitle.trim() || (messages[0]?.text.slice(0, 60) ?? 'New Conversation Task');
     try {
-      await api.tasks.create(title, `Created from chat with ${currentAgent?.name ?? 'agent'}`, 'medium', selectedAgent || undefined);
+      await api.tasks.create(title, `Created from chat with ${currentAgent?.name ?? 'agent'}`, selectedAgent, selectedAgent, 'medium');
       setNewTaskTitle('');
       setShowTaskPicker(false);
       // Reload tasks to get new ID
@@ -2024,7 +2025,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? 'error' : isWorking ? 'busy' : 'idle';
+  const label = isError ? 'error' : isWorking ? 'working' : 'idle';
 
   const activityLabel = activity
     ? activity.type === 'heartbeat' ? `Heartbeat: ${activity.heartbeatName ?? activity.label}`

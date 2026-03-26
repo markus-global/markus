@@ -902,25 +902,6 @@ export class AgentManager {
           const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
           return stripInternalBlocks(reply);
         },
-        createTask: (params) => {
-          if (this.taskService) {
-            const task = this.taskService.createTask({
-              orgId: config.orgId,
-              title: params.title,
-              description: params.description,
-              priority: params.priority ?? 'medium',
-              assignedAgentId: params.assignedAgentId,
-              reviewerAgentId: params.reviewerAgentId,
-              blockedBy: params.blockedBy,
-              requirementId: params.requirementId,
-              projectId: params.projectId,
-              createdBy: id,
-              creatorRole: 'manager',
-            });
-            return task.id;
-          }
-          return `task_${Date.now()}`;
-        },
         getTeamStatus: () =>
           this.listAgents().map(a => {
             try {
@@ -1417,24 +1398,6 @@ export class AgentManager {
           const target = this.getAgent(targetId);
           const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
           return stripInternalBlocks(reply);
-        },
-        createTask: (params) => {
-          if (this.taskService) {
-            return this.taskService.createTask({
-              orgId: config.orgId,
-              title: params.title,
-              description: params.description,
-              priority: params.priority ?? 'medium',
-              assignedAgentId: params.assignedAgentId,
-              reviewerAgentId: params.reviewerAgentId,
-              blockedBy: params.blockedBy,
-              requirementId: params.requirementId,
-              projectId: params.projectId,
-              createdBy: id,
-              creatorRole: 'manager',
-            }).id;
-          }
-          return `task_${Date.now()}`;
         },
         getTeamStatus: () =>
           this.listAgents().map(a => {

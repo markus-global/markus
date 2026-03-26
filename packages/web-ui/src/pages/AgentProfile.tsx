@@ -775,7 +775,7 @@ function SkillsTab({ agent, onUpdate: _onUpdate }: { agent: AgentDetail; onUpdat
   return (
     <div className="space-y-4">
       <Card title={`Skills (${agent.skills.length})`} action={
-        <span className="text-[10px] text-fg-tertiary">Auto-discovered via discover_tools</span>
+        <span className="text-[10px] text-fg-tertiary">Assigned + built-in skills</span>
       }>
         {agent.skills.length === 0 ? <Empty text="No skills configured" /> : (
           <div className="space-y-2">

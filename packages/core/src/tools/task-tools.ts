@@ -113,7 +113,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Create a new task in the team task board.',
         'Tasks MUST reference an approved requirement_id.',
         'If you want to propose new work, use requirement_propose instead.',
-        'IMPORTANT: assigned_agent_id and reviewer_agent_id are REQUIRED — every task must have an assignee and an independent reviewer. Call team_list first to pick both.',
+        'IMPORTANT: assigned_agent_id and reviewer_agent_id are REQUIRED — every task must have an assignee and an independent reviewer. Call agent_list_colleagues or team_list first to pick both.',
         'Use subtask_create to break a task into smaller steps.',
       ].join(' '),
       inputSchema: {
@@ -135,12 +135,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           },
           assigned_agent_id: {
             type: 'string',
-            description: 'Agent ID to assign this task to. REQUIRED — every task must have a responsible person. Call team_list first to find the right agent by role/skills.',
+            description: 'Agent ID to assign this task to. REQUIRED — every task must have a responsible person. Call agent_list_colleagues (or team_list for managers) to find the right agent.',
           },
           reviewer_agent_id: {
             type: 'string',
             description:
-              'Agent ID who will review deliverables when execution finishes (must differ from the assignee when both are agents). Call team_list to choose a reviewer (often the delegator or team manager).',
+              'Agent ID who will review deliverables when execution finishes (must differ from the assignee when both are agents). Call agent_list_colleagues (or team_list for managers) to choose a reviewer.',
           },
           project_id: {
             type: 'string',

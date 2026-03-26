@@ -23,8 +23,8 @@ export class WebUIAdapter implements CommAdapter {
     this.port = (config['port'] as number) ?? 8058;
 
     this.server = createServer((req, res) => this.handleRequest(req, res));
-    this.server.listen(this.port, () => {
-      log.info(`WebUI comm server listening on port ${this.port}`);
+    this.server.listen(this.port, '0.0.0.0', () => {
+      log.info(`WebUI comm server listening on 0.0.0.0:${this.port}`);
     });
 
     this.connected = true;

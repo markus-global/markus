@@ -8,7 +8,7 @@ import { navBus } from '../navBus.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import {
   NewTeamModal, AddHumanModal, AddExistingModal,
-  OpenClawImportModal, BusyAgentModal,
+  OpenClawImportModal,
 } from './TeamModals.tsx';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,7 +66,6 @@ export function ChatTeamSidebar({
   const [showAddHuman, setShowAddHuman] = useState<{ teamId?: string } | null>(null);
   const [showAddExisting, setShowAddExisting] = useState<string | null>(null);
   const [showOpenClaw, setShowOpenClaw] = useState(false);
-  const [busyAgent, setBusyAgent] = useState<{ id: string; name: string; taskId: string } | null>(null);
 
   // Context menus
   const [teamMenu, setTeamMenu] = useState<{ teamId: string; x: number; y: number } | null>(null);
@@ -904,18 +903,6 @@ export function ChatTeamSidebar({
             setShowOpenClaw(false);
             onRefreshAgents();
             onRefreshTeams();
-          }}
-        />
-      )}
-
-      {busyAgent && (
-        <BusyAgentModal
-          agentName={busyAgent.name}
-          taskId={busyAgent.taskId}
-          onClose={() => setBusyAgent(null)}
-          onGoToTask={() => {
-            setBusyAgent(null);
-            navBus.navigate('tasks', { openTask: busyAgent.taskId });
           }}
         />
       )}

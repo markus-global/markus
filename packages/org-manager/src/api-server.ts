@@ -723,8 +723,8 @@ export class APIServer {
   start(): void {
     this.server = createServer((req, res) => this.handleRequest(req, res));
     this.ws.attach(this.server);
-    this.server.listen(this.port, () => {
-      log.info(`API server listening on port ${this.port} (HTTP + WebSocket)`);
+    this.server.listen(this.port, '0.0.0.0', () => {
+      log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
     });
   }
 
@@ -1787,6 +1787,15 @@ export class APIServer {
         this.json(res, 400, { error: 'assignedAgentId and reviewerAgentId are required' });
         return;
       }
+      const agentMgr = this.orgService.getAgentManager();
+      if (!agentMgr.hasAgent(assignedAgentId)) {
+        this.json(res, 400, { error: `Assigned agent not found: ${assignedAgentId}` });
+        return;
+      }
+      if (!agentMgr.hasAgent(reviewerAgentId)) {
+        this.json(res, 400, { error: `Reviewer agent not found: ${reviewerAgentId}` });
+        return;
+      }
       const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
       const task = this.taskService.createTask({
         orgId: (body['orgId'] as string) ?? 'default',
@@ -2673,7 +2682,7 @@ export class APIServer {
           state,
           activeTaskCount: state.activeTaskCount,
           activeTaskIds: state.activeTaskIds,
-          skills: agent.config.skills,
+          skills: agent.getActiveSkillNames(),
           proficiency: agent.getSkillProficiency(),
           config: {
             llmConfig: agent.config.llmConfig,

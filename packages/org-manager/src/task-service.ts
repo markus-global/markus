@@ -611,19 +611,6 @@ export class TaskService {
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
-    // Enforce single-task constraint: one task at a time per agent
-    const agentState = agent.getState();
-    if (agentState.status === 'working' && agentState.activeTaskIds?.length) {
-      const otherTaskId = agentState.activeTaskIds.find(id => id !== taskId);
-      if (otherTaskId) {
-        const otherTask = this.tasks.get(otherTaskId);
-        throw new Error(
-          `Agent "${agent.config.name}" is already working on "${otherTask?.title ?? otherTaskId}". ` +
-            `An agent can only execute one task at a time.`
-        );
-      }
-    }
-
     // Cancel any currently running execution for this task before starting a new one
     const existing = this.taskCancelTokens.get(taskId);
     if (existing) existing.cancelled = true;
@@ -799,6 +786,36 @@ export class TaskService {
     const ws = this.ws;
     const executionRound = task.executionRound ?? 1;
     const isRetry = _retryAttempt > 0;
+
+    // Ensure the task row exists in DB before writing any child rows (task_logs).
+    // createTask() fire-and-forgets the DB insert which can silently fail (e.g. FK
+    // on assignedAgentId), leaving logs unable to reference the task.
+    if (this.taskRepo) {
+      try {
+        await this.taskRepo.ensureExists({
+          id: task.id,
+          orgId: task.orgId,
+          title: task.title,
+          description: task.description,
+          priority: task.priority,
+          status: task.status,
+          assignedAgentId: task.assignedAgentId,
+          reviewerAgentId: task.reviewerAgentId,
+          executionRound: task.executionRound,
+          requirementId: task.requirementId,
+          projectId: task.projectId,
+          iterationId: task.iterationId,
+          createdBy: task.createdBy,
+          blockedBy: task.blockedBy,
+          dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
+          taskType: task.taskType,
+          scheduleConfig: task.scheduleConfig as Record<string, unknown> | undefined,
+          subtasks: task.subtasks,
+        });
+      } catch (err) {
+        log.warn('Failed to ensure task exists in DB before execution', { taskId, error: String(err) });
+      }
+    }
 
     // Continuous seq: load max seq from existing logs to avoid collisions across retries
     let seq = 0;
@@ -1134,6 +1151,22 @@ export class TaskService {
   }
 
   createTask(request: CreateTaskRequest): Task {
+    // ── Validate assignedAgentId / reviewerAgentId exist ──
+    if (!request.assignedAgentId) {
+      throw new Error('Task creation failed: assignedAgentId is required');
+    }
+    if (!request.reviewerAgentId) {
+      throw new Error('Task creation failed: reviewerAgentId is required');
+    }
+    if (this.agentManager) {
+      if (!this.agentManager.hasAgent(request.assignedAgentId)) {
+        throw new Error(`Task creation failed: assigned agent not found: ${request.assignedAgentId}`);
+      }
+      if (!this.agentManager.hasAgent(request.reviewerAgentId)) {
+        throw new Error(`Task creation failed: reviewer agent not found: ${request.reviewerAgentId}`);
+      }
+    }
+
     // ── Governance: check task limits ──
     const limitCheck = this.checkTaskLimits(request);
     if (!limitCheck.allowed) {
@@ -2788,6 +2821,34 @@ export class TaskService {
     ].join('\n');
 
     const taskDescription = `${freshRetryHeader}${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
+
+    // Ensure task row exists in DB before writing child rows (task_logs)
+    if (this.taskRepo) {
+      try {
+        await this.taskRepo.ensureExists({
+          id: task.id,
+          orgId: task.orgId,
+          title: task.title,
+          description: task.description,
+          priority: task.priority,
+          status: task.status,
+          assignedAgentId: task.assignedAgentId,
+          reviewerAgentId: task.reviewerAgentId,
+          executionRound: task.executionRound,
+          requirementId: task.requirementId,
+          projectId: task.projectId,
+          iterationId: task.iterationId,
+          createdBy: task.createdBy,
+          blockedBy: task.blockedBy,
+          dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
+          taskType: task.taskType,
+          scheduleConfig: task.scheduleConfig as Record<string, unknown> | undefined,
+          subtasks: task.subtasks,
+        });
+      } catch (err) {
+        log.warn('Failed to ensure task exists in DB before fresh retry', { taskId, error: String(err) });
+      }
+    }
 
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;

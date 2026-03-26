@@ -800,6 +800,14 @@ export class Agent {
     return this.activatedSkillInstructions.has(skillName);
   }
 
+  getActiveSkillNames(): string[] {
+    const names = new Set(this.config.skills);
+    for (const name of this.activatedSkillInstructions.keys()) {
+      names.add(name);
+    }
+    return [...names];
+  }
+
   setSkillMcpActivator(
     cb: (
       skillName: string,
@@ -2767,13 +2775,6 @@ export class Agent {
     agentId: string;
     triggeredAt: string;
   }): Promise<void> {
-    if (this.state.status === 'working' || this.activeTasks.size > 0) {
-      log.debug('Skipping heartbeat — agent is busy', {
-        activeTasks: this.activeTasks.size,
-      });
-      return;
-    }
-
     log.info('Processing heartbeat check-in');
     const activityId = this.startActivity('heartbeat', 'Heartbeat check-in', {});
 

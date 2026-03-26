@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { Database } from '../db.js';
 import { tasks } from '../schema.js';
 
@@ -149,6 +149,64 @@ export class TaskRepo {
 
   async updateBlockedBy(id: string, blockedBy: string[]) {
     await this.db.update(tasks).set({ blockedBy, updatedAt: new Date() }).where(eq(tasks.id, id));
+  }
+
+  /**
+   * Upsert: guarantee the task row exists in DB before writing child rows
+   * (task_logs, task_comments) that reference it via FK.
+   */
+  async ensureExists(data: {
+    id: string;
+    orgId: string;
+    title: string;
+    description?: string;
+    priority?: TaskPriority;
+    status?: TaskStatus;
+    assignedAgentId: string;
+    reviewerAgentId: string;
+    executionRound?: number;
+    requirementId?: string;
+    projectId?: string;
+    iterationId?: string;
+    createdBy?: string;
+    blockedBy?: string[];
+    dueAt?: Date;
+    taskType?: string;
+    scheduleConfig?: Record<string, unknown>;
+    subtasks?: unknown[];
+  }) {
+    await this.db
+      .insert(tasks)
+      .values({
+        id: data.id,
+        orgId: data.orgId,
+        title: data.title,
+        description: data.description ?? '',
+        priority: data.priority ?? 'medium',
+        status: data.status ?? 'pending_approval',
+        assignedAgentId: data.assignedAgentId,
+        reviewerAgentId: data.reviewerAgentId,
+        executionRound: data.executionRound ?? 1,
+        requirementId: data.requirementId ?? null,
+        projectId: data.projectId ?? null,
+        iterationId: data.iterationId ?? null,
+        createdBy: data.createdBy ?? null,
+        blockedBy: data.blockedBy ?? [],
+        dueAt: data.dueAt ?? null,
+        taskType: data.taskType ?? 'standard',
+        scheduleConfig: data.scheduleConfig ?? null,
+        subtasks: data.subtasks ?? [],
+      })
+      .onConflictDoUpdate({
+        target: tasks.id,
+        set: {
+          title: sql`excluded.title`,
+          status: sql`excluded.status`,
+          assignedAgentId: sql`excluded.assigned_agent_id`,
+          executionRound: sql`excluded.execution_round`,
+          updatedAt: new Date(),
+        },
+      });
   }
 
   async delete(id: string) {

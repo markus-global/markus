@@ -899,6 +899,62 @@ export class SqliteTaskRepo {
       .run(toJson(subtasks), now(), id);
   }
 
+  async ensureExists(data: {
+    id: string;
+    orgId: string;
+    title: string;
+    description?: string;
+    priority?: string;
+    status?: string;
+    assignedAgentId: string;
+    reviewerAgentId: string;
+    executionRound?: number;
+    requirementId?: string;
+    projectId?: string;
+    iterationId?: string;
+    createdBy?: string;
+    blockedBy?: string[];
+    dueAt?: Date;
+    taskType?: string;
+    scheduleConfig?: Record<string, unknown>;
+    subtasks?: unknown[];
+  }) {
+    const ts = now();
+    this.db
+      .prepare(
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         status = excluded.status,
+         assigned_agent_id = excluded.assigned_agent_id,
+         execution_round = excluded.execution_round,
+         updated_at = excluded.updated_at`
+      )
+      .run(
+        data.id,
+        data.orgId,
+        data.title,
+        data.description ?? '',
+        data.status ?? 'pending_approval',
+        data.priority ?? 'medium',
+        data.assignedAgentId,
+        data.reviewerAgentId,
+        data.executionRound ?? 1,
+        toJson(data.subtasks ?? []),
+        data.requirementId ?? null,
+        toJson(data.blockedBy ?? []),
+        data.projectId ?? null,
+        data.iterationId ?? null,
+        data.createdBy ?? null,
+        data.dueAt?.toISOString() ?? null,
+        data.taskType ?? 'standard',
+        data.scheduleConfig ? toJson(data.scheduleConfig) : null,
+        ts,
+        ts
+      );
+  }
+
   async delete(id: string) {
     this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
   }

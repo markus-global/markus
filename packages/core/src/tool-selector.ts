@@ -29,7 +29,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'code',
     keywords: ['code', 'search', 'file', 'read', 'write', 'edit', 'project', 'structure', 'directory',
       '代码', '文件', '搜索', '目录', '编辑', '读取', '写入', '项目结构'],
-    toolNames: ['file_read', 'file_write', 'file_edit', 'grep', 'glob', 'list_directory', 'patch_apply'],
+    toolNames: ['file_read', 'file_write', 'file_edit', 'grep_search', 'glob_find', 'list_directory', 'apply_patch'],
   },
   {
     name: 'browser',
@@ -51,7 +51,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'manager',
     keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route',
       '团队', '管理', '委派', '分配', '路由'],
-    toolNames: ['team_list', 'team_status', 'delegate_message', 'create_task'],
+    toolNames: ['team_list', 'team_status', 'delegate_message'],
   },
   {
     name: 'todo',
