@@ -143,6 +143,26 @@ If you encounter a tool call timeout, inform the user and suggest these steps (i
 - **Form data**: When filling forms with sensitive data (passwords, payment info), confirm
   with the user before proceeding.
 
+## Multi-agent browser usage
+
+This skill uses **per-agent isolation**: each agent gets its own MCP server process with
+independent page state. Multiple agents can use Chrome simultaneously without interfering
+with each other's navigation or interactions.
+
+**How it works:**
+- Your browser tool calls are routed to your own dedicated MCP process.
+- You only see tabs that you created; other agents' tabs are hidden from `list_pages`.
+- You cannot `select_page` or `close_page` on tabs owned by another agent.
+
+**Best practices for concurrent browser work:**
+1. Always use `new_page` to open a dedicated tab for your task instead of reusing
+   pre-existing user tabs.
+2. Close your tabs with `close_page` when the task is complete to avoid tab clutter.
+3. Be aware that **cookies and login sessions are shared** across all agents (same
+   Chrome instance). If one agent logs out of a site, other agents lose that session too.
+4. Avoid actions that affect global browser state (clearing cookies, changing settings)
+   unless the task explicitly requires it.
+
 ## Common workflows
 
 ### Web testing

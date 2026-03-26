@@ -52,6 +52,8 @@ export interface SkillSection {
   skillFile: string;
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
   mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  /** MCP server isolation mode. 'per-agent' spawns a separate MCP process per agent (needed for stateful tools like browser). */
+  isolation?: 'shared' | 'per-agent';
   /** If true, instructions are auto-injected into every agent (not just available for discovery) */
   alwaysOn?: boolean;
 }
@@ -165,6 +167,7 @@ export function buildManifest(
       skillFile: (skillSection?.skillFile as string) ?? (raw.skillFile as string) ?? 'SKILL.md',
       requiredPermissions: (skillSection?.requiredPermissions ?? raw.requiredPermissions) as SkillSection['requiredPermissions'],
       mcpServers: (skillSection?.mcpServers ?? raw.mcpServers) as SkillSection['mcpServers'],
+      isolation: (skillSection?.isolation ?? raw.isolation) as SkillSection['isolation'],
     };
     // Pull version/author from raw if present
     if (!base.version || base.version === '1.0.0') {

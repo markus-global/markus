@@ -238,6 +238,21 @@ export class Agent {
       ).catch(e => log.error('Heartbeat handler failed', { error: String(e) }));
     });
 
+    // Auto-reload role when agent modifies its own ROLE.md
+    const roleFilePath = join(this.dataDir, 'role', 'ROLE.md');
+    this.toolHooks.register({
+      name: 'role-auto-reload',
+      after: async (ctx) => {
+        if ((ctx.toolName === 'file_edit' || ctx.toolName === 'file_write') && ctx.success) {
+          const targetPath = (ctx.arguments['path'] ?? ctx.arguments['filePath'] ?? '') as string;
+          if (targetPath === roleFilePath || targetPath.endsWith('/role/ROLE.md')) {
+            log.info('Agent modified its own ROLE.md — reloading role definition');
+            this.reloadRole();
+          }
+        }
+      },
+    });
+
     log.info(`Agent created: ${this.id}`, { name: this.config.name, role: this.role.name });
   }
 
@@ -529,6 +544,21 @@ export class Agent {
 
   getActiveTasks(): Array<{ taskId: string }> {
     return Array.from(this.activeTasks).map(taskId => ({ taskId }));
+  }
+
+  /** Returns the task ID currently being executed (set at the start of executeTask). */
+  getCurrentTaskId(): string | undefined {
+    return this.currentTaskId;
+  }
+
+  /**
+   * Externally remove a task from the activeTasks set.
+   * Used when a task reaches a terminal state outside of the executeTask finally block
+   * (e.g. reviewer completes the task while the execution is already winding down).
+   */
+  removeActiveTask(taskId: string): void {
+    this.activeTasks.delete(taskId);
+    this.activeTaskGen.delete(taskId);
   }
 
   /**
@@ -1183,6 +1213,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
@@ -1310,7 +1341,7 @@ export class Agent {
                   action: tc.name,
                   durationMs: Date.now() - toolStart,
                   success: !isToolError,
-                  detail: JSON.stringify(tc.arguments).slice(0, 200),
+                  detail: JSON.stringify(tc.arguments),
                 });
                 if (currentActId) {
                   this.emitActivityLog(currentActId, 'tool_end', tc.name, {
@@ -1325,7 +1356,7 @@ export class Agent {
                     tool: tc.name,
                     status: isToolError ? 'error' : 'done',
                     arguments: tc.arguments,
-                    result: result.slice(0, 500),
+                    result,
                     durationMs: Date.now() - toolStart,
                   });
                 }
@@ -1337,7 +1368,7 @@ export class Agent {
                   action: tc.name,
                   durationMs: Date.now() - toolStart,
                   success: false,
-                  detail: String(toolErr).slice(0, 200),
+                  detail: String(toolErr),
                 });
                 if (currentActId) {
                   this.emitActivityLog(currentActId, 'error', `Tool ${tc.name} failed: ${String(toolErr)}`);
@@ -1347,7 +1378,7 @@ export class Agent {
                     tool: tc.name,
                     status: 'error',
                     arguments: tc.arguments,
-                    result: String(toolErr).slice(0, 500),
+                    result: String(toolErr),
                     durationMs: Date.now() - toolStart,
                   });
                 }
@@ -1476,12 +1507,12 @@ export class Agent {
         } catch { /* avoid masking the original error */ }
       }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
+      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
       this.emitAudit({
         type: 'error',
         action: 'handle_message',
         success: false,
-        detail: String(error).slice(0, 200),
+        detail: String(error),
       });
       log.error('Failed to handle message', { error: String(error) });
       throw error;
@@ -1545,6 +1576,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
@@ -1658,9 +1690,9 @@ export class Agent {
                   action: tc.name,
                   durationMs,
                   success: !isToolError,
-                  detail: JSON.stringify(tc.arguments).slice(0, 200),
+                  detail: JSON.stringify(tc.arguments),
                 });
-                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError, arguments: tc.arguments, result: result.slice(0, 2000), durationMs });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError, arguments: tc.arguments, result, durationMs });
                 return { toolCallId: tc.id, content: result };
               } catch (toolErr) {
                 const durationMs = Date.now() - toolStart;
@@ -1669,9 +1701,9 @@ export class Agent {
                   action: tc.name,
                   durationMs,
                   success: false,
-                  detail: String(toolErr).slice(0, 200),
+                  detail: String(toolErr),
                 });
-                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: String(toolErr).slice(0, 500), durationMs });
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: String(toolErr), durationMs });
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
               }
             })
@@ -1770,12 +1802,12 @@ export class Agent {
         } catch { /* avoid masking the original error */ }
       }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error).slice(0, 500));
+      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
       this.emitAudit({
         type: 'error',
         action: 'handle_message_stream',
         success: false,
-        detail: String(error).slice(0, 200),
+        detail: String(error),
       });
       log.error('Failed to handle stream message', { error: String(error) });
       throw error;
@@ -2046,6 +2078,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
@@ -2234,11 +2267,11 @@ export class Agent {
         type: 'error',
         action: 'execute_task',
         success: false,
-        detail: String(error).slice(0, 200),
+        detail: String(error),
       });
       log.error('Task execution failed', { taskId, agentId: this.id, error: String(error) });
       this.eventBus.emit('task:failed', { taskId, agentId: this.id, error: String(error) });
-      taskFailed = String(error).slice(0, 500);
+      taskFailed = String(error);
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
@@ -2848,16 +2881,16 @@ export class Agent {
     const selfEvolutionSection = [
       '',
       '## Self-Evolution Reflection',
-      'Before finishing, briefly reflect on your recent work since last heartbeat:',
-      '- **What did I accomplish?** (tasks completed, reviews done, problems solved)',
-      '- **What lessons did I learn?** (gotchas, better approaches, tool tips)',
-      '- **What best practices should I remember?** (patterns that worked well)',
-      '- **What mistakes should I avoid?** (things that failed or wasted time)',
+      'Before finishing, briefly reflect on your recent work since the last heartbeat.',
+      'Follow your **self-evolution** skill instructions. Check each layer:',
+      '',
+      '1. **Lessons** — Did anything go wrong or get corrected? Save with `memory_save` using `tags: ["lesson", ...]` and the `[LESSON]` format.',
+      '2. **Tool preferences** — Did you discover a better tool or parameter for a task? Save with `tags: ["lesson", "tool-preference", ...]` and the `[TOOL-PREF]` format.',
+      '3. **SOPs** — Did you repeat a multi-step workflow that should be standardized? Update `memory_update_longterm({ section: "sops", ... })`.',
+      '4. **Role evolution** — Do you have 3+ related lessons pointing to a fundamental behavioral change? If so, consider updating your ROLE.md.',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',
-      'If you have insights, call `memory_save` with key `evolution:lessons` to append them to your long-term memory.',
-      'Format: `[YYYY-MM-DD] lesson-text` — one line per insight, dated for tracking.',
     ].join('\n');
 
     const prompt = [
@@ -2882,9 +2915,10 @@ export class Agent {
 
     const baseTools = [
       'task_list', 'task_update', 'task_get', 'task_note',
-      'file_read', 'agent_send_message',
+      'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list',
-      'memory_save', 'memory_search', 'discover_tools', 'send_user_message',
+      'memory_save', 'memory_search', 'memory_update_longterm',
+      'discover_tools', 'send_user_message',
     ];
     if (isManager) {
       baseTools.push(

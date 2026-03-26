@@ -145,7 +145,7 @@ export function createTypeScriptChecker(): ReviewChecker {
         name: 'typescript',
         status: 'fail',
         message: 'TypeScript compilation errors',
-        details: String(output).slice(0, 2000),
+        details: String(output),
       };
     }
   };
@@ -175,7 +175,7 @@ export function createTestChecker(): ReviewChecker {
         name: 'tests',
         status: 'fail',
         message: 'Test failures detected',
-        details: String(output).slice(0, 2000),
+        details: String(output),
       };
     }
   };
@@ -208,7 +208,7 @@ export function createLintChecker(): ReviewChecker {
         name: 'lint',
         status: 'fail',
         message: 'Lint errors found',
-        details: String(output).slice(0, 2000),
+        details: String(output),
       };
     }
   };

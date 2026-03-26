@@ -120,7 +120,7 @@ export const auditLogHook: ToolHook = {
     if (sideEffectTools.includes(ctx.toolName)) {
       log.info(`[audit] ${ctx.toolName}`, {
         agentId: ctx.agentId,
-        args: JSON.stringify(ctx.arguments).slice(0, 300),
+        args: JSON.stringify(ctx.arguments),
         success: ctx.success,
         durationMs: ctx.durationMs,
       });

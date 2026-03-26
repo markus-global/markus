@@ -4,6 +4,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
+import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { navBus } from '../navBus.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
@@ -1937,9 +1938,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   // Create modals
   const [showCreateProject, setShowCreateProject] = useState(false);
-  const [newProjName, setNewProjName] = useState('');
-  const [newProjDesc, setNewProjDesc] = useState('');
-  const [newProjRepo, setNewProjRepo] = useState('');
 
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
@@ -2151,15 +2149,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile]);
 
-  const handleCreateProject = async () => {
-    if (!newProjName.trim()) return;
-    try {
-      const repos = newProjRepo.trim() ? [{ url: newProjRepo, defaultBranch: 'main' }] : [];
-      await api.projects.create({ name: newProjName, description: newProjDesc, orgId: authUser?.orgId ?? 'default', repositories: repos } as Partial<ProjectInfo>);
-      setShowCreateProject(false); setNewProjName(''); setNewProjDesc(''); setNewProjRepo('');
-      msg('Project created');
-      refreshProjects();
-    } catch (e) { msg(`Error: ${e}`); }
+  const handleProjectCreated = () => {
+    setShowCreateProject(false);
+    msg('Project created');
+    refreshProjects();
   };
 
   const handleDeleteProject = async (id: string) => {
@@ -2447,19 +2440,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           })}
         </div>
 
-        {/* Create project modal */}
         {showCreateProject && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateProject(false)}>
-            <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[90vw] max-w-md space-y-4" onClick={e => e.stopPropagation()}>
-              <h3 className="text-base font-semibold">New Project</h3>
-              <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="Project name" className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm focus:border-brand-500 outline-none" />
-              <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="Description" rows={3} className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm focus:border-brand-500 outline-none resize-none" />
-              <div className="flex justify-end gap-3">
-                <button onClick={() => setShowCreateProject(false)} className="text-sm text-fg-tertiary py-2">Cancel</button>
-                <button onClick={handleCreateProject} disabled={!newProjName.trim()} className="bg-brand-600 hover:bg-brand-500 text-white text-sm px-4 py-2 rounded-lg disabled:opacity-50">Create</button>
-              </div>
-            </div>
-          </div>
+          <NewProjectModal
+            orgId={authUser?.orgId}
+            onCreated={handleProjectCreated}
+            onClose={() => setShowCreateProject(false)}
+          />
         )}
       </div>
     );
@@ -2792,32 +2778,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         )}
       </div>
 
-      {/* ── Create Project Modal ── */}
       {showCreateProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateProject(false)}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary">New Project</h3>
-            <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Name</label>
-              <input value={newProjName} onChange={e => setNewProjName(e.target.value)} placeholder="e.g. My App"
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 outline-none" autoFocus />
-            </div>
-            <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Description</label>
-              <textarea value={newProjDesc} onChange={e => setNewProjDesc(e.target.value)} placeholder="What is this project about? (optional)"
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary h-20 resize-none focus:border-brand-500 outline-none" />
-            </div>
-            <div>
-              <label className="block text-sm text-fg-secondary mb-1.5">Repository URL</label>
-              <input value={newProjRepo} onChange={e => setNewProjRepo(e.target.value)} placeholder="https://github.com/... (optional)"
-                className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 outline-none" />
-            </div>
-            <div className="flex justify-end gap-3 pt-1">
-              <button onClick={() => setShowCreateProject(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
-              <button onClick={() => void handleCreateProject()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
-            </div>
-          </div>
-        </div>
+        <NewProjectModal
+          orgId={authUser?.orgId}
+          onCreated={handleProjectCreated}
+          onClose={() => setShowCreateProject(false)}
+        />
       )}
 
       {/* ── Create Task Modal ── */}

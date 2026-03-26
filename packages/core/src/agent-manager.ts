@@ -18,6 +18,7 @@ import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
+import { BrowserSessionManager } from './tools/browser-session.js';
 import { createManagerTools } from './tools/manager.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
@@ -35,6 +36,45 @@ import { mkdirSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const log = createLogger('agent-manager');
+
+/**
+ * Resolve the task ID for submitForReview.
+ * Prefers the agent's currentTaskId (set by executeTask) over blindly picking
+ * activeTasks[0], which may be stale or belong to a different concurrent execution.
+ * Falls back to the first active task whose status is still 'in_progress'.
+ */
+function resolveCurrentTaskId(
+  agentObj: Agent | undefined,
+  ts: { getTask(id: string): { status: string } | undefined },
+  agentId: string,
+): string {
+  const activeTasks = agentObj?.getActiveTasks?.() ?? [];
+  if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
+
+  const currentId = agentObj?.getCurrentTaskId?.();
+  if (currentId && activeTasks.some(t => t.taskId === currentId)) {
+    const currentTask = ts.getTask(currentId);
+    if (currentTask?.status === 'in_progress') return currentId;
+    log.warn('Agent currentTaskId is no longer in_progress, searching activeTasks for a valid candidate', {
+      agentId, currentTaskId: currentId, actualStatus: currentTask?.status,
+    });
+  }
+
+  for (const t of activeTasks) {
+    const task = ts.getTask(t.taskId);
+    if (task?.status === 'in_progress') return t.taskId;
+  }
+
+  // Last resort: clean up stale entries and throw
+  for (const t of activeTasks) {
+    const task = ts.getTask(t.taskId);
+    if (task && ['completed', 'failed', 'cancelled', 'archived'].includes(task.status)) {
+      log.warn('Removing stale task from agent activeTasks', { agentId, taskId: t.taskId, status: task.status });
+      agentObj?.removeActiveTask(t.taskId);
+    }
+  }
+  throw new Error(`No in_progress task found for agent ${agentId} — cannot submit for review. Active task IDs: [${activeTasks.map(t => t.taskId).join(', ')}]`);
+}
 
 /** Minimal interface that AgentManager needs from TaskService */
 export interface RequirementServiceBridge {
@@ -193,6 +233,7 @@ export class AgentManager {
   private dataDir: string;
   private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
+  private browserSessionManager: BrowserSessionManager;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -356,6 +397,7 @@ export class AgentManager {
     this.sharedDataDir = options.sharedDataDir;
     this.eventBus = options.eventBus ?? new EventBus();
     this.mcpManager = new MCPClientManager();
+    this.browserSessionManager = new BrowserSessionManager();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
     this.skillRegistry = options.skillRegistry;
@@ -598,10 +640,18 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
+          const isolated = skill.manifest.isolation === 'per-agent';
           for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
-              await this.mcpManager.connectServer(serverName, serverConfig);
-              const mcpTools = this.mcpManager.getToolHandlers(serverName);
+              let mcpTools: AgentToolHandler[];
+              if (isolated) {
+                await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
+                mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
+                mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+              } else {
+                await this.mcpManager.connectServer(serverName, serverConfig);
+                mcpTools = this.mcpManager.getToolHandlers(serverName);
+              }
               const toolNames: string[] = [];
               for (const tool of mcpTools) {
                 agent.registerTool(tool);
@@ -609,7 +659,7 @@ export class AgentManager {
               }
               agent.activateTools(toolNames);
               log.info(`Skill ${skillName} MCP server ${serverName} connected for agent ${id}`, {
-                toolCount: mcpTools.length,
+                toolCount: mcpTools.length, isolated,
               });
             } catch (error) {
               log.warn(`Failed to connect skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -622,11 +672,21 @@ export class AgentManager {
     }
 
     // Set skill MCP activator callback for runtime activation via discover_tools
-    agent.setSkillMcpActivator(async (_skillName, mcpServers) => {
-      const tools: AgentToolHandler[] = [];
+    agent.setSkillMcpActivator(async (skillName, mcpServers) => {
+      let tools: AgentToolHandler[] = [];
+      const skill = this.skillRegistry?.get(skillName);
+      const isolated = skill?.manifest.isolation === 'per-agent';
       for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
-        await this.mcpManager.connectServer(serverName, srvConfig);
-        tools.push(...this.mcpManager.getToolHandlers(serverName));
+        if (isolated) {
+          await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+          tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
+        } else {
+          await this.mcpManager.connectServer(serverName, srvConfig);
+          tools.push(...this.mcpManager.getToolHandlers(serverName));
+        }
+      }
+      if (isolated) {
+        tools = this.browserSessionManager.wrapToolHandlers(tools, id);
       }
       return tools;
     });
@@ -788,10 +848,7 @@ export class AgentManager {
           return task?.subtasks ?? [];
         },
         submitForReview: async (summary, inputDeliverables, knownIssues) => {
-          const agentObj = this.agents.get(id);
-          const activeTasks = agentObj?.getActiveTasks?.() ?? [];
-          if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
-          const taskId = activeTasks[0].taskId;
+          const taskId = resolveCurrentTaskId(this.agents.get(id), ts, id);
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
@@ -1141,10 +1198,18 @@ export class AgentManager {
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
+          const isolated = skill.manifest.isolation === 'per-agent';
           for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
-              await this.mcpManager.connectServer(serverName, serverConfig);
-              const mcpTools = this.mcpManager.getToolHandlers(serverName);
+              let mcpTools: AgentToolHandler[];
+              if (isolated) {
+                await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
+                mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
+                mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+              } else {
+                await this.mcpManager.connectServer(serverName, serverConfig);
+                mcpTools = this.mcpManager.getToolHandlers(serverName);
+              }
               const toolNames: string[] = [];
               for (const tool of mcpTools) {
                 agent.registerTool(tool);
@@ -1152,7 +1217,7 @@ export class AgentManager {
               }
               agent.activateTools(toolNames);
               log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
-                toolCount: mcpTools.length,
+                toolCount: mcpTools.length, isolated,
               });
             } catch (error) {
               log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -1165,11 +1230,21 @@ export class AgentManager {
     }
 
     // Set skill MCP activator callback for runtime activation via discover_tools
-    agent.setSkillMcpActivator(async (_skillName, mcpServers) => {
-      const tools: AgentToolHandler[] = [];
+    agent.setSkillMcpActivator(async (skillName, mcpServers) => {
+      let tools: AgentToolHandler[] = [];
+      const skill = this.skillRegistry?.get(skillName);
+      const isolated = skill?.manifest.isolation === 'per-agent';
       for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
-        await this.mcpManager.connectServer(serverName, srvConfig);
-        tools.push(...this.mcpManager.getToolHandlers(serverName));
+        if (isolated) {
+          await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
+          tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
+        } else {
+          await this.mcpManager.connectServer(serverName, srvConfig);
+          tools.push(...this.mcpManager.getToolHandlers(serverName));
+        }
+      }
+      if (isolated) {
+        tools = this.browserSessionManager.wrapToolHandlers(tools, id);
       }
       return tools;
     });
@@ -1294,10 +1369,7 @@ export class AgentManager {
           return task?.subtasks ?? [];
         },
         submitForReview: async (summary, inputDeliverables, knownIssues) => {
-          const agentObj = this.agents.get(id);
-          const activeTasks = agentObj?.getActiveTasks?.() ?? [];
-          if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
-          const taskId = activeTasks[0].taskId;
+          const taskId = resolveCurrentTaskId(this.agents.get(id), ts, id);
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
@@ -1520,6 +1592,8 @@ export class AgentManager {
     const agent = this.agents.get(agentId);
     if (agent) {
       try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
+      this.browserSessionManager.cleanupAgent(agentId);
+      await this.mcpManager.disconnectAllForScope(agentId);
       this.a2aBus.unregisterAgent(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);

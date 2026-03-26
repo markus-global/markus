@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import type { PageId } from '../types.ts';
-import { api, type AuthUser, type ProjectInfo, type TeamInfo } from '../api.ts';
+import { api, type AuthUser, type ProjectInfo } from '../api.ts';
+import { NewProjectModal } from './NewProjectModal.tsx';
 
 
 interface Props {
@@ -69,9 +69,6 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [showNewProject, setShowNewProject] = useState(false);
-  const [newProj, setNewProj] = useState({ name: '', description: '', iterationModel: 'kanban' as string, repoUrl: '', teamIds: [] as string[] });
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [availableTeams, setAvailableTeams] = useState<TeamInfo[]>([]);
 
   const fetchProjects = useCallback(() => {
     api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
@@ -82,31 +79,6 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
     const timer = setInterval(fetchProjects, 30000);
     return () => clearInterval(timer);
   }, [fetchProjects]);
-
-  const openNewProject = () => {
-    setNewProj({ name: '', description: '', iterationModel: 'kanban', repoUrl: '', teamIds: [] });
-    api.teams.list().then(d => setAvailableTeams(d.teams)).catch(() => {});
-    setShowNewProject(true);
-  };
-
-  const handleCreateProject = async () => {
-    if (!newProj.name.trim() || creatingProject) return;
-    setCreatingProject(true);
-    try {
-      const repos = newProj.repoUrl.trim() ? [{ url: newProj.repoUrl.trim(), defaultBranch: 'main' }] : [];
-      await api.projects.create({
-        name: newProj.name.trim(),
-        description: newProj.description.trim() || undefined,
-        iterationModel: newProj.iterationModel,
-        repositories: repos.length > 0 ? repos : undefined,
-        teamIds: newProj.teamIds.length > 0 ? newProj.teamIds : undefined,
-        orgId: 'default',
-      } as Partial<ProjectInfo>);
-      setShowNewProject(false);
-      fetchProjects();
-    } catch { /* ignore */ }
-    setCreatingProject(false);
-  };
 
   // Sync project selection from hash on mount and page changes
   useEffect(() => {
@@ -220,7 +192,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                       Projects
                     </button>
                     <button
-                      onClick={openNewProject}
+                      onClick={() => setShowNewProject(true)}
                       className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1.5 rounded hover:bg-surface-elevated shrink-0"
                       title="New Project"
                     >
@@ -230,7 +202,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   {/* Project sub-list */}
                   {projects.length === 0 && (
                     <button
-                      onClick={openNewProject}
+                      onClick={() => setShowNewProject(true)}
                       className="w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-xs text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50 rounded-lg transition-colors"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
@@ -314,101 +286,12 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
         {!collapsed && <div className="text-[10px] text-fg-muted">v{__APP_VERSION__}</div>}
       </div>
 
-      {/* New Project Modal — portaled to body for full-page centering */}
-      {showNewProject && createPortal(
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowNewProject(false)}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[520px] shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold mb-5">New Project</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Project Name *</label>
-                <input
-                  value={newProj.name}
-                  onChange={e => setNewProj(p => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. Mobile App, Website Redesign"
-                  className="input"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Description</label>
-                <textarea
-                  value={newProj.description}
-                  onChange={e => setNewProj(p => ({ ...p, description: e.target.value }))}
-                  placeholder="What is this project about?"
-                  className="input"
-                  rows={3}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Iteration Model</label>
-                  <div className="flex gap-2">
-                    {(['kanban', 'sprint'] as const).map(model => (
-                      <button
-                        key={model}
-                        onClick={() => setNewProj(p => ({ ...p, iterationModel: model }))}
-                        className={`flex-1 py-2 text-xs rounded-lg border transition-colors capitalize ${
-                          newProj.iterationModel === model
-                            ? 'border-brand-500 bg-brand-600/15 text-brand-500'
-                            : 'border-border-default text-fg-secondary hover:border-gray-600'
-                        }`}
-                      >
-                        {model === 'kanban' ? 'Kanban' : 'Sprint'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Assign Teams</label>
-                  {availableTeams.length === 0 ? (
-                    <div className="text-[11px] text-fg-tertiary py-2">No teams available</div>
-                  ) : (
-                    <div className="space-y-1 max-h-24 overflow-y-auto">
-                      {availableTeams.map(t => {
-                        const checked = newProj.teamIds.includes(t.id);
-                        return (
-                          <label key={t.id} className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer hover:text-fg-primary py-0.5">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => setNewProj(p => ({
-                                ...p,
-                                teamIds: checked ? p.teamIds.filter(id => id !== t.id) : [...p.teamIds, t.id],
-                              }))}
-                              className="accent-brand-500"
-                            />
-                            <span className="truncate">{t.name}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Repository URL</label>
-                <input
-                  value={newProj.repoUrl}
-                  onChange={e => setNewProj(p => ({ ...p, repoUrl: e.target.value }))}
-                  placeholder="https://github.com/org/repo (optional)"
-                  className="input"
-                />
-              </div>
-              <div className="flex justify-end gap-3 pt-2">
-                <button onClick={() => setShowNewProject(false)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
-                <button
-                  onClick={handleCreateProject}
-                  disabled={!newProj.name.trim() || creatingProject}
-                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white"
-                >
-                  {creatingProject ? 'Creating...' : 'Create Project'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>,
-        document.body,
+      {showNewProject && (
+        <NewProjectModal
+          orgId={authUser?.orgId}
+          onCreated={() => { setShowNewProject(false); fetchProjects(); }}
+          onClose={() => setShowNewProject(false)}
+        />
       )}
     </aside>
   );

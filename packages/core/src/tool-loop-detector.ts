@@ -66,7 +66,7 @@ export class ToolLoopDetector {
     this.history.push({
       name,
       argsHash: hashString(JSON.stringify(args)),
-      resultHash: hashString(result.slice(0, 1000)),
+      resultHash: hashString(result),
       timestamp: Date.now(),
     });
 

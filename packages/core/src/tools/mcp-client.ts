@@ -27,6 +27,12 @@ interface PendingRequest {
  * Manages connections to external MCP servers via stdio transport.
  * Each MCP server exposes tools that can be used by Agents.
  *
+ * Supports two connection modes:
+ * - **Shared** (default): one process per server name, reused across all agents.
+ * - **Scoped** (per-agent): one process per (serverName, scopeId) pair, so each
+ *   agent gets its own MCP server process. Tool names are unchanged — only the
+ *   internal routing differs.
+ *
  * Uses a per-process line buffer to correctly reassemble JSON-RPC
  * messages that may be split across multiple stdout `data` events.
  */
@@ -36,14 +42,22 @@ export class MCPClientManager {
   private pendingRequests = new Map<number, PendingRequest>();
   private stdoutBuffers = new Map<ChildProcess, string>();
 
-  async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
-    const existing = this.servers.get(name);
+  private static scopedKey(name: string, scopeId: string): string {
+    return `${name}::${scopeId}`;
+  }
+
+  /**
+   * Spawn an MCP server process, run JSON-RPC init handshake, list tools,
+   * and store under the given internal key. Shared by connect and connectScoped.
+   */
+  private async connectByKey(key: string, displayName: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
+    const existing = this.servers.get(key);
     if (existing) {
-      log.info(`MCP server ${name} already connected, reusing (${existing.tools.length} tools)`);
+      log.info(`MCP server ${displayName} already connected, reusing (${existing.tools.length} tools)`);
       return existing.tools;
     }
 
-    log.info(`Connecting to MCP server: ${name}`, { command: config.command });
+    log.info(`Connecting to MCP server: ${displayName}`, { command: config.command, key });
 
     const proc = spawn(config.command, config.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -51,15 +65,15 @@ export class MCPClientManager {
     });
 
     proc.on('error', (err) => {
-      log.error(`MCP server ${name} error`, { error: String(err) });
+      log.error(`MCP server ${displayName} error`, { error: String(err) });
     });
 
     proc.on('exit', (code) => {
-      log.info(`MCP server ${name} exited`, { code });
-      this.servers.delete(name);
+      log.info(`MCP server ${displayName} exited`, { code });
+      this.servers.delete(key);
       this.stdoutBuffers.delete(proc);
       for (const [id, req] of this.pendingRequests) {
-        req.reject(new Error(`MCP server ${name} exited (code ${code}) while awaiting ${req.method}`));
+        req.reject(new Error(`MCP server ${displayName} exited (code ${code}) while awaiting ${req.method}`));
         clearTimeout(req.timer);
         this.pendingRequests.delete(id);
       }
@@ -68,7 +82,7 @@ export class MCPClientManager {
     this.stdoutBuffers.set(proc, '');
     proc.stdout?.on('data', (data: Buffer) => this.handleStdoutData(proc, data));
 
-    const initResult = await this.sendRequest(proc, 'initialize', {
+    await this.sendRequest(proc, 'initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: 'markus', version: APP_VERSION },
@@ -79,38 +93,72 @@ export class MCPClientManager {
     const toolsResult = await this.sendRequest(proc, 'tools/list', {});
     const tools = (toolsResult as { tools?: MCPToolDescriptor[] })?.tools ?? [];
 
-    this.servers.set(name, { process: proc, tools });
-    log.info(`MCP server ${name} connected with ${tools.length} tools`);
+    this.servers.set(key, { process: proc, tools });
+    log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
 
     return tools;
   }
 
-  async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string> {
-    const server = this.servers.get(serverName);
-    if (!server) throw new Error(`MCP server not found: ${serverName}`);
-
-    const result = await this.sendRequest(server.process, 'tools/call', {
-      name: toolName,
-      arguments: args,
-    });
-
-    const content = (result as { content?: Array<{ text?: string }> })?.content;
-    if (content?.[0]?.text) return content[0].text;
-    return JSON.stringify(result);
+  async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
+    return this.connectByKey(name, name, config);
   }
 
-  getToolHandlers(serverName: string): AgentToolHandler[] {
-    const server = this.servers.get(serverName);
+  /**
+   * Connect a scoped (per-agent) instance of the MCP server.
+   * Each (name, scopeId) pair gets its own child process.
+   */
+  async connectServerScoped(name: string, config: MCPServerConfig, scopeId: string): Promise<MCPToolDescriptor[]> {
+    const key = MCPClientManager.scopedKey(name, scopeId);
+    return this.connectByKey(key, `${name}[${scopeId}]`, config);
+  }
+
+  private callToolByKey(key: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    const server = this.servers.get(key);
+    if (!server) throw new Error(`MCP server not found: ${key}`);
+
+    return this.sendRequest(server.process, 'tools/call', {
+      name: toolName,
+      arguments: args,
+    }).then((result) => {
+      const content = (result as { content?: Array<{ text?: string }> })?.content;
+      if (content?.[0]?.text) return content[0].text;
+      return JSON.stringify(result);
+    });
+  }
+
+  async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    return this.callToolByKey(serverName, toolName, args);
+  }
+
+  async callToolScoped(serverName: string, scopeId: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+    return this.callToolByKey(MCPClientManager.scopedKey(serverName, scopeId), toolName, args);
+  }
+
+  private getToolHandlersByKey(key: string, toolPrefix: string): AgentToolHandler[] {
+    const server = this.servers.get(key);
     if (!server) return [];
 
     return server.tools.map((tool) => ({
-      name: `${serverName}__${tool.name}`,
-      description: `[MCP:${serverName}] ${tool.description}`,
+      name: `${toolPrefix}__${tool.name}`,
+      description: `[MCP:${toolPrefix}] ${tool.description}`,
       inputSchema: tool.inputSchema,
       execute: async (args: Record<string, unknown>) => {
-        return this.callTool(serverName, tool.name, args);
+        return this.callToolByKey(key, tool.name, args);
       },
     }));
+  }
+
+  getToolHandlers(serverName: string): AgentToolHandler[] {
+    return this.getToolHandlersByKey(serverName, serverName);
+  }
+
+  /**
+   * Return tool handlers for a scoped server instance.
+   * Tool names use the original serverName prefix (e.g. "chrome-devtools__navigate_page"),
+   * but execute() routes to the agent-specific MCP process.
+   */
+  getToolHandlersScoped(serverName: string, scopeId: string): AgentToolHandler[] {
+    return this.getToolHandlersByKey(MCPClientManager.scopedKey(serverName, scopeId), serverName);
   }
 
   listServers(): Array<{ name: string; toolCount: number }> {
@@ -127,6 +175,24 @@ export class MCPClientManager {
       this.servers.delete(name);
       this.stdoutBuffers.delete(server.process);
       log.info(`MCP server disconnected: ${name}`);
+    }
+  }
+
+  async disconnectServerScoped(name: string, scopeId: string): Promise<void> {
+    const key = MCPClientManager.scopedKey(name, scopeId);
+    await this.disconnectServer(key);
+  }
+
+  /**
+   * Disconnect all scoped server instances belonging to a given scope (e.g. agent).
+   * Shared (non-scoped) servers are not affected.
+   */
+  async disconnectAllForScope(scopeId: string): Promise<void> {
+    const suffix = `::${scopeId}`;
+    for (const key of [...this.servers.keys()]) {
+      if (key.endsWith(suffix)) {
+        await this.disconnectServer(key);
+      }
     }
   }
 

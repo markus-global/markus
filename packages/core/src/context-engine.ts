@@ -147,6 +147,7 @@ export class ContextEngine {
       primaryWorkspace: string;
       sharedWorkspace?: string;
     };
+    agentDataDir?: string;
     dynamicContext?: string;
     teamAnnouncements?: string;
     teamNorms?: string;
@@ -215,6 +216,9 @@ export class ContextEngine {
       if (opts.agentWorkspace?.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
+      if (opts.agentDataDir) {
+        parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+      }
       parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
     } else if (opts.agentWorkspace) {
       parts.push('\n## Your Workspace');
@@ -222,8 +226,15 @@ export class ContextEngine {
       if (opts.agentWorkspace.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
+      if (opts.agentDataDir) {
+        parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+      }
       parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
       parts.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
+    } else if (opts.agentDataDir) {
+      parts.push('\n## Your Workspace');
+      parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
     }
 
     // ── Shared User Profile (loaded from shared workspace USER.md) ─────
@@ -308,7 +319,7 @@ export class ContextEngine {
     const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
-      parts.push(longTermMem.slice(0, 3000));
+      parts.push(longTermMem.slice(0, 5000));
     }
 
     const lessons = opts.memory.getEntriesByTag('lesson', 10);

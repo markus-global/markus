@@ -101,6 +101,7 @@ export class SkillLoader {
             tags: pkg_.tags,
             requiredPermissions: pkg_.skill?.requiredPermissions,
             mcpServers: resolveMcpServerPaths(pkg_.skill?.mcpServers, skillDir),
+            isolation: pkg_.skill?.isolation,
             sourcePath: skillDir,
           };
 

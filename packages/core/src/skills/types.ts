@@ -19,6 +19,8 @@ export interface SkillManifest {
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
   /** MCP servers this skill provides. Connected when the skill is activated on an agent. */
   mcpServers?: Record<string, SkillMcpServerConfig>;
+  /** MCP server isolation mode. 'per-agent' spawns a separate MCP process per agent (needed for stateful tools like browser). */
+  isolation?: 'shared' | 'per-agent';
   /** Filesystem path where this skill was loaded from */
   sourcePath?: string;
   /** Origin of this skill: skillhub, skillssh, local, builder */

@@ -167,7 +167,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           entries: entries.map(e => ({
             id: e.id,
             type: e.type,
-            content: e.content.slice(0, 300),
+            content: e.content,
             timestamp: e.timestamp,
           })),
           count: entries.length,
@@ -179,14 +179,16 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
       name: 'memory_update_longterm',
       description:
         'Update a section of your long-term memory file (MEMORY.md). ' +
-        'Use this to persist important accumulated knowledge that should always be available, ' +
-        'such as project conventions, team preferences, or recurring patterns.',
+        'Use this to persist important accumulated knowledge that should always be available. ' +
+        'Standard sections: "lessons-learned" (max 20 lessons), "tool-preferences" (max 15 entries), ' +
+        '"sops" (max 10 standard operating procedures), "role-evolution-log" (max 20 entries). ' +
+        'You can also use custom sections like "project-conventions" or "team-preferences".',
       inputSchema: {
         type: 'object',
         properties: {
           section: {
             type: 'string',
-            description: 'Section name/key (e.g., "project-conventions", "team-preferences", "technical-decisions")',
+            description: 'Section name/key (e.g., "lessons-learned", "tool-preferences", "sops", "role-evolution-log", "project-conventions")',
           },
           content: {
             type: 'string',

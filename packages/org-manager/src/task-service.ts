@@ -551,12 +551,12 @@ export class TaskService {
       } else if (entry.type === 'tool_start') {
         const meta = entry.metadata as Record<string, unknown> | null;
         const args = meta?.arguments as Record<string, unknown> | undefined;
-        const argStr = args ? ` (${JSON.stringify(args).slice(0, 200)})` : '';
+        const argStr = args ? ` (${JSON.stringify(args)})` : '';
         lines.push(`→ Calling: ${entry.content}${argStr}`);
       } else if (entry.type === 'tool_end') {
         const meta = entry.metadata as Record<string, unknown> | null;
         const ok = meta?.success !== false;
-        const result = meta?.result ? ` → ${String(meta.result).slice(0, 400)}` : '';
+        const result = meta?.result ? ` → ${String(meta.result)}` : '';
         lines.push(`  ${ok ? '✓' : '✗'} ${entry.content}${result}`);
       } else if (entry.type === 'error') {
         lines.push(`[ERROR] ${entry.content}`);

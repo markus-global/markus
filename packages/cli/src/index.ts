@@ -281,6 +281,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const openrouterKey =
+    config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
+  if (openrouterKey) {
+    providerConfigs['openrouter'] = {
+      provider: 'openrouter',
+      model: process.env['OPENROUTER_MODEL'] ?? 'xiaomi/mimo-v2-pro',
+      apiKey: openrouterKey,
+      baseUrl:
+        process.env['OPENROUTER_BASE_URL'] ??
+        config.llm.providers['openrouter']?.baseUrl ??
+        'https://openrouter.ai/api/v1',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'openrouter') {
+      defaultProvider = 'openrouter';
+    }
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);
@@ -1422,6 +1440,7 @@ async function quickInit() {
     minimax: 'MiniMax-M2.7',
     siliconflow: 'Qwen/Qwen3.5-35B-A3B',
     ollama: 'llama3',
+    openrouter: 'xiaomi/mimo-v2-pro',
   };
 
   const ENV_KEY_MAP: Array<{ provider: string; label: string; envKey: string; baseUrl?: string }> = [
@@ -1430,6 +1449,7 @@ async function quickInit() {
     { provider: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY' },
     { provider: 'siliconflow', label: 'SiliconFlow', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1' },
     { provider: 'minimax', label: 'MiniMax', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1' },
+    { provider: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1' },
   ];
 
   console.log('\n  Markus Setup\n');

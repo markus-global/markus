@@ -439,7 +439,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow']) {
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -466,7 +466,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow']) {
+    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = {
           name,
@@ -590,6 +590,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   ollama: 'Ollama (Local)',
   siliconflow: 'SiliconFlow',
   minimax: 'MiniMax',
+  openrouter: 'OpenRouter',
 };
 
 // Sources:
@@ -612,4 +613,9 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // MiniMax — https://platform.minimax.io/docs/api-reference/api-overview
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2 }, reasoning: true, inputTypes: ['text'] },
   { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.2, output: 0.95 }, reasoning: false, inputTypes: ['text'] },
+  // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
+  { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'] },
+  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
+  { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
 ];

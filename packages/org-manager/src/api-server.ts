@@ -2280,9 +2280,9 @@ export class APIServer {
               ((s as unknown as Record<string, unknown>).updatedAt as string) ??
               new Date().toISOString(),
           })),
-          dailyLog: dailyLog?.slice(0, 2000) ?? null,
-          recentDailyLogs: recentDailyLogs?.slice(0, 5000) ?? null,
-          longTermMemory: longTermMemory?.slice(0, 3000) ?? null,
+          dailyLog: dailyLog ?? null,
+          recentDailyLogs: recentDailyLogs ?? null,
+          longTermMemory: longTermMemory ?? null,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -2309,12 +2309,12 @@ export class APIServer {
           lastActivityAt: session.lastActivityAt,
           messages: session.messages.map(m => ({
             role: m.role,
-            content: getTextContent(m.content).slice(0, 2000),
+            content: getTextContent(m.content),
             ...(m.toolCalls?.length ? {
               toolCalls: m.toolCalls.map(tc => ({
                 id: tc.id,
                 name: tc.name,
-                arguments: JSON.stringify(tc.arguments).slice(0, 1000),
+                arguments: JSON.stringify(tc.arguments),
               })),
             } : {}),
             ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
@@ -5039,6 +5039,7 @@ export class APIServer {
         { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
         { provider: 'siliconflow', displayName: 'SiliconFlow', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
         { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
+        { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
       ];
 
       const detected: Array<{
@@ -5109,6 +5110,7 @@ export class APIServer {
             google: 'GOOGLE_API_KEY',
             siliconflow: 'SILICONFLOW_API_KEY',
             minimax: 'MINIMAX_API_KEY',
+            openrouter: 'OPENROUTER_API_KEY',
           };
           const apiKey = process.env[envKeyMap[pu.provider] ?? ''];
           if (!apiKey) continue;

@@ -376,7 +376,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
           {info.result && (
             <div>
               <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
-              <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
+              <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto overflow-y-auto max-h-[60vh] whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
           {info.error && (

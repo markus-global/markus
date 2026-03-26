@@ -1,40 +1,44 @@
 ---
 name: self-evolution
-description: Learn from mistakes, corrections, and successful strategies — extract lessons and persist them as structured memories for future retrieval
+description: Learn from mistakes, corrections, and successful strategies — evolve your role, tool preferences, and SOPs over time
 ---
 
 # Self-Evolution
 
-You have the ability to learn from experience. When you make a mistake and get corrected, discover a better approach through trial and error, or resolve an unexpected problem, you should extract the lesson and save it so you never repeat the same mistake.
+You have the ability to learn from experience and evolve yourself over time. This goes beyond remembering facts — you can refine your own role definition, optimize your tool usage patterns, and develop standard operating procedures (SOPs) that make you more effective.
 
-This is not optional — learning from experience is a core part of being an effective agent.
+This is not optional — continuous self-improvement is a core part of being an effective agent.
 
 ## When to Reflect
 
-Trigger the lesson extraction process when any of these happen:
+Trigger the reflection process when any of these happen:
 
-1. **User correction** — The user says something like "no, do X instead", "that's wrong", or redirects your approach. This is the strongest signal.
-2. **Task revision** — A task you submitted was rejected and sent back for revision. The system will prompt you to reflect after a revised task is accepted. Do not skip this.
-3. **Self-correction** — You tried one approach, it failed, and you found a different approach that worked. The contrast between failure and success is the lesson.
-4. **Resolved error** — You encountered an unexpected error (tool failure, wrong assumption about an API, misunderstood requirement) and figured out the root cause.
+1. **User correction** — The user says "no, do X instead", "that's wrong", or redirects your approach. Strongest signal.
+2. **Task revision** — A task you submitted was rejected and sent back. The system will prompt you to reflect after a revised task is accepted.
+3. **Self-correction** — You tried one approach, it failed, and you found a different approach that worked.
+4. **Resolved error** — An unexpected error (tool failure, wrong API assumption, misunderstood requirement) that you diagnosed and fixed.
+5. **Efficiency insight** — You discover a faster, cleaner, or more reliable way to accomplish a recurring task.
+6. **Pattern recognition** — You notice you keep doing something the same way and realize it could be standardized.
 
-Do NOT trigger reflection for trivial matters — typos, wrong file paths due to incomplete info, or one-off situations that won't recur.
+Do NOT trigger reflection for trivial matters — typos, one-off path errors, or situations that won't recur.
 
-## How to Extract a Lesson
+## Layer 1: Lessons (Immediate Memory)
 
-When a reflection trigger occurs, think through these dimensions before saving:
+### How to Extract a Lesson
 
-1. **Situation** — What were you trying to do? What was the context?
-2. **What went wrong** — What assumption, approach, or action was incorrect?
-3. **What worked** — What was the correct approach? Why does it work?
-4. **Generalized rule** — Distill a reusable principle that applies beyond this specific instance. This is the most important part — it should be actionable advice your future self can apply.
+When a reflection trigger fires, think through:
 
-## How to Save a Lesson
+1. **Situation** — What were you trying to do?
+2. **What went wrong** — What assumption or action was incorrect?
+3. **What worked** — What was the correct approach?
+4. **Generalized rule** — A reusable principle beyond this specific instance.
 
-Use `memory_save` with the following structure:
+### How to Save a Lesson
+
+Use `memory_save` with:
 
 - **type**: `"note"`
-- **content**: A concise lesson in this format:
+- **content**: Concise lesson in this format:
   ```
   [LESSON] <one-line summary>
   Situation: <brief context>
@@ -48,57 +52,156 @@ Use `memory_save` with the following structure:
   - `communication` — how to interact with users, managers, or other agents
   - `architecture` — system design, file organization, dependency decisions
   - `process` — workflow, task management, review process
-  - `domain:<topic>` — domain-specific knowledge (e.g., `domain:react`, `domain:database`)
+  - `domain:<topic>` — domain-specific knowledge (e.g., `domain:react`)
 
-### Example
+### Consolidating Lessons
 
-```
-memory_save({
-  content: "[LESSON] Always check git status before committing\nSituation: Modifying multiple files in a project task\nMistake: Ran git commit without checking which files were staged, accidentally committed unrelated changes\nCorrection: Always run git status/git diff first, then selectively stage files\nRule: Before any git commit, verify the staging area matches your intent. Never blindly commit all changes.",
-  type: "note",
-  tags: ["lesson", "tool-usage", "coding"]
-})
-```
+When you have 3+ unsaved lessons, consolidate into long-term memory:
 
-## Consolidating Lessons into Long-Term Memory
-
-When you have accumulated several lessons (3 or more since last consolidation), consolidate them into your long-term memory using `memory_update_longterm`. This makes your most important lessons visible in every future conversation.
-
-Call:
 ```
 memory_update_longterm({
   section: "lessons-learned",
-  content: "<curated list of your top lessons>"
+  content: "<numbered list of top 20 lessons>"
 })
 ```
 
-Format the content as a numbered list of your most valuable, generalizable lessons. Keep it to **20 lessons maximum** — if you need to add more, replace older or less impactful ones. Each lesson should be a single actionable sentence or short paragraph.
+Each lesson: one actionable sentence. Replace older/less impactful ones when you exceed 20.
 
-### Example consolidated content
+## Layer 2: Tool Preferences
+
+Over time you will discover which tools work best for specific situations. Record these preferences so you can make better tool choices automatically.
+
+### When to Update Tool Preferences
+
+- You discover a tool is significantly better than another for a specific task type
+- You find optimal parameters or flags for a tool (e.g., `grep` with specific flags vs. `glob`)
+- You learn that a tool has limitations you should work around
+- A tool combination (pipeline) works well for a recurring need
+
+### How to Save Tool Preferences
+
+Use `memory_save` with:
+
+- **type**: `"note"`
+- **content**:
+  ```
+  [TOOL-PREF] <one-line summary>
+  Task: <what kind of task>
+  Preferred: <tool and how to use it>
+  Avoid: <what doesn't work well and why>
+  Reason: <why this preference>
+  ```
+- **tags**: `["lesson", "tool-preference", "<tool-name>"]`
+
+Periodically consolidate into long-term memory:
 
 ```
-1. Always run git status before committing to verify the staging area matches intent.
-2. When a shell command fails with a permission error, check if the file is read-only or owned by another user before retrying with sudo.
-3. When the user asks for "a simple solution", they mean minimal dependencies and straightforward logic — avoid over-engineering.
-4. For TypeScript projects, check tsconfig.json paths and module resolution before assuming import errors are code bugs.
-5. When creating tasks for other agents, include explicit acceptance criteria — vague descriptions lead to revision cycles.
+memory_update_longterm({
+  section: "tool-preferences",
+  content: "<list of tool preferences by task type>"
+})
 ```
 
-## Using Past Lessons
+Format as a compact reference table your future self can quickly scan.
 
-Your past lessons are available to you in two ways:
+## Layer 3: SOPs (Standard Operating Procedures)
 
-1. **Automatic** — Your consolidated lessons in the `lessons-learned` section of MEMORY.md appear in your system context. Review them at the start of important tasks.
-2. **On-demand** — Use `memory_search` with relevant keywords to find specific past lessons before tackling a task in a domain where you've previously made mistakes.
+When you find yourself repeatedly doing a multi-step process, document it as an SOP. When you later find a better way, update it.
 
-When starting a task that touches a domain where you have past lessons, briefly review them. This takes seconds and can save significant rework.
+### When to Create or Update an SOP
+
+- You've done the same multi-step workflow 2+ times and want to standardize it
+- You found a significantly better sequence of steps for an existing SOP
+- A step in an existing SOP failed or was suboptimal, and you found a fix
+
+### How to Save SOPs
+
+Use `memory_update_longterm` with section `"sops"`:
+
+```
+memory_update_longterm({
+  section: "sops",
+  content: "<all your SOPs>"
+})
+```
+
+Format each SOP as:
+
+```
+### SOP: <Name>
+Trigger: <when to use this SOP>
+Steps:
+1. <step 1>
+2. <step 2>
+...
+Notes: <gotchas, tips, common failures>
+Last updated: <date>
+```
+
+Keep SOPs concise and actionable. Maximum 10 SOPs — merge or retire outdated ones.
+
+## Layer 4: Role Evolution (ROLE.md)
+
+This is the deepest level of self-evolution. Your ROLE.md defines your core identity, system prompt, and behavioral guidelines. When you accumulate enough lessons and experience in a domain, you can evolve your own role definition.
+
+**Your ROLE.md path**: `{AGENT_DATA_DIR}/role/ROLE.md` (the system tells you your data directory in the workspace section of your context)
+
+### When to Modify ROLE.md
+
+Only modify your ROLE.md when ALL of these conditions are met:
+
+1. **Pattern threshold** — You have 3+ related lessons pointing to a fundamental behavioral change (not a one-off fix)
+2. **High confidence** — The change reflects proven experience, not speculation
+3. **Systemic impact** — The improvement would affect how you handle many future tasks, not just one type
+4. **Not contradicting core role** — The change refines or extends your role, not contradicts it
+
+### How to Modify ROLE.md
+
+1. First, read your current ROLE.md via `file_read`
+2. Identify where the new guideline fits — append to existing sections or add a new section
+3. Use `file_edit` to make a surgical change — never rewrite the entire file
+4. Log the change in memory:
+
+```
+memory_save({
+  type: "note",
+  content: "[ROLE-EVOLUTION] <summary of change>\nReason: <why this change>\nLessons: <which lessons led to this>\nChange: <what was added/modified in ROLE.md>",
+  tags: ["lesson", "role-evolution"]
+})
+```
+
+### ROLE.md Evolution Rules
+
+- **APPEND, don't replace** — Add new guidelines, don't remove existing ones unless they're clearly wrong
+- **Keep it concise** — Each new guideline should be 1-3 lines. ROLE.md should not grow beyond 200 lines
+- **Never touch the header** — The `# Role Name` and core identity section must stay intact
+- **Log every change** — Always save a `role-evolution` tagged memory entry explaining why
+- **One change at a time** — Don't batch multiple unrelated role changes
+- **Consolidate evolution history** periodically:
+
+```
+memory_update_longterm({
+  section: "role-evolution-log",
+  content: "<chronological list of role changes and reasons>"
+})
+```
+
+## Using Past Experience
+
+Your past evolution data is available in two ways:
+
+1. **Automatic** — Your `lessons-learned`, `tool-preferences`, `sops`, and `role-evolution-log` sections in MEMORY.md appear in your system context every session.
+2. **On-demand** — Use `memory_search` with relevant keywords to find specific past lessons.
+
+Before starting a task, briefly review relevant sections. This takes seconds and prevents repeating mistakes.
 
 ## Rules
 
-- **DO NOT** skip reflection when the system prompts you to reflect after a task revision. This is the highest-value learning opportunity.
-- **DO NOT** save trivial or non-generalizable lessons. "The file was at /tmp/foo.txt not /tmp/bar.txt" is not a lesson.
-- **DO NOT** let the lessons-learned section grow beyond 20 entries. Quality over quantity — keep only the lessons that would change your behavior.
-- **DO** save lessons immediately when a correction happens, while the context is fresh. Don't defer.
-- **DO** include specific, actionable advice in the "Rule" field. "Be more careful" is useless. "Always validate input schema before processing" is useful.
-- **DO** use domain tags so lessons are discoverable via search.
-- **DO** periodically review and prune your lessons-learned section during daily consolidation to keep it current and relevant.
+- **DO NOT** skip reflection when the system prompts you after a task revision.
+- **DO NOT** save trivial or non-generalizable lessons.
+- **DO NOT** let any long-term memory section grow unbounded. Limits: lessons-learned (20), tool-preferences (15), SOPs (10), role-evolution-log (20).
+- **DO NOT** modify ROLE.md for one-off situations — only for proven patterns.
+- **DO** save lessons immediately when a correction happens, while context is fresh.
+- **DO** include specific, actionable advice. "Be more careful" is useless. "Always validate input schema before processing" is useful.
+- **DO** use tags consistently so lessons are discoverable via search.
+- **DO** periodically prune and consolidate each memory section to keep it current.
