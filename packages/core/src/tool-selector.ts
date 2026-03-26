@@ -159,6 +159,18 @@ export class ToolSelector {
 
     result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
 
+    result.push({
+      name: 'send_user_message',
+      description: 'Send a proactive message to the user via their chat session. Use this to notify the user about important findings, ask for approval (e.g. before installing a skill), or provide status updates.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'The message to send to the user' },
+        },
+        required: ['message'],
+      },
+    });
+
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
       selected: result.length,
@@ -203,6 +215,8 @@ export class ToolSelector {
     parts.push('\nUsage: pass skill names or tool names in tool_names to activate them.');
     parts.push('Skills inject instructions into your context; tools become callable.');
     parts.push('Use mode="list_skills" to get full skill details.');
+    parts.push('Use mode="search_registry" with query to search remote skill registries (SkillHub, skills.sh) for uninstalled skills.');
+    parts.push('Use mode="install" with name/source/slug to install a skill from a remote registry.');
 
     return {
       name: 'discover_tools',
@@ -217,9 +231,18 @@ export class ToolSelector {
           },
           mode: {
             type: 'string',
-            enum: ['activate', 'list_skills'],
-            description: 'Mode: "activate" (default) to activate tools/skills, "list_skills" to browse available skills',
+            enum: ['activate', 'list_skills', 'search_registry', 'install'],
+            description: 'Mode: "activate" (default) activates tools/skills, "list_skills" browses installed skills, "search_registry" searches remote registries, "install" installs from registry',
           },
+          query: {
+            type: 'string',
+            description: 'Search query for mode="search_registry"',
+          },
+          name: { type: 'string', description: 'Skill name for mode="install"' },
+          source: { type: 'string', description: 'Source registry for install: "skillhub" or "skillssh"' },
+          slug: { type: 'string', description: 'Slug identifier for SkillHub install' },
+          githubRepo: { type: 'string', description: 'GitHub repo (owner/repo) for skills.sh install' },
+          githubSkillPath: { type: 'string', description: 'Skill path within GitHub repo' },
         },
       },
     };

@@ -91,6 +91,14 @@ export class WSBroadcaster {
     });
   }
 
+  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string): void {
+    this.broadcast({
+      type: 'chat:proactive_message',
+      payload: { agentId, agentName, sessionId, messageId, message },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   getClientCount(): number {
     return this.clients.size;
   }

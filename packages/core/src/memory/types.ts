@@ -23,6 +23,7 @@ export interface ConversationSession {
 export interface IMemoryStore {
   addEntry(entry: MemoryEntry): void;
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[];
+  getEntriesByTag(tag: string, limit?: number): MemoryEntry[];
   search(query: string): MemoryEntry[];
 
   getSession(sessionId: string): ConversationSession | undefined;

@@ -24,6 +24,8 @@ export interface SkillManifest {
   /** Origin of this skill: skillhub, skillssh, local, builder */
   source?: string;
   sourceUrl?: string;
+  /** True for skills shipped with Markus (templates/skills/) — auto-injected into all agents */
+  builtIn?: boolean;
 }
 
 export type SkillCategory =
@@ -53,4 +55,6 @@ export interface SkillRegistry {
   list(): SkillManifest[];
   /** Return instructions for all prompt-based skills in the given list */
   getInstructionsForSkills(skillNames: string[]): Map<string, string>;
+  /** Return instructions for all builtin skills (auto-injected into every agent) */
+  getBuiltinInstructions(): Map<string, string>;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, hubApi, AgentInfo, type HubItem } from '../api.ts';
+import { api, hubApi, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 
@@ -16,7 +16,6 @@ interface InstalledSkill {
   requiredPermissions?: string[];
   type: 'builtin' | 'filesystem' | 'imported';
   sourcePath?: string;
-  agentIds: string[];
 }
 
 interface SkillHubSkill {
@@ -167,77 +166,6 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   );
 }
 
-// ─── Agent Assignment Modal ──────────────────────────────────────────────────────
-
-function AgentAssignModal({
-  skillName,
-  agents,
-  currentAgentIds,
-  onClose,
-  onConfirm,
-}: {
-  skillName: string;
-  agents: AgentInfo[];
-  currentAgentIds: string[];
-  onClose: () => void;
-  onConfirm: (agentIds: string[]) => void;
-}) {
-  const [selected, setSelected] = useState<Set<string>>(new Set(currentAgentIds));
-
-  const toggle = (id: string) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-surface-secondary border border-border-default rounded-xl w-[480px] max-h-[70vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="px-6 pt-5 pb-4 border-b border-border-default">
-          <h3 className="text-base font-semibold">Assign to Agents</h3>
-          <p className="text-xs text-fg-secondary mt-1">Select which agents can use <span className="text-brand-500 font-medium">{skillName}</span></p>
-        </div>
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {agents.length === 0 ? (
-            <div className="text-sm text-fg-tertiary text-center py-8">No agents available</div>
-          ) : (
-            <div className="space-y-2">
-              {agents.map(agent => (
-                <label key={agent.id} className="flex items-center gap-3 p-3 rounded-lg bg-surface-elevated hover:bg-gray-750 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(agent.id)}
-                    onChange={() => toggle(agent.id)}
-                    className="w-4 h-4 rounded accent-brand-500"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{agent.name}</div>
-                    <div className="text-xs text-fg-tertiary">{agent.role} · {agent.status}</div>
-                  </div>
-                  {agent.skills?.includes(skillName) && (
-                    <span className="text-[10px] text-green-600 shrink-0">assigned</span>
-                  )}
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="px-6 py-4 border-t border-border-default flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-fg-secondary hover:text-fg-primary rounded-lg hover:bg-surface-elevated">
-            Cancel
-          </button>
-          <button onClick={() => onConfirm([...selected])} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg">
-            Confirm ({selected.size} agent{selected.size !== 1 ? 's' : ''})
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function SkillStore() {
@@ -274,11 +202,6 @@ export function SkillStore() {
   const [loadingHub, setLoadingHub] = useState(false);
   const [hubSearch, setHubSearch] = useState('');
 
-  // Agents
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-
-  // Assignment modal
-  const [assignModal, setAssignModal] = useState<{ skillName: string; currentAgentIds: string[] } | null>(null);
 
   const msg = (m: string, type: 'success' | 'error' = 'success') => {
     setFlash({ text: m, type });
@@ -296,12 +219,6 @@ export function SkillStore() {
     setLoadingInstalled(false);
   }, []);
 
-  const loadAgents = useCallback(async () => {
-    try {
-      const d = await api.agents.list();
-      setAgents(d.agents);
-    } catch { /* */ }
-  }, []);
 
   const loadBuiltin = useCallback(async () => {
     setLoadingBuiltin(true);
@@ -350,7 +267,7 @@ export function SkillStore() {
     setLoadingHub(false);
   }, []);
 
-  useEffect(() => { loadInstalled(); loadAgents(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
+  useEffect(() => { loadInstalled(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
   useEffect(() => { if (tab === 'markus-hub') loadHubSkills(hubSearch); }, [tab, hubSearch, loadHubSkills]);
 
   // ── Install helpers ───────────────────────────────────────────────────────────
@@ -369,8 +286,6 @@ export function SkillStore() {
       });
       await loadInstalled();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
-      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
-      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
       msg(`Download failed for "${skill.name}". You can try manually from: ${skill.homepage}`, 'error');
     }
@@ -389,8 +304,6 @@ export function SkillStore() {
       });
       await loadInstalled();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
-      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
-      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
       msg(`Download failed for "${skill.name}". You can try manually from: ${skill.url}`, 'error');
     }
@@ -404,36 +317,10 @@ export function SkillStore() {
       await loadInstalled();
       await loadBuiltin();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
-      const agentIds = agents.filter(a => a.skills?.includes(skill.name)).map(a => a.id);
-      setAssignModal({ skillName: skill.name, currentAgentIds: agentIds });
     } catch (err) {
       msg(`Install failed for "${skill.name}": ${err}`, 'error');
     }
     setInstalling(prev => { const next = new Set(prev); next.delete(skill.name); return next; });
-  };
-
-  const handleAssignConfirm = async (skillName: string, newAgentIds: string[]) => {
-    // Find current assignment
-    const skill = installed.find(s => s.name === skillName);
-    const currentIds = new Set(skill?.agentIds ?? []);
-    const newIds = new Set(newAgentIds);
-
-    // Add to new agents
-    for (const agentId of newIds) {
-      if (!currentIds.has(agentId)) {
-        try { await api.agents.addSkill(agentId, skillName); } catch { /* */ }
-      }
-    }
-    // Remove from unselected agents
-    for (const agentId of currentIds) {
-      if (!newIds.has(agentId)) {
-        try { await api.agents.removeSkill(agentId, skillName); } catch { /* */ }
-      }
-    }
-    await loadInstalled();
-    await loadAgents();
-    setAssignModal(null);
-    msg(`Assignment updated for "${skillName}"`);
   };
 
   const uninstallSkill = async (name: string) => {
@@ -508,7 +395,6 @@ export function SkillStore() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredInstalled.map(skill => {
-                const agentNames = skill.agentIds.map(id => agents.find(a => a.id === id)?.name ?? id).filter(Boolean);
                 return (
                   <div key={skill.name} className="bg-surface-secondary border border-border-default rounded-xl p-5 hover:border-gray-600 transition-colors">
                     <div className="flex items-start justify-between">
@@ -538,29 +424,20 @@ export function SkillStore() {
                     </div>
 
                     <div className="mt-3 pt-2 border-t border-border-default flex items-center justify-between">
-                      <button
-                        onClick={() => setAssignModal({ skillName: skill.name, currentAgentIds: skill.agentIds })}
-                        className="flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-brand-500 transition-colors"
-                      >
-                        <span>
-                          {agentNames.length === 0
-                            ? '＋ Assign to agents'
-                            : `${agentNames.length} agent${agentNames.length !== 1 ? 's' : ''}: ${agentNames.slice(0, 2).join(', ')}${agentNames.length > 2 ? '…' : ''}`}
-                        </span>
-                      </button>
                       <div className="flex items-center gap-2">
                         {skill.tools && skill.tools.length > 0 && (
                           <span className="text-[10px] text-fg-tertiary">{skill.tools.length} tool{skill.tools.length !== 1 ? 's' : ''}</span>
                         )}
-                        {skill.type !== 'builtin' && (
-                          <button
-                            onClick={() => void uninstallSkill(skill.name)}
-                            className="px-2 py-0.5 text-[10px] text-red-500 hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
-                          >
-                            Uninstall
-                          </button>
-                        )}
+                        <span className="text-[10px] text-fg-tertiary">Auto-discovered by agents</span>
                       </div>
+                      {skill.type !== 'builtin' && (
+                        <button
+                          onClick={() => void uninstallSkill(skill.name)}
+                          className="px-2 py-0.5 text-[10px] text-red-500 hover:text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                        >
+                          Uninstall
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -887,16 +764,6 @@ export function SkillStore() {
         </div>
       )}
 
-      {/* ── Agent Assignment Modal ────────────────────────────────────────────── */}
-      {assignModal && (
-        <AgentAssignModal
-          skillName={assignModal.skillName}
-          agents={agents}
-          currentAgentIds={assignModal.currentAgentIds}
-          onClose={() => setAssignModal(null)}
-          onConfirm={agentIds => void handleAssignConfirm(assignModal.skillName, agentIds)}
-        />
-      )}
     </div>
   );
 }

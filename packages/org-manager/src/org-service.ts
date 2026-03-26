@@ -873,11 +873,13 @@ export class OrganizationService {
    * Safe to call on every startup — skips agents that already exist.
    * Also registers dynamic context providers so builder agents can see available skills/roles at runtime.
    */
+  static readonly BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building']);
+
   async seedBuilderAgents(orgId: string, skillRegistry?: SkillRegistry): Promise<void> {
     const builderConfigs = [
-      { name: 'Agent Father', roleName: 'agent-father' },
-      { name: 'Team Factory', roleName: 'team-factory' },
-      { name: 'Skill Architect', roleName: 'skill-architect' },
+      { name: 'Agent Father', roleName: 'agent-father', skills: ['agent-building'] },
+      { name: 'Team Factory', roleName: 'team-factory', skills: ['team-building'] },
+      { name: 'Skill Architect', roleName: 'skill-architect', skills: ['skill-building'] },
     ] as const;
 
     const teams = this.listTeams(orgId);
@@ -899,6 +901,7 @@ export class OrganizationService {
           teamId: defaultTeamId,
           agentRole: 'worker',
           heartbeatIntervalMs: 0,
+          skills: [...cfg.skills],
         });
         log.info(`Seeded builder agent: ${cfg.name}`);
       } catch (err) {
@@ -910,17 +913,19 @@ export class OrganizationService {
   }
 
   /**
-   * Register dynamic context providers on all builder agents so they see
-   * the live list of available skills and roles at message-handling time.
+   * Register dynamic context providers on all builder agents (and any agent
+   * with a building skill) so they see the live list of available skills/roles.
    */
-  private registerBuilderContextProviders(skillRegistry?: SkillRegistry): void {
+  registerBuilderContextProviders(skillRegistry?: SkillRegistry): void {
     const builderNames = new Set(['Agent Father', 'Team Factory', 'Skill Architect']);
     const allAgents = this.agentManager.listAgents();
 
     for (const info of allAgents) {
-      if (!builderNames.has(info.name)) continue;
       try {
         const agent = this.agentManager.getAgent(info.id);
+        const isBuilder = builderNames.has(info.name) ||
+          agent.config.skills.some(s => OrganizationService.BUILDING_SKILLS.has(s));
+        if (!isBuilder) continue;
         agent.addDynamicContextProvider(() => this.buildBuilderDynamicContext(skillRegistry), 'builder-context');
       } catch {
         log.warn(`Could not register dynamic context for builder: ${info.name}`);
@@ -928,7 +933,7 @@ export class OrganizationService {
     }
   }
 
-  private buildBuilderDynamicContext(skillRegistry?: SkillRegistry): string {
+  buildBuilderDynamicContext(skillRegistry?: SkillRegistry): string {
     const parts: string[] = [];
 
     // Available skills

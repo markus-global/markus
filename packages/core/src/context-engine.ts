@@ -310,6 +310,15 @@ export class ContextEngine {
       parts.push(longTermMem.slice(0, 3000));
     }
 
+    const lessons = opts.memory.getEntriesByTag('lesson', 10);
+    if (lessons.length > 0) {
+      parts.push('\n## Lessons from Past Experience');
+      for (const lesson of lessons) {
+        const ts = lesson.timestamp ? new Date(lesson.timestamp).toLocaleDateString() : '';
+        parts.push(`- [${ts}] ${lesson.content}`);
+      }
+    }
+
     if (opts.deliverableContext || opts.knowledgeContext) {
       parts.push('\n## Shared Deliverables');
       parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, 3000));

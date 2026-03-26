@@ -743,28 +743,11 @@ interface SkillDetail {
   requiredPermissions?: string[];
 }
 
-function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
+function SkillsTab({ agent, onUpdate: _onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
   const proficiency = agent.proficiency ?? {};
-  const [availableSkills, setAvailableSkills] = useState<Array<{ name: string; version: string; description?: string }>>([]);
-  const [showImport, setShowImport] = useState(false);
-  const [search, setSearch] = useState('');
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-
-  useEffect(() => {
-    api.skills.list().then(d => setAvailableSkills(d.skills)).catch(() => {});
-  }, []);
-
-  const addSkill = async (skillName: string) => {
-    await api.agents.addSkill(agent.id, skillName);
-    onUpdate();
-  };
-
-  const removeSkill = async (skillName: string) => {
-    await api.agents.removeSkill(agent.id, skillName);
-    onUpdate();
-  };
 
   const toggleDetail = async (skillName: string) => {
     if (expandedSkill === skillName) { setExpandedSkill(null); setSkillDetail(null); return; }
@@ -782,8 +765,6 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
     setDetailLoading(false);
   };
 
-  const importable = availableSkills.filter(s => !agent.skills.includes(s.name) && s.name.toLowerCase().includes(search.toLowerCase()));
-
   const CATEGORY_COLORS: Record<string, string> = {
     development: 'bg-blue-500/15 text-blue-600', devops: 'bg-amber-500/15 text-amber-600',
     communication: 'bg-green-500/15 text-green-600', data: 'bg-brand-500/15 text-brand-500',
@@ -793,24 +774,9 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
 
   return (
     <div className="space-y-4">
-      <Card title={`Assigned Skills (${agent.skills.length})`} action={
-        <button onClick={() => setShowImport(!showImport)} className="text-xs text-brand-500 hover:text-brand-500">
-          {showImport ? 'Close' : '+ Add Skill'}
-        </button>
+      <Card title={`Skills (${agent.skills.length})`} action={
+        <span className="text-[10px] text-fg-tertiary">Auto-discovered via discover_tools</span>
       }>
-        {showImport && (
-          <div className="mb-4 p-3 bg-surface-elevated/40 rounded-lg border border-border-default/40">
-            <input className="input-sm mb-2" placeholder="Search skills..." value={search} onChange={e => setSearch(e.target.value)} />
-            <div className="space-y-1 max-h-40 overflow-y-auto">
-              {importable.length === 0 ? <div className="text-[10px] text-fg-tertiary py-2 text-center">No additional skills available</div> : importable.map(s => (
-                <div key={s.name} className="flex items-center gap-2 px-2.5 py-1.5 rounded bg-surface-elevated/30 hover:bg-surface-overlay/40 transition-colors">
-                  <span className="text-xs text-fg-secondary flex-1">{s.name} <span className="text-fg-tertiary">v{s.version}</span></span>
-                  <button onClick={() => addSkill(s.name)} className="px-2 py-0.5 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded">Add</button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
         {agent.skills.length === 0 ? <Empty text="No skills configured" /> : (
           <div className="space-y-2">
             {agent.skills.map(skill => {
@@ -838,7 +804,6 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
                         <span className="text-[10px] text-fg-tertiary w-8 text-right">{rate}%</span>
                       </div>
                     )}
-                    <button onClick={e => { e.stopPropagation(); removeSkill(skill); }} className="text-fg-tertiary hover:text-red-500 text-xs transition-colors" title="Remove skill">✕</button>
                   </div>
 
                   {isExpanded && (

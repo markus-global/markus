@@ -1,0 +1,13 @@
+{
+  "type": "skill",
+  "name": "agent-building",
+  "displayName": "Agent Building",
+  "version": "1.0.0",
+  "description": "Design and create AI agent packages — manifest format, directory structure, file writing workflow, and field reference for Markus agent artifacts",
+  "author": "markus",
+  "category": "development",
+  "tags": ["builder", "agent", "design", "manifest"],
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

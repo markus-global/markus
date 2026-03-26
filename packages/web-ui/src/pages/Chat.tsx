@@ -901,6 +901,38 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     return unsub;
   }, [chatMode, activeChannel, selectedAgent, activeDmUserId, updateConvMsgs]);
 
+  // WS live updates for proactive agent messages (direct mode)
+  useEffect(() => {
+    const unsub = wsClient.on('chat:proactive_message', (event) => {
+      const p = event.payload;
+      const agentId = (p['agentId'] as string) ?? '';
+      const agentName = (p['agentName'] as string) ?? 'Agent';
+      const message = (p['message'] as string) ?? '';
+      const sessionId = (p['sessionId'] as string) ?? '';
+      if (!agentId || !message) return;
+
+      // Only append to display if we're viewing this agent's direct chat
+      if (chatMode === 'direct' && selectedAgent === agentId) {
+        const newMsg: ChatMsg = {
+          id: `proactive_${Date.now()}`,
+          sender: 'agent',
+          text: message,
+          time: new Date().toLocaleTimeString(),
+          agentName,
+          agentId,
+        };
+        const key = makeConvKey('direct', agentId, activeChannel, activeDmUserId);
+        updateConvMsgs(key, prev => [...prev, newMsg]);
+
+        // Update the active session if the proactive message came with a session ID
+        if (sessionId && activeSessionId !== sessionId) {
+          setActiveSessionId(sessionId);
+        }
+      }
+    });
+    return unsub;
+  }, [chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId, updateConvMsgs]);
+
   // ── Task helpers ─────────────────────────────────────────────────────────────
   const linkedTask = tasks.find(t => t.id === linkedTaskId);
 

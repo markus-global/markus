@@ -1,0 +1,13 @@
+{
+  "type": "skill",
+  "name": "skill-building",
+  "displayName": "Skill Building",
+  "version": "1.0.0",
+  "description": "Design and create agent skill packages — instruction-based and MCP-based skills, manifest format, directory structure for Markus skill artifacts",
+  "author": "markus",
+  "category": "development",
+  "tags": ["builder", "skill", "design", "manifest", "mcp"],
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

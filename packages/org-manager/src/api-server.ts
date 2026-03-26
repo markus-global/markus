@@ -31,7 +31,7 @@ import {
   type SkillCategory,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
-import type { OrganizationService } from './org-service.js';
+import { OrganizationService } from './org-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
@@ -44,6 +44,7 @@ import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
+import { installSkill } from './skill-service.js';
 
 const log = createLogger('api-server');
 
@@ -2483,6 +2484,14 @@ export class APIServer {
               agent.injectSkillInstructions(skillName, skill.manifest.instructions);
             }
           }
+          // When a building skill is added, register builder dynamic context so the
+          // agent can see available skills/roles, just like the seeded builder agents.
+          if (OrganizationService.BUILDING_SKILLS.has(skillName)) {
+            agent.addDynamicContextProvider(
+              () => this.orgService.buildBuilderDynamicContext(this.skillRegistry),
+              'builder-context'
+            );
+          }
         }
         if (this.storage) {
           try { await this.storage.agentRepo.updateConfig(agentId, { skills: agent.config.skills }); }
@@ -3372,8 +3381,8 @@ export class APIServer {
           category: s.category,
           tags: s.tags,
           hasInstructions: !!s.instructions,
-          sourcePath: s.sourcePath,
-          type: (s.sourcePath ? 'filesystem' : 'registry') as string,
+          sourcePath: s.builtIn ? undefined : s.sourcePath,
+          type: (s.builtIn ? 'builtin' : s.sourcePath ? 'filesystem' : 'registry') as string,
         }));
       const seen = new Set(registrySkills.map(s => s.name));
 
@@ -3523,177 +3532,30 @@ export class APIServer {
     if (path === '/api/skills/install' && req.method === 'POST') {
       const body = await this.readBody(req);
       const skillName = body['name'] as string;
-      const source = body['source'] as string | undefined; // 'builtin' | 'skillhub' | 'skillssh' | 'openclaw'
-      const slug = body['slug'] as string | undefined;
-      const sourceUrl = body['sourceUrl'] as string | undefined;
-      const description = body['description'] as string | undefined;
-      const category = body['category'] as string | undefined;
-      const version = body['version'] as string | undefined;
-      const githubRepo = body['githubRepo'] as string | undefined; // e.g. "owner/repo"
-      const githubSkillPath = body['githubSkillPath'] as string | undefined; // e.g. "skill-name"
-
       if (!skillName) {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
 
-      const skillsDir = join(homedir(), '.markus', 'skills');
-      const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-      const targetDir = join(skillsDir, safeName);
-
       try {
-        mkdirSync(skillsDir, { recursive: true });
-
-        let installed = false;
-        let installMethod = 'metadata-only';
-
-        // Strategy 0: Built-in skill — copy from templates/skills/
-        if (source === 'builtin') {
-          const builtinDir = resolve(process.cwd(), 'templates', 'skills', safeName);
-          if (existsSync(builtinDir)) {
-            mkdirSync(targetDir, { recursive: true });
-            for (const file of readdirSync(builtinDir)) {
-              copyFileSync(join(builtinDir, file), join(targetDir, file));
-            }
-            installed = true;
-            installMethod = 'builtin-copy';
-          }
-        }
-
-        // Strategy 1: SkillHub/ClawHub — download ZIP via Convex API
-        if (source === 'skillhub' && slug) {
-          try {
-            const zipUrl = `https://wry-manatee-359.convex.site/api/v1/download?slug=${encodeURIComponent(slug)}`;
-            const zipResp = await fetch(zipUrl);
-            if (zipResp.ok) {
-              const tmpZip = join(skillsDir, `_tmp_${safeName}.zip`);
-              const buffer = Buffer.from(await zipResp.arrayBuffer());
-              writeFileSync(tmpZip, buffer);
-              mkdirSync(targetDir, { recursive: true });
-              try {
-                execSync(`unzip -o "${tmpZip}" -d "${targetDir}"`, { timeout: 30000 });
-                installed = true;
-                installMethod = 'clawhub-zip';
-              } catch {
-                console.warn('[skills/install] unzip failed');
-              }
-              try { execSync(`rm -f "${tmpZip}"`); } catch { /* cleanup */ }
-            }
-          } catch (err) {
-            console.warn(`[skills/install] ClawHub download failed for ${slug}: ${String(err)}`);
-          }
-        }
-
-        // Strategy 2: skills.sh — try to download SKILL.md from GitHub
-        if (!installed && source === 'skillssh' && githubRepo) {
-          try {
-            const rawBase = `https://raw.githubusercontent.com/${githubRepo}/refs/heads/main`;
-            const skillPath = githubSkillPath || safeName;
-            const skillMdUrl = `${rawBase}/${skillPath}/SKILL.md`;
-            const mdResp = await fetch(skillMdUrl, { signal: AbortSignal.timeout(15000) });
-            if (mdResp.ok) {
-              mkdirSync(targetDir, { recursive: true });
-              writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
-              installed = true;
-              installMethod = 'github-skillmd';
-            }
-          } catch (err) {
-            console.warn(`[skills/install] GitHub SKILL.md download failed: ${String(err)}`);
-          }
-
-          if (!installed) {
-            try {
-              const rawBase = `https://raw.githubusercontent.com/${githubRepo}/refs/heads/main`;
-              const rootMd = `${rawBase}/SKILL.md`;
-              const mdResp = await fetch(rootMd, { signal: AbortSignal.timeout(15000) });
-              if (mdResp.ok) {
-                mkdirSync(targetDir, { recursive: true });
-                writeFileSync(join(targetDir, 'SKILL.md'), await mdResp.text(), 'utf-8');
-                installed = true;
-                installMethod = 'github-root-skillmd';
-              }
-            } catch { /* fallthrough */ }
-          }
-        }
-
-        // Strategy 3: Try ClawHub ZIP as fallback (many skills.sh skills are cross-listed)
-        if (!installed) {
-          const trySlug = slug || safeName;
-          try {
-            const zipUrl = `https://wry-manatee-359.convex.site/api/v1/download?slug=${encodeURIComponent(trySlug)}`;
-            const zipResp = await fetch(zipUrl, { signal: AbortSignal.timeout(20000) });
-            if (zipResp.ok) {
-              const tmpZip = join(skillsDir, `_tmp_${safeName}.zip`);
-              const buffer = Buffer.from(await zipResp.arrayBuffer());
-              writeFileSync(tmpZip, buffer);
-              mkdirSync(targetDir, { recursive: true });
-              try {
-                execSync(`unzip -o "${tmpZip}" -d "${targetDir}"`, { timeout: 30000 });
-                installed = true;
-                installMethod = 'clawhub-zip-fallback';
-              } catch {
-                console.warn('[skills/install] unzip failed (fallback)');
-              }
-              try { execSync(`rm -f "${tmpZip}"`); } catch { /* cleanup */ }
-            }
-          } catch {
-            console.warn(`[skills/install] ClawHub fallback failed for ${trySlug}`);
-          }
-        }
-
-        if (!installed) {
-          const hint = sourceUrl ?? (slug ? `https://clawhub.ai/${slug}` : '');
-          this.json(res, 502, {
-            error: `Download failed for "${skillName}". Please visit the source page and download manually.`,
-            sourceUrl: hint,
-          });
-          return;
-        }
-
-        // Supplement skill.json from metadata if download didn't include one
-        const skillMfPath = join(targetDir, manifestFilename('skill'));
-        const skillSource = { type: (source as 'skillhub' | 'skillssh' | 'local') ?? 'local', url: sourceUrl ?? '' };
-        if (!existsSync(skillMfPath)) {
-          const raw: Record<string, unknown> = {
-            name: skillName,
-            version: version ?? '1.0.0',
-            description: description ?? `Skill: ${skillName}`,
-            category: category ?? 'custom',
-          };
-          const manifest = buildManifest('skill', raw);
-          manifest.source = skillSource;
-          writeFileSync(skillMfPath, JSON.stringify(manifest, null, 2), 'utf-8');
-        } else {
-          try {
-            const mf = JSON.parse(readFileSync(skillMfPath, 'utf-8'));
-            if (!mf.source) { mf.source = skillSource; writeFileSync(skillMfPath, JSON.stringify(mf, null, 2), 'utf-8'); }
-          } catch { /* skip */ }
-        }
-
-        // Register into runtime SkillRegistry so the skill is immediately available
-        if (this.skillRegistry) {
-          try {
-            const discovered = discoverSkillsInDir(skillsDir).find(
-              d => d.manifest.name === skillName || d.path === targetDir
-            );
-            if (discovered && !this.skillRegistry.get(discovered.manifest.name)) {
-              discovered.manifest.sourcePath = discovered.path;
-              this.skillRegistry.register({ manifest: discovered.manifest });
-            }
-          } catch (regErr) {
-            log.warn('Failed to register installed skill into runtime registry', { error: String(regErr) });
-          }
-        }
-
-        this.json(res, 201, {
-          installed: true,
+        const result = await installSkill({
           name: skillName,
-          path: targetDir,
-          method: installMethod,
-        });
+          source: body['source'] as string | undefined,
+          slug: body['slug'] as string | undefined,
+          sourceUrl: body['sourceUrl'] as string | undefined,
+          description: body['description'] as string | undefined,
+          category: body['category'] as string | undefined,
+          version: body['version'] as string | undefined,
+          githubRepo: body['githubRepo'] as string | undefined,
+          githubSkillPath: body['githubSkillPath'] as string | undefined,
+        }, this.skillRegistry);
+
+        this.json(res, 201, result);
         return;
       } catch (err) {
-        this.json(res, 500, { error: `Install failed: ${String(err)}` });
+        const msg = String(err instanceof Error ? err.message : err);
+        const status = msg.includes('Download failed') ? 502 : 500;
+        this.json(res, status, { error: msg });
         return;
       }
     }

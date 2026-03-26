@@ -309,6 +309,10 @@ export class EnhancedMemorySystem implements IMemoryStore {
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[] {
     return this.baseStore.getEntries(type, limit);
   }
+
+  getEntriesByTag(tag: string, limit?: number): MemoryEntry[] {
+    return this.baseStore.getEntriesByTag(tag, limit);
+  }
   
   search(query: string): MemoryEntry[] {
     return this.baseStore.search(query);

@@ -2214,6 +2214,12 @@ export class TaskService {
       if (r === 'agent father' || r === 'agent-father') return 'agent';
       if (r === 'team factory' || r === 'team-factory') return 'team';
       if (r === 'skill architect' || r === 'skill-architect') return 'skill';
+      // Also detect via building skills (any agent with a building skill can produce artifacts)
+      const agent = this.agentManager.getAgent(agentId);
+      const skills = agent.config.skills;
+      if (skills.includes('agent-building')) return 'agent';
+      if (skills.includes('team-building')) return 'team';
+      if (skills.includes('skill-building')) return 'skill';
     } catch { /* ignore */ }
     return undefined;
   }
@@ -2331,8 +2337,44 @@ export class TaskService {
       metadata: { workerAgentId: task.assignedAgentId },
     });
 
+    // Trigger self-evolution reflection for tasks that went through revision cycles
+    if ((task.executionRound ?? 1) > 1 && task.assignedAgentId && this.agentManager) {
+      this.triggerPostTaskReflection(task);
+    }
+
     log.info(`Task accepted and completed: ${task.title}`, { id: task.id });
     return task;
+  }
+
+  /**
+   * Fire-and-forget: ask the agent to reflect on a task that required revision cycles,
+   * extracting lessons via the self-evolution skill.
+   */
+  private triggerPostTaskReflection(task: Task): void {
+    const agent = this.agentManager?.getAgent(task.assignedAgentId);
+    if (!agent) return;
+
+    const prompt = [
+      '[SELF-EVOLUTION — Post-Task Reflection]',
+      '',
+      `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
+      'This means the task required revision — something in your initial approach needed correction.',
+      '',
+      'Follow the **self-evolution** skill instructions to extract lessons:',
+      '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
+      '2. What did you change in the successful round?',
+      '3. What is the generalizable lesson?',
+      '',
+      'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
+      'If you now have 3+ unsaved lessons, also consolidate into long-term memory via `memory_update_longterm` with section `"lessons-learned"`.',
+    ].join('\n');
+
+    void agent.handleMessage(prompt, undefined, undefined, {
+      ephemeral: true,
+      maxHistory: 10,
+    }).catch(err => {
+      log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
+    });
   }
 
   async requestRevision(taskId: string, reason: string, author?: string): Promise<Task> {

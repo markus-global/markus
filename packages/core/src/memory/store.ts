@@ -42,6 +42,13 @@ export class MemoryStore implements IMemoryStore {
     return result;
   }
 
+  getEntriesByTag(tag: string, limit?: number): MemoryEntry[] {
+    const tagged = this.entries.filter(e =>
+      Array.isArray(e.metadata?.tags) && (e.metadata!.tags as string[]).includes(tag)
+    );
+    return limit ? tagged.slice(-limit) : tagged;
+  }
+
   search(query: string): MemoryEntry[] {
     const lower = query.toLowerCase();
     return this.entries.filter((e) => e.content.toLowerCase().includes(lower));

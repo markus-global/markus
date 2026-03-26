@@ -1,0 +1,13 @@
+{
+  "type": "skill",
+  "name": "team-building",
+  "displayName": "Team Building",
+  "version": "1.0.0",
+  "description": "Design and create AI team packages — manifest format, member structure, directory layout, and deployment for Markus team artifacts",
+  "author": "markus",
+  "category": "development",
+  "tags": ["builder", "team", "design", "manifest"],
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

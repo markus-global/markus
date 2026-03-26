@@ -1,0 +1,13 @@
+{
+  "type": "skill",
+  "name": "self-evolution",
+  "displayName": "Self-Evolution",
+  "version": "1.0.0",
+  "description": "Learn from mistakes, corrections, and successful strategies — extract lessons and persist them as structured memories for future retrieval",
+  "author": "markus",
+  "category": "productivity",
+  "tags": ["learning", "reflection", "memory", "self-improvement", "evolution"],
+  "skill": {
+    "skillFile": "SKILL.md"
+  }
+}

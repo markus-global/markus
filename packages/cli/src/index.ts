@@ -22,6 +22,8 @@ import {
   TrustService,
   ScheduledTaskRunner,
   initStorage,
+  searchRegistries,
+  installSkill,
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
@@ -448,6 +450,43 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Ensure builder agents exist (idempotent — skips if already created)
   await orgService.seedBuilderAgents(firstOrgId, skillRegistry);
+
+  // Wire skill search/install callbacks so agents can discover and install remote skills
+  agentManager.setSkillSearcher(async (query) => searchRegistries(query));
+  agentManager.setSkillInstaller(async (request) => {
+    const result = await installSkill({
+      name: (request.name as string) ?? '',
+      source: request.source as string | undefined,
+      slug: request.slug as string | undefined,
+      sourceUrl: request.sourceUrl as string | undefined,
+      description: request.description as string | undefined,
+      category: request.category as string | undefined,
+      version: request.version as string | undefined,
+      githubRepo: request.githubRepo as string | undefined,
+      githubSkillPath: request.githubSkillPath as string | undefined,
+    }, skillRegistry);
+    return { installed: result.installed, name: result.name, method: result.method };
+  });
+
+  // Wire proactive user message senders for all agents
+  if (storage?.chatSessionRepo) {
+    const ws = apiServer.getWSBroadcaster();
+    for (const info of agentManager.listAgents()) {
+      agentManager.setUserMessageSender(info.id, async (message: string) => {
+        const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
+        let sessionId: string;
+        if (sessions.length > 0) {
+          sessionId = sessions[0]!.id;
+        } else {
+          const newSess = await storage.chatSessionRepo.createSession(info.id);
+          sessionId = newSess.id;
+        }
+        const msg = await storage.chatSessionRepo.appendMessage(sessionId, info.id, 'assistant', message);
+        ws.broadcastProactiveMessage(info.id, info.name, sessionId, msg.id, message);
+        return { sessionId, messageId: msg.id };
+      });
+    }
+  }
 
   // Do NOT auto-resume in_progress tasks on startup.
   // Previous behavior called taskService.resumeInProgressTasks() here,

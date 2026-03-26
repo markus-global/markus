@@ -118,6 +118,9 @@ export class Agent {
     skillName: string,
     mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
   ) => Promise<AgentToolHandler[]>;
+  private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
+  private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
+  private userMessageSender?: (message: string) => Promise<{ sessionId: string; messageId: string }>;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
@@ -793,6 +796,10 @@ export class Agent {
     this.activatedSkillInstructions.set(skillName, instructions);
   }
 
+  hasSkillInstructions(skillName: string): boolean {
+    return this.activatedSkillInstructions.has(skillName);
+  }
+
   setSkillMcpActivator(
     cb: (
       skillName: string,
@@ -800,6 +807,18 @@ export class Agent {
     ) => Promise<AgentToolHandler[]>,
   ): void {
     this.skillMcpActivator = cb;
+  }
+
+  setSkillSearcher(cb: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>): void {
+    this.skillSearcher = cb;
+  }
+
+  setSkillInstaller(cb: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>): void {
+    this.skillInstaller = cb;
+  }
+
+  setUserMessageSender(cb: (message: string) => Promise<{ sessionId: string; messageId: string }>): void {
+    this.userMessageSender = cb;
   }
 
   private getDynamicContext(): string | undefined {
@@ -2412,6 +2431,52 @@ export class Agent {
       });
     }
 
+    // Search remote registries for skills not yet installed
+    if (mode === 'search_registry') {
+      const query = (args.query as string) ?? '';
+      if (!this.skillSearcher) {
+        return JSON.stringify({ status: 'error', message: 'Remote skill search is not available.' });
+      }
+      try {
+        const results = await this.skillSearcher(query);
+        // Filter out already-installed skills
+        const installed = new Set((this.skillRegistry?.list() ?? []).map(s => s.name.toLowerCase()));
+        const available = results.filter(s => !installed.has(s.name.toLowerCase()));
+        return JSON.stringify({
+          status: 'ok',
+          results: available,
+          message: available.length > 0
+            ? `Found ${available.length} skill(s) matching "${query}". Use discover_tools({ mode: "install", ... }) to install one, then activate it.`
+            : `No uninstalled skills found for "${query}".`,
+        });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', message: `Search failed: ${String(err)}` });
+      }
+    }
+
+    // Install a skill from a remote registry
+    if (mode === 'install') {
+      const skillName = args.name as string;
+      if (!skillName) {
+        return JSON.stringify({ status: 'error', message: 'name is required for install mode.' });
+      }
+      if (!this.skillInstaller) {
+        return JSON.stringify({ status: 'error', message: 'Skill installation is not available.' });
+      }
+      try {
+        const result = await this.skillInstaller(args);
+        log.info('Skill installed via discover_tools', { agentId: this.id, skill: skillName, method: result.method });
+        return JSON.stringify({
+          status: 'ok',
+          installed: result.name,
+          method: result.method,
+          message: `Skill "${result.name}" installed successfully. Use discover_tools({ tool_names: ["${result.name}"] }) to activate it.`,
+        });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', message: `Install failed: ${String(err instanceof Error ? err.message : err)}` });
+      }
+    }
+
     // mode === 'activate' (default)
     const requested = (args.tool_names as string[]) ?? [];
     const activated: string[] = [];
@@ -2488,6 +2553,24 @@ export class Agent {
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
       return await this.handleDiscoverTools(toolCall.arguments);
+    }
+
+    // Handle send_user_message: proactively send a message to the user
+    if (toolCall.name === 'send_user_message') {
+      const message = (toolCall.arguments.message as string) ?? '';
+      if (!message) {
+        return JSON.stringify({ status: 'error', message: 'message is required' });
+      }
+      if (!this.userMessageSender) {
+        return JSON.stringify({ status: 'error', message: 'User messaging is not available.' });
+      }
+      try {
+        const result = await this.userMessageSender(message);
+        log.info('Proactive message sent to user', { agentId: this.id, sessionId: result.sessionId });
+        return JSON.stringify({ status: 'ok', sessionId: result.sessionId, messageId: result.messageId });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', message: `Failed to send message: ${String(err)}` });
+      }
     }
 
     // Enforce agent profile tool restrictions
@@ -2784,7 +2867,7 @@ export class Agent {
       'task_list', 'task_update', 'task_get', 'task_note',
       'file_read', 'agent_send_message',
       'requirement_propose', 'requirement_list',
-      'memory_save', 'memory_search', 'discover_tools',
+      'memory_save', 'memory_search', 'discover_tools', 'send_user_message',
     ];
     if (isManager) {
       baseTools.push(

@@ -131,8 +131,10 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
 export async function createDefaultSkillRegistry(options?: SkillRegistryOptions): Promise<InMemorySkillRegistry> {
   const registry = new InMemorySkillRegistry();
 
+  const builtinDirs = new Set(options?.extraSkillDirs ?? []);
   const allDirs = [...WELL_KNOWN_SKILL_DIRS, ...(options?.extraSkillDirs ?? [])];
   for (const dir of allDirs) {
+    const isBuiltin = builtinDirs.has(dir);
     const found = discoverSkillsInDir(dir);
     for (const { manifest, path: skillPath } of found) {
       if (registry.get(manifest.name)) {
@@ -140,9 +142,11 @@ export async function createDefaultSkillRegistry(options?: SkillRegistryOptions)
         continue;
       }
       manifest.sourcePath = skillPath;
+      if (isBuiltin) manifest.builtIn = true;
       registry.register({ manifest });
       log.info(`Loaded skill: ${manifest.name} from ${skillPath}`, {
         hasInstructions: !!manifest.instructions,
+        builtIn: isBuiltin,
       });
     }
   }

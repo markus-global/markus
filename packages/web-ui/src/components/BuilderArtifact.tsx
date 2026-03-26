@@ -2,13 +2,19 @@ import { useState } from 'react';
 
 export type BuilderMode = 'agent' | 'team' | 'skill';
 
-/** Detect builder mode from agent role name */
-export function getBuilderMode(role?: string): BuilderMode | null {
-  if (!role) return null;
-  const r = role.toLowerCase();
-  if (r === 'agent father' || r === 'agent-father') return 'agent';
-  if (r === 'team factory' || r === 'team-factory') return 'team';
-  if (r === 'skill architect' || r === 'skill-architect') return 'skill';
+/** Detect builder mode from agent role name or assigned building skills */
+export function getBuilderMode(role?: string, skills?: string[]): BuilderMode | null {
+  if (role) {
+    const r = role.toLowerCase();
+    if (r === 'agent father' || r === 'agent-father') return 'agent';
+    if (r === 'team factory' || r === 'team-factory') return 'team';
+    if (r === 'skill architect' || r === 'skill-architect') return 'skill';
+  }
+  if (skills) {
+    if (skills.includes('agent-building')) return 'agent';
+    if (skills.includes('team-building')) return 'team';
+    if (skills.includes('skill-building')) return 'skill';
+  }
   return null;
 }
 

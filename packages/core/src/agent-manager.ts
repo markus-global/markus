@@ -196,6 +196,9 @@ export class AgentManager {
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
+  private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
+  private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
+  private userMessageSenders?: Map<string, (message: string) => Promise<{ sessionId: string; messageId: string }>>;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
@@ -435,6 +438,19 @@ export class AgentManager {
     this.deliverableService = deliverableService;
   }
 
+  setSkillSearcher(cb: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>): void {
+    this.skillSearcher = cb;
+  }
+
+  setSkillInstaller(cb: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>): void {
+    this.skillInstaller = cb;
+  }
+
+  setUserMessageSender(agentId: string, cb: (message: string) => Promise<{ sessionId: string; messageId: string }>): void {
+    if (!this.userMessageSenders) this.userMessageSenders = new Map();
+    this.userMessageSenders.set(agentId, cb);
+  }
+
   getSharedDataDir(): string | undefined {
     return this.sharedDataDir;
   }
@@ -514,10 +530,8 @@ export class AgentManager {
       ? join(homedir(), '.markus', 'teams', request.teamId)
       : undefined;
 
-    // Builder agents get write access to builder-artifacts directory
-    const builderArtifactsDir = AgentManager.BUILDER_ROLES.has(request.roleName)
-      ? join(homedir(), '.markus', 'builder-artifacts')
-      : undefined;
+    // All agents get write access to builder-artifacts (building skills are builtin)
+    const builderArtifactsDir = join(homedir(), '.markus', 'builder-artifacts');
 
     const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
     const securityAllowlist = [workspacePath, agentRoleDir];
@@ -552,7 +566,18 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
 
-    // Inject skill instructions and connect skill MCP servers
+    // Inject builtin skill instructions into every agent (text only, no MCP)
+    if (this.skillRegistry) {
+      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
+      for (const [skillName, instructions] of builtinInstructions) {
+        agent.injectSkillInstructions(skillName, instructions);
+      }
+      if (builtinInstructions.size > 0) {
+        log.info(`Builtin skill instructions injected for agent ${id}`, { skills: [...builtinInstructions.keys()] });
+      }
+    }
+
+    // Inject explicitly assigned skill instructions and connect skill MCP servers
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -563,13 +588,12 @@ export class AgentManager {
       }
       const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
       for (const [skillName, instructions] of skillInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
-      }
-      if (skillInstructions.size > 0) {
-        log.info(`Skill instructions injected for agent ${id}`, { skills: [...skillInstructions.keys()] });
+        if (!agent.hasSkillInstructions(skillName)) {
+          agent.injectSkillInstructions(skillName, instructions);
+        }
       }
 
-      // Connect MCP servers declared by skills and activate the tools
+      // Connect MCP servers declared by explicitly assigned skills
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
@@ -605,6 +629,14 @@ export class AgentManager {
       }
       return tools;
     });
+
+    // Set skill search/install callbacks (injected by org-manager layer)
+    if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
+    if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
+    if (this.userMessageSenders) {
+      const sender = this.userMessageSenders.get(id);
+      if (sender) agent.setUserMessageSender(sender);
+    }
 
     // A2A tools — every agent can message colleagues
     const a2aContext: A2AContext = {
@@ -1064,9 +1096,8 @@ export class AgentManager {
       ? join(homedir(), '.markus', 'teams', config.teamId)
       : undefined;
 
-    const builderArtifactsDir = AgentManager.BUILDER_ROLES.has(config.roleId)
-      ? join(homedir(), '.markus', 'builder-artifacts')
-      : undefined;
+    // All agents get write access to builder-artifacts (building skills are builtin)
+    const builderArtifactsDir = join(homedir(), '.markus', 'builder-artifacts');
 
     const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
     const securityAllowlist = [workspacePath, agentRoleDir];
@@ -1099,6 +1130,15 @@ export class AgentManager {
       skillRegistry: this.skillRegistry,
     });
 
+    // Inject builtin skill instructions into every agent (text only, no MCP)
+    if (this.skillRegistry) {
+      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
+      for (const [skillName, instructions] of builtinInstructions) {
+        agent.injectSkillInstructions(skillName, instructions);
+      }
+    }
+
+    // Inject explicitly assigned skill instructions and connect skill MCP servers
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -1109,10 +1149,12 @@ export class AgentManager {
       }
       const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
       for (const [skillName, instructions] of skillInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
+        if (!agent.hasSkillInstructions(skillName)) {
+          agent.injectSkillInstructions(skillName, instructions);
+        }
       }
 
-      // Connect MCP servers declared by skills and activate the tools
+      // Connect MCP servers declared by explicitly assigned skills
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
@@ -1148,6 +1190,14 @@ export class AgentManager {
       }
       return tools;
     });
+
+    // Set skill search/install callbacks (injected by org-manager layer)
+    if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
+    if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
+    if (this.userMessageSenders) {
+      const sender = this.userMessageSenders.get(id);
+      if (sender) agent.setUserMessageSender(sender);
+    }
 
     const a2aCtx = {
       selfId: id,
