@@ -52,6 +52,8 @@ export interface SkillSection {
   skillFile: string;
   requiredPermissions?: ('shell' | 'file' | 'network' | 'browser')[];
   mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  /** If true, instructions are auto-injected into every agent (not just available for discovery) */
+  alwaysOn?: boolean;
 }
 
 // ─── Top-level manifest ─────────────────────────────────────────────────────

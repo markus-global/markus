@@ -508,6 +508,14 @@ export interface AgentMemorySummary {
   longTermMemory: string | null;
 }
 
+export interface AvailableSkillInfo {
+  name: string;
+  description: string;
+  category: string;
+  builtIn: boolean;
+  alwaysOn: boolean;
+}
+
 export interface AgentDetail {
   id: string;
   name: string;
@@ -515,6 +523,7 @@ export interface AgentDetail {
   roleDescription?: string;
   agentRole: string;
   skills: string[];
+  availableSkills?: AvailableSkillInfo[];
   activeTaskCount?: number;
   activeTaskIds?: string[];
   proficiency?: Record<string, { uses: number; successes: number; lastUsed?: string }>;

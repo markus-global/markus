@@ -743,11 +743,17 @@ interface SkillDetail {
   requiredPermissions?: string[];
 }
 
-function SkillsTab({ agent, onUpdate: _onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
+function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
   const proficiency = agent.proficiency ?? {};
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
+
+  const activeSkills = new Set(agent.skills);
+  const allSkills = agent.availableSkills ?? [];
+  const activeList = allSkills.filter(s => activeSkills.has(s.name));
+  const inactiveList = allSkills.filter(s => !activeSkills.has(s.name));
 
   const toggleDetail = async (skillName: string) => {
     if (expandedSkill === skillName) { setExpandedSkill(null); setSkillDetail(null); return; }
@@ -765,6 +771,27 @@ function SkillsTab({ agent, onUpdate: _onUpdate }: { agent: AgentDetail; onUpdat
     setDetailLoading(false);
   };
 
+  const activateSkill = async (skillName: string) => {
+    setToggling(skillName);
+    try {
+      await fetch(`/api/agents/${agent.id}/skills`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill: skillName }),
+      });
+      onUpdate();
+    } catch { /* ignore */ }
+    setToggling(null);
+  };
+
+  const deactivateSkill = async (skillName: string) => {
+    setToggling(skillName);
+    try {
+      await fetch(`/api/agents/${agent.id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' });
+      onUpdate();
+    } catch { /* ignore */ }
+    setToggling(null);
+  };
+
   const CATEGORY_COLORS: Record<string, string> = {
     development: 'bg-blue-500/15 text-blue-600', devops: 'bg-amber-500/15 text-amber-600',
     communication: 'bg-green-500/15 text-green-600', data: 'bg-brand-500/15 text-brand-500',
@@ -772,95 +799,133 @@ function SkillsTab({ agent, onUpdate: _onUpdate }: { agent: AgentDetail; onUpdat
     custom: 'bg-gray-500/15 text-fg-secondary',
   };
 
+  const renderSkillRow = (skill: { name: string; description: string; category: string; builtIn?: boolean; alwaysOn?: boolean }, isActive: boolean) => {
+    const prof = proficiency[skill.name];
+    const rate = prof && prof.uses > 0 ? Math.round(prof.successes / prof.uses * 100) : null;
+    const isExpanded = expandedSkill === skill.name;
+    const isToggling = toggling === skill.name;
+
+    return (
+      <div key={skill.name}>
+        <div
+          className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border cursor-pointer transition-all ${
+            isExpanded ? 'bg-brand-500/10 border-brand-500/40' : 'bg-surface-elevated/30 border-border-default/30 hover:border-gray-600/50'
+          }`}
+          onClick={() => toggleDetail(skill.name)}
+        >
+          <span className={`text-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{skill.name}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${CATEGORY_COLORS[skill.category] ?? CATEGORY_COLORS['custom']}`}>
+                {skill.category}
+              </span>
+              {skill.alwaysOn && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-green-500/15 text-green-500">always-on</span>
+              )}
+              {skill.builtIn && !skill.alwaysOn && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-surface-overlay/40 text-fg-tertiary">built-in</span>
+              )}
+            </div>
+            <div className="text-[10px] text-fg-tertiary mt-0.5 truncate">{skill.description}</div>
+            {prof && <div className="text-[10px] text-fg-tertiary mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
+          </div>
+          {rate !== null && (
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="w-16 h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
+              </div>
+              <span className="text-[10px] text-fg-tertiary w-8 text-right">{rate}%</span>
+            </div>
+          )}
+          {!skill.alwaysOn && (
+            <button
+              className={`px-2.5 py-1 rounded text-[10px] font-medium transition-all shrink-0 ${
+                isActive
+                  ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                  : 'bg-brand-500/10 text-brand-400 hover:bg-brand-500/20'
+              } ${isToggling ? 'opacity-50 pointer-events-none' : ''}`}
+              onClick={(e) => { e.stopPropagation(); isActive ? deactivateSkill(skill.name) : activateSkill(skill.name); }}
+            >
+              {isToggling ? '...' : isActive ? 'Deactivate' : 'Activate'}
+            </button>
+          )}
+        </div>
+
+        {isExpanded && (
+          <div className="ml-6 mt-1 mb-2 p-4 bg-surface-elevated/30 rounded-lg border border-border-default/20 space-y-3">
+            {detailLoading ? (
+              <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading skill details…</div>
+            ) : skillDetail ? (
+              <>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${CATEGORY_COLORS[skillDetail.category] ?? CATEGORY_COLORS['custom']}`}>
+                    {skillDetail.category}
+                  </span>
+                  <span className="text-[10px] text-fg-tertiary">v{skillDetail.version}</span>
+                  {skillDetail.author && <span className="text-[10px] text-fg-tertiary">by {skillDetail.author}</span>}
+                  {skillDetail.requiredPermissions?.map(p => (
+                    <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-600 text-[10px] rounded">{p}</span>
+                  ))}
+                </div>
+                {skillDetail.description && (
+                  <p className="text-xs text-fg-secondary leading-relaxed">{skillDetail.description}</p>
+                )}
+                {skillDetail.tags && skillDetail.tags.length > 0 && (
+                  <div className="flex gap-1 flex-wrap">
+                    {skillDetail.tags.map(tag => (
+                      <span key={tag} className="px-1.5 py-0.5 bg-surface-overlay/40 text-fg-tertiary text-[10px] rounded">#{tag}</span>
+                    ))}
+                  </div>
+                )}
+                {(skillDetail.toolDetails ?? skillDetail.tools ?? []).length > 0 && (
+                  <div>
+                    <div className="text-[10px] text-fg-tertiary font-semibold uppercase tracking-wider mb-2">
+                      Tools ({(skillDetail.toolDetails ?? skillDetail.tools ?? []).length})
+                    </div>
+                    <div className="space-y-1.5">
+                      {(skillDetail.toolDetails ?? skillDetail.tools ?? []).map(tool => (
+                        <div key={tool.name} className="px-3 py-2 bg-surface-secondary/50 rounded border border-border-default/20">
+                          <div className="text-xs font-medium text-brand-500">{tool.name}</div>
+                          {tool.description && <div className="text-[10px] text-fg-tertiary mt-0.5">{tool.description}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-[10px] text-fg-tertiary py-3 text-center">
+                Skill details not available (skill may not be registered in the store)
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
-      <Card title={`Skills (${agent.skills.length})`} action={
-        <span className="text-[10px] text-fg-tertiary">Assigned + built-in skills</span>
+      <Card title={`Active Skills (${activeList.length})`} action={
+        <span className="text-[10px] text-fg-tertiary">Instructions injected into agent context</span>
       }>
-        {agent.skills.length === 0 ? <Empty text="No skills configured" /> : (
+        {activeList.length === 0 ? <Empty text="No active skills" /> : (
           <div className="space-y-2">
-            {agent.skills.map(skill => {
-              const prof = proficiency[skill];
-              const rate = prof && prof.uses > 0 ? Math.round(prof.successes / prof.uses * 100) : null;
-              const isExpanded = expandedSkill === skill;
-              return (
-                <div key={skill}>
-                  <div
-                    className={`flex items-center gap-3 px-4 py-2.5 rounded-lg border cursor-pointer transition-all ${
-                      isExpanded ? 'bg-brand-500/10 border-brand-500/40' : 'bg-surface-elevated/30 border-border-default/30 hover:border-gray-600/50'
-                    }`}
-                    onClick={() => toggleDetail(skill)}
-                  >
-                    <span className={`text-sm transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium">{skill}</div>
-                      {prof && <div className="text-[10px] text-fg-tertiary mt-0.5">{prof.uses} uses · {prof.successes} successes{prof.lastUsed && ` · last ${new Date(prof.lastUsed).toLocaleDateString()}`}</div>}
-                    </div>
-                    {rate !== null && (
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="w-16 h-1.5 bg-surface-overlay rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${rate >= 80 ? 'bg-green-400' : rate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${rate}%` }} />
-                        </div>
-                        <span className="text-[10px] text-fg-tertiary w-8 text-right">{rate}%</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {isExpanded && (
-                    <div className="ml-6 mt-1 mb-2 p-4 bg-surface-elevated/30 rounded-lg border border-border-default/20 space-y-3">
-                      {detailLoading ? (
-                        <div className="text-[10px] text-fg-tertiary py-3 text-center">Loading skill details…</div>
-                      ) : skillDetail ? (
-                        <>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${CATEGORY_COLORS[skillDetail.category] ?? CATEGORY_COLORS['custom']}`}>
-                              {skillDetail.category}
-                            </span>
-                            <span className="text-[10px] text-fg-tertiary">v{skillDetail.version}</span>
-                            {skillDetail.author && <span className="text-[10px] text-fg-tertiary">by {skillDetail.author}</span>}
-                            {skillDetail.requiredPermissions?.map(p => (
-                              <span key={p} className="px-1.5 py-0.5 bg-amber-500/10 text-amber-600 text-[10px] rounded">{p}</span>
-                            ))}
-                          </div>
-                          {skillDetail.description && (
-                            <p className="text-xs text-fg-secondary leading-relaxed">{skillDetail.description}</p>
-                          )}
-                          {skillDetail.tags && skillDetail.tags.length > 0 && (
-                            <div className="flex gap-1 flex-wrap">
-                              {skillDetail.tags.map(tag => (
-                                <span key={tag} className="px-1.5 py-0.5 bg-surface-overlay/40 text-fg-tertiary text-[10px] rounded">#{tag}</span>
-                              ))}
-                            </div>
-                          )}
-                          {(skillDetail.toolDetails ?? skillDetail.tools ?? []).length > 0 && (
-                            <div>
-                              <div className="text-[10px] text-fg-tertiary font-semibold uppercase tracking-wider mb-2">
-                                Tools ({(skillDetail.toolDetails ?? skillDetail.tools ?? []).length})
-                              </div>
-                              <div className="space-y-1.5">
-                                {(skillDetail.toolDetails ?? skillDetail.tools ?? []).map(tool => (
-                                  <div key={tool.name} className="px-3 py-2 bg-surface-secondary/50 rounded border border-border-default/20">
-                                    <div className="text-xs font-medium text-brand-500">{tool.name}</div>
-                                    {tool.description && <div className="text-[10px] text-fg-tertiary mt-0.5">{tool.description}</div>}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="text-[10px] text-fg-tertiary py-3 text-center">
-                          Skill details not available (skill may not be registered in the store)
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {activeList.map(s => renderSkillRow(s, true))}
           </div>
         )}
       </Card>
+
+      {inactiveList.length > 0 && (
+        <Card title={`Available Skills (${inactiveList.length})`} action={
+          <span className="text-[10px] text-fg-tertiary">Discoverable via discover_tools</span>
+        }>
+          <div className="space-y-2">
+            {inactiveList.map(s => renderSkillRow(s, false))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

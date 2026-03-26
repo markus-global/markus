@@ -8,6 +8,7 @@
   "category": "productivity",
   "tags": ["learning", "reflection", "memory", "self-improvement", "evolution"],
   "skill": {
-    "skillFile": "SKILL.md"
+    "skillFile": "SKILL.md",
+    "alwaysOn": true
   }
 }

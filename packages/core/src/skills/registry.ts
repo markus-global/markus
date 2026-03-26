@@ -52,10 +52,24 @@ export class InMemorySkillRegistry implements SkillRegistry {
   getBuiltinInstructions(): Map<string, string> {
     const result = new Map<string, string>();
     for (const [name, skill] of this.skills) {
-      if (skill.manifest.builtIn && skill.manifest.instructions) {
+      if (skill.manifest.builtIn && skill.manifest.alwaysOn && skill.manifest.instructions) {
         result.set(name, skill.manifest.instructions);
       }
     }
     return result;
+  }
+
+  getBuiltinSkillCatalog(): Array<{ name: string; description: string; category: string }> {
+    const catalog: Array<{ name: string; description: string; category: string }> = [];
+    for (const [, skill] of this.skills) {
+      if (skill.manifest.builtIn && !skill.manifest.alwaysOn) {
+        catalog.push({
+          name: skill.manifest.name,
+          description: skill.manifest.description,
+          category: skill.manifest.category,
+        });
+      }
+    }
+    return catalog;
   }
 }

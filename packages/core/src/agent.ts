@@ -114,6 +114,7 @@ export class Agent {
   private recentToolNames: string[] = [];
   private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
   private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
+  private availableSkillCatalog: Array<{ name: string; description: string; category: string }> = [];
   private skillMcpActivator?: (
     skillName: string,
     mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
@@ -808,6 +809,18 @@ export class Agent {
     return [...names];
   }
 
+  deactivateSkill(skillName: string): void {
+    this.activatedSkillInstructions.delete(skillName);
+  }
+
+  setAvailableSkillCatalog(catalog: Array<{ name: string; description: string; category: string }>): void {
+    this.availableSkillCatalog = catalog;
+  }
+
+  getAvailableSkillCatalog(): Array<{ name: string; description: string; category: string }> {
+    return this.availableSkillCatalog;
+  }
+
   setSkillMcpActivator(
     cb: (
       skillName: string,
@@ -1170,6 +1183,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
 
@@ -1531,6 +1545,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
 
@@ -2031,6 +2046,7 @@ export class Agent {
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      availableSkills: this.availableSkillCatalog,
       ...this.getTeamContextParams(),
     });
 

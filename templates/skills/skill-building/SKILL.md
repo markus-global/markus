@@ -139,6 +139,7 @@ file_write("~/.markus/builder-artifacts/skills/git-changelog/README.md", "# Git 
 - **`skillFile`**: Always `"SKILL.md"` — the entry point instruction document
 - **`requiredPermissions`**: (optional) Array of permissions: `"shell"`, `"file"`, `"network"`, `"browser"`
 - **`mcpServers`**: (optional) Map of MCP server name → config. Each config has `command`, `args?`, `env?`. Use `${SKILL_DIR}` in args/env to reference the skill directory.
+- **`alwaysOn`**: (optional, boolean) If `true`, the skill's instructions are automatically injected into **every** agent's context at startup. Only use this for foundational skills that all agents must always follow (e.g., `self-evolution`). Default is `false` — non-alwaysOn built-in skills are listed as "available" in the agent's identity section and can be activated on-demand via `discover_tools`.
 
 ## After Creation
 

@@ -152,6 +152,7 @@ export class ContextEngine {
     teamNorms?: string;
     teamDataDir?: string;
     isTeamManager?: boolean;
+    availableSkills?: Array<{ name: string; description: string; category: string }>;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -538,6 +539,7 @@ export class ContextEngine {
     agentName: string;
     role: RoleTemplate;
     identity?: IdentityContext;
+    availableSkills?: Array<{ name: string; description: string; category: string }>;
   }): string {
     const lines: string[] = ['\n## Your Identity'];
 
@@ -549,8 +551,14 @@ export class ContextEngine {
         `- Position: ${self.agentRole === 'manager' ? 'Organization Manager — you lead the AI team' : 'Team Member'}`
       );
       if (self.skills.length > 0) {
-        lines.push(`- Skills: ${self.skills.join(', ')}`);
-        lines.push(`  (Use \`discover_tools\` with skill names to activate their tools, or \`discover_tools({ mode: "list_skills" })\` to browse all available skills)`);
+        lines.push(`- Active Skills: ${self.skills.join(', ')}`);
+      }
+      if (opts.availableSkills && opts.availableSkills.length > 0) {
+        lines.push(`- Available Skills (activate via \`discover_tools\`):`);
+        for (const s of opts.availableSkills) {
+          lines.push(`  - **${s.name}** [${s.category}]: ${s.description}`);
+        }
+        lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to activate a skill when needed.`);
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);
