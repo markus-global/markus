@@ -503,12 +503,16 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     }
   }
 
-  // Do NOT auto-resume in_progress tasks on startup.
-  // Previous behavior called taskService.resumeInProgressTasks() here,
-  // which caused all agents to immediately start working without approval.
-  // With the governance framework, tasks should only resume via explicit
-  // human action through the UI or API (/api/system/resume-all).
-  log.info('Skipping auto-resume of in-progress tasks (governance mode)');
+  // Auto-resume in_progress tasks after agents are fully loaded.
+  // Tasks retain their execution history in DB (task_logs + comments),
+  // so the agent receives full previous context on resume.
+  setTimeout(async () => {
+    try {
+      await taskService.resumeInProgressTasks();
+    } catch (err) {
+      log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
+    }
+  }, 3000);
 
   // Wire External Agent Gateway for OpenClaw integration
   const gatewaySecret = config.security?.gatewaySecret ?? process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
