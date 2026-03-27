@@ -124,7 +124,6 @@ export interface TaskServiceBridge {
     reviewerAgentId: string;
     requirementId?: string;
     projectId?: string;
-    iterationId?: string;
     blockedBy?: string[];
     createdBy?: string;
     creatorRole?: string;
@@ -800,7 +799,6 @@ export class AgentManager {
             reviewerAgentId: params.reviewerAgentId,
             requirementId: params.requirementId,
             projectId: params.projectId,
-            iterationId: params.iterationId,
             blockedBy: params.blockedBy,
             taskType: params.taskType,
             scheduleConfig: params.scheduleConfig,

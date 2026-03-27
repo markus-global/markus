@@ -100,7 +100,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   deliverables TEXT,
   notes TEXT DEFAULT '[]',
   project_id TEXT,
-  iteration_id TEXT,
   created_by TEXT,
   updated_by TEXT,
   started_at TEXT,
@@ -200,7 +199,6 @@ CREATE TABLE IF NOT EXISTS requirements (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES organizations(id),
   project_id TEXT,
-  iteration_id TEXT,
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
@@ -224,7 +222,6 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   description TEXT,
   status TEXT NOT NULL DEFAULT 'active',
-  iteration_model TEXT NOT NULL DEFAULT 'kanban',
   repositories TEXT DEFAULT '[]',
   team_ids TEXT DEFAULT '[]',
   governance_policy TEXT,
@@ -235,21 +232,6 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id);
-
-CREATE TABLE IF NOT EXISTS iterations (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id),
-  name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'planning',
-  goal TEXT,
-  start_date TEXT,
-  end_date TEXT,
-  metrics TEXT,
-  review_report TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_iterations_project ON iterations(project_id);
 
 CREATE TABLE IF NOT EXISTS agent_knowledge (
   id TEXT PRIMARY KEY,
@@ -444,7 +426,6 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
     { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
     { table: 'tasks', column: 'project_id', sql: "ALTER TABLE tasks ADD COLUMN project_id TEXT" },
-    { table: 'tasks', column: 'iteration_id', sql: "ALTER TABLE tasks ADD COLUMN iteration_id TEXT" },
     { table: 'tasks', column: 'created_by', sql: "ALTER TABLE tasks ADD COLUMN created_by TEXT" },
     { table: 'tasks', column: 'updated_by', sql: "ALTER TABLE tasks ADD COLUMN updated_by TEXT" },
     { table: 'tasks', column: 'task_type', sql: "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'standard'" },
@@ -700,7 +681,6 @@ export class SqliteTaskRepo {
     requirementId?: string;
     blockedBy?: string[];
     projectId?: string;
-    iterationId?: string;
     createdBy?: string;
     dueAt?: Date;
     taskType?: string;
@@ -710,8 +690,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -728,7 +708,6 @@ export class SqliteTaskRepo {
         data.requirementId ?? null,
         toJson(data.blockedBy ?? []),
         data.projectId ?? null,
-        data.iterationId ?? null,
         data.createdBy ?? null,
         data.dueAt?.toISOString() ?? null,
         data.taskType ?? 'standard',
@@ -773,7 +752,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -800,10 +779,6 @@ export class SqliteTaskRepo {
     if (data.projectId !== undefined) {
       sets.push('project_id = ?');
       vals.push(data.projectId);
-    }
-    if (data.iterationId !== undefined) {
-      sets.push('iteration_id = ?');
-      vals.push(data.iterationId);
     }
     if (data.requirementId !== undefined) {
       sets.push('requirement_id = ?');
@@ -852,7 +827,7 @@ export class SqliteTaskRepo {
       .run(toJson(deliverables), now(), id);
   }
 
-  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; iterationId?: string; taskType?: string }) {
+  listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; taskType?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
     const vals: unknown[] = [orgId];
     if (filters?.status) {
@@ -866,10 +841,6 @@ export class SqliteTaskRepo {
     if (filters?.projectId) {
       q += ' AND project_id = ?';
       vals.push(filters.projectId);
-    }
-    if (filters?.iterationId) {
-      q += ' AND iteration_id = ?';
-      vals.push(filters.iterationId);
     }
     if (filters?.taskType) {
       q += ' AND task_type = ?';
@@ -911,7 +882,6 @@ export class SqliteTaskRepo {
     executionRound?: number;
     requirementId?: string;
     projectId?: string;
-    iterationId?: string;
     createdBy?: string;
     blockedBy?: string[];
     dueAt?: Date;
@@ -922,8 +892,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, iteration_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          status = excluded.status,
@@ -945,7 +915,6 @@ export class SqliteTaskRepo {
         data.requirementId ?? null,
         toJson(data.blockedBy ?? []),
         data.projectId ?? null,
-        data.iterationId ?? null,
         data.createdBy ?? null,
         data.dueAt?.toISOString() ?? null,
         data.taskType ?? 'standard',
@@ -978,7 +947,6 @@ export class SqliteTaskRepo {
       deliverables: fromJson(r['deliverables'] as string),
       notes: fromJson(r['notes'] as string),
       projectId: r['project_id'] as string | null,
-      iterationId: r['iteration_id'] as string | null,
       createdBy: r['created_by'] as string | null,
       updatedBy: r['updated_by'] as string | null,
       startedAt: toDate(r['started_at'] as string),
@@ -1005,7 +973,6 @@ export class SqliteRequirementRepo {
     source: string;
     createdBy: string;
     projectId?: string;
-    iterationId?: string;
     approvedBy?: string;
     approvedAt?: Date;
     tags?: string[];
@@ -1013,8 +980,8 @@ export class SqliteRequirementRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, iteration_id, approved_by, approved_at, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO requirements (id, org_id, title, description, status, priority, source, created_by, project_id, approved_by, approved_at, tags, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1026,7 +993,6 @@ export class SqliteRequirementRepo {
         data.source,
         data.createdBy,
         data.projectId ?? null,
-        data.iterationId ?? null,
         data.approvedBy ?? null,
         data.approvedAt?.toISOString() ?? null,
         toJson(data.tags ?? []),
@@ -1062,7 +1028,7 @@ export class SqliteRequirementRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
   ) {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -1071,7 +1037,6 @@ export class SqliteRequirementRepo {
     if (data.priority !== undefined) { sets.push('priority = ?'); vals.push(data.priority); }
     if (data.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(data.tags)); }
     if (data.projectId !== undefined) { sets.push('project_id = ?'); vals.push(data.projectId); }
-    if (data.iterationId !== undefined) { sets.push('iteration_id = ?'); vals.push(data.iterationId); }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
     vals.push(now());
@@ -1079,13 +1044,12 @@ export class SqliteRequirementRepo {
     this.db.prepare(`UPDATE requirements SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
 
-  listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string; iterationId?: string }) {
+  listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string }) {
     let q = 'SELECT * FROM requirements WHERE org_id = ?';
     const vals: unknown[] = [orgId];
     if (filters?.status) { q += ' AND status = ?'; vals.push(filters.status); }
     if (filters?.source) { q += ' AND source = ?'; vals.push(filters.source); }
     if (filters?.projectId) { q += ' AND project_id = ?'; vals.push(filters.projectId); }
-    if (filters?.iterationId) { q += ' AND iteration_id = ?'; vals.push(filters.iterationId); }
     q += ' ORDER BY created_at DESC';
     return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
   }
@@ -1099,7 +1063,6 @@ export class SqliteRequirementRepo {
       id: r['id'],
       orgId: r['org_id'],
       projectId: r['project_id'] as string | null,
-      iterationId: r['iteration_id'] as string | null,
       title: r['title'],
       description: r['description'],
       status: r['status'],
@@ -1125,7 +1088,6 @@ export class SqliteProjectRepo {
     name: string;
     description?: string;
     status?: string;
-    iterationModel?: string;
     repositories?: unknown[];
     teamIds?: string[];
     governancePolicy?: unknown;
@@ -1136,12 +1098,12 @@ export class SqliteProjectRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, org_id, name, description, status, iteration_model, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (id, org_id, name, description, status, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id, data.orgId, data.name, data.description ?? '',
-        data.status ?? 'active', data.iterationModel ?? 'kanban',
+        data.status ?? 'active',
         toJson(data.repositories ?? []), toJson(data.teamIds ?? []),
         toJson(data.governancePolicy), toJson(data.archivePolicy),
         toJson(data.reportSchedule), toJson(data.onboardingConfig),
@@ -1158,11 +1120,11 @@ export class SqliteProjectRepo {
   async update(id: string, data: Record<string, unknown>) {
     const sets: string[] = [];
     const vals: unknown[] = [];
-    const stringFields = ['name', 'description', 'status', 'iteration_model'] as const;
+    const stringFields = ['name', 'description', 'status'] as const;
     const jsonFields = ['repositories', 'team_ids', 'governance_policy', 'archive_policy', 'report_schedule', 'onboarding_config'] as const;
     const fieldMap: Record<string, string> = {
       name: 'name', description: 'description', status: 'status',
-      iterationModel: 'iteration_model', repositories: 'repositories',
+      repositories: 'repositories',
       teamIds: 'team_ids', governancePolicy: 'governance_policy',
       archivePolicy: 'archive_policy', reportSchedule: 'report_schedule',
       onboardingConfig: 'onboarding_config',
@@ -1181,7 +1143,6 @@ export class SqliteProjectRepo {
   }
 
   async delete(id: string) {
-    this.db.prepare('DELETE FROM iterations WHERE project_id = ?').run(id);
     this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
   }
 
@@ -1200,90 +1161,12 @@ export class SqliteProjectRepo {
       name: r['name'] as string,
       description: r['description'] as string | null,
       status: r['status'] as string,
-      iterationModel: r['iteration_model'] as string,
       repositories: fromJson<unknown[]>(r['repositories'] as string) ?? [],
       teamIds: fromJson<string[]>(r['team_ids'] as string) ?? [],
       governancePolicy: fromJson(r['governance_policy'] as string),
       archivePolicy: fromJson(r['archive_policy'] as string),
       reportSchedule: fromJson(r['report_schedule'] as string),
       onboardingConfig: fromJson(r['onboarding_config'] as string),
-      createdAt: r['created_at'] as string,
-      updatedAt: r['updated_at'] as string,
-    };
-  }
-}
-
-export class SqliteIterationRepo {
-  constructor(private db: Database.Database) {}
-
-  async create(data: {
-    id: string;
-    projectId: string;
-    name: string;
-    status?: string;
-    goal?: string;
-    startDate?: string;
-    endDate?: string;
-  }) {
-    const ts = now();
-    this.db
-      .prepare(
-        `INSERT INTO iterations (id, project_id, name, status, goal, start_date, end_date, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(data.id, data.projectId, data.name, data.status ?? 'planning', data.goal ?? null, data.startDate ?? null, data.endDate ?? null, ts, ts);
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM iterations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  async updateStatus(id: string, status: string) {
-    this.db.prepare('UPDATE iterations SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
-  }
-
-  async update(id: string, data: Record<string, unknown>) {
-    const sets: string[] = [];
-    const vals: unknown[] = [];
-    const fieldMap: Record<string, string> = {
-      name: 'name', status: 'status', goal: 'goal',
-      startDate: 'start_date', endDate: 'end_date',
-      metrics: 'metrics', reviewReport: 'review_report',
-    };
-    for (const [key, col] of Object.entries(fieldMap)) {
-      if (data[key] !== undefined) {
-        sets.push(`${col} = ?`);
-        vals.push(['metrics', 'reviewReport'].includes(key) ? toJson(data[key]) : data[key]);
-      }
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db.prepare(`UPDATE iterations SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-
-  listByProject(projectId: string) {
-    return (this.db.prepare('SELECT * FROM iterations WHERE project_id = ? ORDER BY created_at DESC').all(projectId) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  async delete(id: string) {
-    this.db.prepare('DELETE FROM iterations WHERE id = ?').run(id);
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'] as string,
-      projectId: r['project_id'] as string,
-      name: r['name'] as string,
-      status: r['status'] as string,
-      goal: r['goal'] as string | null,
-      startDate: r['start_date'] as string | null,
-      endDate: r['end_date'] as string | null,
-      metrics: fromJson(r['metrics'] as string),
-      reviewReport: fromJson(r['review_report'] as string),
       createdAt: r['created_at'] as string,
       updatedAt: r['updated_at'] as string,
     };

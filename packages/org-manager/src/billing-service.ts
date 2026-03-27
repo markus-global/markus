@@ -14,7 +14,6 @@ export interface UsageRecord {
   metadata?: Record<string, unknown>;
   taskId?: string;
   projectId?: string;
-  iterationId?: string;
 }
 
 export interface UsageSummary {

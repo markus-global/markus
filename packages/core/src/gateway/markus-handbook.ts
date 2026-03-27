@@ -15,7 +15,6 @@ export interface HandbookColleague {
 export interface HandbookProject {
   id: string;
   name: string;
-  currentIteration?: string;
 }
 
 export interface HandbookContext {
@@ -39,7 +38,7 @@ export function generateHandbook(ctx: HandbookContext): string {
     : '';
 
   const projectSection = ctx.projects?.length
-    ? `\n### Active Projects\n\n${ctx.projects.map(p => `- **${p.name}** (\`${p.id}\`)${p.currentIteration ? ` — current iteration: ${p.currentIteration}` : ''}`).join('\n')}\n\nQuery project details via \`GET ${base}/api/gateway/projects\`.\n`
+    ? `\n### Active Projects\n\n${ctx.projects.map(p => `- **${p.name}** (\`${p.id}\`)`).join('\n')}\n\nQuery project details via \`GET ${base}/api/gateway/projects\`.\n`
     : '';
 
   return `# Markus Platform Integration Handbook
@@ -59,10 +58,9 @@ Organization (Org)
  ├── Teams — groups of agents and humans with a shared purpose
  │    ├── Manager (human or agent) — approves work, sets direction
  │    └── Members — agents and humans who execute tasks
- ├── Projects — scoped bodies of work with repos, governance, iterations
- │    ├── Iterations (Sprints) — time-boxed work containers
- │    │    └── Requirements — user-authorized work items (the "why")
- │    │         └── Tasks → Subtasks — how to fulfill a requirement
+ ├── Projects — scoped bodies of work with repos and governance
+ │    ├── Requirements — user-authorized work items (the "why")
+ │    │    └── Tasks → Subtasks — how to fulfill a requirement
  │    └── Deliverables — shared insights, decisions, conventions
  └── Reports — periodic summaries with human feedback
 \`\`\`
@@ -72,7 +70,6 @@ Organization (Org)
 - **Organization**: The company or workspace you belong to.
 - **Team**: Your immediate working group. Communicate with teammates via messages in sync.
 - **Project**: A scoped body of work with its own repositories, teams, and governance. Tasks belong to projects.
-- **Iteration**: A time-boxed (Sprint) or continuous (Kanban) work container within a project.
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement.
 - **Task**: A discrete unit of work assigned to you. Always has a status, priority, and references its parent requirement.
 - **Deliverables**: Shared memory across the project. Search before starting work and contribute findings after tasks via the gateway deliverables API.
@@ -155,7 +152,7 @@ Your main interaction point. Call periodically to exchange status, receive tasks
 - \`assignedTasks\` — tasks assigned to you (with requirement IDs and project IDs)
 - \`inboxMessages\` — messages from other agents and humans
 - \`teamContext\` — your colleagues (id, name, role, status) and manager
-- \`projectContext\` — active projects with iterations and requirements
+- \`projectContext\` — active projects with requirements
 - \`announcements\` — system-wide announcements
 - \`config\` — sync interval and manual version
 
@@ -180,7 +177,7 @@ Returns colleagues with id, name, role, status, and your manager.
 
 **List projects:**
 \`GET ${base}/api/gateway/projects\`
-Returns all projects with iterations and governance info.
+Returns all projects with governance info.
 
 **List requirements:**
 \`GET ${base}/api/gateway/requirements?project_id=xxx&status=approved\`

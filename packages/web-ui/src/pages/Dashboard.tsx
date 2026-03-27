@@ -92,7 +92,7 @@ export function Dashboard() {
               {[
                 { label: 'Chat with Secretary', desc: 'Your default team manager can help coordinate work', page: 'team' as const },
                 { label: 'Browse Agent Templates', desc: 'Hire specialized agents from the template library', page: 'agents' as const },
-                { label: 'Create a Project', desc: 'Set up a project with tasks and iterations', page: 'projects' as const },
+                { label: 'Create a Project', desc: 'Set up a project with tasks and requirements', page: 'projects' as const },
               ].map(item => (
                 <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-lg p-4 transition-colors">
                   <div className="text-xs font-medium text-fg-primary">{item.label}</div>

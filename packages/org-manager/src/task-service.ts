@@ -54,7 +54,6 @@ export interface CreateTaskRequest {
   timeoutMs?: number;
   requirementId?: string;
   projectId?: string;
-  iterationId?: string;
   createdBy?: string;
   creatorRole?: 'worker' | 'manager' | 'human';
   approvedVia?: string;
@@ -681,6 +680,29 @@ export class TaskService {
       }
     }
 
+    // Build goal ancestry context: show the requirement and project that spawned this task
+    let goalContext = '';
+    if (task.requirementId && this.requirementService) {
+      const req = this.requirementService.getRequirement(task.requirementId);
+      if (req) {
+        const goalLines: string[] = ['## Goal Context'];
+        if (task.projectId && this.projectService) {
+          const project = this.projectService.getProject(task.projectId);
+          if (project) {
+            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, 300)}`);
+          }
+        }
+        goalLines.push(`**Requirement:** ${req.title}`);
+        if (req.description) {
+          goalLines.push(`**Requirement Description:** ${req.description.slice(0, 500)}`);
+        }
+        goalLines.push('');
+        goalLines.push('Keep this goal context in mind. Your task should directly advance this requirement.');
+        goalLines.push('', '---', '');
+        goalContext = goalLines.join('\n');
+      }
+    }
+
     // Include task notes even when there's no previous execution context — keep last 20
     let notesSection = '';
     if (!prevContext && task.notes?.length) {
@@ -749,8 +771,8 @@ export class TaskService {
     }
 
     const taskDescription = prevContext
-      ? `${retryNotice}${prevContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`
-      : `${scheduleSection}${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
+      ? `${retryNotice}${prevContext}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`
+      : `${scheduleSection}${notesSection}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
     // Workspace management is delegated to the agent — the agent creates and
     // manages its own worktree/branch during execution. Task-service only
@@ -804,7 +826,6 @@ export class TaskService {
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,
-          iterationId: task.iterationId,
           createdBy: task.createdBy,
           blockedBy: task.blockedBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
@@ -1103,7 +1124,6 @@ export class TaskService {
           updatedAt:
             row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
           projectId: row.projectId ?? undefined,
-          iterationId: row.iterationId ?? undefined,
           createdBy: (row as any).createdBy ?? undefined,
           updatedBy: (row as any).updatedBy ?? undefined,
           startedAt: toIso((row as any).startedAt),
@@ -1183,15 +1203,12 @@ export class TaskService {
       }
     }
 
-    // ── Auto-inherit projectId/iterationId from the linked requirement ──
+    // ── Auto-inherit projectId from the linked requirement ──
     if (request.requirementId && this.requirementService) {
       const req = this.requirementService.getRequirement(request.requirementId);
       if (req) {
         if (!request.projectId && req.projectId) {
           request.projectId = req.projectId;
-        }
-        if (!request.iterationId && req.iterationId) {
-          request.iterationId = req.iterationId;
         }
       }
     }
@@ -1218,7 +1235,6 @@ export class TaskService {
       dueAt: request.dueAt,
       timeoutMs: request.timeoutMs,
       projectId: request.projectId,
-      iterationId: request.iterationId,
       createdBy: request.createdBy,
       approvedVia: undefined,
       planReportId: request.planReportId,
@@ -1242,7 +1258,6 @@ export class TaskService {
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,
-          iterationId: task.iterationId,
           createdBy: task.createdBy,
           blockedBy: task.blockedBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
@@ -1548,7 +1563,6 @@ export class TaskService {
     assignedAgentId?: string;
     priority?: TaskPriority;
     projectId?: string;
-    iterationId?: string;
     requirementId?: string;
   }): Task[] {
     let result = [...this.tasks.values()];
@@ -1558,7 +1572,6 @@ export class TaskService {
       result = result.filter(t => t.assignedAgentId === filters.assignedAgentId);
     if (filters?.priority) result = result.filter(t => t.priority === filters.priority);
     if (filters?.projectId) result = result.filter(t => t.projectId === filters.projectId);
-    if (filters?.iterationId) result = result.filter(t => t.iterationId === filters.iterationId);
     if (filters?.requirementId) result = result.filter(t => t.requirementId === filters.requirementId);
     return result;
   }
@@ -1567,7 +1580,7 @@ export class TaskService {
     return [...this.tasks.values()].filter(t => t.assignedAgentId === agentId);
   }
 
-  getTaskBoard(orgId: string, filters?: { projectId?: string; iterationId?: string }): Record<TaskStatus, Task[]> {
+  getTaskBoard(orgId: string, filters?: { projectId?: string }): Record<TaskStatus, Task[]> {
     const board: Record<TaskStatus, Task[]> = {
       pending_approval: [],
       in_progress: [],
@@ -1582,7 +1595,6 @@ export class TaskService {
     for (const task of this.tasks.values()) {
       if (task.orgId !== orgId) continue;
       if (filters?.projectId && task.projectId !== filters.projectId) continue;
-      if (filters?.iterationId && task.iterationId !== filters.iterationId) continue;
       const bucket = board[task.status];
       if (bucket) {
         bucket.push(task);
@@ -1702,7 +1714,7 @@ export class TaskService {
 
   updateTask(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string },
+    data: { title?: string; description?: string; priority?: TaskPriority; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string },
     updatedBy?: string
   ): Task {
     const task = this.tasks.get(id);
@@ -1711,7 +1723,6 @@ export class TaskService {
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
-    if (data.iterationId !== undefined) task.iterationId = data.iterationId ?? undefined;
     if (data.requirementId !== undefined) task.requirementId = data.requirementId ?? undefined;
     if (data.reviewerAgentId !== undefined) task.reviewerAgentId = data.reviewerAgentId;
 
@@ -2370,8 +2381,7 @@ export class TaskService {
       metadata: { workerAgentId: task.assignedAgentId },
     });
 
-    // Trigger self-evolution reflection for tasks that went through revision cycles
-    if ((task.executionRound ?? 1) > 1 && task.assignedAgentId && this.agentManager) {
+    if (task.assignedAgentId && this.agentManager) {
       this.triggerPostTaskReflection(task);
     }
 
@@ -2379,28 +2389,58 @@ export class TaskService {
     return task;
   }
 
-  /**
-   * Fire-and-forget: ask the agent to reflect on a task that required revision cycles,
-   * extracting lessons via the self-evolution skill.
-   */
+  private reflectionCountByAgent = new Map<string, { date: string; count: number }>();
+
+  private isReflectionRateLimited(agentId: string): boolean {
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.reflectionCountByAgent.get(agentId);
+    if (!entry || entry.date !== today) {
+      this.reflectionCountByAgent.set(agentId, { date: today, count: 1 });
+      return false;
+    }
+    if (entry.count >= 5) return true;
+    entry.count++;
+    return false;
+  }
+
   private triggerPostTaskReflection(task: Task): void {
     const agent = this.agentManager?.getAgent(task.assignedAgentId);
     if (!agent) return;
 
-    const prompt = [
-      '[SELF-EVOLUTION — Post-Task Reflection]',
-      '',
-      `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
-      'This means the task required revision — something in your initial approach needed correction.',
-      '',
-      'Follow the **self-evolution** skill instructions to extract lessons:',
-      '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
-      '2. What did you change in the successful round?',
-      '3. What is the generalizable lesson?',
-      '',
-      'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
-      'If you now have 3+ unsaved lessons, also consolidate into long-term memory via `memory_update_longterm` with section `"lessons-learned"`.',
-    ].join('\n');
+    if (this.isReflectionRateLimited(task.assignedAgentId)) {
+      log.debug('Skipping reflection — daily limit reached', { agentId: task.assignedAgentId });
+      return;
+    }
+
+    const hadRevisions = (task.executionRound ?? 1) > 1;
+
+    const prompt = hadRevisions
+      ? [
+          '[SELF-EVOLUTION — Post-Task Reflection (Revision)]',
+          '',
+          `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
+          'This means the task required revision — something in your initial approach needed correction.',
+          '',
+          'Follow the **self-evolution** skill instructions to extract lessons:',
+          '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
+          '2. What did you change in the successful round?',
+          '3. What is the generalizable lesson?',
+          '',
+          'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
+          'If you now have 3+ unsaved lessons, also consolidate into long-term memory via `memory_update_longterm` with section `"lessons-learned"`.',
+        ].join('\n')
+      : [
+          '[SELF-EVOLUTION — Post-Task Reflection (Success)]',
+          '',
+          `Task "${task.title}" (ID: ${task.id}) was completed successfully on the first attempt.`,
+          '',
+          'Briefly reflect on what made this task go well:',
+          '1. Were there tools, patterns, or approaches that proved especially effective?',
+          '2. Is there a reusable technique or SOP worth remembering for similar future tasks?',
+          '',
+          'If you identify a meaningful insight, save it using `memory_save` with tags `["lesson", "best-practice", ...]`.',
+          'If nothing noteworthy stands out, it is fine to skip saving.',
+        ].join('\n');
 
     void agent.handleMessage(prompt, undefined, undefined, {
       ephemeral: true,
@@ -2781,6 +2821,29 @@ export class TaskService {
       }
     }
 
+    // Build goal ancestry context (same as runTask)
+    let goalContext = '';
+    if (task.requirementId && this.requirementService) {
+      const req = this.requirementService.getRequirement(task.requirementId);
+      if (req) {
+        const goalLines: string[] = ['## Goal Context'];
+        if (task.projectId && this.projectService) {
+          const project = this.projectService.getProject(task.projectId);
+          if (project) {
+            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, 300)}`);
+          }
+        }
+        goalLines.push(`**Requirement:** ${req.title}`);
+        if (req.description) {
+          goalLines.push(`**Requirement Description:** ${req.description.slice(0, 500)}`);
+        }
+        goalLines.push('');
+        goalLines.push('Keep this goal context in mind. Your task should directly advance this requirement.');
+        goalLines.push('', '---', '');
+        goalContext = goalLines.join('\n');
+      }
+    }
+
     // Notes section only (no previous execution context)
     let notesSection = '';
     if (task.notes?.length) {
@@ -2820,7 +2883,7 @@ export class TaskService {
       '',
     ].join('\n');
 
-    const taskDescription = `${freshRetryHeader}${notesSection}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
+    const taskDescription = `${freshRetryHeader}${notesSection}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
     // Ensure task row exists in DB before writing child rows (task_logs)
     if (this.taskRepo) {
@@ -2837,7 +2900,6 @@ export class TaskService {
           executionRound: task.executionRound,
           requirementId: task.requirementId,
           projectId: task.projectId,
-          iterationId: task.iterationId,
           createdBy: task.createdBy,
           blockedBy: task.blockedBy,
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,

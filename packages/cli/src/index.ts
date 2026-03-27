@@ -412,9 +412,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (storage?.projectRepo) {
     projectService.setProjectRepo(storage.projectRepo);
   }
-  if (storage?.iterationRepo) {
-    projectService.setIterationRepo(storage.iterationRepo);
-  }
   await projectService.loadFromDB('default');
   const knowledgeStore = new FileKnowledgeStore(join(homedir(), '.markus', 'knowledge'));
   const knowledgeService = new KnowledgeService(knowledgeStore);

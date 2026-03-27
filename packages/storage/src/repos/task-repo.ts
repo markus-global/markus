@@ -28,7 +28,6 @@ export class TaskRepo {
     executionRound?: number;
     requirementId?: string;
     projectId?: string;
-    iterationId?: string;
     createdBy?: string;
     blockedBy?: string[];
     dueAt?: Date;
@@ -50,7 +49,6 @@ export class TaskRepo {
         executionRound: data.executionRound ?? 1,
         requirementId: data.requirementId ?? null,
         projectId: data.projectId ?? null,
-        iterationId: data.iterationId ?? null,
         createdBy: data.createdBy ?? null,
         blockedBy: data.blockedBy ?? [],
         dueAt: data.dueAt ?? null,
@@ -86,7 +84,7 @@ export class TaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; blockedBy?: string[]; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
+    data: { title?: string; description?: string; priority?: TaskPriority; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
@@ -95,7 +93,6 @@ export class TaskRepo {
     if (data.notes !== undefined) updates['notes'] = data.notes;
     if (data.blockedBy !== undefined) updates['blockedBy'] = data.blockedBy;
     if (data.projectId !== undefined) updates['projectId'] = data.projectId;
-    if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
     if (data.requirementId !== undefined) updates['requirementId'] = data.requirementId;
     if (data.scheduleConfig !== undefined) updates['scheduleConfig'] = data.scheduleConfig;
     if (data.reviewerAgentId !== undefined) updates['reviewerAgentId'] = data.reviewerAgentId;
@@ -129,13 +126,12 @@ export class TaskRepo {
     await this.db.update(tasks).set({ executionRound: round, updatedAt: new Date() }).where(eq(tasks.id, id));
   }
 
-  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; iterationId?: string; taskType?: string }) {
+  async listByOrg(orgId: string, filters?: { status?: TaskStatus; assignedAgentId?: string; projectId?: string; taskType?: string }) {
     const conditions = [eq(tasks.orgId, orgId)];
     if (filters?.status) conditions.push(eq(tasks.status, filters.status));
     if (filters?.assignedAgentId)
       conditions.push(eq(tasks.assignedAgentId, filters.assignedAgentId));
     if (filters?.projectId) conditions.push(eq(tasks.projectId, filters.projectId));
-    if (filters?.iterationId) conditions.push(eq(tasks.iterationId, filters.iterationId));
     if (filters?.taskType) conditions.push(eq(tasks.taskType, filters.taskType));
     return this.db
       .select()
@@ -167,7 +163,6 @@ export class TaskRepo {
     executionRound?: number;
     requirementId?: string;
     projectId?: string;
-    iterationId?: string;
     createdBy?: string;
     blockedBy?: string[];
     dueAt?: Date;
@@ -189,7 +184,6 @@ export class TaskRepo {
         executionRound: data.executionRound ?? 1,
         requirementId: data.requirementId ?? null,
         projectId: data.projectId ?? null,
-        iterationId: data.iterationId ?? null,
         createdBy: data.createdBy ?? null,
         blockedBy: data.blockedBy ?? [],
         dueAt: data.dueAt ?? null,

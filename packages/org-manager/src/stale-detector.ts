@@ -7,14 +7,12 @@ export interface StaleConfig {
   maxInProgressMs: number;
   maxReviewWaitMs: number;
   maxAssignedUnstartedMs: number;
-  iterationOverdueGraceDays: number;
   maxBranchDivergenceCommits: number;
 }
 
 export interface StaleItem {
-  type: 'stuck_task' | 'review_stale' | 'unstarted_task' | 'iteration_overdue' | 'branch_diverged';
+  type: 'stuck_task' | 'review_stale' | 'unstarted_task' | 'branch_diverged';
   taskId?: string;
-  iterationId?: string;
   ageMs: number;
   agentId?: string;
   message: string;
@@ -24,7 +22,6 @@ const DEFAULT_CONFIG: StaleConfig = {
   maxInProgressMs: 24 * 60 * 60 * 1000,
   maxReviewWaitMs: 12 * 60 * 60 * 1000,
   maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
-  iterationOverdueGraceDays: 1,
   maxBranchDivergenceCommits: 100,
 };
 

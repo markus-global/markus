@@ -26,7 +26,6 @@ export interface StorageBridge {
   taskCommentRepo?: any;
   requirementRepo?: any;
   projectRepo?: any;
-  iterationRepo?: any;
   externalAgentRepo?: any;
   deliverableRepo?: any;
 }
@@ -67,7 +66,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       taskCommentRepo: new storage.SqliteTaskCommentRepo(db) as any,
       requirementRepo: new storage.SqliteRequirementRepo(db) as any,
       projectRepo: new storage.SqliteProjectRepo(db),
-      iterationRepo: new storage.SqliteIterationRepo(db),
       externalAgentRepo: new storage.SqliteExternalAgentRepo(db),
       deliverableRepo: new storage.SqliteDeliverableRepo(db),
     };

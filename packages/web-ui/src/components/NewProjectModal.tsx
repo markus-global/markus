@@ -11,7 +11,6 @@ interface Props {
 export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [iterationModel, setIterationModel] = useState<'kanban' | 'sprint'>('kanban');
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [teamIds, setTeamIds] = useState<string[]>([]);
@@ -37,7 +36,6 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
       const res = await api.projects.create({
         name: name.trim(),
         description: description.trim() || undefined,
-        iterationModel,
         repositories: repos.length > 0 ? repos : undefined,
         teamIds: teamIds.length > 0 ? teamIds : undefined,
         orgId: orgId ?? 'default',
@@ -47,7 +45,7 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
       setError(err instanceof Error ? err.message : 'Failed to create project');
     }
     setCreating(false);
-  }, [name, description, iterationModel, repoUrl, defaultBranch, teamIds, orgId, creating, onCreated]);
+  }, [name, description, repoUrl, defaultBranch, teamIds, orgId, creating, onCreated]);
 
   const nameInvalid = touched && !name.trim();
 
@@ -84,51 +82,30 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Iteration Model</label>
-              <div className="flex gap-2">
-                {(['kanban', 'sprint'] as const).map(model => (
-                  <button
-                    key={model}
-                    type="button"
-                    onClick={() => setIterationModel(model)}
-                    className={`flex-1 py-2 text-xs rounded-lg border transition-colors ${
-                      iterationModel === model
-                        ? 'border-brand-500 bg-brand-600/15 text-brand-300'
-                        : 'border-border-default text-fg-tertiary hover:border-gray-600'
-                    }`}
-                  >
-                    {model === 'kanban' ? 'Kanban' : 'Sprint'}
-                  </button>
-                ))}
+          <div>
+            <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Assign Teams</label>
+            {teams.length === 0 ? (
+              <div className="text-[11px] text-fg-tertiary py-2">No teams available</div>
+            ) : (
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {teams.map(t => {
+                  const checked = teamIds.includes(t.id);
+                  return (
+                    <label key={t.id} className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer hover:text-fg-primary py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => setTeamIds(prev =>
+                          checked ? prev.filter(id => id !== t.id) : [...prev, t.id]
+                        )}
+                        className="accent-brand-500"
+                      />
+                      <span className="truncate">{t.name}</span>
+                    </label>
+                  );
+                })}
               </div>
-            </div>
-            <div>
-              <label className="block text-xs text-fg-secondary mb-1.5 font-medium">Assign Teams</label>
-              {teams.length === 0 ? (
-                <div className="text-[11px] text-fg-tertiary py-2">No teams available</div>
-              ) : (
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {teams.map(t => {
-                    const checked = teamIds.includes(t.id);
-                    return (
-                      <label key={t.id} className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer hover:text-fg-primary py-0.5">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => setTeamIds(prev =>
-                            checked ? prev.filter(id => id !== t.id) : [...prev, t.id]
-                          )}
-                          className="accent-brand-500"
-                        />
-                        <span className="truncate">{t.name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            )}
           </div>
 
           <div className="grid grid-cols-[1fr_auto] gap-3">

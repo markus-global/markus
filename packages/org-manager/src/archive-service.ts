@@ -94,21 +94,6 @@ export class ArchiveService {
     return { archived, worktreesRemoved, branchesDeleted };
   }
 
-  async archiveIteration(iterationId: string): Promise<void> {
-    const iteration = this.projectService.getIteration(iterationId);
-    if (!iteration) return;
-
-    const tasks = this.taskService.listTasks({}).filter(t => t.iterationId === iterationId);
-    const allDone = tasks.every(t =>
-      ['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
-    );
-
-    if (allDone) {
-      this.projectService.updateIterationStatus(iterationId, 'completed');
-      log.info('Iteration archived', { iterationId });
-    }
-  }
-
   private getArchivePolicy(projectId?: string): ArchivePolicy {
     if (projectId) {
       const project = this.projectService.getProject(projectId);

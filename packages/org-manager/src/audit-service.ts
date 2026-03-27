@@ -28,7 +28,6 @@ export type AuditEventType =
   | 'announcement_broadcast'
   | 'trust_level_changed'
   | 'project_created'
-  | 'iteration_created'
   | 'knowledge_contributed'
   | 'report_generated'
   | 'plan_approved'

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type IterationInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -1394,30 +1394,15 @@ function TaskDetailModal({
 
 // ─── Project Settings Panel ─────────────────────────────────────────────────────
 
-function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents, onIterationAction, onDeleteProject, onCreateIteration, onUpdateProject, onRefresh }: {
+function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeleteProject, onUpdateProject, onRefresh }: {
   project: ProjectInfo;
-  iterations: IterationInfo[];
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
   agents: AgentInfo[];
-  onIterationAction: (iterId: string, status: string) => void;
   onDeleteProject: () => void;
-  onCreateIteration: (name: string, goal: string, start: string, end: string) => void;
   onUpdateProject: (data: Partial<ProjectInfo>) => Promise<void>;
   onRefresh: () => void;
 }) {
-  const [showIterForm, setShowIterForm] = useState(false);
-  const [iterName, setIterName] = useState('');
-  const [iterGoal, setIterGoal] = useState('');
-  const [iterStart, setIterStart] = useState('');
-  const [iterEnd, setIterEnd] = useState('');
-
-  const handleCreate = () => {
-    if (!iterName.trim()) return;
-    onCreateIteration(iterName, iterGoal, iterStart, iterEnd);
-    setShowIterForm(false); setIterName(''); setIterGoal(''); setIterStart(''); setIterEnd('');
-  };
-
   const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id), [tasks, project.id]);
   const projReqs = useMemo(() => requirements.filter(r => r.projectId === project.id), [requirements, project.id]);
   const stats = useMemo(() => {
@@ -1449,7 +1434,6 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
           />
           <div className="flex items-center gap-3 text-xs text-fg-tertiary">
             <StatusPill status={project.status} />
-            <IterModelBadge model={project.iterationModel} />
             {project.createdAt && <span className="text-fg-tertiary">Created {new Date(project.createdAt).toLocaleDateString()}</span>}
           </div>
         </div>
@@ -1523,52 +1507,6 @@ function ProjectSettingsPanel({ project, iterations, tasks, requirements, agents
         </div>
       )}
 
-      {/* Iterations */}
-      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-xs font-semibold text-fg-secondary">Iterations</h4>
-          <button onClick={() => setShowIterForm(true)} className="text-xs px-2.5 py-1 rounded-lg border border-border-default hover:bg-surface-elevated text-fg-secondary">+ Add</button>
-        </div>
-
-        {showIterForm && (
-          <div className="mb-3 p-3 bg-surface-elevated rounded-lg space-y-2">
-            <input value={iterName} onChange={e => setIterName(e.target.value)} placeholder="Iteration name" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-fg-primary" />
-            <input value={iterGoal} onChange={e => setIterGoal(e.target.value)} placeholder="Goal" className="w-full bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-fg-primary" />
-            <div className="flex gap-2">
-              <input type="date" value={iterStart} onChange={e => setIterStart(e.target.value)} className="bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-fg-primary" />
-              <input type="date" value={iterEnd} onChange={e => setIterEnd(e.target.value)} className="bg-surface-overlay border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-fg-primary" />
-            </div>
-            <div className="flex gap-2">
-              <button onClick={handleCreate} className="text-sm px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white">Create</button>
-              <button onClick={() => setShowIterForm(false)} className="text-sm text-fg-tertiary">Cancel</button>
-            </div>
-          </div>
-        )}
-
-        {iterations.length === 0 ? (
-          <p className="text-sm text-fg-tertiary">No iterations yet.</p>
-        ) : (
-          <div className="space-y-1.5">
-            {iterations.map(it => (
-              <div key={it.id} className="p-2.5 bg-surface-elevated/50 rounded-lg flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-fg-primary">{it.name}</div>
-                  {it.goal && <div className="text-xs text-fg-secondary mt-0.5">{it.goal}</div>}
-                  <div className="text-[10px] text-fg-tertiary mt-1 flex items-center gap-2">
-                    <StatusPill status={it.status} />
-                    {it.startDate && <span>{it.startDate} → {it.endDate || '?'}</span>}
-                  </div>
-                </div>
-                <div className="flex gap-1.5 ml-3">
-                  {it.status === 'planning' && <button onClick={() => onIterationAction(it.id, 'active')} className="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 text-white">Start</button>}
-                  {it.status === 'active' && <button onClick={() => onIterationAction(it.id, 'review')} className="text-xs px-2 py-1 rounded bg-brand-700 hover:bg-brand-600 text-white">Review</button>}
-                  {it.status === 'review' && <button onClick={() => onIterationAction(it.id, 'completed')} className="text-xs px-2 py-1 rounded bg-gray-600 hover:bg-gray-500 text-white">Complete</button>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -1922,8 +1860,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedIterationId, setSelectedIterationId] = useState<string | null>(null);
-  const [iterations, setIterations] = useState<IterationInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [users, setUsers] = useState<HumanUserInfo[]>([]);
@@ -1985,16 +1921,15 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   }, []);
 
   const refreshBoard = useCallback(async () => {
-    const filters: { projectId?: string; iterationId?: string } = {};
+    const filters: { projectId?: string } = {};
     if (viewMode === 'project' && selectedProjectId) {
       filters.projectId = selectedProjectId;
-      if (selectedIterationId) filters.iterationId = selectedIterationId;
     }
     try {
       const { board: b } = await api.tasks.board(filters);
       setBoard(b);
     } catch { /* */ }
-  }, [viewMode, selectedProjectId, selectedIterationId]);
+  }, [viewMode, selectedProjectId]);
 
   const refreshAgents = useCallback(async () => {
     try { const { agents: a } = await api.agents.list(); setAgents(a); } catch { /* */ }
@@ -2008,21 +1943,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     try { const { requirements: r } = await api.requirements.list({}); setAllRequirements(r); } catch { /* */ }
   }, []);
 
-  const loadIterations = useCallback(async (projectId: string) => {
-    try { const { iterations: it } = await api.projects.listIterations(projectId); setIterations(it); } catch { setIterations([]); }
-  }, []);
-
   const refresh = useCallback(async () => {
     await Promise.all([refreshProjects(), refreshBoard(), refreshAgents(), refreshUsers(), refreshRequirements()]);
     setLoading(false);
   }, [refreshProjects, refreshBoard, refreshAgents, refreshUsers, refreshRequirements]);
 
   useEffect(() => { refresh(); }, [refresh]);
-
-  useEffect(() => {
-    if (selectedProjectId) loadIterations(selectedProjectId);
-    else setIterations([]);
-  }, [selectedProjectId, loadIterations]);
 
   const selectedTaskRef = useRef(selectedTask);
   selectedTaskRef.current = selectedTask;
@@ -2116,7 +2042,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     }
     setProjectFilter(new Set());
     setSelectedProjectId(projectId);
-    setSelectedIterationId(null);
     setViewMode('project');
     viewModeRef.current = 'project';
     setShowProjectSettings(false);
@@ -2130,7 +2055,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const selectAllTasks = () => {
     setProjectFilter(savedProjectFilterRef.current);
     setSelectedProjectId(null);
-    setSelectedIterationId(null);
     setViewMode('all');
     viewModeRef.current = 'all';
     setShowProjectSettings(false);
@@ -2165,28 +2089,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     } catch (e) { msg(`Error: ${e}`); }
   };
 
-  const handleCreateIteration = async (name: string, goal: string, start: string, end: string) => {
-    if (!selectedProjectId) return;
-    try {
-      await api.projects.createIteration(selectedProjectId, { name, goal, startDate: start || undefined, endDate: end || undefined } as Partial<IterationInfo>);
-      msg('Iteration created');
-      loadIterations(selectedProjectId);
-    } catch (e) { msg(`Error: ${e}`); }
-  };
-
-  const handleIterStatus = async (iterId: string, status: string) => {
-    try {
-      await api.projects.updateIterationStatus(iterId, status);
-      msg(`Iteration ${status}`);
-      if (selectedProjectId) loadIterations(selectedProjectId);
-    } catch (e) { msg(`Error: ${e}`); }
-  };
 
   const createTask = async () => {
     if (!taskTitle || !taskAssignTo || !taskReviewer) return;
     if (taskAssignTo === taskReviewer) { msg('Assigned agent and reviewer must be different'); return; }
     const projId = taskProjectId || undefined;
-    const iterId = projId && selectedIterationId ? selectedIterationId : undefined;
     const reqId = taskRequirementId || undefined;
     try {
       await api.tasks.create(
@@ -2195,7 +2102,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         taskReviewer,
         taskPriority,
         projId,
-        iterId,
         taskBlockedBy.length > 0 ? taskBlockedBy : undefined,
         reqId,
         taskType !== 'standard' ? taskType : undefined,
@@ -2210,7 +2116,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     refreshBoard();
     if (selectedTask) {
       setTimeout(() => {
-        const filters: { projectId?: string; iterationId?: string } = {};
+        const filters: { projectId?: string } = {};
         if (viewMode === 'project' && selectedProjectId) filters.projectId = selectedProjectId;
         api.tasks.board(filters).then(d => {
           const all = Object.values(d.board).flat();
@@ -2325,9 +2231,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     if (viewMode === 'project' && selectedProjectId) {
       result = result.filter(t => t.projectId === selectedProjectId);
     }
-    if (viewMode === 'project' && selectedIterationId) {
-      result = result.filter(t => t.iterationId === selectedIterationId);
-    }
     if (projectFilter.size > 0) result = result.filter(t => t.projectId && projectFilter.has(t.projectId));
     if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
     return result;
@@ -2339,11 +2242,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const filteredReqs = useMemo(() => {
     let list = allRequirements;
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
-    if (viewMode === 'project' && selectedIterationId) list = list.filter(r => r.iterationId === selectedIterationId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
     if (agentFilter.size > 0) list = list.filter(r => agentFilter.has(r.createdBy));
     return list;
-  }, [allRequirements, viewMode, selectedProjectId, selectedIterationId, projectFilter, agentFilter]);
+  }, [allRequirements, viewMode, selectedProjectId, projectFilter, agentFilter]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS[number]) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -2406,9 +2308,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   }, [board]);
 
   const totalTaskCount = Object.values(allTaskCounts).reduce((a, b) => a + b, 0);
-
-  // Active iteration for selected project
-  const activeIteration = iterations.find(it => it.status === 'active');
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">Loading…</div>;
 
@@ -2512,28 +2411,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
           <div className="flex-1" />
 
-          {/* Iteration (project view only) */}
-          {viewMode === 'project' && selectedProject && (
-            <>
-              <select
-                value={selectedIterationId ?? ''}
-                onChange={e => setSelectedIterationId(e.target.value || null)}
-                className="px-2 py-1 bg-surface-elevated/60 border border-border-default/60 rounded-md text-[11px] text-fg-secondary focus:border-brand-500 outline-none shrink-0"
-              >
-                <option value="">All iterations</option>
-                {iterations.map(it => (
-                  <option key={it.id} value={it.id}>{it.name} ({it.status})</option>
-                ))}
-              </select>
-              {activeIteration && !selectedIterationId && (
-                <button onClick={() => setSelectedIterationId(activeIteration.id)}
-                  className="flex items-center gap-1 text-[10px] text-brand-500/80 hover:text-brand-500 transition-colors shrink-0">
-                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />
-                  {activeIteration.name}
-                </button>
-              )}
-            </>
-          )}
         </div>
 
         {/* Project filter bar — visible when not in single-project view */}
@@ -2582,13 +2459,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           <div className="flex-1 overflow-y-auto">
             <ProjectSettingsPanel
               project={selectedProject}
-              iterations={iterations}
               tasks={Object.values(board).flat()}
               requirements={allRequirements}
               agents={agents}
-              onIterationAction={handleIterStatus}
               onDeleteProject={() => handleDeleteProject(selectedProject.id)}
-              onCreateIteration={handleCreateIteration}
               onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); }}
               onRefresh={() => { refreshProjects(); }}
             />
@@ -3147,14 +3021,6 @@ function RequirementDetailModal({
 }
 
 // ─── Shared mini-components ─────────────────────────────────────────────────────
-
-function IterModelBadge({ model }: { model: string }) {
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-      model === 'scrum' ? 'bg-brand-500/10 text-brand-500' : 'bg-surface-overlay text-fg-secondary'
-    }`}>{model}</span>
-  );
-}
 
 function StatusPill({ status }: { status: string }) {
   const colors: Record<string, string> = {

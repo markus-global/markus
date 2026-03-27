@@ -114,7 +114,6 @@ export class ContextEngine {
     // Governance context extensions
     projectContext?: {
       project: { id: string; name: string; description: string; status: string };
-      iteration?: { id: string; name: string; goal?: string; status: string; endDate?: string };
       repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
       governanceRules?: string;
       teamRole?: string;
@@ -187,15 +186,10 @@ export class ContextEngine {
 
     // ── Governance: Project Context (P1 priority) ────────────────────────
     if (opts.projectContext) {
-      const { project, iteration, repositories, governanceRules, teamRole } = opts.projectContext;
+      const { project, repositories, governanceRules, teamRole } = opts.projectContext;
       parts.push('\n## Current Project');
       parts.push(`- Project: **${project.name}** (${project.status})`);
       if (project.description) parts.push(`- ${project.description.slice(0, 200)}`);
-      if (iteration) {
-        parts.push(
-          `- Iteration: ${iteration.name} — "${iteration.goal ?? ''}" (${iteration.status}${iteration.endDate ? `, ends ${iteration.endDate}` : ''})`
-        );
-      }
       if (repositories?.length) {
         for (const repo of repositories) {
           parts.push(
@@ -551,6 +545,7 @@ export class ContextEngine {
     role: RoleTemplate;
     identity?: IdentityContext;
     availableSkills?: Array<{ name: string; description: string; category: string }>;
+    currentQuery?: string;
   }): string {
     const lines: string[] = ['\n## Your Identity'];
 
@@ -565,9 +560,13 @@ export class ContextEngine {
         lines.push(`- Active Skills: ${self.skills.join(', ')}`);
       }
       if (opts.availableSkills && opts.availableSkills.length > 0) {
+        const filtered = this.filterSkillsByRelevance(opts.availableSkills, opts.currentQuery);
         lines.push(`- Available Skills (activate via \`discover_tools\`):`);
-        for (const s of opts.availableSkills) {
+        for (const s of filtered) {
           lines.push(`  - **${s.name}** [${s.category}]: ${s.description}`);
+        }
+        if (filtered.length < opts.availableSkills.length) {
+          lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills available — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
         }
         lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to activate a skill when needed.`);
       }
@@ -622,6 +621,29 @@ export class ContextEngine {
     }
 
     return lines.join('\n');
+  }
+
+  private filterSkillsByRelevance(
+    skills: Array<{ name: string; description: string; category: string }>,
+    query?: string,
+    maxResults = 8,
+  ): Array<{ name: string; description: string; category: string }> {
+    if (!query || skills.length <= maxResults) return skills;
+
+    const keywords = query.toLowerCase().split(/[\s\-_.,;:!?()\[\]{}]+/).filter(w => w.length > 2);
+    if (keywords.length === 0) return skills.slice(0, maxResults);
+
+    const scored = skills.map(s => {
+      const haystack = `${s.name} ${s.description} ${s.category}`.toLowerCase();
+      let score = 0;
+      for (const kw of keywords) {
+        if (haystack.includes(kw)) score++;
+      }
+      return { skill: s, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, maxResults).map(s => s.skill);
   }
 
   /**

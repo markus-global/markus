@@ -15,7 +15,6 @@ export interface AgentTaskContext {
     priority?: string;
     requirementId?: string;
     projectId?: string;
-    iterationId?: string;
     blockedBy?: string[];
     taskType?: string;
     scheduleConfig?: {
@@ -146,10 +145,6 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description: 'Project ID this task belongs to. Typically inherited from the requirement.',
           },
-          iteration_id: {
-            type: 'string',
-            description: 'Iteration ID this task belongs to (optional).',
-          },
           blocked_by: {
             type: 'array',
             items: { type: 'string' },
@@ -223,7 +218,6 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             reviewerAgentId,
             requirementId: args['requirement_id'] as string | undefined,
             projectId: args['project_id'] as string | undefined,
-            iterationId: args['iteration_id'] as string | undefined,
             blockedBy: args['blocked_by'] as string[] | undefined,
             taskType,
             scheduleConfig,

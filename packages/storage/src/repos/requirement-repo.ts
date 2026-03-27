@@ -26,7 +26,6 @@ export class RequirementRepo {
     source: RequirementSource;
     createdBy: string;
     projectId?: string;
-    iterationId?: string;
     approvedBy?: string;
     approvedAt?: Date;
     tags?: string[];
@@ -43,7 +42,6 @@ export class RequirementRepo {
         source: data.source,
         createdBy: data.createdBy,
         projectId: data.projectId ?? null,
-        iterationId: data.iterationId ?? null,
         approvedBy: data.approvedBy ?? null,
         approvedAt: data.approvedAt ?? null,
         tags: data.tags ?? [],
@@ -81,7 +79,7 @@ export class RequirementRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: TaskPriority; tags?: string[]; projectId?: string | null; iterationId?: string | null }
+    data: { title?: string; description?: string; priority?: TaskPriority; tags?: string[]; projectId?: string | null }
   ) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (data.title !== undefined) updates['title'] = data.title;
@@ -89,16 +87,14 @@ export class RequirementRepo {
     if (data.priority !== undefined) updates['priority'] = data.priority;
     if (data.tags !== undefined) updates['tags'] = data.tags;
     if (data.projectId !== undefined) updates['projectId'] = data.projectId;
-    if (data.iterationId !== undefined) updates['iterationId'] = data.iterationId;
     await this.db.update(requirements).set(updates).where(eq(requirements.id, id));
   }
 
-  async listByOrg(orgId: string, filters?: { status?: RequirementStatus; source?: RequirementSource; projectId?: string; iterationId?: string }) {
+  async listByOrg(orgId: string, filters?: { status?: RequirementStatus; source?: RequirementSource; projectId?: string }) {
     const conditions = [eq(requirements.orgId, orgId)];
     if (filters?.status) conditions.push(eq(requirements.status, filters.status));
     if (filters?.source) conditions.push(eq(requirements.source, filters.source));
     if (filters?.projectId) conditions.push(eq(requirements.projectId, filters.projectId));
-    if (filters?.iterationId) conditions.push(eq(requirements.iterationId, filters.iterationId));
     return this.db
       .select()
       .from(requirements)

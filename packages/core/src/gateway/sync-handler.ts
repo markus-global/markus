@@ -27,7 +27,6 @@ export interface SyncTeamContext {
 export interface SyncProjectContext {
   id: string;
   name: string;
-  currentIteration?: { id: string; name: string; status: string };
   activeRequirements: Array<{
     id: string;
     title: string;
@@ -120,7 +119,6 @@ export interface ProjectBridge {
   getProjects(orgId: string): Array<{
     id: string;
     name: string;
-    currentIteration?: { id: string; name: string; status: string };
   }>;
   getActiveRequirements(orgId: string): Array<{
     id: string;
@@ -224,7 +222,6 @@ export class GatewaySyncHandler {
       projectContext = projects.map(p => ({
         id: p.id,
         name: p.name,
-        currentIteration: p.currentIteration,
         activeRequirements: reqs
           .filter(r => r.projectId === p.id)
           .map(r => ({ id: r.id, title: r.title, status: r.status, priority: r.priority })),

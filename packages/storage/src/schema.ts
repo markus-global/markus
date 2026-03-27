@@ -107,7 +107,6 @@ export const tasks = pgTable('tasks', {
   deliverables: jsonb('deliverables'),
   notes: jsonb('notes').default([]),
   projectId: varchar('project_id', { length: 64 }),
-  iterationId: varchar('iteration_id', { length: 64 }),
   createdBy: varchar('created_by', { length: 128 }),
   updatedBy: varchar('updated_by', { length: 128 }),
   startedAt: timestamp('started_at'),
@@ -442,7 +441,6 @@ export const requirements = pgTable(
       .notNull()
       .references(() => organizations.id),
     projectId: varchar('project_id', { length: 64 }),
-    iterationId: varchar('iteration_id', { length: 64 }),
     title: varchar('title', { length: 500 }).notNull(),
     description: text('description').notNull().default(''),
     status: requirementStatusEnum('status').notNull().default('draft'),
@@ -463,7 +461,7 @@ export const requirements = pgTable(
   ]
 );
 
-// ─── Governance: Projects & Iterations ───────────────────────────────────────
+// ─── Governance: Projects ─────────────────────────────────────────────────────
 
 export const projects = pgTable(
   'projects',
@@ -475,7 +473,6 @@ export const projects = pgTable(
     name: varchar('name', { length: 255 }).notNull(),
     description: text('description'),
     status: varchar('status', { length: 32 }).notNull().default('active'),
-    iterationModel: varchar('iteration_model', { length: 32 }).notNull().default('kanban'),
     repositories: jsonb('repositories').default([]),
     teamIds: jsonb('team_ids').default([]),
     governancePolicy: jsonb('governance_policy'),
@@ -486,26 +483,6 @@ export const projects = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   t => [index('idx_projects_org').on(t.orgId)]
-);
-
-export const iterations = pgTable(
-  'iterations',
-  {
-    id: varchar('id', { length: 64 }).primaryKey(),
-    projectId: varchar('project_id', { length: 64 })
-      .notNull()
-      .references(() => projects.id),
-    name: varchar('name', { length: 255 }).notNull(),
-    status: varchar('status', { length: 32 }).notNull().default('planning'),
-    goal: text('goal'),
-    startDate: timestamp('start_date'),
-    endDate: timestamp('end_date'),
-    metrics: jsonb('metrics'),
-    reviewReport: jsonb('review_report'),
-    createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow(),
-  },
-  t => [index('idx_iterations_project').on(t.projectId)]
 );
 
 // ─── Governance: Project Knowledge Base ──────────────────────────────────────

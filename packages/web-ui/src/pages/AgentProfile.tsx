@@ -181,14 +181,14 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       { method: 'POST', path: '/api/gateway/sync', desc: 'Exchange status, tasks, messages, team & project context' },
       { method: 'GET', path: '/api/gateway/manual', desc: 'Download integration handbook (dynamic, includes colleagues & projects)' },
       { method: 'GET', path: '/api/gateway/team', desc: 'Query team members, roles, and manager' },
-      { method: 'GET', path: '/api/gateway/projects', desc: 'List projects with iterations and governance' },
+      { method: 'GET', path: '/api/gateway/projects', desc: 'List projects with governance' },
       { method: 'GET', path: '/api/gateway/requirements', desc: 'Query requirements (filter by project/status)' },
     ];
     const SYNC_CONTEXT_FIELDS = [
       { field: 'assignedTasks', desc: 'Tasks with requirement & project traceability' },
       { field: 'inboxMessages', desc: 'Messages from teammates' },
       { field: 'teamContext', desc: 'Colleagues (id, name, role, status) + manager' },
-      { field: 'projectContext', desc: 'Projects, iterations, active requirements' },
+      { field: 'projectContext', desc: 'Projects and active requirements' },
     ];
 
     return (
@@ -677,7 +677,7 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   'Web': ['web_search', 'web_fetch', 'web_extract'],
   'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list'],
   'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status'],
-  'Projects': ['list_projects', 'get_project', 'project_info', 'iteration_status'],
+  'Projects': ['list_projects', 'get_project', 'project_info'],
   'Deliverables': ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   'Communication': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'],
   'Memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],

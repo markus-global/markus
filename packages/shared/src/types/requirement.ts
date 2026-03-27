@@ -15,7 +15,6 @@ export interface Requirement {
   id: string;
   orgId: string;
   projectId?: string;
-  iterationId?: string;
   title: string;
   description: string;
   status: RequirementStatus;

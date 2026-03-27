@@ -148,22 +148,9 @@ export interface ProjectInfo {
   name: string;
   description?: string;
   status: string;
-  iterationModel: string;
   repositories?: Array<{ url: string; defaultBranch: string; localPath?: string }>;
   teamIds: string[];
   governancePolicy?: GovernancePolicyInfo;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface IterationInfo {
-  id: string;
-  projectId: string;
-  name: string;
-  status: string;
-  goal?: string;
-  startDate?: string;
-  endDate?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -384,7 +371,6 @@ export interface TaskInfo {
     summary: string;
   }>;
   projectId?: string;
-  iterationId?: string;
   requirementId?: string;
   createdBy?: string;
   updatedBy?: string;
@@ -432,7 +418,6 @@ export interface RequirementInfo {
   taskIds: string[];
   tags?: string[];
   projectId?: string;
-  iterationId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -760,19 +745,18 @@ export const api = {
     list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),
   },
   tasks: {
-    list: (filters?: { assignedAgentId?: string; status?: string; projectId?: string; iterationId?: string }) => {
+    list: (filters?: { assignedAgentId?: string; status?: string; projectId?: string }) => {
       const params = new URLSearchParams();
       if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.projectId) params.set('projectId', filters.projectId);
-      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
       const qs = params.toString();
       return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
-    create: (title: string, description: string, assignedAgentId: string, reviewerAgentId: string, priority?: string, projectId?: string, iterationId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
-      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerAgentId, priority, projectId, iterationId, blockedBy, requirementId, taskType, scheduleConfig }) }),
-    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; iterationId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string }) =>
+    create: (title: string, description: string, assignedAgentId: string, reviewerAgentId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>
+      request('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerAgentId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig }) }),
+    update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerAgentId?: string }) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -782,10 +766,9 @@ export const api = {
     reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
     cancel: (id: string, cascade = false) => request<{ task: TaskInfo }>(`/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify({ cascade }) }),
     getDependentCount: (id: string) => request<{ count: number }>(`/tasks/${id}/dependents`),
-    board: (filters?: { projectId?: string; iterationId?: string }) => {
+    board: (filters?: { projectId?: string }) => {
       const params = new URLSearchParams();
       if (filters?.projectId) params.set('projectId', filters.projectId);
-      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
       const qs = params.toString();
       return request<{ board: Record<string, TaskInfo[]> }>(`/taskboard${qs ? `?${qs}` : ''}`);
     },
@@ -824,18 +807,17 @@ export const api = {
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
   },
   requirements: {
-    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; iterationId?: string }) => {
+    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {
       const params = new URLSearchParams();
       if (filters?.orgId) params.set('orgId', filters.orgId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.source) params.set('source', filters.source);
       if (filters?.projectId) params.set('projectId', filters.projectId);
-      if (filters?.iterationId) params.set('iterationId', filters.iterationId);
       const qs = params.toString();
       return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}`),
-    create: (data: { title: string; description: string; priority?: string; projectId?: string; iterationId?: string; tags?: string[] }) =>
+    create: (data: { title: string; description: string; priority?: string; projectId?: string; tags?: string[] }) =>
       request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[] }) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -1121,12 +1103,6 @@ export const api = {
     delete: (id: string) =>
       request<{ deleted: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
 
-    listIterations: (projectId: string) =>
-      request<{ iterations: IterationInfo[] }>(`/projects/${projectId}/iterations`),
-    createIteration: (projectId: string, data: Partial<IterationInfo>) =>
-      request<{ iteration: IterationInfo }>(`/projects/${projectId}/iterations`, { method: 'POST', body: JSON.stringify(data) }),
-    updateIterationStatus: (iterationId: string, status: string) =>
-      request<{ iteration: IterationInfo }>(`/iterations/${iterationId}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
   },
 
   // ─── Knowledge (legacy, redirects to deliverables) ──────────────────

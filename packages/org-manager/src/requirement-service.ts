@@ -16,7 +16,6 @@ export interface CreateRequirementRequest {
   description: string;
   priority?: TaskPriority;
   projectId?: string;
-  iterationId?: string;
   source: RequirementSource;
   createdBy: string;
   tags?: string[];
@@ -49,7 +48,6 @@ export class RequirementService {
       id: genRequirementId(),
       orgId: request.orgId,
       projectId: request.projectId,
-      iterationId: request.iterationId,
       title: request.title,
       description: request.description,
       status: isUser ? 'approved' : 'draft',
@@ -78,7 +76,6 @@ export class RequirementService {
           source: req.source,
           createdBy: req.createdBy,
           projectId: req.projectId,
-          iterationId: req.iterationId,
           approvedBy: req.approvedBy ?? undefined,
           approvedAt: req.approvedAt ? new Date(req.approvedAt) : undefined,
           tags: req.tags,
@@ -354,7 +351,6 @@ export class RequirementService {
   listRequirements(filters?: {
     orgId?: string;
     projectId?: string;
-    iterationId?: string;
     status?: RequirementStatus;
     source?: RequirementSource;
   }): Requirement[] {
@@ -362,7 +358,6 @@ export class RequirementService {
 
     if (filters?.orgId) result = result.filter(r => r.orgId === filters.orgId);
     if (filters?.projectId) result = result.filter(r => r.projectId === filters.projectId);
-    if (filters?.iterationId) result = result.filter(r => r.iterationId === filters.iterationId);
     if (filters?.status) result = result.filter(r => r.status === filters.status);
     if (filters?.source) result = result.filter(r => r.source === filters.source);
 
@@ -381,7 +376,6 @@ export class RequirementService {
           id: row.id,
           orgId: row.orgId,
           projectId: row.projectId ?? undefined,
-          iterationId: row.iterationId ?? undefined,
           title: row.title,
           description: row.description,
           status: row.status as RequirementStatus,

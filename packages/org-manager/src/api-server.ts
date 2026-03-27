@@ -390,14 +390,10 @@ export class APIServer {
     this.syncHandler.setProjectBridge({
       getProjects(orgId: string) {
         if (!self.projectService) return [];
-        return self.projectService.listProjects(orgId).map(p => {
-          const iter = self.projectService!.getActiveIteration(p.id);
-          return {
-            id: p.id,
-            name: p.name,
-            currentIteration: iter ? { id: iter.id, name: iter.name, status: iter.status } : undefined,
-          };
-        });
+        return self.projectService.listProjects(orgId).map(p => ({
+          id: p.id,
+          name: p.name,
+        }));
       },
       getActiveRequirements(orgId: string) {
         if (!self.requirementService) return [];
@@ -1660,8 +1656,7 @@ export class APIServer {
       const status = url.searchParams.get('status') as TaskStatus | undefined;
       const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const iterationId = url.searchParams.get('iterationId') ?? undefined;
-      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId, projectId, iterationId });
+      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId, projectId });
       this.json(res, 200, { tasks });
       return;
     }
@@ -1805,7 +1800,6 @@ export class APIServer {
         assignedAgentId,
         reviewerAgentId,
         projectId: body['projectId'] as string | undefined,
-        iterationId: body['iterationId'] as string | undefined,
         blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
         requirementId: body['requirementId'] as string | undefined,
         createdBy: authUser?.userId ?? 'unknown',
@@ -1845,13 +1839,12 @@ export class APIServer {
         return;
       }
 
-      // General field update (title/description/priority/projectId/iterationId/requirementId/blockedBy/reviewerAgentId)
+      // General field update (title/description/priority/projectId/requirementId/blockedBy/reviewerAgentId)
       if (
         body['title'] !== undefined ||
         body['description'] !== undefined ||
         body['priority'] !== undefined ||
         body['projectId'] !== undefined ||
-        body['iterationId'] !== undefined ||
         body['requirementId'] !== undefined ||
         body['blockedBy'] !== undefined ||
         body['reviewerAgentId'] !== undefined
@@ -1861,7 +1854,6 @@ export class APIServer {
           description: body['description'] as string | undefined,
           priority: body['priority'] as TaskPriority | undefined,
           projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
-          iterationId: body['iterationId'] !== undefined ? (body['iterationId'] as string | null) : undefined,
           requirementId: body['requirementId'] !== undefined ? (body['requirementId'] as string | null) : undefined,
           blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
           reviewerAgentId: body['reviewerAgentId'] as string | undefined,
@@ -1967,8 +1959,7 @@ export class APIServer {
     if (path === '/api/taskboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const iterationId = url.searchParams.get('iterationId') ?? undefined;
-      const board = this.taskService.getTaskBoard(orgId, { projectId, iterationId });
+      const board = this.taskService.getTaskBoard(orgId, { projectId });
       this.json(res, 200, { board });
       return;
     }
@@ -2906,10 +2897,9 @@ export class APIServer {
         });
 
         const projects: HandbookProject[] = this.projectService
-          ? this.projectService.listProjects(token.orgId).map(p => {
-              const iter = this.projectService!.getActiveIteration(p.id);
-              return { id: p.id, name: p.name, currentIteration: iter?.name };
-            })
+          ? this.projectService.listProjects(token.orgId).map(p => ({
+              id: p.id, name: p.name,
+            }))
           : [];
 
         const handbook = generateHandbook({
@@ -2964,17 +2954,10 @@ export class APIServer {
       try {
         const token = this.gateway.verifyToken(authHeader.slice(7));
         if (!this.projectService) { this.json(res, 200, { projects: [] }); return; }
-        const projects = this.projectService.listProjects(token.orgId).map(p => {
-          const iter = this.projectService!.getActiveIteration(p.id);
-          const iterations = this.projectService!.listIterations(p.id);
-          return {
-            id: p.id, name: p.name, description: p.description, status: p.status,
-            iterationModel: p.iterationModel,
-            currentIteration: iter ? { id: iter.id, name: iter.name, status: iter.status } : null,
-            iterationCount: iterations.length,
-            teamIds: p.teamIds,
-          };
-        });
+        const projects = this.projectService.listProjects(token.orgId).map(p => ({
+          id: p.id, name: p.name, description: p.description, status: p.status,
+          teamIds: p.teamIds,
+        }));
         this.json(res, 200, { projects });
       } catch (err) {
         if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
@@ -3001,7 +2984,7 @@ export class APIServer {
         }).map(r => ({
           id: r.id, title: r.title, description: r.description,
           status: r.status, priority: r.priority,
-          projectId: r.projectId, iterationId: r.iterationId,
+          projectId: r.projectId,
           source: r.source, createdAt: r.createdAt,
         }));
         this.json(res, 200, { requirements: reqs });
@@ -6127,7 +6110,6 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const source = url.searchParams.get('source') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const iterationId = url.searchParams.get('iterationId') ?? undefined;
       if (!this.requirementService) {
         this.json(res, 200, { requirements: [] });
         return;
@@ -6138,7 +6120,6 @@ export class APIServer {
           status: status as any,
           source: source as any,
           projectId,
-          iterationId,
         }),
       });
       return;
@@ -6168,7 +6149,6 @@ export class APIServer {
         description: (body['description'] as string) ?? '',
         priority: body['priority'] as TaskPriority | undefined,
         projectId: body['projectId'] as string | undefined,
-        iterationId: body['iterationId'] as string | undefined,
         source: 'user',
         createdBy: authUser?.userId ?? 'unknown',
         tags: body['tags'] as string[] | undefined,
@@ -6292,7 +6272,6 @@ export class APIServer {
         orgId: (body['orgId'] as string) ?? 'default',
         name: body['name'] as string,
         description: (body['description'] as string) ?? '',
-        iterationModel: body['iterationModel'] as any,
         repositories: body['repositories'] as any,
         teamIds: body['teamIds'] as any,
         governancePolicy: body['governancePolicy'] as any,
@@ -6336,51 +6315,6 @@ export class APIServer {
       const projectId = path.split('/')[3]!;
       this.projectService.deleteProject(projectId);
       this.json(res, 200, { deleted: true });
-      return;
-    }
-
-    // ── Governance: Iterations ────────────────────────────────────────────
-
-    if (path.match(/^\/api\/projects\/[^/]+\/iterations$/) && req.method === 'GET') {
-      const projectId = path.split('/')[3]!;
-      this.json(res, 200, { iterations: this.projectService?.listIterations(projectId) ?? [] });
-      return;
-    }
-
-    if (path.match(/^\/api\/projects\/[^/]+\/iterations$/) && req.method === 'POST') {
-      if (!this.projectService) {
-        this.json(res, 503, { error: 'Project service not available' });
-        return;
-      }
-      const projectId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      const iteration = this.projectService.createIteration({
-        projectId,
-        name: body['name'] as string,
-        goal: body['goal'] as string,
-        startDate: body['startDate'] as string,
-        endDate: body['endDate'] as string,
-      });
-      this.json(res, 201, { iteration });
-      return;
-    }
-
-    if (path.match(/^\/api\/iterations\/[^/]+\/status$/) && req.method === 'PUT') {
-      if (!this.projectService) {
-        this.json(res, 503, { error: 'Project service not available' });
-        return;
-      }
-      const iterationId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      try {
-        const iteration = this.projectService.updateIterationStatus(
-          iterationId,
-          body['status'] as any
-        );
-        this.json(res, 200, { iteration });
-      } catch (err) {
-        this.json(res, 404, { error: String(err) });
-      }
       return;
     }
 

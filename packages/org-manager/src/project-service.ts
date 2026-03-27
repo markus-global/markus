@@ -2,8 +2,6 @@ import {
   createLogger,
   generateId,
   type Project,
-  type Iteration,
-  type IterationStatus,
   type ProjectRepository,
   type TaskGovernancePolicy,
   type ArchivePolicy,
@@ -21,26 +19,12 @@ interface ProjectRepo {
   listAll(): unknown[];
 }
 
-interface IterationRepo {
-  create(data: Record<string, unknown>): Promise<unknown>;
-  updateStatus(id: string, status: string): Promise<unknown>;
-  update(id: string, data: Record<string, unknown>): Promise<unknown>;
-  delete(id: string): Promise<unknown>;
-  listByProject(projectId: string): unknown[];
-}
-
 export class ProjectService {
   private projects = new Map<string, Project>();
-  private iterations = new Map<string, Iteration>();
   private projectRepo?: ProjectRepo;
-  private iterationRepo?: IterationRepo;
 
   setProjectRepo(repo: ProjectRepo): void {
     this.projectRepo = repo;
-  }
-
-  setIterationRepo(repo: IterationRepo): void {
-    this.iterationRepo = repo;
   }
 
   async loadFromDB(orgId: string): Promise<void> {
@@ -54,7 +38,6 @@ export class ProjectService {
             name: r.name,
             description: r.description ?? '',
             status: r.status ?? 'active',
-            iterationModel: (r.iterationModel as Project['iterationModel']) ?? 'kanban',
             repositories: (r.repositories as ProjectRepository[]) ?? [],
             teamIds: (r.teamIds as string[]) ?? [],
             governancePolicy: r.governancePolicy as TaskGovernancePolicy | undefined,
@@ -71,33 +54,6 @@ export class ProjectService {
         log.warn('Failed to load projects from DB', { error: String(err) });
       }
     }
-
-    if (this.iterationRepo) {
-      for (const project of this.projects.values()) {
-        try {
-          const rows = this.iterationRepo.listByProject(project.id) as any[];
-          for (const r of rows) {
-            const iter: Iteration = {
-              id: r.id,
-              projectId: r.projectId,
-              name: r.name,
-              status: r.status as IterationStatus,
-              goal: r.goal ?? undefined,
-              startDate: r.startDate ?? undefined,
-              endDate: r.endDate ?? undefined,
-              metrics: r.metrics ?? undefined,
-              reviewReport: r.reviewReport ?? undefined,
-              createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(r.createdAt).toISOString(),
-              updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : new Date(r.updatedAt).toISOString(),
-            };
-            this.iterations.set(iter.id, iter);
-          }
-        } catch (err) {
-          log.warn('Failed to load iterations from DB', { projectId: project.id, error: String(err) });
-        }
-      }
-      log.info(`Loaded ${this.iterations.size} iterations from DB`);
-    }
   }
 
   // ─── Project CRUD ──────────────────────────────────────────────────────────
@@ -106,7 +62,6 @@ export class ProjectService {
     orgId: string;
     name: string;
     description: string;
-    iterationModel?: 'sprint' | 'kanban';
     repositories?: ProjectRepository[];
     teamIds?: string[];
     governancePolicy?: TaskGovernancePolicy;
@@ -121,7 +76,6 @@ export class ProjectService {
       name: opts.name,
       description: opts.description,
       status: 'active',
-      iterationModel: opts.iterationModel ?? 'kanban',
       repositories: opts.repositories ?? [],
       teamIds: opts.teamIds ?? [],
       governancePolicy: opts.governancePolicy,
@@ -135,7 +89,7 @@ export class ProjectService {
     this.projectRepo?.create({
       id: project.id, orgId: project.orgId, name: project.name,
       description: project.description, status: project.status,
-      iterationModel: project.iterationModel, repositories: project.repositories,
+      repositories: project.repositories,
       teamIds: project.teamIds, governancePolicy: project.governancePolicy,
       archivePolicy: project.archivePolicy, reportSchedule: project.reportSchedule,
       onboardingConfig: project.onboardingConfig,
@@ -168,87 +122,9 @@ export class ProjectService {
 
   deleteProject(id: string): void {
     this.projects.delete(id);
-    for (const [iterId, iter] of this.iterations) {
-      if (iter.projectId === id) this.iterations.delete(iterId);
-    }
     this.projectRepo?.delete(id)
       .catch(err => log.warn('Failed to delete project from DB', { error: String(err) }));
     log.info('Project deleted', { id });
-  }
-
-  // ─── Iteration CRUD ────────────────────────────────────────────────────────
-
-  createIteration(opts: {
-    projectId: string;
-    name: string;
-    goal?: string;
-    startDate?: string;
-    endDate?: string;
-  }): Iteration {
-    const project = this.projects.get(opts.projectId);
-    if (!project) throw new Error(`Project not found: ${opts.projectId}`);
-
-    const now = new Date().toISOString();
-    const iteration: Iteration = {
-      id: generateId('iter'),
-      projectId: opts.projectId,
-      name: opts.name,
-      status: 'planning',
-      goal: opts.goal,
-      startDate: opts.startDate,
-      endDate: opts.endDate,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.iterations.set(iteration.id, iteration);
-    this.iterationRepo?.create({
-      id: iteration.id, projectId: iteration.projectId, name: iteration.name,
-      status: iteration.status, goal: iteration.goal,
-      startDate: iteration.startDate, endDate: iteration.endDate,
-    }).catch(err => log.warn('Failed to persist iteration', { error: String(err) }));
-    log.info('Iteration created', {
-      id: iteration.id,
-      name: iteration.name,
-      projectId: opts.projectId,
-    });
-    return iteration;
-  }
-
-  getIteration(id: string): Iteration | undefined {
-    return this.iterations.get(id);
-  }
-
-  listIterations(projectId: string): Iteration[] {
-    return [...this.iterations.values()].filter(i => i.projectId === projectId);
-  }
-
-  getActiveIteration(projectId: string): Iteration | undefined {
-    return [...this.iterations.values()].find(
-      i => i.projectId === projectId && i.status === 'active'
-    );
-  }
-
-  updateIterationStatus(id: string, status: IterationStatus): Iteration {
-    const iter = this.iterations.get(id);
-    if (!iter) throw new Error(`Iteration not found: ${id}`);
-    iter.status = status;
-    iter.updatedAt = new Date().toISOString();
-    this.iterationRepo?.updateStatus(id, status)
-      .catch(err => log.warn('Failed to persist iteration status', { error: String(err) }));
-    log.info('Iteration status updated', { id, status });
-    return iter;
-  }
-
-  updateIteration(
-    id: string,
-    updates: Partial<Omit<Iteration, 'id' | 'projectId' | 'createdAt'>>
-  ): Iteration {
-    const iter = this.iterations.get(id);
-    if (!iter) throw new Error(`Iteration not found: ${id}`);
-    Object.assign(iter, updates, { updatedAt: new Date().toISOString() });
-    this.iterationRepo?.update(id, updates as Record<string, unknown>)
-      .catch(err => log.warn('Failed to persist iteration update', { error: String(err) }));
-    return iter;
   }
 
   // ─── Agent Onboarding ──────────────────────────────────────────────────────
@@ -261,7 +137,6 @@ export class ProjectService {
       `# Project Onboarding: ${project.name}`,
       '',
       `**Description:** ${project.description}`,
-      `**Iteration Model:** ${project.iterationModel}`,
       `**Status:** ${project.status}`,
     ];
 
@@ -270,14 +145,6 @@ export class ProjectService {
       for (const repo of project.repositories) {
         parts.push(`- ${repo.role}: ${repo.localPath} (branch: ${repo.defaultBranch})`);
       }
-    }
-
-    const activeIter = this.getActiveIteration(projectId);
-    if (activeIter) {
-      parts.push('', '## Current Iteration');
-      parts.push(`- **${activeIter.name}** (${activeIter.status})`);
-      if (activeIter.goal) parts.push(`- Goal: ${activeIter.goal}`);
-      if (activeIter.endDate) parts.push(`- Ends: ${activeIter.endDate}`);
     }
 
     if (project.governancePolicy?.enabled) {
@@ -291,21 +158,5 @@ export class ProjectService {
     const onboardingDoc = parts.join('\n');
     log.info('Agent onboarded to project', { agentId, projectId });
     return onboardingDoc;
-  }
-
-  // ─── Periodic Review ───────────────────────────────────────────────────────
-
-  checkOverdueIterations(): Iteration[] {
-    const now = new Date();
-    const overdue: Iteration[] = [];
-    for (const iter of this.iterations.values()) {
-      if (iter.status === 'active' && iter.endDate) {
-        const end = new Date(iter.endDate);
-        if (now > end) {
-          overdue.push(iter);
-        }
-      }
-    }
-    return overdue;
   }
 }

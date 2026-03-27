@@ -70,7 +70,6 @@ export interface TaskWorkspace {
   baseBranch: string;
   projectContext?: {
     project: { id: string; name: string; description: string; status: string };
-    iteration?: { id: string; name: string; goal?: string; status: string; endDate?: string };
     repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
   };
 }

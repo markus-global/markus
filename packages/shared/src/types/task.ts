@@ -75,7 +75,6 @@ export interface Task {
   /** Requirement that authorized this task */
   requirementId?: string;
   projectId?: string;
-  iterationId?: string;
   repositoryPath?: string;
   /** Agent or user who created this task */
   createdBy?: string;

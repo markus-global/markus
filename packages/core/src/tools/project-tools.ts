@@ -71,7 +71,6 @@ export interface ProjectServiceBridge {
     name: string;
     description: string;
     status: string;
-    iterationModel: string;
     teamIds: string[];
   }>;
   getProject(id: string): {
@@ -79,27 +78,10 @@ export interface ProjectServiceBridge {
     name: string;
     description: string;
     status: string;
-    iterationModel: string;
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
   } | undefined;
-  getActiveIteration(projectId: string): {
-    id: string;
-    name: string;
-    goal?: string;
-    status: string;
-    startDate?: string;
-    endDate?: string;
-  } | undefined;
-  listIterations(projectId: string): Array<{
-    id: string;
-    name: string;
-    status: string;
-    goal?: string;
-    startDate?: string;
-    endDate?: string;
-  }>;
 }
 
 export interface ProjectToolsContext {
@@ -111,23 +93,9 @@ export interface ProjectToolsContext {
     name: string;
     description: string;
     status: string;
-    iterationModel: string;
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
-    activeIteration?: { id: string; name: string; goal?: string; status: string; endDate?: string };
-  } | null>;
-  getIterationStatus?: (iterationId?: string) => Promise<{
-    id: string;
-    name: string;
-    status: string;
-    goal?: string;
-    startDate?: string;
-    endDate?: string;
-    taskBreakdown: Record<string, number>;
-    completionPercent: number;
-    daysRemaining?: number;
-    blockers: Array<{ taskId: string; title: string; reason: string }>;
   } | null>;
   knowledgeContribute?: (opts: {
     scope: string;
@@ -203,7 +171,6 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     id: p.id,
                     name: p.name,
                     status: p.status,
-                    iterationModel: p.iterationModel,
                   })),
                 });
               } catch (error) {
@@ -214,7 +181,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'get_project',
             description:
-              'Get detailed information about a specific project including repositories, teams, governance policy, and iteration model.',
+              'Get detailed information about a specific project including repositories, teams, and governance policy.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -230,8 +197,6 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 const projectId = args['project_id'] as string;
                 const project = ctx.projectService!.getProject(projectId);
                 if (!project) return JSON.stringify({ status: 'error', error: 'Project not found' });
-                const activeIteration = ctx.projectService!.getActiveIteration(projectId);
-                const iterations = ctx.projectService!.listIterations(projectId);
                 return JSON.stringify({
                   status: 'success',
                   project: {
@@ -239,19 +204,10 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     name: project.name,
                     description: project.description,
                     status: project.status,
-                    iterationModel: project.iterationModel,
                     repoCount: project.repositories?.length ?? 0,
                     teamCount: project.teamIds?.length ?? 0,
                     governance: project.governancePolicy?.enabled ? project.governancePolicy.defaultTier : 'none',
                   },
-                  activeIteration: activeIteration ? {
-                    id: activeIteration.id,
-                    name: activeIteration.name,
-                    status: activeIteration.status,
-                    goal: activeIteration.goal,
-                    endDate: activeIteration.endDate,
-                  } : null,
-                  iterationCount: iterations.length,
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -265,7 +221,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'project_info',
             description:
-              'Get details about your current project: repositories, iteration status, governance rules, and team composition. Call this when you need to understand your working context.',
+              'Get details about your current project: repositories, governance rules, and team composition. Call this when you need to understand your working context.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -286,50 +242,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     name: info.name,
                     description: info.description,
                     status: info.status,
-                    iterationModel: info.iterationModel,
                     repositories: info.repositories?.map(r => ({ path: r.localPath, branch: r.defaultBranch })),
                     teamCount: info.teamIds?.length ?? 0,
                     governance: info.governancePolicy?.enabled ? info.governancePolicy.defaultTier : 'none',
-                    activeIteration: info.activeIteration ? {
-                      id: info.activeIteration.id,
-                      name: info.activeIteration.name,
-                      status: info.activeIteration.status,
-                      goal: info.activeIteration.goal,
-                      endDate: info.activeIteration.endDate,
-                    } : null,
                   },
                 });
-              } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
-              }
-            },
-          } as AgentToolHandler,
-        ]
-      : []),
-
-    ...(ctx.getIterationStatus
-      ? [
-          {
-            name: 'iteration_status',
-            description:
-              'Get the current iteration progress: tasks by status, completion percentage, days remaining, and blockers.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                iteration_id: {
-                  type: 'string',
-                  description: 'Iteration ID (omit for current active iteration)',
-                },
-              },
-            },
-            async execute(args: Record<string, unknown>): Promise<string> {
-              try {
-                const status = await ctx.getIterationStatus!(
-                  args['iteration_id'] as string | undefined
-                );
-                if (!status)
-                  return JSON.stringify({ status: 'error', error: 'No active iteration found' });
-                return JSON.stringify({ status: 'success', iteration: status });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

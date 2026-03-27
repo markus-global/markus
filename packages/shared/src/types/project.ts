@@ -3,7 +3,6 @@ import type { TaskGovernancePolicy, ArchivePolicy } from './governance.js';
 // ─── Project ─────────────────────────────────────────────────────────────────
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
-export type IterationModel = 'sprint' | 'kanban';
 
 export interface Project {
   id: string;
@@ -11,7 +10,6 @@ export interface Project {
   name: string;
   description: string;
   status: ProjectStatus;
-  iterationModel: IterationModel;
   repositories: ProjectRepository[];
   teamIds: string[];
   governancePolicy?: TaskGovernancePolicy;
@@ -36,45 +34,10 @@ export interface ProjectOnboardingConfig {
   keyDirectories?: string[];
 }
 
-// ─── Iteration ───────────────────────────────────────────────────────────────
-
-export type IterationStatus = 'planning' | 'active' | 'review' | 'completed';
-
-export interface Iteration {
-  id: string;
-  projectId: string;
-  name: string;
-  status: IterationStatus;
-  goal?: string;
-  startDate?: string;
-  endDate?: string;
-  metrics?: IterationMetrics;
-  reviewReport?: IterationReviewReport;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface IterationMetrics {
-  totalTasks: number;
-  completedTasks: number;
-  failedTasks: number;
-  velocity?: number;
-  burndownData?: Array<{ date: string; remaining: number }>;
-}
-
-export interface IterationReviewReport {
-  summary: string;
-  completedItems: string[];
-  carriedOver: string[];
-  blockers: string[];
-  generatedAt: string;
-  generatedBy: string;
-}
-
 // ─── Report ──────────────────────────────────────────────────────────────────
 
 export type ReportPeriod = 'daily' | 'weekly' | 'monthly';
-export type ReportScope = 'agent' | 'team' | 'project' | 'iteration' | 'org';
+export type ReportScope = 'agent' | 'team' | 'project' | 'org';
 export type ReportStatus = 'generating' | 'ready' | 'reviewed' | 'archived';
 
 export interface Report {
@@ -147,13 +110,6 @@ export interface ReportSchedule {
   daily?: ReportScheduleEntry & { includePlan?: false };
   weekly?: ReportScheduleEntry & { includePlan: boolean; requirePlanApproval: boolean };
   monthly?: ReportScheduleEntry & { includePlan: boolean; requirePlanApproval: boolean };
-  iterationEnd?: {
-    enabled: boolean;
-    scope: 'iteration';
-    agentEnriched: boolean;
-    includePlan: boolean;
-    requirePlanApproval: boolean;
-  };
 }
 
 export interface ReportScheduleEntry {
