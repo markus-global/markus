@@ -667,7 +667,8 @@ export class ContextEngine {
     }>;
   }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
-    const maxOutput = opts.modelMaxOutput ?? 4096;
+    const rawMaxOutput = opts.modelMaxOutput ?? 4096;
+    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.2));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions
@@ -746,6 +747,7 @@ export class ContextEngine {
     // ── Stage 4: Last-resort trimming ───────────────────────────────────
     if (totalTokens > messageBudget) {
       messages = this.trimToFitBudget(messages, messageBudget);
+      messages = this.sanitizeMessageSequence(messages);
       totalTokens = this.sumTokens(messages);
       log.info('Trimmed oldest messages to fit budget', {
         remaining: messages.length,
