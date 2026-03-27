@@ -37,6 +37,8 @@ export { AnthropicProvider } from './llm/anthropic.js';
 export { OpenAIProvider } from './llm/openai.js';
 export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
+export { AuthProfileStore } from './llm/auth-profiles.js';
+export { OAuthManager } from './llm/oauth-manager.js';
 export { MemoryStore } from './memory/store.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 export {

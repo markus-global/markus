@@ -493,7 +493,7 @@ export class SqliteOrgRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO organizations (id, name, owner_id, plan, max_agents, settings, created_at, updated_at)
+        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, max_agents, settings, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, '{}', ?, ?)`
       )
       .run(data.id, data.name, data.ownerId, data.plan ?? 'free', data.maxAgents ?? 5, ts, ts);

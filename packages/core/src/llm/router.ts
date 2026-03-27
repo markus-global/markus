@@ -1,10 +1,12 @@
-import { createLogger, getTextContent, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings } from '@markus/shared';
+import { createLogger, getTextContent, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider } from './openai.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
+import { AuthProfileStore } from './auth-profiles.js';
+import { OAuthManager } from './oauth-manager.js';
 
 const log = createLogger('llm-router');
 
@@ -66,6 +68,9 @@ export class LLMRouter {
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private disabledProviders = new Set<string>();
 
+  private _profileStore?: AuthProfileStore;
+  private _oauthManager?: OAuthManager;
+
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
   /** Non-retryable failures (auth, billing, region) get a longer cooldown */
@@ -94,6 +99,50 @@ export class LLMRouter {
 
   constructor(defaultProvider?: string) {
     this.defaultProvider = defaultProvider ?? 'anthropic';
+  }
+
+  get profileStore(): AuthProfileStore | undefined {
+    return this._profileStore;
+  }
+
+  get oauthManager(): OAuthManager | undefined {
+    return this._oauthManager;
+  }
+
+  initOAuth(stateDir?: string): { profileStore: AuthProfileStore; oauthManager: OAuthManager } {
+    if (!this._profileStore) {
+      this._profileStore = new AuthProfileStore(stateDir);
+    }
+    if (!this._oauthManager) {
+      this._oauthManager = new OAuthManager(this._profileStore);
+    }
+    return { profileStore: this._profileStore, oauthManager: this._oauthManager };
+  }
+
+  /**
+   * Register an OpenAI-compatible provider backed by an OAuth auth profile.
+   * The provider dynamically resolves its Bearer token from the OAuthManager.
+   */
+  registerOAuthProvider(name: string, profile: AuthProfile, config?: Partial<LLMProviderConfig>): void {
+    if (!this._oauthManager) throw new Error('OAuth not initialized — call initOAuth() first');
+    const oauthMgr = this._oauthManager;
+    const profileId = profile.id;
+
+    const providerConfig: LLMProviderConfig = {
+      provider: (config?.provider ?? name) as any,
+      model: config?.model ?? 'gpt-5.4',
+      baseUrl: config?.baseUrl ?? 'https://api.openai.com',
+      maxTokens: config?.maxTokens,
+      timeoutMs: config?.timeoutMs,
+    };
+
+    const provider = new OpenAIProvider(
+      { ...providerConfig, provider: name as any },
+      async () => oauthMgr.getValidToken(profileId),
+    );
+
+    this.registerProvider(name, provider);
+    log.info(`Registered OAuth-backed provider: ${name}`, { profileId, model: providerConfig.model });
   }
 
   get defaultProviderName(): string {
@@ -231,8 +280,10 @@ export class LLMRouter {
     return order.filter(n => n !== primary && this.isAvailable(n));
   }
 
-  static createDefault(configs?: Record<string, LLMProviderConfig>, defaultProvider?: string): LLMRouter {
+  static createDefault(configs?: Record<string, LLMProviderConfig>, defaultProvider?: string, stateDir?: string): LLMRouter {
     const router = new LLMRouter(defaultProvider);
+
+    router.initOAuth(stateDir);
 
     const anthropicConfig = configs?.['anthropic'];
     if (anthropicConfig?.apiKey) {
@@ -261,15 +312,34 @@ export class LLMRouter {
       }
     }
 
+    // Auto-register OAuth-backed providers from stored auth profiles
+    if (router._profileStore) {
+      const profiles = router._profileStore.listProfiles();
+      for (const profile of profiles) {
+        if (profile.authType !== 'oauth' || !profile.oauth) continue;
+        const providerName = profile.provider;
+        if (router.providers.has(providerName)) continue;
+
+        const cfg = configs?.[providerName];
+        try {
+          router.registerOAuthProvider(providerName, profile, {
+            model: cfg?.model,
+            baseUrl: cfg?.baseUrl,
+            maxTokens: cfg?.maxTokens,
+            timeoutMs: cfg?.timeoutMs,
+          });
+        } catch (err) {
+          log.warn(`Failed to auto-register OAuth provider ${providerName}`, { error: String(err) });
+        }
+      }
+    }
+
     // Auto-configure tiers if multiple providers available.
-    // Priority order: defaultProvider is always first in the tier for its complexity levels,
-    // ensuring the preferred provider is selected when healthy.
     const providerNames = router.listProviders();
     if (providerNames.length > 1) {
       const effectiveDefault = defaultProvider ?? providerNames[0];
       router.enableAutoSelect(buildTiers(providerNames, effectiveDefault));
 
-      // Fallback order: put the defaultProvider first so it's tried first when another is primary and fails
       const fallbackOrder = [
         effectiveDefault,
         ...providerNames.filter(n => n !== effectiveDefault),
@@ -439,7 +509,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -453,6 +523,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       const modelDef = BUILTIN_MODEL_CATALOG.find(m => m.id === p.model || m.provider === name);
       const customModels = this.customModelConfigs.get(name);
+      const oauthProfile = this._profileStore?.getDefaultProfile(name);
       providers[name] = {
         name,
         displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
@@ -463,11 +534,15 @@ export class LLMRouter {
         maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
         cost: customModels?.cost ?? modelDef?.cost,
         models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+        authType: oauthProfile?.authType,
+        oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
+        oauthAccountId: oauthProfile?.oauth?.accountId,
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
+        const oauthProfile = this._profileStore?.getDefaultProfile(name);
         providers[name] = {
           name,
           displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
@@ -475,6 +550,9 @@ export class LLMRouter {
           configured: false,
           enabled: this.isProviderEnabled(name),
           models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+          authType: oauthProfile?.authType,
+          oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
+          oauthAccountId: oauthProfile?.oauth?.accountId,
         };
       }
     }
@@ -586,6 +664,7 @@ export class LLMRouter {
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  'openai-codex': 'OpenAI Codex (OAuth)',
   google: 'Google Gemini',
   ollama: 'Ollama (Local)',
   siliconflow: 'SiliconFlow',
@@ -607,6 +686,9 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'] },
   { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'] },
+  // OpenAI Codex (OAuth — uses ChatGPT subscription)
+  { id: 'gpt-5.4', name: 'GPT-5.4 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
+  { id: 'gpt-4o', name: 'GPT-4o (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], description: 'Uses ChatGPT subscription via OAuth' },
   // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
   { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'] },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.15, output: 0.6 }, reasoning: true, inputTypes: ['text', 'image'] },

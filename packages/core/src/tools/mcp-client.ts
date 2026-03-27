@@ -21,6 +21,7 @@ interface PendingRequest {
   reject: (reason: Error) => void;
   method: string;
   timer: ReturnType<typeof setTimeout>;
+  proc: ChildProcess;
 }
 
 /**
@@ -68,11 +69,26 @@ export class MCPClientManager {
       log.error(`MCP server ${displayName} error`, { error: String(err) });
     });
 
+    const stderrChunks: string[] = [];
+    proc.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stderrChunks.push(text);
+      if (stderrChunks.length <= 5) {
+        log.warn(`MCP server ${displayName} stderr`, { text: text.trimEnd() });
+      }
+    });
+
     proc.on('exit', (code) => {
-      log.info(`MCP server ${displayName} exited`, { code });
+      const stderr = stderrChunks.join('').trim();
+      if (stderr) {
+        log.error(`MCP server ${displayName} exited with stderr`, { code, stderr: stderr.slice(0, 500) });
+      } else {
+        log.info(`MCP server ${displayName} exited`, { code });
+      }
       this.servers.delete(key);
       this.stdoutBuffers.delete(proc);
       for (const [id, req] of this.pendingRequests) {
+        if (req.proc !== proc) continue;
         req.reject(new Error(`MCP server ${displayName} exited (code ${code}) while awaiting ${req.method}`));
         clearTimeout(req.timer);
         this.pendingRequests.delete(id);
@@ -82,21 +98,27 @@ export class MCPClientManager {
     this.stdoutBuffers.set(proc, '');
     proc.stdout?.on('data', (data: Buffer) => this.handleStdoutData(proc, data));
 
-    await this.sendRequest(proc, 'initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'markus', version: APP_VERSION },
-    });
+    try {
+      await this.sendRequest(proc, 'initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'markus', version: APP_VERSION },
+      });
 
-    await this.sendNotification(proc, 'notifications/initialized', {});
+      await this.sendNotification(proc, 'notifications/initialized', {});
 
-    const toolsResult = await this.sendRequest(proc, 'tools/list', {});
-    const tools = (toolsResult as { tools?: MCPToolDescriptor[] })?.tools ?? [];
+      const toolsResult = await this.sendRequest(proc, 'tools/list', {});
+      const tools = (toolsResult as { tools?: MCPToolDescriptor[] })?.tools ?? [];
 
-    this.servers.set(key, { process: proc, tools });
-    log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
+      this.servers.set(key, { process: proc, tools });
+      log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
 
-    return tools;
+      return tools;
+    } catch (err) {
+      proc.kill();
+      this.stdoutBuffers.delete(proc);
+      throw err;
+    }
   }
 
   async connectServer(name: string, config: MCPServerConfig): Promise<MCPToolDescriptor[]> {
@@ -244,7 +266,7 @@ export class MCPClientManager {
         reject(new Error(`MCP request timeout for ${method} (id=${id}, ${timeoutMs}ms)`));
       }, timeoutMs);
 
-      this.pendingRequests.set(id, { resolve, reject, method, timer });
+      this.pendingRequests.set(id, { resolve, reject, method, timer, proc });
       proc.stdin?.write(message);
     });
   }

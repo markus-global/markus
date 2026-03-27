@@ -27,22 +27,27 @@ interface OpenAIResponse {
   usage: { prompt_tokens: number; completion_tokens: number };
 }
 
+export type TokenResolver = () => Promise<string>;
+
 export class OpenAIProvider implements LLMProviderInterface {
-  name = 'openai';
+  name: string;
   model: string;
   private apiKey: string;
   private baseUrl: string;
   private maxTokens: number;
   private chatTimeoutMs: number;
   private streamTimeoutMs: number;
+  private tokenResolver?: TokenResolver;
 
-  constructor(config?: LLMProviderConfig) {
+  constructor(config?: LLMProviderConfig, tokenResolver?: TokenResolver) {
+    this.name = config?.provider ?? 'openai';
     this.model = config?.model ?? 'gpt-4o';
     this.apiKey = config?.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
     this.maxTokens = config?.maxTokens ?? 4096;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
     this.streamTimeoutMs = config?.timeoutMs ?? 120_000;
+    this.tokenResolver = tokenResolver;
   }
 
   configure(config: LLMProviderConfig): void {
@@ -54,6 +59,18 @@ export class OpenAIProvider implements LLMProviderInterface {
       this.chatTimeoutMs = config.timeoutMs;
       this.streamTimeoutMs = config.timeoutMs;
     }
+  }
+
+  setTokenResolver(resolver: TokenResolver): void {
+    this.tokenResolver = resolver;
+  }
+
+  private async resolveAuthHeader(): Promise<string> {
+    if (this.tokenResolver) {
+      const token = await this.tokenResolver();
+      return `Bearer ${token}`;
+    }
+    return `Bearer ${this.apiKey}`;
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
@@ -74,11 +91,12 @@ export class OpenAIProvider implements LLMProviderInterface {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
     try {
+      const authorization = await this.resolveAuthHeader();
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: authorization,
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -168,11 +186,12 @@ export class OpenAIProvider implements LLMProviderInterface {
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
     let res: Response;
     try {
+      const authorization = await this.resolveAuthHeader();
       res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: authorization,
         },
         body: JSON.stringify(body),
         signal: controller.signal,

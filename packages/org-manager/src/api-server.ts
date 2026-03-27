@@ -5131,6 +5131,173 @@ export class APIServer {
       return;
     }
 
+    // ─── OAuth Authentication ───
+
+    // List available OAuth providers
+    if (path === '/api/settings/oauth/providers' && req.method === 'GET') {
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 200, { providers: [] });
+        return;
+      }
+      const supportedProviders = this.llmRouter.oauthManager.getSupportedProviders().map(name => ({
+        name,
+        displayName: name === 'openai-codex' ? 'OpenAI Codex (ChatGPT OAuth)' : name,
+        config: this.llmRouter!.oauthManager!.getProviderConfig(name),
+      }));
+      this.json(res, 200, { providers: supportedProviders });
+      return;
+    }
+
+    // List auth profiles
+    if (path === '/api/settings/oauth/profiles' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.profileStore) {
+        this.json(res, 200, { profiles: [] });
+        return;
+      }
+      const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+      const provider = url.searchParams.get('provider') ?? undefined;
+      this.json(res, 200, { profiles: this.llmRouter.profileStore.listProfilesSafe(provider) });
+      return;
+    }
+
+    // Start OAuth login flow
+    if (path === '/api/settings/oauth/login' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 503, { error: 'OAuth not initialized' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const { provider } = body as { provider?: string };
+      if (!provider) {
+        this.json(res, 400, { error: 'provider is required' });
+        return;
+      }
+      try {
+        const { authorizeUrl, promise } = await this.llmRouter.oauthManager.startLogin(provider);
+        // Don't await the promise — it resolves when the user completes the browser flow.
+        // Instead, respond with the authorizeUrl and let the frontend poll for status.
+        promise.then(profile => {
+          log.info(`OAuth login completed for ${provider}`, { profileId: profile.id });
+          // Auto-register the new OAuth provider in the router
+          if (this.llmRouter && !this.llmRouter.getProvider(provider)) {
+            try {
+              this.llmRouter.registerOAuthProvider(provider, profile, {
+                model: provider === 'openai-codex' ? 'gpt-5.4' : undefined,
+              });
+            } catch (err) {
+              log.warn(`Failed to auto-register OAuth provider after login`, { error: String(err) });
+            }
+          }
+        }).catch(err => {
+          log.warn(`OAuth login failed for ${provider}`, { error: String(err) });
+        });
+        this.json(res, 200, { authorizeUrl, provider });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Handle manual OAuth callback (paste redirect URL for headless scenarios)
+    if (path === '/api/settings/oauth/callback' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 503, { error: 'OAuth not initialized' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const { callbackUrl } = body as { callbackUrl?: string };
+      if (!callbackUrl) {
+        this.json(res, 400, { error: 'callbackUrl is required' });
+        return;
+      }
+      try {
+        const profile = await this.llmRouter.oauthManager.handleManualCallback(callbackUrl);
+        if (this.llmRouter && !this.llmRouter.getProvider(profile.provider)) {
+          this.llmRouter.registerOAuthProvider(profile.provider, profile, {
+            model: profile.provider === 'openai-codex' ? 'gpt-5.4' : undefined,
+          });
+        }
+        this.json(res, 200, {
+          profile: {
+            id: profile.id,
+            provider: profile.provider,
+            authType: profile.authType,
+            label: profile.label,
+            oauthAccountId: profile.oauth?.accountId,
+          },
+        });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Check OAuth login status (polling endpoint)
+    if (path === '/api/settings/oauth/status' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 200, { pending: false, profiles: [] });
+        return;
+      }
+      const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+      const provider = url.searchParams.get('provider') ?? undefined;
+      const pending = this.llmRouter.oauthManager.hasPendingLogin(provider);
+      const profiles = this.llmRouter.profileStore?.listProfilesSafe(provider) ?? [];
+      this.json(res, 200, { pending, profiles });
+      return;
+    }
+
+    // Delete auth profile
+    if (path.match(/^\/api\/settings\/oauth\/profiles\/[^/]+$/) && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.profileStore) {
+        this.json(res, 404, { error: 'Profile store not available' });
+        return;
+      }
+      const profileId = decodeURIComponent(path.split('/')[5]!);
+      const deleted = this.llmRouter.profileStore.deleteProfile(profileId);
+      if (deleted) {
+        this.json(res, 200, { deleted: true, profileId });
+      } else {
+        this.json(res, 404, { error: 'Profile not found' });
+      }
+      return;
+    }
+
+    // Store setup token (e.g. Anthropic)
+    if (path === '/api/settings/oauth/setup-token' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter?.oauthManager) {
+        this.json(res, 503, { error: 'OAuth not initialized' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const { provider, token } = body as { provider?: string; token?: string };
+      if (!provider || !token) {
+        this.json(res, 400, { error: 'provider and token are required' });
+        return;
+      }
+      const profile = this.llmRouter.oauthManager.storeSetupToken(provider, token);
+      this.json(res, 200, {
+        profile: {
+          id: profile.id,
+          provider: profile.provider,
+          authType: profile.authType,
+          label: profile.label,
+        },
+      });
+      return;
+    }
+
     // Settings — Config Export
     if (path === '/api/settings/export' && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);

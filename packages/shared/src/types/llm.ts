@@ -1,4 +1,33 @@
-export type LLMProvider = 'anthropic' | 'openai' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'custom';
+
+export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
+
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+  accountId?: string;
+}
+
+export interface OAuthProviderConfig {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  scope?: string;
+  callbackPort?: number;
+}
+
+export interface AuthProfile {
+  id: string;
+  provider: string;
+  authType: LLMAuthType;
+  label?: string;
+  createdAt: number;
+  updatedAt: number;
+  apiKey?: string;
+  oauth?: OAuthTokens;
+  setupToken?: string;
+}
 
 export interface LLMProviderConfig {
   provider: LLMProvider;
@@ -9,6 +38,8 @@ export interface LLMProviderConfig {
   temperature?: number;
   /** Request timeout in milliseconds (default: 90s for chat, 120s for streaming) */
   timeoutMs?: number;
+  authType?: LLMAuthType;
+  authProfileId?: string;
 }
 
 export interface ModelCostConfig {
@@ -41,6 +72,9 @@ export interface EnhancedProviderSettings {
   maxOutputTokens?: number;
   cost?: ModelCostConfig;
   models?: ModelDefinition[];
+  authType?: LLMAuthType;
+  oauthConnected?: boolean;
+  oauthAccountId?: string;
 }
 
 export interface EnhancedLLMSettings {
