@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createLogger, readManifest } from '@markus/shared';
 import { InMemorySkillRegistry } from './registry.js';
-import { readSkillInstructions } from './loader.js';
+import { readSkillInstructions, resolveMcpServerPaths } from './loader.js';
 import type { SkillManifest, SkillCategory } from './types.js';
 
 const log = createLogger('skill-registry');
@@ -98,7 +98,7 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
         tags: pkg.tags,
         instructions: instructions ?? undefined,
         requiredPermissions: pkg.skill?.requiredPermissions,
-        mcpServers: pkg.skill?.mcpServers,
+        mcpServers: resolveMcpServerPaths(pkg.skill?.mcpServers, skillDir),
         alwaysOn: pkg.skill?.alwaysOn ?? undefined,
         sourcePath: skillDir,
       };

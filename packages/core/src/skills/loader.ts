@@ -9,7 +9,7 @@ const log = createLogger('skill-loader');
  * Resolve ${SKILL_DIR} placeholders in MCP server args so skills can
  * reference bundled scripts relative to their own directory.
  */
-function resolveMcpServerPaths(
+export function resolveMcpServerPaths(
   servers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | undefined,
   skillDir: string,
 ): Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | undefined {
