@@ -2100,7 +2100,7 @@ export class TaskService {
         }
 
         this.deliverableService.create({
-          type: d.type === 'file' ? 'file' : d.type === 'report' ? 'report' : 'document',
+          type: d.type === 'directory' ? 'directory' : 'file',
           title: d.summary.slice(0, 200) || d.reference,
           summary: d.summary,
           reference,
@@ -2308,8 +2308,8 @@ export class TaskService {
           }
         }
       }
-      // For document/report types, write the summary as a file
-      if ((d.type === 'document' || d.type === 'report') && d.summary) {
+      // For file types without a physical path, write the summary as a file
+      if (d.type === 'file' && d.summary && !existsSync(d.reference)) {
         const safeName = d.reference.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
         writeFileSync(join(taskSharedDir, `${safeName}.md`), d.summary);
       }

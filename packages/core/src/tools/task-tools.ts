@@ -675,7 +675,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             description: [
               'Submit your completed work for review. You MUST call this when your task is done — execution is NOT considered complete without it.',
               'The system auto-fills task_id, reviewer, and branch from your current execution context.',
-              'Provide a summary and list all deliverables (files, documents, reports, URLs, directories, or text notes) you produced.',
+              'Provide a summary and list all deliverables (files or directories) you produced.',
             ].join(' '),
             inputSchema: {
               type: 'object',
@@ -692,8 +692,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     properties: {
                       type: {
                         type: 'string',
-                        enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
-                        description: 'file = source/config file, document = markdown/docs, report = analysis/audit, directory = folder of files, url = external link, text = inline text note',
+                        enum: ['file', 'directory'],
+                        description: 'file = any file-based content (source, config, docs, reports, etc.), directory = folder of files',
                       },
                       reference: {
                         type: 'string',

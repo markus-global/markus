@@ -175,7 +175,7 @@ export interface KnowledgeEntryInfo {
 
 export interface DeliverableInfo {
   id: string;
-  type: 'file' | 'document' | 'report' | 'directory' | 'url' | 'text';
+  type: 'file' | 'directory';
   title: string;
   summary: string;
   reference: string;

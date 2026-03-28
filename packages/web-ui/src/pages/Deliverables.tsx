@@ -4,14 +4,11 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
   file:      { icon: '\u{1F4C4}', color: 'bg-green-500/10 text-green-600' },
-  document:  { icon: '\u{1F4DD}', color: 'bg-blue-500/10 text-blue-600' },
-  report:    { icon: '\u{1F4CA}', color: 'bg-amber-500/10 text-amber-600' },
   directory: { icon: '\u{1F4C1}', color: 'bg-blue-500/10 text-blue-600' },
-  url:       { icon: '\u{1F517}', color: 'bg-brand-500/10 text-brand-500' },
-  text:      { icon: '\u{1F4AC}', color: 'bg-surface-overlay text-fg-secondary' },
 };
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -20,7 +17,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   outdated: { label: 'Outdated', color: 'text-red-500 bg-red-500/10' },
 };
 
-const ALL_TYPES = ['file', 'document', 'report', 'directory', 'url', 'text'] as const;
+const ALL_TYPES = ['file', 'directory'] as const;
 
 const ARTIFACT_META: Record<string, { icon: string; label: string; color: string }> = {
   agent: { icon: '\u2726', label: 'Agent', color: 'bg-brand-500/10 text-brand-500' },
@@ -30,6 +27,7 @@ const ARTIFACT_META: Record<string, { icon: string; label: string; color: string
 
 export function DeliverablesPage() {
   const isMobile = useIsMobile();
+  const listPanel = useResizablePanel({ side: 'left', defaultWidth: 384, minWidth: 280, maxWidth: 600, storageKey: 'markus_deliverables_list' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
@@ -69,7 +67,7 @@ export function DeliverablesPage() {
   const listRef = useRef<HTMLDivElement>(null);
 
   // Create form
-  const [newType, setNewType] = useState<string>('document');
+  const [newType, setNewType] = useState<string>('file');
   const [newTitle, setNewTitle] = useState('');
   const [newSummary, setNewSummary] = useState('');
   const [newReference, setNewReference] = useState('');
@@ -366,7 +364,7 @@ export function DeliverablesPage() {
 
   const openContributeForm = () => {
     setNewTitle(''); setNewSummary(''); setNewReference(''); setNewTags('');
-    setNewType('document');
+    setNewType('file');
     if (projects.length > 0) setNewProjectId(projects[0]!.id);
     setShowCreate(true);
   };
@@ -383,7 +381,8 @@ export function DeliverablesPage() {
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar */}
       {(!isMobile || !mobileShowDetail) && (
-      <div className={`${isMobile ? 'flex-1 min-w-0' : 'w-96 shrink-0'} border-r border-border-default flex flex-col bg-surface-primary`}>
+      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} border-r border-border-default flex flex-col bg-surface-primary`}
+        style={isMobile ? undefined : { width: listPanel.width }}>
         <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg-secondary">
@@ -517,9 +516,14 @@ export function DeliverablesPage() {
       </div>
       )}
 
+      {/* Resize handle */}
+      {!isMobile && (
+        <div className="w-1 shrink-0 cursor-col-resize hover:bg-brand-500/30 active:bg-brand-500/50 transition-colors" onMouseDown={listPanel.onResizeStart} />
+      )}
+
       {/* Right detail panel */}
       {(!isMobile || mobileShowDetail) && (
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-w-0">
         {isMobile && (
           <div className="sticky top-0 z-10 bg-surface-secondary border-b border-border-default px-4 py-2.5 flex items-center gap-2">
             <button

@@ -281,9 +281,7 @@ export class DeliverableService {
   private mapTaskDeliverableType(type: TaskDeliverable['type']): Deliverable['type'] {
     switch (type) {
       case 'file': return 'file';
-      case 'report': return 'report';
-      case 'document': return 'document';
-      default: return 'document';
+      default: return 'file';
     }
   }
 

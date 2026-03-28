@@ -280,7 +280,7 @@ export const deliverables = pgTable(
   'deliverables',
   {
     id: varchar('id', { length: 64 }).primaryKey(),
-    type: varchar('type', { length: 32 }).notNull().default('text'),
+    type: varchar('type', { length: 32 }).notNull().default('file'),
     title: varchar('title', { length: 512 }).notNull(),
     summary: text('summary').notNull().default(''),
     reference: text('reference').notNull().default(''),

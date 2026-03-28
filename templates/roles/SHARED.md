@@ -255,7 +255,7 @@ Your team maintains two tiers of persistent information:
 - This is YOUR private workspace — other agents cannot see it
 
 ### Shared Deliverables
-- Use `deliverable_create` to publish outputs that benefit the team: files, documents, reports, architectural decisions, conventions, gotchas, troubleshooting tips
+- Use `deliverable_create` to publish outputs that benefit the team: files, architectural decisions, conventions, gotchas, troubleshooting tips
 - Use `deliverable_search` to find existing team outputs before starting work
 - Use `deliverable_list` to browse what's available by project, type, or agent
 - Use `deliverable_update` to flag outdated entries or update metadata

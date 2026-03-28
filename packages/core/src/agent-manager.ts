@@ -850,7 +850,7 @@ export class AgentManager {
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
-          const _validTypes = new Set(['file', 'document', 'report', 'directory', 'url', 'text']);
+          const _validTypes = new Set(['file', 'directory']);
           const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
             type: 'branch', reference: `task/${taskId}`,
             summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,
@@ -1371,7 +1371,7 @@ export class AgentManager {
           const task = ts.getTask(taskId);
           if (!task) throw new Error(`Task not found: ${taskId}`);
           const reviewerAgentId = (task as Record<string, unknown>).reviewerAgentId as string | undefined;
-          const _validTypes = new Set(['file', 'document', 'report', 'directory', 'url', 'text']);
+          const _validTypes = new Set(['file', 'directory']);
           const deliverables: Array<{ type: string; reference: string; summary: string }> = [{
             type: 'branch', reference: `task/${taskId}`,
             summary: `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`,

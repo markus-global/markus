@@ -55,7 +55,7 @@ export interface TaskDeliverable {
 
 // ─── Unified Deliverable (产出物) ────────────────────────────────────────────
 
-export type DeliverableType = 'file' | 'document' | 'report' | 'directory' | 'url' | 'text';
+export type DeliverableType = 'file' | 'directory';
 export type DeliverableStatus = 'active' | 'verified' | 'outdated';
 export type BuilderArtifactType = 'agent' | 'team' | 'skill';
 

@@ -260,14 +260,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'deliverable_create',
             description:
-              'Publish a deliverable to the shared team repository. Use for files, documents, reports, research findings, conventions, architectural decisions, gotchas, or troubleshooting tips.',
+              'Publish a deliverable to the shared team repository. Use for files, research findings, conventions, architectural decisions, gotchas, or troubleshooting tips.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
-                  description: 'Type of deliverable',
+                  enum: ['file', 'directory'],
+                  description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files',
                 },
                 title: { type: 'string', description: 'Clear, searchable title' },
                 summary: {
@@ -319,7 +319,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 agent_id: { type: 'string', description: 'Filter by agent ID (optional)' },
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
+                  enum: ['file', 'directory'],
                   description: 'Filter by deliverable type (optional)',
                 },
                 limit: { type: 'number', description: 'Max results (default: 20)' },
@@ -364,7 +364,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 agent_id: { type: 'string', description: 'Filter by agent ID' },
                 type: {
                   type: 'string',
-                  enum: ['file', 'document', 'report', 'directory', 'url', 'text'],
+                  enum: ['file', 'directory'],
                   description: 'Filter by type',
                 },
                 status: {

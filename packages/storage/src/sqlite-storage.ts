@@ -254,7 +254,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_knowledge_org ON agent_knowledge(org_id);
 
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL DEFAULT 'text',
+  type TEXT NOT NULL DEFAULT 'file',
   title TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
   reference TEXT NOT NULL DEFAULT '',
