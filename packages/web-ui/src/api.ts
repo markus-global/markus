@@ -959,7 +959,10 @@ export const api = {
       request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),
     storage: () => request<StorageInfo>('/system/storage'),
     orphans: () => request<OrphanInfo>('/system/storage/orphans'),
-    purgeOrphans: () => request<PurgeResult>('/system/storage/orphans', { method: 'DELETE' }),
+    purgeOrphans: (ids?: string[]) => request<PurgeResult>('/system/storage/orphans', {
+      method: 'DELETE',
+      body: ids ? JSON.stringify({ ids }) : undefined,
+    }),
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),

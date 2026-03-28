@@ -5984,7 +5984,9 @@ export class APIServer {
 
     if (path === '/api/system/storage/orphans' && req.method === 'DELETE') {
       try {
-        const result = this.purgeOrphans();
+        const body = await this.readBody(req);
+        const ids = Array.isArray(body?.ids) ? body.ids as string[] : undefined;
+        const result = this.purgeOrphans(ids);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Orphan cleanup failed: ${String(err)}` });
@@ -6972,13 +6974,15 @@ export class APIServer {
     };
   }
 
-  private purgeOrphans() {
+  private purgeOrphans(ids?: string[]) {
     const orphans = this.detectOrphans();
+    const filter = ids && ids.length > 0 ? new Set(ids) : null;
     const purgedAgents: string[] = [];
     const purgedTeams: string[] = [];
     const failures: string[] = [];
 
     for (const o of orphans.orphanAgents) {
+      if (filter && !filter.has(o.id)) continue;
       try {
         rmSync(o.path, { recursive: true, force: true });
         purgedAgents.push(o.id);
@@ -6986,6 +6990,7 @@ export class APIServer {
     }
 
     for (const o of orphans.orphanTeams) {
+      if (filter && !filter.has(o.id)) continue;
       try {
         rmSync(o.path, { recursive: true, force: true });
         purgedTeams.push(o.id);

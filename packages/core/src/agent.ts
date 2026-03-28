@@ -448,10 +448,11 @@ export class Agent {
    * The message will be seen by the LLM on its next turn.
    */
   injectUserMessage(sessionId: string, content: string): void {
-    const session = this.memory.getSession?.(sessionId);
+    let session = this.memory.getSession?.(sessionId);
     if (!session) {
-      log.warn('Cannot inject message: session not found', { sessionId });
-      return;
+      // Session may not exist yet (e.g. feedback injection before task execution creates it).
+      // Create it now so the message is available when the task loop starts.
+      session = this.memory.getOrCreateSession(this.id, sessionId);
     }
     this.memory.appendMessage(sessionId, { role: 'user', content });
     log.debug('Injected user message into session', { sessionId, contentLength: content.length });

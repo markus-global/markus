@@ -165,11 +165,12 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
 const ALL_STATUSES = ['pending_approval', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
+  { id: 'failed',      label: 'Failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
   { id: 'todo',        label: 'To Do',       statuses: ['pending_approval'],        accent: 'border-t-amber-500', dropStatus: 'pending_approval' },
   { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
   { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
   { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['failed', 'cancelled'],     accent: 'border-t-red-500',    dropStatus: 'cancelled' },
+  { id: 'closed',      label: 'Closed',      statuses: ['cancelled'],               accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -1541,6 +1542,7 @@ const REQ_COLUMN_MAP: Record<string, string> = {
 };
 
 const REQ_DROP_STATUS: Record<string, string> = {
+  failed: 'rejected',
   todo: 'approved',
   in_progress: 'in_progress',
   review: 'approved',
@@ -1551,20 +1553,22 @@ const REQ_DROP_STATUS: Record<string, string> = {
 // ─── Backlog Table View ─────────────────────────────────────────────────────────
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
-const GROUP_ORDER: Record<string, number> = { todo: 0, in_progress: 1, review: 2, done: 3, closed: 4 };
+const GROUP_ORDER: Record<string, number> = { failed: 0, todo: 1, in_progress: 2, review: 3, done: 4, closed: 5 };
 const GROUP_ACCENT: Record<string, string> = {
+  failed: 'border-l-red-500 bg-red-500/5',
   todo: 'border-l-blue-500 bg-blue-500/5',
   in_progress: 'border-l-brand-500 bg-brand-500/5',
   review: 'border-l-purple-500 bg-brand-500/5',
   done: 'border-l-green-500 bg-green-500/5',
-  closed: 'border-l-red-500 bg-red-500/5',
+  closed: 'border-l-gray-500 bg-gray-500/5',
 };
 const GROUP_HEADER_CLS: Record<string, string> = {
+  failed: 'border-l-red-500 text-red-500',
   todo: 'border-l-blue-500 text-blue-600',
   in_progress: 'border-l-brand-500 text-brand-500',
   review: 'border-l-purple-500 text-brand-500',
   done: 'border-l-green-500 text-green-600',
-  closed: 'border-l-red-500 text-red-500',
+  closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
 const ALL_REQ_STATUSES = ['draft', 'pending_review', 'approved', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
@@ -1789,8 +1793,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows]);
   const visibleGroups = useMemo(() => {
     if (sortMode !== 'status') return null;
+    const dataGroups = new Set(rows.map(r => r.group));
     const groups: string[] = [];
     const seen = new Set<string>();
+    if (dataGroups.has('failed')) { groups.push('failed'); seen.add('failed'); }
     for (const g of ALWAYS_SHOW_GROUPS) { groups.push(g); seen.add(g); }
     for (const r of rows) { if (!seen.has(r.group)) { groups.push(r.group); seen.add(r.group); } }
     return groups;
@@ -2251,7 +2257,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
 
   const visibleColumns = BOARD_COLUMNS.filter(col => {
-    if (col.id === 'closed') {
+    if (col.id === 'failed' || col.id === 'closed') {
       const tasks = getColumnTasks(col);
       const reqs = getColumnReqs(col);
       return tasks.length + reqs.length > 0;

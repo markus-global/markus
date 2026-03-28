@@ -65,8 +65,6 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [orphanInfo, setOrphanInfo] = useState<OrphanInfo | null>(null);
   const [orphanLoading, setOrphanLoading] = useState(false);
-  const [purging, setPurging] = useState(false);
-  const [purgeResult, setPurgeResult] = useState<string | null>(null);
 
   const authHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
@@ -850,43 +848,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
                 {/* Orphan cleanup */}
                 {orphanInfo && (orphanInfo.orphanAgents.length > 0 || orphanInfo.orphanTeams.length > 0) && (
-                  <div className="border-t border-border-default pt-4">
-                    <h4 className="text-xs font-semibold text-amber-500 mb-2">Orphaned Directories</h4>
-                    <p className="text-xs text-fg-tertiary mb-3">
-                      These directories have no matching database record. They were likely left behind when agents or teams were deleted.
-                      Total: {formatBytes(orphanInfo.totalOrphanSize)}
-                    </p>
-                    <div className="space-y-1 mb-3 max-h-40 overflow-y-auto">
-                      {orphanInfo.orphanAgents.map(o => (
-                        <div key={o.id} className="flex items-center justify-between text-xs py-1 px-3 rounded bg-amber-500/5">
-                          <span className="text-fg-tertiary font-mono truncate">{o.id}</span>
-                          <span className="text-fg-secondary tabular-nums shrink-0 ml-2">{formatBytes(o.size)}</span>
-                        </div>
-                      ))}
-                      {orphanInfo.orphanTeams.map(o => (
-                        <div key={o.id} className="flex items-center justify-between text-xs py-1 px-3 rounded bg-amber-500/5">
-                          <span className="text-fg-tertiary font-mono truncate">team: {o.id}</span>
-                          <span className="text-fg-secondary tabular-nums shrink-0 ml-2">{formatBytes(o.size)}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <button
-                      disabled={purging}
-                      onClick={async () => {
-                        setPurging(true); setPurgeResult(null);
-                        try {
-                          const r = await api.system.purgeOrphans();
-                          setPurgeResult(`Cleaned ${r.purgedAgents.length + r.purgedTeams.length} dirs, freed ${formatBytes(r.freedBytes)}${r.failures.length ? ` (${r.failures.length} failed)` : ''}`);
-                          loadStorage();
-                        } catch { setPurgeResult('Cleanup failed'); }
-                        finally { setPurging(false); }
-                      }}
-                      className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                    >
-                      {purging ? 'Cleaning...' : `Clean Up (${formatBytes(orphanInfo.totalOrphanSize)})`}
-                    </button>
-                    {purgeResult && <div className="text-xs text-fg-tertiary mt-2">{purgeResult}</div>}
-                  </div>
+                  <OrphanSection orphanInfo={orphanInfo} dataDir={storageInfo.dataDir} onPurged={loadStorage} />
                 )}
               </>
             )}
@@ -964,4 +926,86 @@ function formatBytes(bytes: number): string {
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const val = bytes / Math.pow(1024, i);
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
+}
+
+function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanInfo; dataDir: string; onPurged: () => void }) {
+  const allItems = [
+    ...orphanInfo.orphanAgents.map(o => ({ ...o, kind: 'agent' as const })),
+    ...orphanInfo.orphanTeams.map(o => ({ ...o, kind: 'team' as const })),
+  ];
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [purging, setPurging] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const toggle = (id: string) => setSelected(prev => {
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+  const allSelected = selected.size === allItems.length && allItems.length > 0;
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(allItems.map(o => o.id)));
+
+  const selectedSize = allItems.filter(o => selected.has(o.id)).reduce((s, o) => s + o.size, 0);
+
+  const doPurge = async (ids?: string[]) => {
+    setPurging(true); setResult(null);
+    try {
+      const r = await api.system.purgeOrphans(ids);
+      const count = r.purgedAgents.length + r.purgedTeams.length;
+      setResult(`Cleaned ${count} dir${count !== 1 ? 's' : ''}, freed ${formatBytes(r.freedBytes)}${r.failures.length ? ` (${r.failures.length} failed)` : ''}`);
+      setSelected(new Set());
+      onPurged();
+    } catch { setResult('Cleanup failed'); }
+    finally { setPurging(false); }
+  };
+
+  return (
+    <div className="border-t border-border-default pt-4">
+      <h4 className="text-xs font-semibold text-amber-500 mb-2">Orphaned Directories</h4>
+      <p className="text-xs text-fg-tertiary mb-3">
+        These directories have no matching database record and were likely left behind when agents or teams were deleted.
+        Total: {formatBytes(orphanInfo.totalOrphanSize)} across {allItems.length} director{allItems.length === 1 ? 'y' : 'ies'}.
+      </p>
+
+      {/* Select all */}
+      <div className="flex items-center gap-2 mb-2 px-1">
+        <label className="flex items-center gap-1.5 text-[10px] text-fg-tertiary cursor-pointer select-none">
+          <input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded" />
+          Select all
+        </label>
+        {selected.size > 0 && (
+          <span className="text-[10px] text-fg-secondary">{selected.size} selected ({formatBytes(selectedSize)})</span>
+        )}
+      </div>
+
+      {/* List */}
+      <div className="space-y-0.5 mb-3 max-h-52 overflow-y-auto">
+        {allItems.map(o => (
+          <div key={o.id} className={`flex items-center gap-2 text-xs py-1.5 px-2 rounded transition-colors ${selected.has(o.id) ? 'bg-amber-500/10' : 'bg-surface-elevated/30 hover:bg-surface-elevated/50'}`}>
+            <input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)} className="rounded shrink-0" />
+            {o.kind === 'team' && <span className="text-[10px] text-fg-tertiary shrink-0">team</span>}
+            <span className="text-fg-tertiary font-mono truncate min-w-0 flex-1">{o.id}</span>
+            <span className="text-fg-secondary tabular-nums shrink-0">{formatBytes(o.size)}</span>
+            <button onClick={() => void api.system.openPath(o.path)}
+              className="text-[10px] text-fg-tertiary hover:text-fg-secondary shrink-0 underline">
+              Open
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 items-center flex-wrap">
+        {selected.size > 0 && (
+          <button disabled={purging} onClick={() => void doPurge([...selected])}
+            className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
+            {purging ? 'Cleaning...' : `Clean Selected (${formatBytes(selectedSize)})`}
+          </button>
+        )}
+        <button disabled={purging} onClick={() => void doPurge()}
+          className="px-3 py-1.5 text-xs border border-amber-600/50 hover:bg-amber-600/10 text-amber-500 rounded-lg transition-colors disabled:opacity-50">
+          {purging ? 'Cleaning...' : `Clean All (${formatBytes(orphanInfo.totalOrphanSize)})`}
+        </button>
+      </div>
+      {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}
+    </div>
+  );
 }
