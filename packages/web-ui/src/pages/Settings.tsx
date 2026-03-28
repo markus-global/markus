@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { api } from '../api.ts';
+import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
+import { navBus } from '../navBus.ts';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -58,6 +59,15 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   // Track if user dismissed the setup guide
   const [setupDismissed, setSetupDismissed] = useState(false);
 
+  // Storage transparency
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [orphanInfo, setOrphanInfo] = useState<OrphanInfo | null>(null);
+  const [orphanLoading, setOrphanLoading] = useState(false);
+  const [purging, setPurging] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
+
   const authHeaders = (): Record<string, string> => ({
     'Content-Type': 'application/json',
     Authorization: `Bearer ${localStorage.getItem('markus_token') ?? ''}`,
@@ -91,7 +101,19 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles]);
+  const loadStorage = useCallback(() => {
+    setStorageLoading(true);
+    api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
+    api.system.orphans().then(setOrphanInfo).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadStorage]);
+
+  useEffect(() => {
+    const handler = () => loadStorage();
+    window.addEventListener('markus:data-changed', handler);
+    return () => window.removeEventListener('markus:data-changed', handler);
+  }, [loadStorage]);
 
   const detectEnvModels = useCallback(async () => {
     setEnvLoading(true); setEnvMsg(null); setEnvModels(null); setEnvSelected({});
@@ -745,6 +767,132 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
+        <Section title="Data & Storage">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">Scanning storage...</div>}
+            {storageInfo && (
+              <>
+                {/* Summary bar */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-lg font-semibold text-fg-primary">{formatBytes(storageInfo.totalSize)}</div>
+                    <div className="text-xs text-fg-tertiary font-mono mt-0.5">{storageInfo.dataDir}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => loadStorage()} disabled={storageLoading}
+                      className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors disabled:opacity-40">
+                      {storageLoading ? 'Scanning...' : 'Refresh'}
+                    </button>
+                    <button onClick={() => void api.system.openPath(storageInfo.dataDir)}
+                      className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">
+                      Open in Finder
+                    </button>
+                  </div>
+                </div>
+
+                {/* Breakdown table */}
+                <div className="border-t border-border-default pt-4">
+                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">Storage Breakdown</h4>
+                  <div className="space-y-1.5">
+                    {storageInfo.breakdown.filter(b => b.size > 0).map(item => (
+                      <div key={item.name} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-surface-elevated/40">
+                        <div className="min-w-0">
+                          <span className="text-sm text-fg-primary">{item.name}</span>
+                          <span className="text-xs text-fg-tertiary ml-2">{item.description}</span>
+                        </div>
+                        <span className="text-sm font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(item.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Per-agent storage */}
+                {storageInfo.agents.length > 0 && (
+                  <div className="border-t border-border-default pt-4">
+                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">Agent Storage ({storageInfo.agents.length})</h4>
+                    <div className="space-y-1">
+                      {storageInfo.agents.map(ag => {
+                        const expanded = expandedAgents.has(ag.id);
+                        return (
+                          <div key={ag.id} className="rounded-lg bg-surface-elevated/40 overflow-hidden">
+                            <div className="flex items-center justify-between py-2 px-3 cursor-pointer hover:bg-surface-elevated/70"
+                              onClick={() => setExpandedAgents(prev => { const n = new Set(prev); if (n.has(ag.id)) n.delete(ag.id); else n.add(ag.id); return n; })}>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-[10px] text-fg-tertiary">{expanded ? '▼' : '▶'}</span>
+                                <button onClick={e => { e.stopPropagation(); navBus.navigate('chat', { agentId: ag.id }); }}
+                                  className="text-sm text-brand-500 hover:text-brand-400 truncate">
+                                  {ag.name}
+                                </button>
+                                <span className="text-[10px] text-fg-tertiary font-mono truncate">{ag.id}</span>
+                              </div>
+                              <span className="text-xs font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(ag.size)}</span>
+                            </div>
+                            {expanded && (
+                              <div className="px-3 pb-2 pt-0.5 space-y-0.5">
+                                {ag.subItems.filter(s => s.size > 0).map(sub => (
+                                  <div key={sub.name} className="flex items-center justify-between text-xs py-0.5 pl-5">
+                                    <span className="text-fg-tertiary">{sub.name}</span>
+                                    <span className="text-fg-secondary tabular-nums">{formatBytes(sub.size)}</span>
+                                  </div>
+                                ))}
+                                <div className="pl-5 pt-1">
+                                  <button onClick={() => void api.system.openPath(storageInfo.dataDir + '/agents/' + ag.id)}
+                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">Open folder</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Orphan cleanup */}
+                {orphanInfo && (orphanInfo.orphanAgents.length > 0 || orphanInfo.orphanTeams.length > 0) && (
+                  <div className="border-t border-border-default pt-4">
+                    <h4 className="text-xs font-semibold text-amber-500 mb-2">Orphaned Directories</h4>
+                    <p className="text-xs text-fg-tertiary mb-3">
+                      These directories have no matching database record. They were likely left behind when agents or teams were deleted.
+                      Total: {formatBytes(orphanInfo.totalOrphanSize)}
+                    </p>
+                    <div className="space-y-1 mb-3 max-h-40 overflow-y-auto">
+                      {orphanInfo.orphanAgents.map(o => (
+                        <div key={o.id} className="flex items-center justify-between text-xs py-1 px-3 rounded bg-amber-500/5">
+                          <span className="text-fg-tertiary font-mono truncate">{o.id}</span>
+                          <span className="text-fg-secondary tabular-nums shrink-0 ml-2">{formatBytes(o.size)}</span>
+                        </div>
+                      ))}
+                      {orphanInfo.orphanTeams.map(o => (
+                        <div key={o.id} className="flex items-center justify-between text-xs py-1 px-3 rounded bg-amber-500/5">
+                          <span className="text-fg-tertiary font-mono truncate">team: {o.id}</span>
+                          <span className="text-fg-secondary tabular-nums shrink-0 ml-2">{formatBytes(o.size)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      disabled={purging}
+                      onClick={async () => {
+                        setPurging(true); setPurgeResult(null);
+                        try {
+                          const r = await api.system.purgeOrphans();
+                          setPurgeResult(`Cleaned ${r.purgedAgents.length + r.purgedTeams.length} dirs, freed ${formatBytes(r.freedBytes)}${r.failures.length ? ` (${r.failures.length} failed)` : ''}`);
+                          loadStorage();
+                        } catch { setPurgeResult('Cleanup failed'); }
+                        finally { setPurging(false); }
+                      }}
+                      className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {purging ? 'Cleaning...' : `Clean Up (${formatBytes(orphanInfo.totalOrphanSize)})`}
+                    </button>
+                    {purgeResult && <div className="text-xs text-fg-tertiary mt-2">{purgeResult}</div>}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </Section>
+
         <div className="h-8" />
       </div>
     </div>
@@ -808,4 +956,12 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <div className="text-xs text-fg-secondary mt-0.5 truncate">{value}</div>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }

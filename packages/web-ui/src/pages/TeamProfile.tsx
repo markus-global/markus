@@ -337,19 +337,54 @@ export function TeamProfile({ teamId, onBack, inline }: Props) {
               </div>
             </div>
 
-            <div className="p-4 bg-surface-secondary rounded-xl border border-red-900/30 space-y-3">
-              <div className="text-sm font-medium text-red-500">Danger Zone</div>
-              <button onClick={async () => {
-                if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
-                await api.teams.delete(teamId, false);
-                onBack();
-              }} className="px-4 py-1.5 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-500 rounded-lg transition-colors border border-red-500/30">
-                Delete Team
-              </button>
-            </div>
+            <DangerZone teamId={teamId} teamName={team.name} onDeleted={onBack} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DangerZone({ teamId, teamName, onDeleted }: { teamId: string; teamName: string; onDeleted: () => void }) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [purgeFiles, setPurgeFiles] = useState(false);
+  const [deleteMembers, setDeleteMembers] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  return (
+    <div className="p-4 bg-surface-secondary rounded-xl border border-red-900/30 space-y-3">
+      <div className="text-sm font-medium text-red-500">Danger Zone</div>
+      {!showConfirm ? (
+        <button onClick={() => setShowConfirm(true)}
+          className="px-4 py-1.5 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-500 rounded-lg transition-colors border border-red-500/30">
+          Delete Team
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <div className="text-xs text-fg-secondary">Delete team &quot;{teamName}&quot;? This removes the team record from the database.</div>
+          <label className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer">
+            <input type="checkbox" checked={deleteMembers} onChange={e => setDeleteMembers(e.target.checked)} className="rounded" />
+            Also delete all members in this team
+          </label>
+          <label className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer">
+            <input type="checkbox" checked={purgeFiles} onChange={e => setPurgeFiles(e.target.checked)} className="rounded" />
+            Also delete disk files (workspace, memory, logs)
+          </label>
+          <div className="flex gap-2">
+            <button disabled={deleting} onClick={async () => {
+              setDeleting(true);
+              try { await api.teams.delete(teamId, deleteMembers, { purgeFiles }); window.dispatchEvent(new CustomEvent('markus:data-changed')); onDeleted(); }
+              catch { setDeleting(false); }
+            }} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50">
+              {deleting ? 'Deleting...' : 'Confirm Delete'}
+            </button>
+            <button onClick={() => setShowConfirm(false)}
+              className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors border border-border-default">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

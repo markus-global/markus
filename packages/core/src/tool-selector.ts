@@ -193,7 +193,7 @@ export class ToolSelector {
     parts.push(`You have ${alreadySelected.size} tools active.`);
 
     if (skillCatalog && skillCatalog.length > 0) {
-      const maxSkills = 8;
+      const maxSkills = 30;
       const shown = skillCatalog.slice(0, maxSkills);
       parts.push(`\nSkills available (activate by name to load instructions into your context):`);
       for (const skill of shown) {

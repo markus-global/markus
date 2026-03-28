@@ -186,15 +186,20 @@ export function ChatTeamSidebar({
   const handleDeleteTeam = (teamId: string, teamName: string) => {
     askConfirm(
       `Delete "${teamName}"?`,
-      'This team will be permanently deleted.',
+      'This team will be removed from the database. Check options below to also delete members and disk files.',
       async (checked) => {
         const deleteMembers = checked?.['deleteMembers'] ?? true;
-        await api.teams.delete(teamId, deleteMembers);
+        const purgeFiles = checked?.['purgeFiles'] ?? false;
+        await api.teams.delete(teamId, deleteMembers, { purgeFiles });
         onRefreshTeams();
         refreshUngrouped();
+        window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
       'Delete Team',
-      [{ id: 'deleteMembers', label: 'Also delete all members in this team', defaultChecked: true }],
+      [
+        { id: 'deleteMembers', label: 'Also delete all members in this team', defaultChecked: true },
+        { id: 'purgeFiles', label: 'Also delete disk files (workspace, memory, logs)', defaultChecked: false },
+      ],
     );
   };
 
@@ -252,15 +257,23 @@ export function ChatTeamSidebar({
   const handleRemoveFromOrg = (id: string, name: string, type: 'agent' | 'human') => {
     askConfirm(
       `Remove "${name}"?`,
-      type === 'agent' ? 'This agent will be permanently removed.' : 'This user will lose access.',
-      async () => {
-        if (type === 'agent') await api.agents.remove(id);
-        else await api.users.remove(id);
+      type === 'agent'
+        ? 'This agent will be removed from the database. Check the option below to also delete its workspace, memory, and other files from disk.'
+        : 'This user will lose access.',
+      async (checked) => {
+        if (type === 'agent') {
+          const purgeFiles = checked?.['purgeFiles'] ?? false;
+          await api.agents.remove(id, { purgeFiles });
+        } else {
+          await api.users.remove(id);
+        }
         onRefreshAgents();
         onRefreshTeams();
         refreshUngrouped();
+        window.dispatchEvent(new CustomEvent('markus:data-changed'));
       },
       'Remove',
+      type === 'agent' ? [{ id: 'purgeFiles', label: 'Also delete disk files (workspace, memory, logs)', defaultChecked: false }] : undefined,
     );
   };
 

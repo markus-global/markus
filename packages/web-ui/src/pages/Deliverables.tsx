@@ -82,6 +82,7 @@ export function DeliverablesPage() {
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
   const copyMenuRef = useRef<HTMLDivElement>(null);
+  const [sharedDir, setSharedDir] = useState('');
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -96,6 +97,7 @@ export function DeliverablesPage() {
   useEffect(() => {
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
+    api.system.storage().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -396,6 +398,13 @@ export function DeliverablesPage() {
             placeholder="Search deliverables..."
             className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-sm text-fg-primary focus:border-brand-500 focus:outline-none transition-colors"
           />
+          {sharedDir && (
+            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-surface-elevated/50 border border-border-default rounded-lg text-[10px] text-fg-tertiary">
+              <span className="truncate font-mono">{sharedDir}</span>
+              <button onClick={() => void api.system.openPath(sharedDir)}
+                className="shrink-0 underline hover:text-fg-secondary transition-colors">Open</button>
+            </div>
+          )}
           {/* Type filter (includes artifact types) */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide">
             <FilterPill label="All types" value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />

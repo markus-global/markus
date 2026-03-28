@@ -135,6 +135,29 @@ export interface AnnouncementInfo {
   acknowledged: string[];
 }
 
+export interface StorageBreakdownItem { name: string; path: string; size: number; description: string }
+export interface StorageAgentItem { id: string; name: string; size: number; subItems: Array<{ name: string; size: number }> }
+export interface StorageInfo {
+  dataDir: string;
+  totalSize: number;
+  breakdown: StorageBreakdownItem[];
+  agents: StorageAgentItem[];
+  database: { path: string; size: number };
+}
+
+export interface OrphanInfo {
+  orphanAgents: Array<{ id: string; path: string; size: number }>;
+  orphanTeams: Array<{ id: string; path: string; size: number }>;
+  totalOrphanSize: number;
+}
+
+export interface PurgeResult {
+  purgedAgents: string[];
+  purgedTeams: string[];
+  freedBytes: number;
+  failures: string[];
+}
+
 export interface GovernancePolicyInfo {
   defaultApprovalTier: string;
   maxTasksPerAgent?: number;
@@ -605,7 +628,8 @@ export const api = {
       request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
-    remove: (id: string) => request(`/agents/${id}`, { method: 'DELETE' }),
+    remove: (id: string, opts?: { purgeFiles?: boolean }) =>
+      request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
     updateConfig: (id: string, patch: Record<string, unknown>) =>
       request<{ ok: boolean; config: AgentConfigInfo }>(`/agents/${id}/config`, { method: 'PATCH', body: JSON.stringify(patch) }),
     getMemory: (id: string) => request<AgentMemorySummary>(`/agents/${id}/memory`),
@@ -714,8 +738,8 @@ export const api = {
       request<{ team: TeamInfo }>('/teams', { method: 'POST', body: JSON.stringify({ name, description }) }),
     update: (id: string, data: { name?: string; description?: string; managerId?: string; managerType?: 'human' | 'agent' }) =>
       request<{ team: TeamInfo }>(`/teams/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-    delete: (id: string, deleteMembers?: boolean) =>
-      request(`/teams/${id}?deleteMembers=${deleteMembers ? 'true' : 'false'}`, { method: 'DELETE' }),
+    delete: (id: string, deleteMembers?: boolean, opts?: { purgeFiles?: boolean }) =>
+      request(`/teams/${id}?deleteMembers=${deleteMembers ? 'true' : 'false'}${opts?.purgeFiles ? '&purgeFiles=true' : ''}`, { method: 'DELETE' }),
     addMember: (teamId: string, memberId: string, memberType: 'human' | 'agent') =>
       request(`/teams/${teamId}/members`, { method: 'POST', body: JSON.stringify({ memberId, memberType }) }),
     removeMember: (teamId: string, memberId: string) =>
@@ -933,6 +957,9 @@ export const api = {
   system: {
     openPath: (path: string) =>
       request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),
+    storage: () => request<StorageInfo>('/system/storage'),
+    orphans: () => request<OrphanInfo>('/system/storage/orphans'),
+    purgeOrphans: () => request<PurgeResult>('/system/storage/orphans', { method: 'DELETE' }),
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),

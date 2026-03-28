@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo } from '../api.ts';
+import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 
 export function Dashboard() {
@@ -9,6 +9,7 @@ export function Dashboard() {
   const [ops, setOps] = useState<OpsDashboard | null>(null);
   const [opsPeriod, setOpsPeriod] = useState<'1h' | '24h' | '7d'>('24h');
   const [pendingReqs, setPendingReqs] = useState<RequirementInfo[]>([]);
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
 
   const refresh = () => {
     api.agents.list().then(d => setAgents(d.agents)).catch(() => {});
@@ -18,12 +19,15 @@ export function Dashboard() {
     api.requirements.list({ source: 'agent' }).then(d => {
       setPendingReqs(d.requirements.filter(r => r.status === 'draft' || r.status === 'pending_review'));
     }).catch(() => {});
+    api.system.storage().then(setStorageInfo).catch(() => {});
   };
 
   useEffect(() => {
     refresh();
     const i = setInterval(refresh, 30000);
-    return () => clearInterval(i);
+    const onDataChanged = () => refresh();
+    window.addEventListener('markus:data-changed', onDataChanged);
+    return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsPeriod]);
 
@@ -267,6 +271,23 @@ export function Dashboard() {
                 )}
               </div>
             )}
+
+            {/* Storage Summary */}
+            {storageInfo && (
+              <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-brand-500/30 transition-colors"
+                onClick={() => navBus.navigate('settings')}>
+                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Storage</h3>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold text-fg-primary">{fmtBytes(storageInfo.totalSize)}</span>
+                  <span className="text-xs text-fg-tertiary">total</span>
+                </div>
+                <div className="mt-2 flex gap-4 text-xs text-fg-tertiary">
+                  <span>DB: {fmtBytes(storageInfo.database.size)}</span>
+                  <span>Agents: {storageInfo.agents.length}</span>
+                </div>
+                <div className="mt-2 text-[10px] text-fg-tertiary">Click to view details in Settings</div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -356,5 +377,13 @@ function HealthGauge({ label, value, max, unit, color, raw }: {
       </div>
     </div>
   );
+}
+
+function fmtBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 

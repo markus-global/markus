@@ -187,6 +187,7 @@ export function AgentBuilder() {
       if (result.team && typeof result.team === 'object') info.teamId = (result.team as Record<string, string>).id;
       if (Array.isArray(result.agents)) info.agentIds = (result.agents as Array<Record<string, string>>).map(a => a.id);
       setInstalledMap(prev => new Map(prev).set(key, info));
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       console.error('Install failed:', err);
       alert(`Install failed: ${err}`);
@@ -202,6 +203,7 @@ export function AgentBuilder() {
     try {
       await api.builder.artifacts.uninstall(art.type, art.name);
       setInstalledMap(prev => { const m = new Map(prev); m.delete(key); return m; });
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       console.error('Uninstall failed:', err);
       alert(`Uninstall failed: ${err}`);
@@ -269,6 +271,7 @@ export function AgentBuilder() {
       await api.builder.artifacts.delete(art.type, art.name);
       setArtifacts(prev => prev.filter(a => !(a.type === art.type && a.name === art.name)));
       setInstalledMap(prev => { const m = new Map(prev); m.delete(key); return m; });
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       console.error('Delete failed:', err);
     } finally {

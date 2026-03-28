@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, RoleUpdateStatus } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -135,6 +135,8 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
+  const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
+  const [agentDataDir, setAgentDataDir] = useState('');
 
   useEffect(() => {
     api.settings.getLlm().then(d => {
@@ -147,6 +149,11 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
       if (info) setUsageInfo(info);
     }).catch(() => {});
     api.agents.getRecentActivities(agent.id).then(d => setRecentActivities(d.activities)).catch(() => {});
+    api.system.storage().then(info => {
+      setAgentDataDir(info.dataDir + '/agents/' + agent.id);
+      const match = info.agents.find(a => a.id === agent.id);
+      if (match) setAgentStorage(match);
+    }).catch(() => {});
   }, [agent.id]);
 
   const configuredModels = Object.entries(providers).filter(([, v]) => v.configured).map(([k]) => k);
@@ -346,6 +353,23 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
             <StatBox label="Prompt Tokens" value={fmtNum(usageInfo.promptTokens)} />
             <StatBox label="Completion Tokens" value={fmtNum(usageInfo.completionTokens)} />
             <StatBox label="Est. Cost" value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
+          </div>
+        </Card>
+      )}
+
+      {agentStorage && (
+        <Card title="Storage" action={
+          <button onClick={() => void api.system.openPath(agentDataDir)}
+            className="text-xs text-fg-tertiary hover:text-fg-secondary">Open folder →</button>
+        }>
+          <div className="flex items-baseline gap-2 mb-3">
+            <span className="text-lg font-bold text-fg-primary">{fmtBytesLocal(agentStorage.size)}</span>
+            <span className="text-xs text-fg-tertiary font-mono truncate">{agentDataDir}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {agentStorage.subItems.filter(s => s.size > 0).map(sub => (
+              <StatBox key={sub.name} label={sub.name} value={fmtBytesLocal(sub.size)} />
+            ))}
           </div>
         </Card>
       )}
@@ -1491,4 +1515,12 @@ function StatBox({ label, value, color }: { label: string; value: string; color?
 
 function Empty({ text }: { text: string }) {
   return <div className="text-xs text-fg-tertiary py-6 text-center">{text}</div>;
+}
+
+function fmtBytesLocal(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }

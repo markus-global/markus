@@ -128,6 +128,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
       await api.builder.artifacts.install('skill', s);
       onMsg(canUpgrade ? `Upgraded ${item.name}` : `Installed ${item.name}`, 'success');
       onRefresh();
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch {
       onMsg('Install failed', 'error');
     } finally {
@@ -286,6 +287,7 @@ export function SkillStore() {
       });
       await loadInstalled();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       msg(`Download failed for "${skill.name}". You can try manually from: ${skill.homepage}`, 'error');
     }
@@ -304,6 +306,7 @@ export function SkillStore() {
       });
       await loadInstalled();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       msg(`Download failed for "${skill.name}". You can try manually from: ${skill.url}`, 'error');
     }
@@ -317,6 +320,7 @@ export function SkillStore() {
       await loadInstalled();
       await loadBuiltin();
       msg(`"${skill.name}" installed (${result.method}) → ${result.path}`);
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       msg(`Install failed for "${skill.name}": ${err}`, 'error');
     }
@@ -329,6 +333,7 @@ export function SkillStore() {
       await api.skills.uninstall(name);
       await loadInstalled();
       msg(`"${name}" uninstalled`);
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch (err) {
       msg(`Uninstall failed: ${err}`, 'error');
     }

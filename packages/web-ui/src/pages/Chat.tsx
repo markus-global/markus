@@ -617,7 +617,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const unsubGroup = wsClient.on('chat:group_created', () => {
       fetch('/api/group-chats').then(r => r.json()).then((d: { chats: typeof groupChats }) => setGroupChats(d.chats)).catch(() => {});
     });
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); };
+    const onDataChanged = () => { refreshAgents(); refreshTeams(); };
+    window.addEventListener('markus:data-changed', onDataChanged);
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeam(); unsubGroup(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

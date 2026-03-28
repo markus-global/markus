@@ -1308,8 +1308,9 @@ export class APIServer {
           await this.gateway.unregister(extReg.externalAgentId, extReg.orgId);
         }
       }
-      await this.orgService.fireAgent(agentId);
-      this.json(res, 200, { deleted: true });
+      const purgeFiles = url.searchParams.get('purgeFiles') === 'true';
+      await this.orgService.fireAgent(agentId, { purgeFiles });
+      this.json(res, 200, { deleted: true, purgedFiles: purgeFiles });
       return;
     }
 
@@ -1448,8 +1449,9 @@ export class APIServer {
       }
       const teamId = path.split('/')[3]!;
       const deleteMembers = url.searchParams.get('deleteMembers') === 'true';
-      await this.orgService.deleteTeam(teamId, deleteMembers);
-      this.json(res, 200, { deleted: true });
+      const purgeFiles = url.searchParams.get('purgeFiles') === 'true';
+      await this.orgService.deleteTeam(teamId, deleteMembers, { purgeFiles });
+      this.json(res, 200, { deleted: true, purgedFiles: purgeFiles });
       return;
     }
 
@@ -3835,7 +3837,7 @@ export class APIServer {
 
         if (this.deliverableService) {
           this.deliverableService.create({
-            type: 'document',
+            type: 'file',
             title: `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${manifest.displayName}`,
             summary: (artifact.description as string) ?? manifest.description ?? `${mode} saved via Builder`,
             reference: artDir,
@@ -5959,6 +5961,37 @@ export class APIServer {
       return;
     }
 
+    if (path === '/api/system/storage' && req.method === 'GET') {
+      try {
+        const dataDir = join(homedir(), '.markus');
+        const result = this.collectStorageInfo(dataDir);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 500, { error: `Storage scan failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    if (path === '/api/system/storage/orphans' && req.method === 'GET') {
+      try {
+        const result = this.detectOrphans();
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 500, { error: `Orphan detection failed: ${String(err)}` });
+      }
+      return;
+    }
+
+    if (path === '/api/system/storage/orphans' && req.method === 'DELETE') {
+      try {
+        const result = this.purgeOrphans();
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 500, { error: `Orphan cleanup failed: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── Governance: Announcements ─────────────────────────────────────────
 
     if (path === '/api/system/announcements' && req.method === 'POST') {
@@ -6597,7 +6630,7 @@ export class APIServer {
       const body = await this.readBody(req);
       try {
         const d = await this.deliverableService.create({
-          type: 'document',
+          type: 'file',
           title: body['title'] as string,
           summary: body['content'] as string,
           tags: body['tags'] as string[],
@@ -6809,5 +6842,161 @@ export class APIServer {
       }
     }
     return null;
+  }
+
+  private collectStorageInfo(dataDir: string) {
+    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
+      if (!existsSync(p)) return 0;
+      try {
+        const st = statSync(p);
+        if (st.isFile()) return st.size;
+        if (!st.isDirectory() || depth >= maxDepth) return 0;
+        let total = 0;
+        for (const entry of readdirSync(p, { withFileTypes: true })) {
+          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
+        }
+        return total;
+      } catch { return 0; }
+    };
+
+    const topLevelItems: Array<{ name: string; path: string; size: number; description: string }> = [
+      { name: 'Database', path: join(dataDir, 'data.db'), size: 0, description: 'SQLite database (tasks, agents, chat, etc.)' },
+      { name: 'Agents', path: join(dataDir, 'agents'), size: 0, description: 'Agent workspaces, memory, role files, sessions' },
+      { name: 'Skills', path: join(dataDir, 'skills'), size: 0, description: 'Installed skill packages' },
+      { name: 'LLM Logs', path: join(dataDir, 'llm-logs'), size: 0, description: 'Daily LLM request/response audit logs' },
+      { name: 'Builder Artifacts', path: join(dataDir, 'builder-artifacts'), size: 0, description: 'Agent, team, and skill build outputs' },
+      { name: 'Teams', path: join(dataDir, 'teams'), size: 0, description: 'Team announcements and norms' },
+      { name: 'Shared', path: join(dataDir, 'shared'), size: 0, description: 'Cross-agent shared files and task deliverables' },
+      { name: 'Knowledge', path: join(dataDir, 'knowledge'), size: 0, description: 'File-based knowledge base entries' },
+    ];
+
+    for (const item of topLevelItems) {
+      if (item.name === 'Database') {
+        for (const ext of ['', '-wal', '-shm']) {
+          const f = item.path + ext;
+          if (existsSync(f)) { try { item.size += statSync(f).size; } catch { /* */ } }
+        }
+      } else {
+        item.size = dirSize(item.path);
+      }
+    }
+
+    const agentsDir = join(dataDir, 'agents');
+    const agentInfos: Array<{ id: string; name: string; size: number; subItems: Array<{ name: string; size: number }> }> = [];
+    const am = this.orgService.getAgentManager();
+
+    if (existsSync(agentsDir)) {
+      for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === 'vector-store') continue;
+        const agentDir = join(agentsDir, entry.name);
+        const agent = (() => { try { return am.getAgent(entry.name); } catch { return null; } })();
+        const subItems = [
+          { name: 'workspace', size: dirSize(join(agentDir, 'workspace')) },
+          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
+          { name: 'role', size: dirSize(join(agentDir, 'role')) },
+          { name: 'tool-outputs', size: dirSize(join(agentDir, 'tool-outputs')) },
+          { name: 'daily-logs', size: dirSize(join(agentDir, 'daily-logs')) },
+        ];
+        agentInfos.push({
+          id: entry.name,
+          name: agent?.config?.name ?? entry.name,
+          size: subItems.reduce((s, i) => s + i.size, 0),
+          subItems,
+        });
+      }
+    }
+    agentInfos.sort((a, b) => b.size - a.size);
+
+    const totalSize = topLevelItems.reduce((s, i) => s + i.size, 0);
+    const dbItem = topLevelItems.find(i => i.name === 'Database')!;
+
+    return {
+      dataDir,
+      totalSize,
+      breakdown: topLevelItems,
+      agents: agentInfos,
+      database: { path: dbItem.path, size: dbItem.size },
+    };
+  }
+
+  private detectOrphans() {
+    const dataDir = join(homedir(), '.markus');
+    const am = this.orgService.getAgentManager();
+    const knownAgentIds = new Set(am.listAgents().map(a => a.id));
+    const teams = this.orgService.listTeams('default');
+    const knownTeamIds = new Set(teams.map(t => t.id));
+
+    const orphanAgents: Array<{ id: string; path: string; size: number }> = [];
+    const orphanTeams: Array<{ id: string; path: string; size: number }> = [];
+
+    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
+      if (!existsSync(p)) return 0;
+      try {
+        const st = statSync(p);
+        if (st.isFile()) return st.size;
+        if (!st.isDirectory() || depth >= maxDepth) return 0;
+        let total = 0;
+        for (const entry of readdirSync(p, { withFileTypes: true })) {
+          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
+        }
+        return total;
+      } catch { return 0; }
+    };
+
+    const agentsDir = join(dataDir, 'agents');
+    if (existsSync(agentsDir)) {
+      for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === 'vector-store') continue;
+        if (!knownAgentIds.has(entry.name)) {
+          const p = join(agentsDir, entry.name);
+          orphanAgents.push({ id: entry.name, path: p, size: dirSize(p) });
+        }
+      }
+    }
+
+    const teamsDir = join(dataDir, 'teams');
+    if (existsSync(teamsDir)) {
+      for (const entry of readdirSync(teamsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!knownTeamIds.has(entry.name)) {
+          const p = join(teamsDir, entry.name);
+          orphanTeams.push({ id: entry.name, path: p, size: dirSize(p) });
+        }
+      }
+    }
+
+    return {
+      orphanAgents: orphanAgents.sort((a, b) => b.size - a.size),
+      orphanTeams: orphanTeams.sort((a, b) => b.size - a.size),
+      totalOrphanSize: [...orphanAgents, ...orphanTeams].reduce((s, o) => s + o.size, 0),
+    };
+  }
+
+  private purgeOrphans() {
+    const orphans = this.detectOrphans();
+    const purgedAgents: string[] = [];
+    const purgedTeams: string[] = [];
+    const failures: string[] = [];
+
+    for (const o of orphans.orphanAgents) {
+      try {
+        rmSync(o.path, { recursive: true, force: true });
+        purgedAgents.push(o.id);
+      } catch { failures.push(o.id); }
+    }
+
+    for (const o of orphans.orphanTeams) {
+      try {
+        rmSync(o.path, { recursive: true, force: true });
+        purgedTeams.push(o.id);
+      } catch { failures.push(o.id); }
+    }
+
+    return {
+      purgedAgents,
+      purgedTeams,
+      freedBytes: orphans.totalOrphanSize,
+      failures,
+    };
   }
 }

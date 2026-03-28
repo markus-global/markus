@@ -32,7 +32,7 @@ import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const log = createLogger('agent-manager');
@@ -1586,7 +1586,7 @@ export class AgentManager {
     await agent.stop();
   }
 
-  async removeAgent(agentId: string): Promise<void> {
+  async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
       try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
@@ -1596,8 +1596,41 @@ export class AgentManager {
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
-      log.info(`Agent removed: ${agentId}`);
     }
+
+    if (opts?.purgeFiles) {
+      const agentDir = join(this.dataDir, agentId);
+      if (existsSync(agentDir)) {
+        try {
+          rmSync(agentDir, { recursive: true, force: true });
+          log.info(`Agent data directory purged: ${agentDir}`);
+        } catch (err) {
+          log.warn('Failed to purge agent data directory', { agentId, error: String(err) });
+        }
+      }
+    }
+
+    log.info(`Agent removed: ${agentId}`, { purgeFiles: !!opts?.purgeFiles });
+  }
+
+  /** Remove orphaned agent directories that have no matching DB record */
+  purgeOrphanedAgentDirs(knownAgentIds: Set<string>): { removed: string[]; failed: string[] } {
+    const removed: string[] = [];
+    const failed: string[] = [];
+    if (!existsSync(this.dataDir)) return { removed, failed };
+    for (const entry of readdirSync(this.dataDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'vector-store') continue;
+      if (knownAgentIds.has(entry.name)) continue;
+      const dirPath = join(this.dataDir, entry.name);
+      try {
+        rmSync(dirPath, { recursive: true, force: true });
+        removed.push(entry.name);
+      } catch {
+        failed.push(entry.name);
+      }
+    }
+    if (removed.length > 0) log.info(`Purged ${removed.length} orphaned agent directories`);
+    return { removed, failed };
   }
 
   getAgent(agentId: string): Agent {

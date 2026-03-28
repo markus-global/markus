@@ -327,6 +327,7 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
       await api.builder.artifacts.install(mode, slug);
       setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
       onStatusChange();
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch {
       setStatus('Failed');
     } finally {

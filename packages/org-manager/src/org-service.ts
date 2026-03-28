@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -251,13 +251,13 @@ export class OrganizationService {
     return team;
   }
 
-  async deleteTeam(teamId: string, deleteMembers = false): Promise<void> {
+  async deleteTeam(teamId: string, deleteMembers = false, opts?: { purgeFiles?: boolean }): Promise<void> {
     const team = this.teams.get(teamId);
     if (!team) return;
 
     if (deleteMembers) {
       for (const agentId of [...team.memberAgentIds]) {
-        try { await this.fireAgent(agentId); } catch { /* already gone */ }
+        try { await this.fireAgent(agentId, { purgeFiles: opts?.purgeFiles }); } catch { /* already gone */ }
       }
       for (const userId of [...(team.humanMemberIds ?? [])]) {
         if (userId === 'default') continue; // never delete the default owner
@@ -288,7 +288,20 @@ export class OrganizationService {
     }
 
     this.teams.delete(teamId);
-    log.info(`Team deleted: ${teamId}`, { deleteMembers });
+
+    if (opts?.purgeFiles) {
+      const teamDir = join(homedir(), '.markus', 'teams', teamId);
+      if (existsSync(teamDir)) {
+        try {
+          rmSync(teamDir, { recursive: true, force: true });
+          log.info(`Team data directory purged: ${teamDir}`);
+        } catch (err) {
+          log.warn('Failed to purge team data directory', { teamId, error: String(err) });
+        }
+      }
+    }
+
+    log.info(`Team deleted: ${teamId}`, { deleteMembers, purgeFiles: !!opts?.purgeFiles });
   }
 
   addMemberToTeam(teamId: string, memberId: string, memberType: 'human' | 'agent'): void {
@@ -590,13 +603,13 @@ export class OrganizationService {
     } catch { return false; }
   }
 
-  async fireAgent(agentId: string): Promise<void> {
+  async fireAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     if (this.isProtectedAgent(agentId)) {
       throw new Error('The Secretary agent is a protected system agent and cannot be deleted.');
     }
 
     const agentInfo = this.agentManager.listAgents().find(a => a.id === agentId);
-    await this.agentManager.removeAgent(agentId);
+    await this.agentManager.removeAgent(agentId, { purgeFiles: opts?.purgeFiles });
 
     for (const org of this.orgs.values()) {
       if (org.managerAgentId === agentId) {

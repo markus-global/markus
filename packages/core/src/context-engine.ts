@@ -626,7 +626,7 @@ export class ContextEngine {
   private filterSkillsByRelevance(
     skills: Array<{ name: string; description: string; category: string }>,
     query?: string,
-    maxResults = 8,
+    maxResults = 30,
   ): Array<{ name: string; description: string; category: string }> {
     if (!query || skills.length <= maxResults) return skills;
 

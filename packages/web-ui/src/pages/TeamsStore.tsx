@@ -364,6 +364,7 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
       await api.builder.artifacts.install('team', slug);
       setStatus(canUpgrade ? 'Upgraded!' : 'Installed!');
       onStatusChange();
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
     } catch {
       setStatus('Failed');
     } finally {
