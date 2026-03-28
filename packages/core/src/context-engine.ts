@@ -668,7 +668,7 @@ export class ContextEngine {
   }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const rawMaxOutput = opts.modelMaxOutput ?? 4096;
-    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.2));
+    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.1));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions

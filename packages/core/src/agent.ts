@@ -1128,6 +1128,8 @@ export class Agent {
     senderInfo?: { name: string; role: string },
     options?: {
       ephemeral?: boolean;
+      /** Resume a specific session instead of using the current or ephemeral one */
+      sessionId?: string;
       maxHistory?: number;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
@@ -1168,10 +1170,13 @@ export class Agent {
 
     const maxHistory = options?.maxHistory ?? 200; // load generously; context engine will trim intelligently
 
-    // Ephemeral mode: don't pollute the agent's main session with channel messages.
-    // Use a minimal context with only channel history provided by the caller.
+    // Session resolution: explicit sessionId > ephemeral > current main session
     let sessionId: string;
-    if (isEphemeral) {
+    if (options?.sessionId) {
+      sessionId = options.sessionId;
+      const userContent = this.buildUserContent(userMessage, options?.images);
+      this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
+    } else if (isEphemeral) {
       sessionId = `ephemeral_${Date.now()}`;
     } else {
       if (!this.currentSessionId) {
@@ -2298,6 +2303,165 @@ export class Agent {
           this.setStatus('idle');
         }
       }
+    }
+  }
+
+  /**
+   * Continue an existing session with a new user message, using streamed
+   * LLM calls and the same onLog callback as task execution. This gives
+   * callers full visibility (text deltas, tool_start/tool_end events)
+   * without the task lifecycle overhead (no task_submit_review requirement,
+   * no activeTasks tracking, no worktree setup).
+   *
+   * Intended for post-task discussions where the agent should respond
+   * with full context and tools, and the process should be observable.
+   */
+  async respondInSession(
+    sessionId: string,
+    userMessage: string,
+    onLog: (entry: {
+      seq: number;
+      type: string;
+      content: string;
+      metadata?: unknown;
+      persist: boolean;
+    }) => void,
+  ): Promise<string> {
+    this.setStatus('working');
+    const actId = this.startActivity('chat', userMessage.slice(0, 80));
+
+    let seq = 0;
+    const emit = (type: string, content: string, metadata?: unknown) => {
+      onLog({ seq: seq++, type, content, metadata, persist: true });
+    };
+    const emitDelta = (text: string) => {
+      onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
+    };
+
+    this.memory.getOrCreateSession(this.id, sessionId);
+    this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
+
+    const systemPrompt = await this.contextEngine.buildSystemPrompt({
+      agentId: this.id,
+      agentName: this.config.name,
+      role: this.role,
+      orgContext: this.orgContext,
+      contextMdPath: this.contextMdPath,
+      memory: this.memory,
+      currentQuery: userMessage,
+      identity: this.identityContext,
+      assignedTasks: this.tasksFetcher?.(),
+      deliverableContext: this.getDeliverableContext(userMessage),
+      environment: this.environmentProfile,
+      scenario: 'chat',
+      agentWorkspace: this.pathPolicy ? {
+        primaryWorkspace: this.pathPolicy.primaryWorkspace,
+        sharedWorkspace: this.pathPolicy.sharedWorkspace,
+      } : undefined,
+      dynamicContext: this.getDynamicContext(),
+      agentDataDir: this.dataDir,
+      availableSkills: this.availableSkillCatalog,
+      ...this.getTeamContextParams(),
+    });
+
+    const llmTools = this.buildToolDefinitions({ userMessage });
+    const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
+    let textBuffer = '';
+    const flushText = () => {
+      if (textBuffer.trim()) {
+        emit('text', textBuffer);
+        textBuffer = '';
+      }
+    };
+
+    try {
+      const prepared = await this.contextEngine.prepareMessages({
+        systemPrompt,
+        sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+        memory: this.memory,
+        sessionId,
+        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+        toolDefinitions: llmTools,
+      });
+      let messages = prepared.messages;
+
+      let response = await this.llmRouter.chatStream(
+        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+        event => {
+          if (event.type === 'text_delta' && event.text) {
+            textBuffer += event.text;
+            emitDelta(event.text);
+          }
+        },
+        this.getEffectiveProvider(),
+      );
+      this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens);
+
+      let toolIter = 0;
+      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+        if (++toolIter > 25) break;
+        flushText();
+
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+        });
+
+        for (const tc of response.toolCalls) {
+          emit('tool_start', tc.name, { arguments: tc.arguments });
+          const toolStart = Date.now();
+          try {
+            let result = await this.executeTool(tc);
+            result = this.offloadLargeResult(tc.name, result);
+            const isErr = isErrorResult(result);
+            emit('tool_end', tc.name, { success: !isErr, durationMs: Date.now() - toolStart, arguments: tc.arguments, result });
+            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+          } catch (toolErr) {
+            emit('tool_end', tc.name, { success: false, durationMs: Date.now() - toolStart, arguments: tc.arguments, error: String(toolErr) });
+            this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+          }
+        }
+
+        const preparedCont = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          memory: this.memory,
+          sessionId,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+        response = await this.llmRouter.chatStream(
+          { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          event => {
+            if (event.type === 'text_delta' && event.text) {
+              textBuffer += event.text;
+              emitDelta(event.text);
+            }
+          },
+          this.getEffectiveProvider(),
+        );
+        this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens);
+      }
+
+      flushText();
+      const finalReply = response.content;
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      return finalReply;
+    } catch (error) {
+      if (textBuffer.trim()) {
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: textBuffer + '\n\n[interrupted by error]' });
+      }
+      flushText();
+      emit('error', String(error));
+      throw error;
+    } finally {
+      this.endActivity(actId);
+      if (this.activeTasks.size === 0) this.setStatus('idle');
     }
   }
 

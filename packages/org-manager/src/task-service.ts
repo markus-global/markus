@@ -2989,12 +2989,20 @@ export class TaskService {
    * Inject a live comment into a running task's agent session.
    * The comment becomes a user message in the LLM context, so the agent
    * sees it on its next turn and can act on the feedback immediately.
+   *
+   * For completed tasks, triggers an asynchronous post-task conversation
+   * where the agent reads the comment, replies, and records the exchange.
    */
   injectCommentIntoRunningTask(taskId: string, authorName: string, content: string): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    // Inject into running tasks. For non-running tasks, comments are picked up
-    // via formatPreviousExecutionContext + direct session injection on next runTask.
+
+    const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
+    if (terminalStatuses.has(task.status)) {
+      void this.handlePostTaskComment(taskId, task, authorName, content);
+      return;
+    }
+
     if (task.status !== 'in_progress') return;
     if (!task.assignedAgentId || !this.agentManager) return;
 
@@ -3013,6 +3021,141 @@ export class TaskService {
       log.info('Injected live comment into agent session', { taskId, sessionId, authorName });
     } catch (err) {
       log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
+    }
+  }
+
+  /**
+   * Handle a user comment on a completed task by continuing the agent's
+   * original task session with full streaming visibility. The agent has
+   * full execution context and all tools — the process is logged as
+   * execution entries identical to normal task runs.
+   */
+  private async handlePostTaskComment(
+    taskId: string,
+    task: Task,
+    authorName: string,
+    content: string,
+  ): Promise<void> {
+    if (!task.assignedAgentId || !this.agentManager) {
+      log.debug('Cannot handle post-task comment — no agent assigned or agent manager unavailable', { taskId });
+      return;
+    }
+
+    let agent;
+    try {
+      agent = this.agentManager.getAgent(task.assignedAgentId);
+    } catch {
+      log.debug('Cannot handle post-task comment — agent not found', { taskId, agentId: task.assignedAgentId });
+      return;
+    }
+
+    const agentId = task.assignedAgentId;
+    const round = task.executionRound ?? 1;
+    const taskSessionId = `task_${taskId}_r${round}`;
+    const taskLogRepo = this.taskLogRepo;
+    const ws = this.ws;
+
+    let seq = 0;
+    if (taskLogRepo) {
+      try {
+        const maxSeq = await taskLogRepo.getMaxSeq(taskId);
+        seq = maxSeq + 1;
+      } catch { /* start from current */ }
+    }
+
+    const prompt = [
+      `[POST-TASK COMMENT from ${authorName}]`,
+      '',
+      content,
+      '',
+      `(This task "${task.title}" is already ${task.status}. You have full context from your execution above.`,
+      'Respond to the comment. If the feedback contains something worth remembering, save it to memory.',
+      'You have all your tools available — take action if appropriate.)',
+    ].join('\n');
+
+    try {
+      log.info('Triggering post-task agent reply', { taskId, taskSessionId, agentId, authorName });
+
+      const reply = await agent.respondInSession(taskSessionId, prompt, entry => {
+        if (!entry.persist) {
+          ws?.broadcast({
+            type: 'task:log:delta',
+            payload: { taskId, agentId, text: entry.content },
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        const logEntry = {
+          taskId,
+          agentId,
+          seq: seq++,
+          type: entry.type as TaskLogType,
+          content: entry.content,
+          metadata: entry.metadata,
+          executionRound: round,
+        };
+
+        if (taskLogRepo) {
+          taskLogRepo.append(logEntry).catch(err =>
+            log.warn('Failed to persist post-task log', { taskId, error: String(err) })
+          );
+        }
+
+        ws?.broadcast({
+          type: 'task:log',
+          payload: {
+            taskId,
+            agentId,
+            log: {
+              ...logEntry,
+              id: `tmp_${taskId}_${logEntry.seq}`,
+              createdAt: new Date().toISOString(),
+            },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const cleanReply = reply.trim();
+      if (!cleanReply) {
+        log.warn('Agent returned empty reply for post-task comment', { taskId });
+        return;
+      }
+
+      if (this.taskCommentRepo) {
+        const agentComment = await this.taskCommentRepo.add({
+          taskId,
+          authorId: agentId,
+          authorName: agent.config.name ?? agentId,
+          authorType: 'agent',
+          content: cleanReply,
+        });
+
+        ws?.broadcast({
+          type: 'task:comment',
+          payload: {
+            taskId,
+            comment: {
+              id: agentComment.id,
+              taskId: agentComment.taskId,
+              authorId: agentComment.authorId,
+              authorName: agentComment.authorName,
+              authorType: agentComment.authorType,
+              content: agentComment.content,
+              attachments: agentComment.attachments,
+              createdAt: agentComment.createdAt instanceof Date
+                ? agentComment.createdAt.toISOString()
+                : agentComment.createdAt,
+            },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      log.info('Post-task agent reply saved', { taskId, replyLength: cleanReply.length });
+    } catch (err) {
+      log.warn('Post-task comment reply failed', { taskId, error: String(err) });
     }
   }
 
