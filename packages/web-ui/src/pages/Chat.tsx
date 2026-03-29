@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type RefObject } from 'react';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
@@ -423,32 +423,35 @@ function AgentMessageBody({
 
 type MainTab = 'chat' | 'profile';
 
+// ── Hash-based store: the URL is the single source of truth for mobile nav ────
+const _hashSubs = new Set<() => void>();
+function _getHash() { return window.location.hash; }
+function _subHash(cb: () => void) { _hashSubs.add(cb); return () => { _hashSubs.delete(cb); }; }
+if (typeof window !== 'undefined') {
+  window.addEventListener('hashchange', () => _hashSubs.forEach(fn => fn()));
+}
+
 export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
   const isMobile = useIsMobile();
 
-  // Mobile: show list vs chat detail
-  const [mobileShowChat, setMobileShowChat] = useState(false);
-  const mobileShowChatRef = useRef(mobileShowChat);
-  mobileShowChatRef.current = mobileShowChat;
+  // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
+  const hash = useSyncExternalStore(_subHash, _getHash);
+  const mobileShowChat = isMobile && hash.startsWith('#chat/');
 
   const enterMobileDetail = useCallback(() => {
-    setMobileShowChat(true);
-    history.pushState({ mobileDetail: 'chat' }, '', window.location.hash);
+    window.location.hash = 'chat/d';
   }, []);
 
+  // Profile tab: still uses pushState for back navigation
   useEffect(() => {
     if (!isMobile) return;
-    const handler = () => {
-      if (mainTabRef.current === 'profile') {
-        setMainTab('chat');
-      } else if (mobileShowChatRef.current) {
-        setMobileShowChat(false);
-      }
+    const onPop = () => {
+      if (mainTabRef.current === 'profile') setMainTab('chat');
     };
-    window.addEventListener('popstate', handler);
-    return () => window.removeEventListener('popstate', handler);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, [isMobile]);
 
   // Tab system: Chat vs Agent Profile
@@ -1589,7 +1592,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               {/* Mobile Row 1: back + name + status */}
               <div className="flex items-center px-3 h-11 gap-2">
                 <button
-                  onClick={() => history.back()}
+                  onClick={() => { window.location.hash = 'chat'; }}
                   className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>

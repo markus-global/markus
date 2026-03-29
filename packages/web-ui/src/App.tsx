@@ -38,6 +38,9 @@ function getPageFromHash(): PageId {
   return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
 }
 
+// Preserve sub-path hashes (e.g. #chat/d) across page switches
+const _savedPageHashes: Record<string, string> = {};
+
 export function App() {
   const [page, setPage] = useState<PageId>(getPageFromHash);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
@@ -64,9 +67,15 @@ export function App() {
       if (normalized === 'agents' || normalized === 'teams' || normalized === 'skills') normalized = 'builder';
       if (normalized === 'governance' || normalized === 'reports') normalized = 'settings';
     }
+    // Save current page's full hash (e.g. 'chat/d') so it can be restored later
+    const curBase = getPageFromHash();
+    const curFull = window.location.hash.slice(1);
+    if (curFull !== curBase) _savedPageHashes[curBase] = curFull;
+    else delete _savedPageHashes[curBase];
+
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
-    window.location.hash = normalized;
+    window.location.hash = _savedPageHashes[normalized] || normalized;
   }, [isMobile]);
 
   useEffect(() => {
