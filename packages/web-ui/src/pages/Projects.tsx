@@ -357,23 +357,23 @@ const RoundSection = memo(function RoundSection({ round, expanded, onToggle, isL
       )}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left min-w-0 overflow-hidden"
       >
         <svg className={`w-3 h-3 text-fg-tertiary shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 12 12" fill="currentColor">
           <path d="M4 2l5 4-5 4V2z" />
         </svg>
-        <span className="text-xs font-medium text-fg-secondary">{totalRounds > 1 ? `Round #${round.id}` : 'Execution'}</span>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded ${sc.bg} ${sc.color}`}>{sc.label}</span>
-        {round.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
-        <span className="text-[10px] text-fg-tertiary ml-auto flex items-center gap-2">
-          {toolCount > 0 && <span>{toolCount} tool calls</span>}
-          {errorCount > 0 && <span className="text-red-500">{errorCount} errors</span>}
+        <span className="text-xs font-medium text-fg-secondary shrink-0">{totalRounds > 1 ? `Round #${round.id}` : 'Execution'}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sc.bg} ${sc.color}`}>{sc.label}</span>
+        {round.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />}
+        <span className="text-[10px] text-fg-tertiary ml-auto flex items-center gap-2 shrink-0 truncate">
+          {toolCount > 0 && <span>{toolCount} tools</span>}
+          {errorCount > 0 && <span className="text-red-500">{errorCount} err</span>}
           {duration && <span>{duration}</span>}
           <span>{startDate}</span>
         </span>
       </button>
       {expanded && (
-        <div className="px-4 pb-3 space-y-0.5">
+        <div className="px-4 pb-3 space-y-0.5 overflow-x-hidden min-w-0">
           {round.items.map((item, i) =>
             item.kind === 'comment'
               ? <MemoCommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
@@ -723,6 +723,8 @@ function TaskDetailModal({
   const [revisionReason, setRevisionReason] = useState('');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
   const [notesPage, setNotesPage] = useState(1);
+  const [descExpanded, setDescExpanded] = useState(false);
+  const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
   const loadSubtasks = useCallback(async () => {
     try { const d = await api.tasks.listSubtasks(task.id); setSubtasks(d.subtasks); } catch { /* ok */ }
@@ -841,8 +843,10 @@ function TaskDetailModal({
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-surface-secondary border border-border-default rounded-xl w-[780px] max-w-[95vw] max-h-[88vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+    <div className={`fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-3 ${isMobile ? 'pb-[4.5rem]' : ''}`} onClick={onClose}>
+      <div className={`bg-surface-secondary border border-border-default rounded-xl flex flex-col shadow-2xl ${
+        isMobile ? 'w-full max-h-full' : 'w-[780px] max-w-[95vw] max-h-[88vh]'
+      }`} onClick={e => e.stopPropagation()}>
         {/* Header – title & close only */}
         <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
           <h3 className="text-base font-semibold leading-snug flex-1 min-w-0 pr-4">{task.title}</h3>
@@ -873,10 +877,21 @@ function TaskDetailModal({
               </div>
             ) : (
               <div className="group relative">
-                {task.description
-                  ? <MarkdownMessage content={task.description} className="text-sm text-fg-secondary leading-relaxed" />
-                  : <p className="text-sm text-fg-tertiary italic">No description</p>
-                }
+                {task.description ? (
+                  <div>
+                    <div className={isMobile && !descExpanded ? 'line-clamp-3' : ''}>
+                      <MarkdownMessage content={task.description} className="text-sm text-fg-secondary leading-relaxed" />
+                    </div>
+                    {isMobile && task.description.length > 150 && (
+                      <button onClick={() => setDescExpanded(!descExpanded)}
+                        className="text-[11px] text-brand-500 mt-1 font-medium">
+                        {descExpanded ? 'Collapse' : 'Show more'}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-fg-tertiary italic">No description</p>
+                )}
                 <button
                   onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
                   className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -974,7 +989,7 @@ function TaskDetailModal({
 
           {/* Logs tab — conditionally mounted to avoid unnecessary DOM / fetches */}
           {activeTab === 'logs' && (
-            <div>
+            <div className="overflow-x-hidden min-w-0">
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
                   <span className="font-medium">Failed to start:</span> {runError}
@@ -1861,7 +1876,6 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 export function ProjectsPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
   const isMobile = useIsMobile();
-  const viewModeRef = useRef<ViewMode>('all');
   // ── State ──
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
@@ -1902,6 +1916,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>('backlog');
   const [showArchived, setShowArchived] = useState(false);
+  const [showFilterSheet, setShowFilterSheet] = useState(false);
   const dragTaskRef = useRef<TaskInfo | null>(null);
   const dragReqRef = useRef<RequirementInfo | null>(null);
 
@@ -2049,35 +2064,17 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     setProjectFilter(new Set());
     setSelectedProjectId(projectId);
     setViewMode('project');
-    viewModeRef.current = 'project';
     setShowProjectSettings(false);
-    if (isMobile) {
-      history.pushState({ mobileDetail: 'projects' }, '', '#projects/' + projectId);
-    } else {
-      history.replaceState(null, '', '#projects/' + projectId);
-    }
+    history.replaceState(null, '', '#projects/' + projectId);
   };
 
   const selectAllTasks = () => {
     setProjectFilter(savedProjectFilterRef.current);
     setSelectedProjectId(null);
     setViewMode('all');
-    viewModeRef.current = 'all';
     setShowProjectSettings(false);
     history.replaceState(null, '', '#projects');
   };
-
-  useEffect(() => {
-    if (!isMobile) return;
-    const handler = () => {
-      if (viewModeRef.current === 'project') {
-        selectAllTasks();
-      }
-    };
-    window.addEventListener('popstate', handler);
-    return () => window.removeEventListener('popstate', handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile]);
 
   const handleProjectCreated = () => {
     setShowCreateProject(false);
@@ -2317,45 +2314,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">Loading…</div>;
 
-  // Mobile project list: show when in 'all' mode with multiple projects
-  if (isMobile && viewMode === 'all' && projects.length > 1) {
-    return (
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <div className="px-4 h-14 flex items-center border-b border-border-default bg-surface-secondary/80 shrink-0">
-          <h2 className="text-sm font-semibold text-fg-primary">Projects</h2>
-          <button onClick={() => setShowCreateProject(true)} className="ml-auto text-xs px-2.5 py-1 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">+ New</button>
-        </div>
-        {flash && <div className="mx-4 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-          {projects.map(p => {
-            const count = allTaskCounts[p.id] ?? 0;
-            return (
-              <button key={p.id} onClick={() => selectProject(p.id)}
-                className="w-full text-left p-3.5 rounded-xl bg-surface-secondary border border-border-default hover:border-brand-500/30 transition-colors">
-                <div className="flex items-center gap-2">
-                  <span className="w-8 h-8 rounded-lg bg-brand-600/20 flex items-center justify-center text-sm font-bold text-brand-500 shrink-0">{p.name[0]?.toUpperCase()}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-fg-primary truncate">{p.name}</div>
-                    <div className="text-[11px] text-fg-tertiary">{count} tasks · <StatusPill status={p.status} /></div>
-                  </div>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-fg-tertiary shrink-0"><polyline points="9 18 15 12 9 6" /></svg>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {showCreateProject && (
-          <NewProjectModal
-            orgId={authUser?.orgId}
-            onCreated={handleProjectCreated}
-            onClose={() => setShowCreateProject(false)}
-          />
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* ── Task Board + Project Context ── */}
@@ -2364,13 +2322,59 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
 
         {/* Top bar */}
-        <div className={`flex items-center gap-3 ${isMobile ? 'px-3' : 'px-6'} h-14 border-b border-border-default bg-surface-secondary/80 shrink-0`}>
-          {/* Mobile back button */}
-          {isMobile && viewMode === 'project' && projects.length > 1 && (
-            <button onClick={() => history.back()} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            </button>
-          )}
+        {isMobile ? (
+          <div className="border-b border-border-default bg-surface-secondary/80 shrink-0">
+            {/* Mobile Row 1: title + action buttons */}
+            <div className="flex items-center gap-2 px-3 h-11">
+              {selectedProject ? (
+                <div className="flex items-center gap-1 min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-fg-primary truncate">{selectedProject.name}</span>
+                  <button onClick={() => setShowProjectSettings(!showProjectSettings)}
+                    className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors shrink-0 ${showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                  </button>
+                </div>
+              ) : (
+                <h2 className="text-sm font-semibold text-fg-primary min-w-0 flex-1 truncate">
+                  {projects.length === 1 ? projects[0].name : `${projects.length} Projects`}
+                </h2>
+              )}
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] border border-border-default text-fg-secondary rounded-md">+ Project</button>
+                <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">+ Req</button>
+                <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-border-default text-fg-secondary rounded-md">+ Task</button>
+              </div>
+            </div>
+            {/* Mobile Row 2: view toggle + filter */}
+            <div className="flex items-center gap-2 px-3 h-9 border-t border-border-default/40">
+              <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
+                {(['backlog', 'kanban', 'dag'] as const).map(v => (
+                  <button key={v} onClick={() => setBoardType(v)}
+                    className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
+                  >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
+                ))}
+              </div>
+              {archivedCount > 0 && (
+                <button onClick={() => setShowArchived(v => !v)} className={`text-[10px] shrink-0 px-2 py-0.5 rounded-md transition-colors ${showArchived ? 'bg-surface-overlay text-fg-secondary' : 'text-fg-tertiary'}`}>
+                  {showArchived ? `Hide archived` : `${archivedCount} archived`}
+                </button>
+              )}
+              <div className="flex-1" />
+              {(projectFilter.size > 0 || agentFilter.size > 0 || projects.length > 1 || agents.length > 0) && (
+                <button onClick={() => setShowFilterSheet(true)}
+                  className={`px-2 py-1 text-[11px] rounded-md font-medium transition-colors flex items-center gap-1 ${
+                    projectFilter.size > 0 || agentFilter.size > 0
+                      ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30'
+                      : 'border border-border-default text-fg-secondary'
+                  }`}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
+                  Filter{(projectFilter.size + agentFilter.size) > 0 ? ` (${projectFilter.size + agentFilter.size})` : ''}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+        <div className="flex items-center gap-3 px-6 h-14 border-b border-border-default bg-surface-secondary/80 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
             <div className="flex items-center gap-1 shrink-0">
@@ -2418,9 +2422,10 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           <div className="flex-1" />
 
         </div>
+        )}
 
-        {/* Project filter bar — visible when not in single-project view */}
-        {projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+        {/* Project filter bar — desktop only */}
+        {!isMobile && projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button onClick={() => setProjectFilter(new Set())}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
@@ -2441,8 +2446,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           </div>
         )}
 
-        {/* Agent filter bar */}
-        {agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+        {/* Agent filter bar — desktop only */}
+        {!isMobile && agents.length > 0 && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
           <div className="px-6 py-1.5 border-b border-border-default/60 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button onClick={() => setAgentFilter(new Set())}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>Clear</button>
@@ -2668,8 +2673,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
       {/* ── Create Task Modal ── */}
       {showCreateTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowCreateTask(false)}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setShowCreateTask(false)}>
+          <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary">New Task</h3>
             <div>
               <label className="block text-sm text-fg-secondary mb-1.5">Project</label>
@@ -2691,7 +2696,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             </div>
             <div>
               <label className="block text-sm text-fg-secondary mb-1.5">Title</label>
-              <input autoFocus value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
+              <input autoFocus={!isMobile} value={taskTitle} onChange={e => setTaskTitle(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') void createTask(); }}
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
             </div>
@@ -2805,8 +2810,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
       {/* ── Create Requirement Modal ── */}
       {showCreateReq && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[28rem] space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
+          <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[28rem]'}`} onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary">New Requirement</h3>
             <p className="text-xs text-fg-tertiary -mt-2">Describe what you need. Agents will break approved requirements into tasks.</p>
             <div>
@@ -2820,7 +2825,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             <div>
               <label className="block text-sm text-fg-secondary mb-1.5">Title</label>
               <input value={reqTitle} onChange={e => setReqTitle(e.target.value)} placeholder="e.g. Add user authentication"
-                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" autoFocus
+                className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" autoFocus={!isMobile}
                 onKeyDown={e => { if (e.key === 'Enter' && reqTitle.trim()) void handleCreateReq(); }} />
             </div>
             <div>
@@ -2845,13 +2850,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
       {/* ── Reject Requirement Modal ── */}
       {rejectReqId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setRejectReqId(null)}>
-          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => setRejectReqId(null)}>
+          <div className={`bg-surface-secondary border border-border-default rounded-xl p-6 space-y-4 ${isMobile ? 'w-full' : 'w-96'}`} onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary">Reject Requirement</h3>
             <div>
               <label className="block text-sm text-fg-secondary mb-1.5">Reason</label>
               <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Why is this being rejected..."
-                rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-red-500 outline-none resize-none" autoFocus />
+                rows={3} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-red-500 outline-none resize-none" autoFocus={!isMobile} />
             </div>
             <div className="flex justify-end gap-3">
               <button onClick={() => setRejectReqId(null)} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
@@ -2878,6 +2883,69 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
           }}
         />
       )}
+
+      {/* ── Mobile Filter Bottom Sheet ── */}
+      {showFilterSheet && (
+        <div className="fixed inset-0 z-[60] flex flex-col justify-end" onClick={() => setShowFilterSheet(false)}>
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative bg-surface-secondary rounded-t-2xl border-t border-border-default max-h-[70vh] overflow-y-auto pb-16" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 bg-surface-secondary z-10 px-4 pt-3 pb-2 flex items-center justify-between border-b border-border-default/60">
+              <h3 className="text-sm font-semibold text-fg-primary">Filters</h3>
+              <div className="flex items-center gap-2">
+                {(projectFilter.size > 0 || agentFilter.size > 0) && (
+                  <button onClick={() => { setProjectFilter(new Set()); setAgentFilter(new Set()); }}
+                    className="text-[11px] text-brand-500 font-medium">Clear all</button>
+                )}
+                <button onClick={() => setShowFilterSheet(false)}
+                  className="w-7 h-7 flex items-center justify-center rounded-full bg-surface-elevated text-fg-tertiary">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+            </div>
+            {projects.length > 1 && (
+              <div className="px-4 py-3">
+                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">Projects</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sortedProjects.map(p => {
+                    const selected = projectFilter.has(p.id);
+                    const count = allTaskCounts[p.id] ?? 0;
+                    return (
+                      <button key={p.id} onClick={() => toggleProjectFilter(p.id)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
+                          selected ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'bg-surface-elevated text-fg-secondary'
+                        }`}>
+                        <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
+                        {p.name}
+                        {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {agents.length > 0 && (
+              <div className="px-4 py-3 border-t border-border-default/40">
+                <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">Agents</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sortedAgents.map(a => {
+                    const selected = agentFilter.has(a.id);
+                    return (
+                      <button key={a.id} onClick={() => toggleAgentFilter(a.id)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
+                          selected ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/40' : 'bg-surface-elevated text-fg-secondary'
+                        }`}>
+                        <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{a.name[0]?.toUpperCase()}</span>
+                        {a.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div className="h-[env(safe-area-inset-bottom,0px)]" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2898,6 +2966,7 @@ function RequirementDetailModal({
   onCancel: (id: string) => void;
   onStatusChange?: (id: string, status: string) => void;
 }) {
+  const isMobile = useIsMobile();
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
@@ -2908,8 +2977,8 @@ function RequirementDetailModal({
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="bg-surface-secondary border border-border-default rounded-xl w-[36rem] max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={onClose}>
+      <div className={`bg-surface-secondary border border-border-default rounded-xl max-h-[85dvh] flex flex-col ${isMobile ? 'w-full' : 'w-[36rem]'}`} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-5 pb-0">
           <div className="flex-1 min-w-0">

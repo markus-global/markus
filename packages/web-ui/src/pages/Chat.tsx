@@ -441,7 +441,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   useEffect(() => {
     if (!isMobile) return;
     const handler = () => {
-      if (mobileShowChatRef.current) {
+      if (mainTabRef.current === 'profile') {
+        setMainTab('chat');
+      } else if (mobileShowChatRef.current) {
         setMobileShowChat(false);
       }
     };
@@ -451,6 +453,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Tab system: Chat vs Agent Profile
   const [mainTab, setMainTab] = useState<MainTab>('chat');
+  const mainTabRef = useRef<MainTab>('chat');
+  mainTabRef.current = mainTab;
 
   // Resizable chat left sidebar
   const chatSidebar = useResizablePanel({
@@ -464,13 +468,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
+  const switchToProfile = useCallback(() => {
+    setMainTab('profile');
+    if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
+  }, [isMobile]);
+
   const handleViewProfile = useCallback((agentId: string) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
-    setMainTab('profile');
+    switchToProfile();
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [switchToProfile]);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
@@ -1575,18 +1584,58 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Header */}
         <div className="border-b border-border-default bg-surface-secondary shrink-0 relative">
-          {/* Top row: tabs left + actions right */}
+          {isMobile ? (
+            <>
+              {/* Mobile Row 1: back + name + status */}
+              <div className="flex items-center px-3 h-11 gap-2">
+                <button
+                  onClick={() => history.back()}
+                  className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                </button>
+                <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
+                {chatMode === 'direct' && currentAgent && (
+                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
+                )}
+              </div>
+              {/* Mobile Row 2: tabs + actions */}
+              <div className="flex items-center px-3 h-9 gap-1 border-t border-border-default/40">
+                <button
+                  onClick={() => { if (mainTab === 'profile') history.back(); else setMainTab('chat'); }}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                    mainTab === 'chat' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
+                  }`}
+                >Chat</button>
+                <button
+                  onClick={() => { if (mainTab !== 'profile') switchToProfile(); }}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                    mainTab === 'profile' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
+                  }`}
+                >{chatMode === 'channel' ? 'Team' : 'Profile'}</button>
+                <div className="flex-1" />
+                {chatMode === 'direct' && (
+                  <>
+                    <button
+                      onClick={newConversation}
+                      className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
+                    >+ New</button>
+                    <button
+                      ref={historyBtnRef}
+                      onClick={() => setShowSessions(!showSessions)}
+                      className={`p-1 rounded-md transition-colors shrink-0 ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+          /* Desktop: original single-row header */
           <div className="flex items-center px-6 h-14 gap-3">
-            {/* Mobile back button */}
-            {isMobile && (
-              <button
-                onClick={() => history.back()}
-                className="text-fg-secondary hover:text-fg-primary transition-colors -ml-2 mr-1 p-1"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-              </button>
-            )}
-            {/* Left: agent title + status + main tabs */}
             <span className="font-semibold text-sm truncate">{modeTitle}</span>
             {chatMode === 'direct' && currentAgent && (
               <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
@@ -1647,6 +1696,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               </div>
             )}
           </div>
+          )}
 
           {/* Session tab bar (direct mode, chat tab) */}
           {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 0 && (

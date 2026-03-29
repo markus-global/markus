@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 import {
   api, wsClient,
   type AgentInfo, type TeamInfo, type TeamMemberInfo,
@@ -10,6 +11,9 @@ import {
   NewTeamModal, AddHumanModal, AddExistingModal,
   OpenClawImportModal,
 } from './TeamModals.tsx';
+
+// Module-level cache so last-message previews survive unmount/remount cycles on mobile
+let _lastMsgCache: Map<string, string> = new Map();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +56,7 @@ export function ChatTeamSidebar({
   onRefreshTeams, onRefreshAgents, onViewProfile,
   width, onResizeStart,
 }: ChatTeamSidebarProps) {
+  const isMobile = useIsMobile();
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
 
@@ -120,7 +125,7 @@ export function ChatTeamSidebar({
   }, []);
 
   // ── Last messages per agent ──────────────────────────────────────────────
-  const [agentLastMsg, setAgentLastMsg] = useState<Map<string, string>>(new Map());
+  const [agentLastMsg, setAgentLastMsg] = useState<Map<string, string>>(_lastMsgCache);
   const agentIdsKey = useMemo(() => agents.map(a => a.id).sort().join(','), [agents]);
 
   useEffect(() => {
@@ -148,7 +153,11 @@ export function ChatTeamSidebar({
           } catch { /* ignore */ }
         }),
       );
-      if (!cancelled) setAgentLastMsg(new Map(entries));
+      if (!cancelled) {
+        const m = new Map(entries);
+        _lastMsgCache = m;
+        setAgentLastMsg(m);
+      }
     };
     fetchAll();
     const timer = setInterval(fetchAll, 30_000);
@@ -390,7 +399,9 @@ export function ChatTeamSidebar({
             e.preventDefault();
             setAgentMenu({ agentId: a.id, teamId, x: e.clientX, y: e.clientY });
           }}
-          className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors touch-none select-none ${
+          className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors select-none ${
+            isMobile ? '' : 'touch-none'
+          } ${
             selected ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
           }`}
         >

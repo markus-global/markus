@@ -141,7 +141,7 @@ export function App() {
 
   if (authUser === 'loading') {
     return (
-      <div className="min-h-screen bg-surface-primary flex items-center justify-center">
+      <div className="min-h-dvh bg-surface-primary flex items-center justify-center">
         <div className="text-fg-tertiary text-sm animate-pulse">Loading…</div>
       </div>
     );
@@ -170,7 +170,7 @@ export function App() {
   }
 
   return (
-    <div className={`flex h-screen bg-surface-primary text-fg-primary ${isMobile ? 'flex-col' : ''}`}>
+    <div className={`flex h-dvh bg-surface-primary text-fg-primary ${isMobile ? 'flex-col' : ''}`}>
       {/* Desktop sidebar */}
       {!isMobile && (
         <>

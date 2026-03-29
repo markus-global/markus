@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Settings } from '../pages/Settings.tsx';
 import { GovernancePage } from '../pages/Governance.tsx';
 import { ReportsPage } from '../pages/Reports.tsx';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 
 const tabs = [
@@ -14,9 +15,10 @@ type TabId = (typeof tabs)[number]['id'];
 
 export function MobileSettingsTabs({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void }) {
   const [activeTab, setActiveTab] = useState<TabId>('settings');
+  const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
+    <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
       <div className="flex border-b border-border-default bg-surface-secondary shrink-0 overflow-x-auto scrollbar-hide">
         {tabs.map(tab => (
           <button

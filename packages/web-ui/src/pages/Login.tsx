@@ -29,7 +29,7 @@ export function Login({ onLogin }: Props) {
   };
 
   return (
-    <div className="min-h-screen bg-surface-primary flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="min-h-dvh bg-surface-primary flex items-center justify-center p-4 relative overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-brand-950/50 via-transparent to-transparent" />
       <div className="w-full max-w-sm relative z-10">
         {/* Logo */}

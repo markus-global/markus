@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { api, hubApi, type AgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 function shortenPath(p: string): string {
   const home = '~/.markus/builder-artifacts/';
@@ -102,6 +103,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
 }
 
 export function AgentBuilder() {
+  const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [artifacts, setArtifacts] = useState<BuilderArtifact[]>([]);
   const [loading, setLoading] = useState(false);
@@ -283,7 +285,7 @@ export function AgentBuilder() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl px-6 py-10">
+      <div className={`max-w-4xl ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
         {/* Builder cards */}
         <div className="mb-10">
           <h1 className="text-2xl font-bold text-fg-primary">Builder</h1>
@@ -298,15 +300,15 @@ export function AgentBuilder() {
             <button
               key={b.roleId}
               onClick={() => navigateToBuilder(b.roleId, b.roleName)}
-              className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 p-6 transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
+              className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 ${isMobile ? 'p-4' : 'p-6'} transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
             >
-              <div className="flex items-start gap-5">
-                <div className={`w-14 h-14 rounded-xl ${b.bgColor} flex items-center justify-center text-2xl shrink-0`}>
+              <div className={`flex items-start ${isMobile ? 'gap-3' : 'gap-5'}`}>
+                <div className={`${isMobile ? 'w-10 h-10 text-xl' : 'w-14 h-14 text-2xl'} rounded-xl ${b.bgColor} flex items-center justify-center shrink-0`}>
                   {b.icon}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-1.5">
-                    <h3 className={`text-lg font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
                       {b.roleName}
                     </h3>
                     <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{b.desc}</span>
@@ -385,12 +387,55 @@ export function AgentBuilder() {
               const key = `${art.type}/${art.name}`;
               const busy = actionInProgress === key;
 
+              const actionButtons = (
+                <div className={`flex items-center gap-1.5 ${isMobile ? 'flex-wrap' : 'shrink-0'}`}>
+                  {installedMap.has(key) ? (
+                    <button onClick={() => handleUninstall(art)} disabled={busy}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50">
+                      {busy ? 'Uninstalling...' : 'Uninstall'}
+                    </button>
+                  ) : (
+                    <button onClick={() => handleInstall(art)} disabled={busy}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
+                      {busy ? 'Installing...' : 'Install'}
+                    </button>
+                  )}
+                  {sharedMap.has(key) ? (
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })} disabled={busy}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Remove from Markus Hub">
+                        Shared
+                      </button>
+                      <button onClick={() => {
+                        const hubItem = sharedMap.get(key); const hubUser = hubApi.getUser();
+                        if (!hubItem || !hubUser) return;
+                        const link = `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
+                        navigator.clipboard.writeText(link).then(() => { setCopiedKey(key); setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000); }).catch(() => {});
+                      }} className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors" title="Copy Hub link">
+                        {copiedKey === key ? (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => handleShare(art)} disabled={busy}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50">
+                      {busy ? 'Sharing...' : 'Share'}
+                    </button>
+                  )}
+                  <button onClick={() => setDeleteTarget(art)} disabled={busy}
+                    className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50" title="Delete">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                  </button>
+                </div>
+              );
+
               return (
-                <div
-                  key={key}
-                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all"
-                >
-                  <div className="flex items-start gap-3">
+                <div key={key}
+                  className="group rounded-lg border border-border-default bg-surface-secondary/60 p-4 hover:border-gray-600 transition-all overflow-hidden">
+                  <div className="flex items-start gap-3 min-w-0">
                     <div className={`w-9 h-9 rounded-lg ${style.bg} flex items-center justify-center text-lg shrink-0`}>
                       {style.icon}
                     </div>
@@ -400,91 +445,18 @@ export function AgentBuilder() {
                         <span className={`text-[10px] font-medium uppercase tracking-wider ${style.color}`}>{art.type}</span>
                       </div>
                       {description && <p className="text-xs text-fg-tertiary line-clamp-2">{description}</p>}
-                      <div className="flex items-center gap-3 mt-2 text-[10px] text-fg-tertiary">
+                      <div className="flex items-center gap-3 mt-2 text-[10px] text-fg-tertiary min-w-0">
                         <button
                           onClick={(e) => { e.stopPropagation(); api.system.openPath(art.path).catch(() => {}); }}
-                          className="hover:text-fg-secondary transition-colors truncate max-w-[280px]"
+                          className="hover:text-fg-secondary transition-colors truncate min-w-0"
                           title={art.path}
                         >{shortenPath(art.path)}</button>
                         <span className="shrink-0">{new Date(art.updatedAt).toLocaleDateString()}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {installedMap.has(key) ? (
-                        <button
-                          onClick={() => handleUninstall(art)}
-                          disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 transition-colors disabled:opacity-50"
-                        >
-                          {busy ? 'Uninstalling...' : 'Uninstall'}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleInstall(art)}
-                          disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50"
-                        >
-                          {busy ? 'Installing...' : 'Install'}
-                        </button>
-                      )}
-                      {sharedMap.has(key) ? (
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => setHubDeleteTarget({ key, name: (art.meta.displayName as string) || (art.meta.name as string) || art.name })}
-                            disabled={busy}
-                            className="text-xs px-3 py-1.5 rounded-lg border border-green-600/30 text-green-600 hover:text-red-500 hover:border-red-500/30 hover:bg-red-500/10 transition-colors disabled:opacity-50"
-                            title="Remove from Markus Hub"
-                          >
-                            Shared
-                          </button>
-                          <button
-                            onClick={() => {
-                              const hubItem = sharedMap.get(key);
-                              const hubUser = hubApi.getUser();
-                              if (!hubItem || !hubUser) return;
-                              const link = `${hubApi.getUrl()}/${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
-                              navigator.clipboard.writeText(link).then(() => {
-                                setCopiedKey(key);
-                                setTimeout(() => setCopiedKey(prev => prev === key ? null : prev), 2000);
-                              }).catch(() => {});
-                            }}
-                            className="text-xs px-2 py-1.5 rounded-lg border border-green-600/20 text-green-500 hover:text-green-600 hover:border-green-500/40 transition-colors"
-                            title="Copy Hub link"
-                          >
-                            {copiedKey === key ? (
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <polyline points="20 6 9 17 4 12" />
-                              </svg>
-                            ) : (
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleShare(art)}
-                          disabled={busy}
-                          className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-green-600 hover:border-green-500/30 transition-colors disabled:opacity-50"
-                        >
-                          {busy ? 'Sharing...' : 'Share'}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setDeleteTarget(art)}
-                        disabled={busy}
-                        className="text-xs px-2 py-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50"
-                        title="Delete"
-                      >
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
-                      </button>
-                    </div>
+                    {!isMobile && actionButtons}
                   </div>
+                  {isMobile && <div className="mt-3 pt-3 border-t border-border-default/50">{actionButtons}</div>}
                 </div>
               );
             })}

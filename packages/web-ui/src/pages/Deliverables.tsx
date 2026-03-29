@@ -80,6 +80,7 @@ export function DeliverablesPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copyMenuOpen, setCopyMenuOpen] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
   const copyMenuRef = useRef<HTMLDivElement>(null);
   const [sharedDir, setSharedDir] = useState('');
@@ -89,6 +90,12 @@ export function DeliverablesPage() {
   const flashMsg = (type: 'success' | 'error', text: string) => {
     setFlash({ type, text });
     setTimeout(() => setFlash(null), 3000);
+  };
+
+  const copyPath = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedPath(true);
+    setTimeout(() => setCopiedPath(false), 1500);
   };
 
   const agentMap = useMemo(() => new Map(agents.map(a => [a.id, a])), [agents]);
@@ -303,7 +310,7 @@ export function DeliverablesPage() {
   const renderMarkdownPreview = (content: string) => (
     <div className="relative group/preview">
       <div
-        className={`absolute -top-1 -right-1 z-10 transition-opacity ${copyMenuOpen ? 'opacity-100' : 'opacity-0 group-hover/preview:opacity-100'}`}
+        className="absolute -top-1 -right-1 z-10"
         ref={copyMenuRef}
       >
         <button
@@ -598,10 +605,10 @@ export function DeliverablesPage() {
                     title="Reveal in Finder"
                   >Open</button>
                   <button
-                    onClick={() => { navigator.clipboard.writeText(selected.reference); flashMsg('success', 'Path copied'); }}
-                    className="px-2 py-1 text-[10px] rounded bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay transition-colors shrink-0"
+                    onClick={() => copyPath(selected.reference)}
+                    className={`px-2 py-1 text-[10px] rounded transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}
                     title="Copy path to clipboard"
-                  >Copy</button>
+                  >{copiedPath ? 'Copied!' : 'Copy'}</button>
                 </div>
               )}
               {selected.reference && selected.type === 'url' && (
@@ -666,8 +673,8 @@ export function DeliverablesPage() {
                       >{selected.reference}</button>
                       <button onClick={() => { api.files.reveal(selected!.reference).catch(() => flashMsg('error', 'Failed to open')); }}
                         className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0">Open</button>
-                      <button onClick={() => { navigator.clipboard.writeText(selected!.reference); flashMsg('success', 'Path copied'); }}
-                        className="px-3 py-2 text-xs rounded-lg bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay transition-colors shrink-0">Copy</button>
+                      <button onClick={() => copyPath(selected!.reference)}
+                        className={`px-3 py-2 text-xs rounded-lg transition-colors shrink-0 ${copiedPath ? 'bg-green-500/20 text-green-600' : 'bg-surface-overlay/50 text-fg-secondary hover:bg-surface-overlay'}`}>{copiedPath ? 'Copied!' : 'Copy'}</button>
                     </div>
                   </div>
                 ) : selected.summary ? (

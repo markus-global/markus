@@ -97,7 +97,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
   const hasMoreProjects = projects.length > DEFAULT_VISIBLE_PROJECTS;
 
   return (
-    <aside className="h-screen bg-surface-secondary flex flex-col shrink-0 overflow-hidden border-r border-border-subtle">
+    <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden border-r border-border-subtle">
       <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
         {collapsed ? (
           <button onClick={onToggleCollapse} title="Expand sidebar" className="group">

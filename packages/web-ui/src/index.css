@@ -70,8 +70,14 @@ html.light {
   }
 }
 
+html, body, #root {
+  height: 100vh;
+  height: 100dvh;
+}
+
 body {
   @apply bg-surface-primary text-fg-primary antialiased;
+  overflow: hidden;
 }
 
 .input,

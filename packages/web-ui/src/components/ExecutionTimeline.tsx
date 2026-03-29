@@ -688,7 +688,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
         onClick={() => isDone && setExpanded(true)}
       >
         {showTime && time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-0.5">{time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-0.5 hidden md:inline">{time}</span>
         )}
         <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
           <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
@@ -762,7 +762,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{entry.time}</span>
         )}
         <div className="flex-1 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
           <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary" />
@@ -779,7 +779,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className="flex items-center gap-2 py-0.5 px-1">
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums hidden md:inline">{entry.time}</span>
         )}
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
         <span className={`text-xs capitalize ${color}`}>{entry.content}</span>
@@ -790,7 +790,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     return (
       <div className={`flex items-start gap-2 ${showTime ? '' : ''}`}>
         {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2">{entry.time}</span>
+          <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2 hidden md:inline">{entry.time}</span>
         )}
         <div className="flex-1 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
           <span className="font-medium">Error:</span> {entry.content}

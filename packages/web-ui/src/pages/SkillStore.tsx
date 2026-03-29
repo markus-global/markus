@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api, hubApi, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -170,6 +171,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function SkillStore() {
+  const isMobile = useIsMobile();
   const [tab, setTab] = useState<TabId>('installed');
   const [flash, setFlash] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [installing, setInstalling] = useState<Set<string>>(new Set());
@@ -356,12 +358,14 @@ export function SkillStore() {
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-4 px-6 h-14 border-b border-border-default bg-surface-secondary shrink-0">
-        <h2 className="text-lg font-semibold">Skill Store</h2>
-        <div className="flex gap-1 ml-2">
+      <div className={`${isMobile ? 'px-4' : 'px-6'} border-b border-border-default bg-surface-secondary shrink-0`}>
+        <div className="flex items-center h-14">
+          <h2 className="text-lg font-semibold">Skill Store</h2>
+        </div>
+        <div className={`flex ${isMobile ? 'flex-wrap' : ''} gap-1 pb-2 overflow-x-auto scrollbar-hide`}>
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              className={`px-3 py-1.5 text-xs rounded-lg transition-colors shrink-0 ${
                 tab === t.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}>
               {t.label}
@@ -378,15 +382,15 @@ export function SkillStore() {
 
       {/* ── Installed Tab ─────────────────────────────────────────────────────── */}
       {tab === 'installed' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
           <div className="flex items-center gap-3 mb-5">
             <input
               value={installedSearch}
               onChange={e => setInstalledSearch(e.target.value)}
               placeholder="Search installed skills..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
+              className={`px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none ${isMobile ? 'flex-1 min-w-0' : 'w-72'}`}
             />
-            <span className="text-xs text-fg-tertiary">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
+            <span className="text-xs text-fg-tertiary shrink-0">{filteredInstalled.length} skill{filteredInstalled.length !== 1 ? 's' : ''}</span>
           </div>
 
           {loadingInstalled ? (
@@ -454,7 +458,7 @@ export function SkillStore() {
 
       {/* ── Built-in Tab ─────────────────────────────────────────────────────── */}
       {tab === 'builtin' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
           <div className="flex items-center gap-3 mb-5">
             <span className="text-xs text-fg-tertiary">{builtinSkills.length} built-in skill{builtinSkills.length !== 1 ? 's' : ''} available</span>
             <button
@@ -541,9 +545,9 @@ export function SkillStore() {
 
       {/* ── SkillHub Tab ──────────────────────────────────────────────────────── */}
       {tab === 'skillhub' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
           {/* Controls */}
-          <div className="flex items-center gap-2 mb-5 flex-wrap">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
             <select
               value={skillhubCategory}
               onChange={e => { setSkillhubCategory(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: e.target.value || undefined, page: 1 }); }}
@@ -562,22 +566,24 @@ export function SkillStore() {
               <option value="stars">收藏数</option>
               <option value="installs">安装量</option>
             </select>
+            {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">
+              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
+            </span>}
+          </div>
+          <div className="flex items-center gap-2 mb-5">
             <input
               value={skillhubSearch}
               onChange={e => setSkillhubSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); } }}
               placeholder="搜索 SkillHub 技能..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-64"
+              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none flex-1 min-w-0"
             />
             <button
               onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
-              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg shrink-0"
             >
               Search
             </button>
-            <span className="text-xs text-fg-tertiary ml-auto">
-              <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
-            </span>
           </div>
 
           {loadingSkillhub ? (
@@ -653,24 +659,24 @@ export function SkillStore() {
 
       {/* ── skills.sh Tab ─────────────────────────────────────────────────────── */}
       {tab === 'skillssh' && (
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="flex items-center gap-2 mb-5">
+        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
+          <div className={`flex ${isMobile ? 'flex-wrap' : ''} items-center gap-2 mb-5`}>
             <input
               value={skillsshSearch}
               onChange={e => setSkillsshSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
               placeholder="Search skills.sh..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
+              className={`px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none ${isMobile ? 'flex-1 min-w-0' : 'w-72'}`}
             />
             <button
               onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
-              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg shrink-0"
             >
               Search
             </button>
-            <span className="text-xs text-fg-tertiary ml-auto">
+            {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">
               <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
-            </span>
+            </span>}
           </div>
 
           {loadingSkillssh ? (
@@ -724,15 +730,15 @@ export function SkillStore() {
 
       {/* ── Markus Hub Tab ────────────────────────────────────────────────────── */}
       {tab === 'markus-hub' && (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
           <div className="flex items-center gap-2 mb-5">
             <input
               value={hubSearch}
               onChange={e => setHubSearch(e.target.value)}
               placeholder="Search Markus Hub skills..."
-              className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none w-72"
+              className={`px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none ${isMobile ? 'flex-1 min-w-0' : 'w-72'}`}
             />
-            <span className="text-xs text-fg-tertiary ml-auto">Community skills from Markus Hub</span>
+            {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">Community skills from Markus Hub</span>}
           </div>
 
           {loadingHub ? (

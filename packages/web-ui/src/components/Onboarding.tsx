@@ -296,7 +296,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const current = steps[step]!;
 
   return (
-    <div className="min-h-screen bg-surface-primary flex items-center justify-center p-4">
+    <div className="min-h-dvh bg-surface-primary flex items-center justify-center p-4">
       <div className="w-full max-w-lg">
         <div className="bg-surface-secondary border border-border-default rounded-2xl p-8">
           <div className="flex gap-1.5 mb-8">

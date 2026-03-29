@@ -3,6 +3,7 @@ import { AgentBuilder } from '../pages/AgentBuilder.tsx';
 import { TemplateMarketplace } from '../pages/TemplateMarketplace.tsx';
 import { TeamsStore } from '../pages/TeamsStore.tsx';
 import { SkillStore } from '../pages/SkillStore.tsx';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { AuthUser } from '../api.ts';
 
 const tabs = [
@@ -16,9 +17,10 @@ type TabId = (typeof tabs)[number]['id'];
 
 export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
   const [activeTab, setActiveTab] = useState<TabId>('builder');
+  const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
 
   return (
-    <div className="flex-1 overflow-hidden flex flex-col">
+    <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
       <div className="flex border-b border-border-default bg-surface-secondary shrink-0 overflow-x-auto scrollbar-hide">
         {tabs.map(tab => (
           <button

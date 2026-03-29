@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { api, type ProjectInfo, type TeamInfo } from '../api.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 interface Props {
   orgId?: string;
@@ -18,6 +19,7 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [touched, setTouched] = useState(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
@@ -50,9 +52,9 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
   const nameInvalid = touched && !name.trim();
 
   return createPortal(
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-3" onClick={onClose}>
       <form
-        className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[520px] shadow-2xl max-h-[90vh] overflow-y-auto"
+        className={`bg-surface-secondary border border-border-default rounded-xl p-6 shadow-2xl max-h-[90dvh] overflow-y-auto ${isMobile ? 'w-full' : 'w-[520px]'}`}
         onClick={e => e.stopPropagation()}
         onSubmit={handleSubmit}
       >
@@ -66,7 +68,7 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
               onBlur={() => setTouched(true)}
               placeholder="e.g. Mobile App, Website Redesign"
               className={`input ${nameInvalid ? '!border-red-500 focus:!ring-red-500/25' : ''}`}
-              autoFocus
+              autoFocus={!isMobile}
             />
             {nameInvalid && <p className="text-[11px] text-red-400 mt-1">Project name is required</p>}
           </div>
