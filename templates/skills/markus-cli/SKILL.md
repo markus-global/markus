@@ -39,6 +39,11 @@ markus agent list --json
 markus agent list
 ```
 
+## Platform Info
+
+- **Website**: https://www.markus.global/
+- **GitHub**: https://github.com/markus-global/markus
+
 ## Command structure
 
 Commands follow the pattern: `markus <domain> [sub] <action> [id] [options]`
@@ -48,6 +53,7 @@ markus agent list                        # List agents
 markus project list --json               # List projects
 markus project task create --title "..."  # Create a task
 markus admin system status               # System health
+markus admin system version --json       # Check version and updates
 markus <domain> --help                   # See all subcommands
 ```
 
@@ -67,7 +73,7 @@ markus <domain> --help                   # See all subcommands
 | `project review` | Code / task reviews | markus-project-cli |
 | `project approval` | HITL approvals | markus-project-cli |
 | `admin` | Platform administration & system controls | markus-admin-cli |
-| `admin system` | Global controls, governance, storage | markus-admin-cli |
+| `admin system` | Global controls, governance, storage, version, update | markus-admin-cli |
 | `admin system audit` | Audit log and summary | markus-admin-cli |
 | `admin user` | Human user management | markus-admin-cli |
 | `admin key` | API key management | markus-admin-cli |
@@ -77,6 +83,23 @@ markus <domain> --help                   # See all subcommands
 | `admin gateway` | External agent gateway | markus-admin-cli |
 | `admin settings` | LLM and platform settings | markus-admin-cli |
 | `admin external-agent` | External agent registration | markus-admin-cli |
+
+## System Update
+
+To check for updates and update the platform:
+
+```bash
+# Check current version and whether updates are available
+markus admin system version --json
+
+# Update to latest version (pulls from GitHub, installs deps, rebuilds)
+markus admin system update
+
+# Preview update without making changes
+markus admin system update --dry-run
+```
+
+**Always confirm with the user before running `markus admin system update`** — updating requires a service restart which interrupts running agents.
 
 ## Tips
 

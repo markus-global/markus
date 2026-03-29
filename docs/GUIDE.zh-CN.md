@@ -152,8 +152,7 @@ docker compose up -d
 
 - 左侧面板列出所有项目，右侧显示选中项目的详情
 - 创建新项目（名称、描述、仓库地址）
-- 管理项目内的迭代（创建、更新状态：planning → active → review → completed）
-- 查看项目状态、迭代模型、关联的 Team
+- 查看项目状态、需求、关联的 Team
 
 ### Knowledge 页面
 
@@ -239,14 +238,12 @@ docker compose up -d
 | GET/POST | `/api/system/announcements` | 系统公告 CRUD |
 | GET/PUT | `/api/governance/policy` | 治理策略查看/更新 |
 
-### 项目与迭代
+### 项目
 
 | 方法 | 路径 | 描述 |
 |------|------|------|
 | GET/POST | `/api/projects` | 项目列表/创建 |
 | GET/PUT/DELETE | `/api/projects/:id` | 项目详情/更新/删除 |
-| GET/POST | `/api/projects/:id/iterations` | 迭代列表/创建 |
-| PUT | `/api/iterations/:id/status` | 更新迭代状态 |
 
 ### 交付与评审
 

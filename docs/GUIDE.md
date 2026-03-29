@@ -152,8 +152,7 @@ The left sidebar lets you choose a conversation target:
 
 - Left panel lists all projects; right side shows the selected project details
 - Create projects (name, description, repository URL)
-- Manage iterations within a project (create, update status: planning, active, review, completed)
-- View project status, iteration models, and linked Teams
+- View project status, requirements, and linked Teams
 
 ### Knowledge Page
 
@@ -239,14 +238,12 @@ Requests must include a Cookie (set after login) or an `Authorization: Bearer <t
 | GET/POST | `/api/system/announcements` | Announcements CRUD |
 | GET/PUT | `/api/governance/policy` | View or update governance policy |
 
-### Projects and Iterations
+### Projects
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET/POST | `/api/projects` | List or create projects |
 | GET/PUT/DELETE | `/api/projects/:id` | Project detail, update, or delete |
-| GET/POST | `/api/projects/:id/iterations` | List or create iterations |
-| PUT | `/api/iterations/:id/status` | Update iteration status |
 
 ### Delivery and Review
 
@@ -361,4 +358,4 @@ A: This depends on the governance policy. By default, standard tasks need Manage
 A: Agents contribute via the `knowledge_contribute` tool to the project knowledge base; other Agents search with `knowledge_search`. Humans can view and manage entries on the Knowledge page.
 
 **Q: How do I assign Agents to different projects?**  
-A: Create projects on the Projects page and link them to Teams. When Agents are assigned to iteration tasks within a project, they automatically get project context and isolated workspaces.
+A: Create projects on the Projects page and link them to Teams. When Agents are assigned to tasks within a project, they automatically get project context and isolated workspaces.

@@ -11,6 +11,9 @@ Administrative operations through `shell_execute` with `markus admin` commands. 
 
 ```bash
 markus admin system status --json
+markus admin system version --json
+markus admin system update
+markus admin system update --dry-run
 markus admin system pause-all --reason "Deploying updates"
 markus admin system resume-all
 markus admin system emergency-stop
@@ -24,6 +27,8 @@ markus admin system policy --set --body '{"defaultApproval":"manager"}'
 | Command | Key Options |
 |---------|-------------|
 | `admin system status` | |
+| `admin system version` | Shows current version, git info, and whether updates are available |
+| `admin system update` | `--dry-run` (preview without applying). Pulls latest code, installs deps, rebuilds |
 | `admin system pause-all` | `--reason` |
 | `admin system resume-all` | |
 | `admin system emergency-stop` | |
@@ -31,6 +36,8 @@ markus admin system policy --set --body '{"defaultApproval":"manager"}'
 | `admin system orphans` | |
 | `admin system announce` | `--title` `--content` `--priority` `--type` `--expires-at` |
 | `admin system policy` | `--set <json>` (update mode) |
+
+**Update workflow**: When updating the platform, always: (1) confirm with the user, (2) pause all agents first (`pause-all`), (3) run `update`, (4) restart the service (`markus start`), (5) resume agents (`resume-all`).
 
 ## Audit (nested under admin system)
 

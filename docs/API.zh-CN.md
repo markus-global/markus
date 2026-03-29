@@ -83,7 +83,7 @@
 
 ---
 
-## 项目与迭代
+## 项目
 
 | 方法 | 路径 | 说明 |
 |--------|------|-------------|
@@ -92,9 +92,6 @@
 | GET | `/api/projects/:id` | 获取项目 |
 | PUT | `/api/projects/:id` | 更新项目 |
 | DELETE | `/api/projects/:id` | 删除项目 |
-| GET | `/api/projects/:id/iterations` | 列出迭代 |
-| POST | `/api/projects/:id/iterations` | 创建迭代 |
-| PUT | `/api/iterations/:id/status` | 更新迭代状态 |
 
 ---
 

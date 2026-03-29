@@ -83,7 +83,7 @@ All requests require authentication via one of:
 
 ---
 
-## Projects & Iterations
+## Projects
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -92,9 +92,6 @@ All requests require authentication via one of:
 | GET | `/api/projects/:id` | Get project |
 | PUT | `/api/projects/:id` | Update project |
 | DELETE | `/api/projects/:id` | Delete project |
-| GET | `/api/projects/:id/iterations` | List iterations |
-| POST | `/api/projects/:id/iterations` | Create iteration |
-| PUT | `/api/iterations/:id/status` | Update iteration status |
 
 ---
 

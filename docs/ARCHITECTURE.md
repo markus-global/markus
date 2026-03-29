@@ -22,8 +22,8 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
    │          │          │          │          │
 ┌──▼────┐ ┌──▼─────┐ ┌──▼──────┐ ┌▼───────┐ ┌▼────────────────┐
 │OrgSvc │ │TaskSvc │ │AgentMgr │ │Project │ │Governance Layer │
-│Org    │ │Tasks   │ │Agent    │ │Service │ │Report·Knowledge │
-│Mgmt   │ │+ Approve│ │Lifecycle│ │Iters   │ │Trust·Archive    │
+│Org    │ │Tasks   │ │Agent    │ │Service │ │Report·Deliver   │
+│Mgmt   │ │+ Approve│ │Lifecycle│ │Reqs    │ │Trust·Archive    │
 └──┬────┘ └──┬─────┘ └──┬──────┘ └┬───────┘ └┬────────────────┘
    │         │          │         │           │
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
@@ -34,8 +34,8 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
                            │
               ┌────────────▼──────────────┐
               │      SQLite (better-sqlite3)     │
-              │  tasks · projects · iters  │
-              │  knowledge · reports       │
+              │  tasks · projects · reqs   │
+              │  deliverables · reports    │
               │  users · chat · audit_logs │
               └───────────────────────────┘
 ```
@@ -85,9 +85,9 @@ Each Agent consists of:
 | Level | Condition | Permissions |
 |-------|-----------|-------------|
 | `probation` | New Agent or score < 40 | All tasks require human approval |
-| `junior` | score >= 40, >= 3 deliveries | Standard tasks need Manager approval |
-| `standard` | score >= 60, >= 10 deliveries | Routine tasks auto-approved |
-| `senior` | score >= 80, >= 25 deliveries | High autonomy, can review others |
+| `standard` | score >= 40, >= 5 deliveries | Routine tasks auto-approved |
+| `trusted` | score >= 60, >= 15 deliveries | Higher autonomy, can review others |
+| `senior` | score >= 80, >= 25 deliveries | Highest autonomy, key reviewer |
 
 ### 3.2 Organization Structure
 
@@ -96,8 +96,8 @@ Organization (Org)
  ├── Teams -- Working groups of Agents and humans with shared goals
  │    ├── Manager -- Approves work, sets direction
  │    └── Members -- Agents and humans executing tasks
- ├── Projects -- Scopes with repos, governance rules, iterations
- │    ├── Iterations (Sprint/Kanban) -- Task containers
+ ├── Projects -- Scopes with repos and governance rules
+ │    ├── Requirements -- User-authorized work items
  │    │    └── Tasks -> Subtasks -- Atomic work units
  │    ├── Knowledge Base -- Shared knowledge (ADRs, conventions, gotchas, etc.)
  │    └── Governance Policy -- Approval rules, task caps
@@ -106,7 +106,7 @@ Organization (Org)
 
 **Relationship model:**
 - A Team can participate in multiple Projects; a Project can be worked on by multiple Teams
-- Each Task belongs to one Project and one Iteration
+- Each Task belongs to one Project and traces to a Requirement
 - Each Project can link multiple code repositories
 
 ### 3.3 Memory and Knowledge System
@@ -146,8 +146,8 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `agent_send_message` | Send message to another Agent (A2A) |
 | `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
 | `task_submit_review` | Submit delivery for review |
-| `project_info` / `iteration_status` | Query project and iteration info |
-| `knowledge_contribute` / `knowledge_search` / `knowledge_browse` / `knowledge_flag_outdated` | Project knowledge base ops |
+| `requirement_propose` / `requirement_list` | Requirement management |
+| `deliverable_create` / `deliverable_search` / `deliverable_list` | Shared deliverables |
 
 **Git commit metadata injection:** When an Agent runs `git commit`, `shell_execute` auto-injects `--author` and `--trailer` with Agent ID, name, Team, Org, Task ID, etc., so all commits are traceable.
 
@@ -217,7 +217,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 1. Role definition (ROLE.md system prompt)
 2. Shared behavior norms (SHARED.md: workflow overview, governance rules, knowledge sharing, etc.)
 3. Identity and org awareness (colleague list, manager, human members)
-4. **Current project context** (project name, iteration goals, repos, governance rules)
+4. **Current project context** (project name, repos, governance rules)
 5. **Current workspace** (branch name, worktree path, base branch)
 6. **Agent trust level** (current level and permission description)
 7. **System announcements** (urgent/high-priority announcements)
@@ -292,9 +292,8 @@ Agent completes work
 | Daily | Daily | Task done/in-progress/blocked, token usage |
 | Weekly | Weekly | Progress, cost trends, next week plan (may include plan approval) |
 | Monthly | Monthly | Monthly summary, cost analysis, quality metrics |
-| Iteration | End of iteration | Retrospective, carry-over items, next iteration plan |
 
-**Plan approval flow:** Weekly/iteration reports' work plans need human approval -> approved plans auto-create tasks -> Agents must not start before plan approval
+**Plan approval flow:** Weekly reports' work plans need human approval -> approved plans auto-create tasks -> Agents must not start before plan approval
 
 **Human feedback:** Annotations, comments, and instructions on reports can:
 - Be sent to specific Agents
@@ -307,7 +306,6 @@ Agent completes work
 - Completed tasks auto-archive after configurable days
 - Accepted tasks auto-clean worktree after merge
 - Archived tasks delete branch after configurable days
-- Iteration archives when all its tasks are archived
 
 ### 4.6 Stall Detection
 
@@ -316,7 +314,6 @@ Agent completes work
 | Task `in_progress` too long | > 24h or 2x avg completion time | Warn Agent -> report to Manager |
 | Task `review` unhandled | > 12h | Report to human |
 | Task `assigned` not started | > 4h | Remind Agent -> reassign |
-| Iteration overdue and < 80% done | Due date + 1 day | Auto-generate retrospective |
 
 ---
 
@@ -335,15 +332,19 @@ channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text
 
 -- Tasks (extended)
 tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,
-       project_id, iteration_id, due_at, created_at, updated_at)
+       project_id, requirement_id, due_at, created_at, updated_at)
 
 -- Projects
-projects (id, org_id, name, description, status, iteration_model, repositories,
+projects (id, org_id, name, description, status, repositories,
           team_ids, governance_policy, review_schedule, created_at, updated_at)
 
--- Iterations
-iterations (id, project_id, name, status, goal, start_date, end_date,
-            metrics, review_report, created_at, updated_at)
+-- Requirements
+requirements (id, org_id, project_id, title, description, priority, status,
+              source, tags, created_at, updated_at)
+
+-- Deliverables
+deliverables (id, org_id, project_id, agent_id, task_id, type, title,
+              summary, reference, tags, status, created_at, updated_at)
 
 -- Project knowledge
 project_knowledge (id, scope, scope_id, category, title, content, tags,
@@ -426,8 +427,8 @@ Agents understand the workflow and governance rules through three layers:
 | **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, shell/file tools restricted to worktree, git commit auto-injects metadata |
 
 **Design principles:**
-- Things Agents need for **decisions** -> put in Context (project goals, iteration timeline, governance rules)
-- Things Agents need to **act on** -> implement as Tools (submit review, query project info, contribute knowledge)
+- Things Agents need for **decisions** -> put in Context (project goals, governance rules, requirement context)
+- Things Agents need to **act on** -> implement as Tools (submit review, manage deliverables, contribute knowledge)
 - Things that must be **enforced** -> implement as transparent tool behavior (workspace limits, approval blocking, commit metadata injection)
 
 ---
