@@ -8,7 +8,7 @@
  */
 import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { TaskLogEntry, AgentActivityLogEntry } from '../api.ts';
+import { api, type TaskLogEntry, type AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
@@ -48,6 +48,8 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   add_task_note:        { label: 'Adding note',            icon: '📝' },
   task_add_note:        { label: 'Adding note',            icon: '📝' },
   task_list:            { label: 'Listing tasks',          icon: '📋' },
+  requirement_propose:  { label: 'Proposing requirement',  icon: '📋' },
+  requirement_list:     { label: 'Listing requirements',   icon: '📋' },
   git_status:           { label: 'Git status',             icon: '🔀' },
   git_diff:             { label: 'Git diff',               icon: '🔀' },
   git_log:              { label: 'Git log',                icon: '📜' },
@@ -394,6 +396,252 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
   );
 }
 
+// ─── TaskApprovalCard — inline approval UI for pending_approval tasks ────────
+
+interface TaskApprovalInfo {
+  taskId: string;
+  title: string;
+  description?: string;
+  assignedAgentId?: string;
+  priority?: string;
+}
+
+function parseTaskApprovalFromResult(tool: string, result?: string): TaskApprovalInfo | null {
+  if (tool !== 'task_create' && tool !== 'create_task') return null;
+  if (!result) return null;
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed.status !== 'pending_approval' || !parsed.task) return null;
+    const t = parsed.task;
+    return {
+      taskId: t.id,
+      title: t.title,
+      description: t.description,
+      assignedAgentId: t.assignedAgentId,
+      priority: t.priority,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
+  urgent: 'text-red-500',
+  high: 'text-amber-500',
+  medium: 'text-blue-500',
+  low: 'text-fg-tertiary',
+};
+
+export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
+  const [state, setState] = useState<'idle' | 'approving' | 'rejecting' | 'approved' | 'rejected'>('idle');
+
+  const handleApprove = async () => {
+    setState('approving');
+    try {
+      await api.tasks.approve(info.taskId);
+      setState('approved');
+    } catch {
+      setState('idle');
+    }
+  };
+
+  const handleReject = async () => {
+    setState('rejecting');
+    try {
+      await api.tasks.reject(info.taskId);
+      setState('rejected');
+    } catch {
+      setState('idle');
+    }
+  };
+
+  const isDone = state === 'approved' || state === 'rejected';
+
+  return (
+    <div className={`my-2 rounded-lg border ${isDone ? 'border-border-default/40 bg-surface-secondary/30' : 'border-amber-500/40 bg-amber-500/5'} p-3 max-w-md`}>
+      <div className="flex items-start gap-2 mb-2">
+        <span className="text-amber-500 text-sm mt-0.5">{isDone ? (state === 'approved' ? '✅' : '❌') : '⏳'}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 font-medium">Task</span>
+          </div>
+          <div className="text-sm font-medium text-fg-primary truncate mt-1">{info.title}</div>
+          {info.description && (
+            <div className="text-xs text-fg-secondary mt-0.5 line-clamp-2">{info.description}</div>
+          )}
+          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-fg-tertiary">
+            {info.priority && (
+              <span className={APPROVAL_PRIORITY_COLORS[info.priority] ?? 'text-fg-tertiary'}>
+                {info.priority}
+              </span>
+            )}
+            <span className="opacity-50">ID: {info.taskId.slice(0, 8)}...</span>
+          </div>
+        </div>
+      </div>
+
+      {!isDone && (
+        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default/30">
+          <button
+            onClick={handleApprove}
+            disabled={state !== 'idle'}
+            className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {state === 'approving' ? 'Approving...' : 'Approve'}
+          </button>
+          <button
+            onClick={handleReject}
+            disabled={state !== 'idle'}
+            className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {state === 'rejecting' ? 'Rejecting...' : 'Reject'}
+          </button>
+        </div>
+      )}
+
+      {state === 'approved' && (
+        <div className="text-xs text-green-500 mt-1.5">
+          Task approved — executing in task context
+        </div>
+      )}
+      {state === 'rejected' && (
+        <div className="text-xs text-fg-tertiary mt-1.5">
+          Task rejected
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── RequirementApprovalCard — inline approval for proposed requirements ──────
+
+interface RequirementApprovalInfo {
+  requirementId: string;
+  title: string;
+  description?: string;
+  priority?: string;
+}
+
+function parseRequirementApprovalFromResult(tool: string, result?: string): RequirementApprovalInfo | null {
+  if (tool !== 'requirement_propose') return null;
+  if (!result) return null;
+  try {
+    const parsed = JSON.parse(result);
+    if (parsed.status !== 'success' || !parsed.requirement) return null;
+    const r = parsed.requirement;
+    if (r.status !== 'draft' && r.status !== 'pending_review') return null;
+    return {
+      requirementId: r.id,
+      title: r.title,
+      description: r.description,
+      priority: r.priority,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function RequirementApprovalCard({ info }: { info: RequirementApprovalInfo }) {
+  const [state, setState] = useState<'idle' | 'approving' | 'rejecting' | 'approved' | 'rejected'>('idle');
+  const [rejectReason, setRejectReason] = useState('');
+  const [showRejectInput, setShowRejectInput] = useState(false);
+
+  const handleApprove = async () => {
+    setState('approving');
+    try {
+      await api.requirements.approve(info.requirementId);
+      setState('approved');
+    } catch {
+      setState('idle');
+    }
+  };
+
+  const handleReject = async () => {
+    if (!showRejectInput) {
+      setShowRejectInput(true);
+      return;
+    }
+    if (!rejectReason.trim()) return;
+    setState('rejecting');
+    try {
+      await api.requirements.reject(info.requirementId, rejectReason.trim());
+      setState('rejected');
+    } catch {
+      setState('idle');
+    }
+  };
+
+  const isDone = state === 'approved' || state === 'rejected';
+
+  return (
+    <div className={`my-2 rounded-lg border ${isDone ? 'border-border-default/40 bg-surface-secondary/30' : 'border-amber-500/40 bg-amber-500/5'} p-3 max-w-md`}>
+      <div className="flex items-start gap-2 mb-2">
+        <span className="text-amber-500 text-sm mt-0.5">{isDone ? (state === 'approved' ? '✅' : '❌') : '📋'}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 font-medium">REQ</span>
+          </div>
+          <div className="text-sm font-medium text-fg-primary truncate mt-1">{info.title}</div>
+          {info.description && (
+            <div className="text-xs text-fg-secondary mt-0.5 line-clamp-3">{info.description}</div>
+          )}
+          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-fg-tertiary">
+            {info.priority && (
+              <span className={APPROVAL_PRIORITY_COLORS[info.priority] ?? 'text-fg-tertiary'}>
+                {info.priority}
+              </span>
+            )}
+            <span className="opacity-50">ID: {info.requirementId.slice(0, 8)}...</span>
+          </div>
+        </div>
+      </div>
+
+      {!isDone && (
+        <div className="mt-2 pt-2 border-t border-border-default/30 space-y-2">
+          {showRejectInput && (
+            <input
+              type="text"
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Rejection reason..."
+              className="w-full px-2 py-1.5 text-xs rounded-md bg-surface-secondary border border-border-default text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
+              onKeyDown={e => e.key === 'Enter' && handleReject()}
+              autoFocus
+            />
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleApprove}
+              disabled={state !== 'idle'}
+              className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {state === 'approving' ? 'Approving...' : 'Approve'}
+            </button>
+            <button
+              onClick={handleReject}
+              disabled={state !== 'idle' || (showRejectInput && !rejectReason.trim())}
+              className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {state === 'rejecting' ? 'Rejecting...' : 'Reject'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state === 'approved' && (
+        <div className="text-xs text-green-500 mt-1.5">
+          Requirement approved — agents can now create tasks for it
+        </div>
+      )}
+      {state === 'rejected' && (
+        <div className="text-xs text-fg-tertiary mt-1.5">
+          Requirement rejected{rejectReason ? `: ${rejectReason}` : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── ToolCallRow — unified rendering for a single tool call ───────────────────
 
 export function ToolCallRow({ info, showTime, time, isLast }: {
@@ -487,6 +735,13 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
         {hovered && <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />}
       </div>
       {expanded && <ToolDetailModal info={info} onClose={() => setExpanded(false)} />}
+      {isDone && (() => {
+        const taskApproval = parseTaskApprovalFromResult(info.tool, info.result);
+        if (taskApproval) return <TaskApprovalCard info={taskApproval} />;
+        const reqApproval = parseRequirementApprovalFromResult(info.tool, info.result);
+        if (reqApproval) return <RequirementApprovalCard info={reqApproval} />;
+        return null;
+      })()}
     </>
   );
 }

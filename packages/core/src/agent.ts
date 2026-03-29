@@ -692,6 +692,10 @@ export class Agent {
     const OFFLOAD_THRESHOLD = 50_000;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
 
+    // file_read already has built-in auto-limiting — don't re-offload its output
+    // to avoid the infinite loop where reading the offloaded file triggers another offload.
+    if (toolName === 'file_read') return result;
+
     try {
       const offloadDir = join(this.dataDir, 'tool-outputs');
       mkdirSync(offloadDir, { recursive: true });
@@ -704,7 +708,8 @@ export class Agent {
       const lineCount = result.split('\n').length;
       return [
         `[FULL output (${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
-        `[NOTE: The content below is only the first ${PREVIEW_SIZE} chars. The complete, untruncated result is in the file above. Use file_read to access it if you need more.]`,
+        `[NOTE: The content below is only the first ${PREVIEW_SIZE} chars. The complete, untruncated result is in the file above.]`,
+        `[To read the full content, use file_read with offset and limit parameters to read in chunks, e.g.: file_read(path="${filepath}", offset=1, limit=500)]`,
         ``,
         preview,
         ``,

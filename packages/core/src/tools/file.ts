@@ -101,18 +101,52 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
         const totalLines = lines.length;
 
         const startIdx = Math.max(0, offset - 1);
-        const endIdx = limit ? Math.min(startIdx + limit, totalLines) : totalLines;
-        const selectedLines = lines.slice(startIdx, endIdx);
+        const AUTO_LINE_LIMIT = 500;
+        const MAX_CHARS = 40_000;
+        const userSpecifiedLimit = limit != null;
+        let endIdx = limit ? Math.min(startIdx + limit, totalLines) : totalLines;
 
-        const numbered = selectedLines.map((line, i) => `${startIdx + i + 1}|${line}`).join('\n');
-        return JSON.stringify({
+        // Auto-limit: if no explicit limit and file is large, cap to avoid
+        // excessive output that would get offloaded and create a read loop.
+        let autoLimited = false;
+        if (!userSpecifiedLimit && (endIdx - startIdx) > AUTO_LINE_LIMIT) {
+          endIdx = Math.min(startIdx + AUTO_LINE_LIMIT, totalLines);
+          autoLimited = true;
+        }
+
+        let selectedLines = lines.slice(startIdx, endIdx);
+        let numbered = selectedLines.map((line, i) => `${startIdx + i + 1}|${line}`).join('\n');
+
+        // If still too large in chars (e.g. lines are very long), trim further
+        if (numbered.length > MAX_CHARS) {
+          const trimmedLines: string[] = [];
+          let charCount = 0;
+          for (let i = 0; i < selectedLines.length; i++) {
+            const line = `${startIdx + i + 1}|${selectedLines[i]}`;
+            if (charCount + line.length + 1 > MAX_CHARS) break;
+            trimmedLines.push(line);
+            charCount += line.length + 1;
+          }
+          numbered = trimmedLines.join('\n');
+          endIdx = startIdx + trimmedLines.length;
+          autoLimited = true;
+        }
+
+        const result: Record<string, unknown> = {
           status: 'success',
           path,
           totalLines,
           shownLines: `${startIdx + 1}-${endIdx}`,
           size: stat.size,
           content: numbered,
-        });
+        };
+
+        if (autoLimited) {
+          result.truncated = true;
+          result.hint = `File has ${totalLines} total lines but only lines ${startIdx + 1}-${endIdx} are shown to keep output manageable. Use 'offset' and 'limit' parameters to read specific sections (e.g. offset=${endIdx + 1}, limit=${AUTO_LINE_LIMIT}).`;
+        }
+
+        return JSON.stringify(result);
       } catch (error) {
         return JSON.stringify({ status: 'error', error: `Failed to read: ${String(error)}` });
       }
