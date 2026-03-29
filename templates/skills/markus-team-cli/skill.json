@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-team-cli",
+  "displayName": "Markus Team CLI",
+  "version": "1.0.0",
+  "description": "Manage teams via markus CLI — create, members, lifecycle, export.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "teams", "management"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}

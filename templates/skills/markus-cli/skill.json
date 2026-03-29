@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-cli",
+  "displayName": "Markus CLI",
+  "version": "1.0.0",
+  "description": "Core knowledge for operating the Markus platform via CLI commands. Prerequisite for all markus-*-cli skills.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "platform", "management", "api"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}

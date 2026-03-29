@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-agent-cli",
+  "displayName": "Markus Agent CLI",
+  "version": "1.0.0",
+  "description": "Manage agents via markus CLI — lifecycle, messaging, config, memory, skills.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "agents", "lifecycle"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}

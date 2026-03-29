@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-project-cli",
+  "displayName": "Markus Project CLI",
+  "version": "1.0.0",
+  "description": "Manage projects, requirements, deliverables, reports, and code reviews via markus CLI.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "projects", "requirements", "deliverables", "reports"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}

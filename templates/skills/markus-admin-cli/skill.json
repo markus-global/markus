@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-admin-cli",
+  "displayName": "Markus Admin CLI",
+  "version": "1.0.0",
+  "description": "System administration via markus CLI — system controls, audit, users, settings, gateway.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "admin", "governance", "audit", "settings"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}

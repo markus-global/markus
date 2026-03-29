@@ -12,9 +12,10 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@markus/shared": "workspace:*",
-    "@markus/core": "workspace:*",
     "@markus/comms": "workspace:*",
-    "@markus/org-manager": "workspace:*"
+    "@markus/core": "workspace:*",
+    "@markus/org-manager": "workspace:*",
+    "@markus/shared": "workspace:*",
+    "commander": "^14.0.3"
   }
 }

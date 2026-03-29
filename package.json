@@ -19,7 +19,8 @@
     "quality": "npm run typecheck && npm run test",
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",
-    "example:gui": "tsx examples/gui-automation-workflow.ts"
+    "example:gui": "tsx examples/gui-automation-workflow.ts",
+    "markus": "node packages/cli/dist/index.js"
   },
   "engines": {
     "node": ">=20.0.0",

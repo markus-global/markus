@@ -1,0 +1,14 @@
+{
+  "type": "skill",
+  "name": "markus-skill-cli",
+  "displayName": "Markus Skill CLI",
+  "version": "1.0.0",
+  "description": "Manage skills via markus CLI — list, install, uninstall, search, scaffold.",
+  "author": "markus",
+  "category": "platform",
+  "tags": ["cli", "skills", "registry"],
+  "skill": {
+    "skillFile": "SKILL.md",
+    "alwaysOn": false
+  }
+}
