@@ -3334,11 +3334,9 @@ export class Agent {
   /**
    * Periodic memory consolidation:
    * 1. Compact main session if it has grown large
-   * 2. Generate daily report (writes to MEMORY.md long-term store)
-   * 3. Log the consolidation activity
+   * 2. Memory dream: prune, deduplicate, merge (once per day)
    */
   private lastDreamDate = '';
-  private lastDailyReportDate = '';
 
   private async consolidateMemory(): Promise<void> {
     try {
@@ -3360,15 +3358,7 @@ export class Agent {
         }
       }
 
-      // 2. Auto-generate daily report once per day (writes to daily-logs/, not MEMORY.md)
-      if (this.lastDailyReportDate !== today) {
-        this.lastDailyReportDate = today;
-        this.generateDailyReport().catch(e =>
-          log.warn('Auto daily report generation failed', { error: String(e) })
-        );
-      }
-
-      // 3. Memory dream: prune, deduplicate, merge — once per day when entries are large
+      // 2. Memory dream: prune, deduplicate, merge — once per day when entries are large
       const entries = this.memory.getEntries();
       if (entries.length >= 50 && this.lastDreamDate !== today) {
         this.lastDreamDate = today;
