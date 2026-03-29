@@ -92,10 +92,32 @@ export function DeliverablesPage() {
     setTimeout(() => setFlash(null), 3000);
   };
 
-  const copyPath = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedPath(true);
-    setTimeout(() => setCopiedPath(false), 1500);
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch { return false; }
+    }
+  };
+
+  const copyPath = async (text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedPath(true);
+      setTimeout(() => setCopiedPath(false), 1500);
+    } else {
+      flashMsg('error', 'Copy failed — try long-pressing to copy manually');
+    }
   };
 
   const agentMap = useMemo(() => new Map(agents.map(a => [a.id, a])), [agents]);
@@ -293,17 +315,22 @@ export function DeliverablesPage() {
     return () => document.removeEventListener('mousedown', handler);
   }, [copyMenuOpen]);
 
-  const copyAsHtml = (theme: 'light' | 'dark', sourceText: string) => {
+  const copyAsHtml = async (theme: 'light' | 'dark', sourceText: string) => {
     const sourceEl = previewRef.current?.firstElementChild as HTMLElement | null;
     if (!sourceEl) return;
     const html = buildStyledHtml(sourceEl, theme);
-    navigator.clipboard.write([
-      new ClipboardItem({
-        'text/html': new Blob([html], { type: 'text/html' }),
-        'text/plain': new Blob([sourceText], { type: 'text/plain' }),
-      }),
-    ]);
-    flashMsg('success', theme === 'light' ? 'HTML（亮色）已复制' : 'HTML（暗色）已复制');
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([sourceText], { type: 'text/plain' }),
+        }),
+      ]);
+      flashMsg('success', theme === 'light' ? 'HTML (light) copied' : 'HTML (dark) copied');
+    } catch {
+      const ok = await copyToClipboard(sourceText);
+      flashMsg(ok ? 'success' : 'error', ok ? 'Text copied (HTML not supported)' : 'Copy failed');
+    }
     setCopyMenuOpen(false);
   };
 
@@ -316,7 +343,7 @@ export function DeliverablesPage() {
         <button
           onClick={() => setCopyMenuOpen(o => !o)}
           className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
-          title="复制内容"
+          title="Copy content"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -325,25 +352,25 @@ export function DeliverablesPage() {
         {copyMenuOpen && (
           <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
             <button
-              onClick={() => { navigator.clipboard.writeText(content); flashMsg('success', 'Markdown 原文已复制'); setCopyMenuOpen(false); }}
+              onClick={async () => { const ok = await copyToClipboard(content); flashMsg(ok ? 'success' : 'error', ok ? 'Markdown source copied' : 'Copy failed'); setCopyMenuOpen(false); }}
               className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center text-fg-tertiary shrink-0 font-mono text-[10px]">Md</span>
-              复制 Markdown 原文
+              Copy Markdown Source
             </button>
             <button
               onClick={() => copyAsHtml('light', content)}
               className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">☀️</span>
-              复制 HTML（亮色）
+              Copy HTML (Light)
             </button>
             <button
               onClick={() => copyAsHtml('dark', content)}
               className="w-full px-3 py-2 text-left text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-2"
             >
               <span className="w-4 text-center shrink-0">🌙</span>
-              复制 HTML（暗色）
+              Copy HTML (Dark)
             </button>
           </div>
         )}
