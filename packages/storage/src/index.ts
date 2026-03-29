@@ -37,7 +37,6 @@ export {
   SqliteRequirementRepo,
   SqliteProjectRepo,
   SqliteMessageRepo,
-  SqliteMemoryRepo,
   SqliteChatSessionRepo,
   SqliteChannelMessageRepo,
   SqliteUserRepo,
@@ -49,5 +48,8 @@ export {
   SqliteTaskCommentRepo,
   SqliteExternalAgentRepo,
   SqliteDeliverableRepo,
+  SqliteActivityRepo,
   type SqliteExternalAgentRegistration,
+  type ActivityRecord,
+  type ActivityLogRecord,
 } from './sqlite-storage.js';

@@ -19,7 +19,6 @@ export interface StorageBridge {
   agentRepo: any;
   teamRepo: any;
   messageRepo: any;
-  memoryRepo: any;
   chatSessionRepo: any;
   channelMessageRepo: any;
   userRepo: any;
@@ -28,6 +27,7 @@ export interface StorageBridge {
   projectRepo?: any;
   externalAgentRepo?: any;
   deliverableRepo?: any;
+  activityRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -59,7 +59,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       agentRepo: new storage.SqliteAgentRepo(db) as any,
       teamRepo: new storage.SqliteTeamRepo(db) as any,
       messageRepo: new storage.SqliteMessageRepo(db) as any,
-      memoryRepo: new storage.SqliteMemoryRepo(db) as any,
       chatSessionRepo: new storage.SqliteChatSessionRepo(db) as any,
       channelMessageRepo: new storage.SqliteChannelMessageRepo(db) as any,
       userRepo: new storage.SqliteUserRepo(db) as any,
@@ -68,6 +67,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       projectRepo: new storage.SqliteProjectRepo(db),
       externalAgentRepo: new storage.SqliteExternalAgentRepo(db),
       deliverableRepo: new storage.SqliteDeliverableRepo(db),
+      activityRepo: new storage.SqliteActivityRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

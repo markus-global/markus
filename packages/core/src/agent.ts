@@ -121,6 +121,7 @@ export class Agent {
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
   private userMessageSender?: (message: string) => Promise<{ sessionId: string; messageId: string }>;
+  private semanticSearch?: import('./memory/semantic-search.js').SemanticMemorySearch;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
@@ -168,9 +169,12 @@ export class Agent {
   private pauseReason?: string;
   private toolResultCounter = 0;
   private lastEstimatedInputTokens = 0;
-  /** In-memory activity log buffer (keyed by activity ID) */
+  /** In-memory activity log buffer (keyed by activity ID, write-through cache) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
+  private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
+  private onActivityLogCb?: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+  private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -673,6 +677,17 @@ export class Agent {
    * Keeps a compact reference in context, full data in a file the agent can re-read.
    * This prevents context bloat while preserving all information (restorable compression).
    */
+  private extractTaskLabel(description: string, taskId: string): string {
+    const lines = description.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (line.startsWith('#') || line.startsWith('**') || line.startsWith('[') || line.startsWith('//')) continue;
+      if (line.length > 10 && line.length < 200 && !line.includes('Current time:') && !line.includes('Execution Context')) {
+        return line.slice(0, 100);
+      }
+    }
+    return `Task ${taskId}`;
+  }
+
   private offloadLargeResult(toolName: string, result: string): string {
     const OFFLOAD_THRESHOLD = 50_000;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
@@ -911,6 +926,24 @@ export class Agent {
   }): void {
     this.metricsCollector.recordAudit(event);
     this.auditCallback?.(event);
+
+    const actId = this.state.currentActivity?.id;
+    if (actId) {
+      const logType: AgentActivityLogEntry['type'] =
+        event.type === 'llm_request' ? 'llm_request' :
+        event.type === 'tool_call' ? 'tool_end' :
+        event.type === 'error' ? 'error' : 'status';
+      const parts: string[] = [event.action];
+      if (event.durationMs) parts.push(`${(event.durationMs / 1000).toFixed(1)}s`);
+      if (event.tokensUsed) parts.push(`${event.tokensUsed} tokens`);
+      if (!event.success) parts.push('FAILED');
+      this.emitActivityLog(actId, logType, parts.join(' · '), {
+        tokensUsed: event.tokensUsed,
+        durationMs: event.durationMs,
+        action: event.action,
+        success: event.success,
+      });
+    }
   }
 
   setApprovalCallback(cb: ApprovalCallback): void {
@@ -943,15 +976,25 @@ export class Agent {
     }
   }
 
+  setActivityCallbacks(cbs: {
+    onStart?: (activity: AgentActivity & { agentId: string }) => void;
+    onLog?: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+  }): void {
+    this.onActivityStartCb = cbs.onStart;
+    this.onActivityLogCb = cbs.onLog;
+    this.onActivityEndCb = cbs.onEnd;
+  }
+
   // ─── Activity Tracking ───────────────────────────────────────────────────────
 
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    this.state.currentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra };
+    const activity = { id, type, label, startedAt: new Date().toISOString(), ...extra };
+    this.state.currentActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
 
-    // Prune old activity logs if too many
     if (this.activityLogs.size > Agent.MAX_ACTIVITY_LOGS_KEPT) {
       const keys = [...this.activityLogs.keys()];
       for (let i = 0; i < keys.length - Agent.MAX_ACTIVITY_LOGS_KEPT; i++) {
@@ -960,23 +1003,48 @@ export class Agent {
       }
     }
 
+    try { this.onActivityStartCb?.({ ...activity, agentId: this.id }); } catch { /* best effort */ }
     this.emitActivityLog(id, 'status', `Started: ${label}`);
     this.notifyStateChange();
     return id;
   }
 
-  private endActivity(activityId?: string): void {
+  private endActivity(activityId?: string, opts?: { success?: boolean }): void {
     const aid = activityId ?? this.state.currentActivity?.id;
     if (aid) {
       this.emitActivityLog(aid, 'status', 'Completed');
+
+      const logs = this.activityLogs.get(aid) ?? [];
+      let totalTokens = 0;
+      let totalTools = 0;
+      for (const l of logs) {
+        if (l.type === 'llm_request' && l.metadata?.tokensUsed) totalTokens += l.metadata.tokensUsed as number;
+        if (l.type === 'tool_start' || l.type === 'tool_end') totalTools++;
+      }
+      totalTools = Math.floor(totalTools / 2);
+
+      try {
+        this.onActivityEndCb?.(aid, {
+          endedAt: new Date().toISOString(),
+          totalTokens,
+          totalTools,
+          success: opts?.success !== false,
+        });
+      } catch { /* best effort */ }
+
+      this.activityLogs.delete(aid);
+      this.activitySeqCounters.delete(aid);
     }
     this.state.currentActivity = undefined;
     this.notifyStateChange();
   }
 
   private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
-    const logs = this.activityLogs.get(activityId);
-    if (!logs) return;
+    let logs = this.activityLogs.get(activityId);
+    if (!logs) {
+      logs = [];
+      this.activityLogs.set(activityId, logs);
+    }
 
     const seq = (this.activitySeqCounters.get(activityId) ?? 0) + 1;
     this.activitySeqCounters.set(activityId, seq);
@@ -994,6 +1062,8 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
+    try { this.onActivityLogCb?.({ activityId, seq, type, content, metadata }); } catch { /* best effort */ }
+
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
       activityId,
@@ -1009,65 +1079,29 @@ export class Agent {
     return this.state.currentActivity;
   }
 
-  /** Return summary of recent in-memory activities (heartbeat, chat, task) */
+  /** Return summary of currently-live in-memory activities */
   getRecentActivities(): Array<{
     id: string;
-    type: 'task' | 'heartbeat' | 'chat';
+    type: AgentActivity['type'];
     label: string;
     taskId?: string;
     heartbeatName?: string;
     startedAt: string;
     logCount: number;
   }> {
-    const result: Array<{
-      id: string;
-      type: 'task' | 'heartbeat' | 'chat';
-      label: string;
-      taskId?: string;
-      heartbeatName?: string;
-      startedAt: string;
-      logCount: number;
-    }> = [];
+    const current = this.state.currentActivity;
+    if (!current) return [];
 
-    for (const [actId, logs] of this.activityLogs.entries()) {
-      // Parse metadata from activity ID: act-<agentId>-<timestamp>-<rand>
-      const parts = actId.split('-');
-      const tsStr = parts.length >= 3 ? parts[parts.length - 2] : undefined;
-      const startedAt = tsStr && /^\d+$/.test(tsStr) ? new Date(Number(tsStr)).toISOString() : new Date().toISOString();
-
-      // Infer type and label from the first "Started:" log entry
-      let type: 'task' | 'heartbeat' | 'chat' = 'chat';
-      let label = actId;
-      let taskId: string | undefined;
-      let heartbeatName: string | undefined;
-
-      const startLog = logs.find(l => l.type === 'status' && l.content.startsWith('Started:'));
-      if (startLog) {
-        label = startLog.content.replace('Started: ', '');
-        if (label.startsWith('Heartbeat:')) {
-          type = 'heartbeat';
-          heartbeatName = label.replace('Heartbeat: ', '').trim();
-        } else if (label.startsWith('A2A:') || label.startsWith('Chat with')) {
-          type = 'chat';
-        } else {
-          type = 'task';
-        }
-      }
-
-      // Check if this is the current activity (has richer metadata)
-      const current = this.state.currentActivity;
-      if (current && current.id === actId) {
-        type = current.type;
-        label = current.label;
-        taskId = current.taskId;
-        heartbeatName = current.heartbeatName;
-      }
-
-      result.push({ id: actId, type, label, taskId, heartbeatName, startedAt, logCount: logs.length });
-    }
-
-    // Newest first
-    return result.reverse();
+    const logs = this.activityLogs.get(current.id);
+    return [{
+      id: current.id,
+      type: current.type,
+      label: current.label,
+      taskId: current.taskId,
+      heartbeatName: current.heartbeatName,
+      startedAt: current.startedAt,
+      logCount: logs?.length ?? 0,
+    }];
   }
 
   /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
@@ -1105,11 +1139,9 @@ export class Agent {
       const report = await this.handleMessage(prompt, undefined, undefined, {
         ephemeral: true,
         maxHistory: 5,
+        scenario: 'heartbeat',
       });
-      this.memory.addLongTermMemory(
-        `daily-report-${new Date().toISOString().split('T')[0]}`,
-        report
-      );
+      this.memory.writeDailyLog(this.id, `## Daily Report\n\n${report}`);
       return report;
     } catch (error) {
       log.error('Failed to generate daily report', { error: String(error) });
@@ -1153,9 +1185,26 @@ export class Agent {
     const isEphemeral = options?.ephemeral ?? false;
     let chatActivityId: string | undefined;
     if (!this.state.currentActivity) {
-      const senderLabel = senderInfo?.name ?? senderId ?? 'user';
-      const activityLabel = isEphemeral && senderId ? `A2A: Chat with ${senderLabel}` : `Chat with ${senderLabel}`;
-      chatActivityId = this.startActivity('chat', activityLabel);
+      let actType: AgentActivity['type'] = 'chat';
+      let actLabel: string;
+      if (isEphemeral && senderId) {
+        actType = 'a2a';
+        actLabel = `A2A: Chat with ${senderInfo?.name ?? senderId}`;
+      } else if (isEphemeral && !senderId) {
+        if (userMessage.includes('DAILY REPORT')) {
+          actType = 'internal';
+          actLabel = 'Daily Report';
+        } else if (userMessage.includes('MEMORY FLUSH')) {
+          actType = 'internal';
+          actLabel = 'Memory Flush';
+        } else {
+          actType = 'internal';
+          actLabel = 'Internal Operation';
+        }
+      } else {
+        actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
+      }
+      chatActivityId = this.startActivity(actType, actLabel);
     }
 
     // Run input guardrails
@@ -1246,6 +1295,7 @@ export class Agent {
         sessionMessages,
         memory: this.memory,
         sessionId,
+        agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
@@ -1279,7 +1329,7 @@ export class Agent {
         success: true,
       });
 
-      const MAX_TOOL_ITERATIONS = 25;
+      const MAX_TOOL_ITERATIONS = 200;
       let toolIterations = 0;
 
       while (
@@ -1429,7 +1479,10 @@ export class Agent {
 
         let updatedMessages: typeof messages;
         if (isEphemeral) {
-          updatedMessages = messages;
+          updatedMessages = this.contextEngine.shrinkEphemeralMessages(
+            messages,
+            this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          );
         } else {
           const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
           const prepared2 = await this.contextEngine.prepareMessages({
@@ -1437,6 +1490,7 @@ export class Agent {
             sessionMessages: updatedSessionMessages,
             memory: this.memory,
             sessionId,
+            agentId: this.id,
             modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
             modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
             toolDefinitions: llmTools,
@@ -1594,6 +1648,7 @@ export class Agent {
       sessionMessages,
       memory: this.memory,
       sessionId: this.currentSessionId,
+      agentId: this.id,
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
@@ -1638,7 +1693,7 @@ export class Agent {
         success: true,
       });
 
-      const MAX_STREAM_TOOL_ITERATIONS = 25;
+      const MAX_STREAM_TOOL_ITERATIONS = 200;
       let streamToolIterations = 0;
 
       while (
@@ -1655,9 +1710,15 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled by user during tool loop', { agentId: this.id });
+          if (lastResponseContent && this.currentSessionId) {
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: lastResponseContent + '\n\n[interrupted by user]',
+            });
+          }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
-          return response.content || '';
+          return lastResponseContent || '';
         }
 
         // Handle max_tokens continuation
@@ -1721,6 +1782,19 @@ export class Agent {
               toolCallId: tr.toolCallId,
             });
           }
+
+          for (let i = 0; i < response.toolCalls!.length; i++) {
+            const tc = response.toolCalls![i]!;
+            this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
+          }
+          const loopCheck = this.loopDetector.check();
+          if (loopCheck.detected && loopCheck.severity === 'critical') {
+            log.warn('Stream loop detector: critical pattern — injecting warning', {
+              agentId: this.id, pattern: loopCheck.pattern,
+            });
+            const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
+            this.memory.appendMessage(this.currentSessionId, { role: 'user', content: warningMsg });
+          }
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
@@ -1729,6 +1803,7 @@ export class Agent {
           sessionMessages: updatedSessionMessages,
           memory: this.memory,
           sessionId: this.currentSessionId,
+          agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
@@ -1737,9 +1812,15 @@ export class Agent {
 
         if (cancelToken?.cancelled) {
           log.info('Stream cancelled before LLM re-call', { agentId: this.id });
+          if (lastResponseContent && this.currentSessionId) {
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: lastResponseContent + '\n\n[interrupted by user]',
+            });
+          }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
           if (this.activeTasks.size === 0) this.setStatus('idle');
-          return response.content || '';
+          return lastResponseContent || '';
         }
 
         const llmStart2 = Date.now();
@@ -1786,10 +1867,16 @@ export class Agent {
 
       return reply;
     } catch (error) {
-      if (streamChatActivityId) this.endActivity(streamChatActivityId);
-      // If abort was triggered by cancel, treat as cancellation not error
-      // Preserve partial content from the last successful response
+      if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.cancelled });
       if (cancelToken?.cancelled) {
+        if (lastResponseContent && this.currentSessionId) {
+          try {
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: lastResponseContent + '\n\n[interrupted by user]',
+            });
+          } catch { /* avoid masking */ }
+        }
         if (this.activeTasks.size === 0) this.setStatus('idle');
         return lastResponseContent || '';
       }
@@ -1929,7 +2016,8 @@ export class Agent {
     this.activeTasks.add(taskId);
     const execGen = (this.activeTaskGen.get(taskId) ?? 0) + 1;
     this.activeTaskGen.set(taskId, execGen);
-    const taskActId = this.startActivity('task', description.slice(0, 100), { taskId });
+    const taskActLabel = this.extractTaskLabel(description, taskId);
+    const taskActId = this.startActivity('task', taskActLabel, { taskId });
     this.notifyStateChange();
     const taskStartMs = Date.now();
     let taskFailed = '';
@@ -2111,6 +2199,7 @@ export class Agent {
         sessionMessages: this.memory.getRecentMessages(sessionId, 200),
         memory: this.memory,
         sessionId,
+        agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
@@ -2118,21 +2207,30 @@ export class Agent {
       const messages = preparedTask.messages;
       log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
 
-      let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-        event => {
-          if (event.type === 'text_delta' && event.text) {
-            textBuffer += event.text;
-            emitDelta(event.text);
-          }
-        },
-        this.getEffectiveProvider(),
-        abortController.signal,
+      let taskLlmStart = Date.now();
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chatStream(
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          event => {
+            if (event.type === 'text_delta' && event.text) {
+              textBuffer += event.text;
+              emitDelta(event.text);
+            }
+          },
+          this.getEffectiveProvider(),
+          abortController.signal,
+        ),
+        'Task execution LLM call',
       );
-      this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+      let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
+      this.updateTokensUsed(taskLlmTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
+      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, durationMs: Date.now() - taskLlmStart, success: true });
 
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
+      while (
+        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
+        response.finishReason === 'max_tokens'
+      ) {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
           flushText();
@@ -2143,42 +2241,50 @@ export class Agent {
 
         flushText();
 
-        this.memory.appendMessage(sessionId, {
-          role: 'assistant',
-          content: response.content,
-          toolCalls: response.toolCalls,
-        });
+        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: '[Continue from where you left off. Do not repeat what you already said.]',
+          });
+        } else {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
 
-        for (const tc of response.toolCalls) {
-          if (cancelToken?.cancelled) break;
-          emit('tool_start', tc.name, { arguments: tc.arguments });
-          const toolStart = Date.now();
-          try {
-            let result = await this.executeTool(tc);
-            result = this.offloadLargeResult(tc.name, result);
-            const isErr = isErrorResult(result);
-            const durationMs = Date.now() - toolStart;
-            emit('tool_end', tc.name, {
-              success: !isErr,
-              durationMs,
-              arguments: tc.arguments,
-              result,
-            });
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
-            this.memory.appendMessage(sessionId, {
-              role: 'tool',
-              content: result,
-              toolCallId: tc.id,
-            });
-          } catch (toolErr) {
-            const durationMs = Date.now() - toolStart;
-            emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
-            this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
-            this.memory.appendMessage(sessionId, {
-              role: 'tool',
-              content: `Error: ${String(toolErr)}`,
-              toolCallId: tc.id,
-            });
+          for (const tc of response.toolCalls!) {
+            if (cancelToken?.cancelled) break;
+            emit('tool_start', tc.name, { arguments: tc.arguments });
+            const toolStart = Date.now();
+            try {
+              let result = await this.executeTool(tc);
+              result = this.offloadLargeResult(tc.name, result);
+              const isErr = isErrorResult(result);
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, {
+                success: !isErr,
+                durationMs,
+                arguments: tc.arguments,
+                result,
+              });
+              this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: result,
+                toolCallId: tc.id,
+              });
+            } catch (toolErr) {
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: `Error: ${String(toolErr)}`,
+                toolCallId: tc.id,
+              });
+            }
           }
         }
 
@@ -2211,28 +2317,35 @@ export class Agent {
           sessionMessages: this.memory.getRecentMessages(sessionId, 200),
           memory: this.memory,
           sessionId,
+          agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
         });
-        response = await this.llmRouter.chatStream(
-          {
-            messages: preparedTaskCont.messages,
-            tools: llmTools.length > 0 ? llmTools : undefined,
-            metadata: this.getLLMMetadata(sessionId),
-            compaction: useCompaction,
-          },
-          event => {
-            if (event.type === 'text_delta' && event.text) {
-              textBuffer += event.text;
-              emitDelta(event.text);
-            }
-          },
-          this.getEffectiveProvider(),
-          abortController.signal,
+        taskLlmStart = Date.now();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            {
+              messages: preparedTaskCont.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+            },
+            event => {
+              if (event.type === 'text_delta' && event.text) {
+                textBuffer += event.text;
+                emitDelta(event.text);
+              }
+            },
+            this.getEffectiveProvider(),
+            abortController.signal,
+          ),
+          'Task execution LLM continuation',
         );
-        this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+        taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(taskLlmTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
+        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, durationMs: Date.now() - taskLlmStart, success: true });
       }
 
       // Final cancel check after the tool loop exits
@@ -2329,7 +2442,8 @@ export class Agent {
     }) => void,
   ): Promise<string> {
     this.setStatus('working');
-    const actId = this.startActivity('chat', userMessage.slice(0, 80));
+    const risLabel = userMessage.replace(/^[\s#*[\]]+/g, '').slice(0, 80) || 'Session response';
+    const actId = this.startActivity('respond_in_session', risLabel);
 
     let seq = 0;
     const emit = (type: string, content: string, metadata?: unknown) => {
@@ -2381,48 +2495,70 @@ export class Agent {
         sessionMessages: this.memory.getRecentMessages(sessionId, 200),
         memory: this.memory,
         sessionId,
+        agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
       });
       let messages = prepared.messages;
 
-      let response = await this.llmRouter.chatStream(
-        { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-        event => {
-          if (event.type === 'text_delta' && event.text) {
-            textBuffer += event.text;
-            emitDelta(event.text);
-          }
-        },
-        this.getEffectiveProvider(),
+      let risLlmStart = Date.now();
+      let response = await this.withNetworkRetry(
+        () => this.llmRouter.chatStream(
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+          event => {
+            if (event.type === 'text_delta' && event.text) {
+              textBuffer += event.text;
+              emitDelta(event.text);
+            }
+          },
+          this.getEffectiveProvider(),
+        ),
+        'RespondInSession LLM call',
       );
-      this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+      let risTokens = response.usage.inputTokens + response.usage.outputTokens;
+      this.updateTokensUsed(risTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
+      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, durationMs: Date.now() - risLlmStart, success: true });
 
       let toolIter = 0;
-      while (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-        if (++toolIter > 25) break;
+      while (
+        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
+        response.finishReason === 'max_tokens'
+      ) {
+        if (++toolIter > 200) break;
         flushText();
 
-        this.memory.appendMessage(sessionId, {
-          role: 'assistant',
-          content: response.content,
-          toolCalls: response.toolCalls,
-        });
+        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: '[Continue from where you left off. Do not repeat what you already said.]',
+          });
+        } else {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
 
-        for (const tc of response.toolCalls) {
-          emit('tool_start', tc.name, { arguments: tc.arguments });
-          const toolStart = Date.now();
-          try {
-            let result = await this.executeTool(tc);
-            result = this.offloadLargeResult(tc.name, result);
-            const isErr = isErrorResult(result);
-            emit('tool_end', tc.name, { success: !isErr, durationMs: Date.now() - toolStart, arguments: tc.arguments, result });
-            this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
-          } catch (toolErr) {
-            emit('tool_end', tc.name, { success: false, durationMs: Date.now() - toolStart, arguments: tc.arguments, error: String(toolErr) });
-            this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+          for (const tc of response.toolCalls!) {
+            emit('tool_start', tc.name, { arguments: tc.arguments });
+            const toolStart = Date.now();
+            try {
+              let result = await this.executeTool(tc);
+              result = this.offloadLargeResult(tc.name, result);
+              const isErr = isErrorResult(result);
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
+              this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } catch (toolErr) {
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            }
           }
         }
 
@@ -2431,22 +2567,29 @@ export class Agent {
           sessionMessages: this.memory.getRecentMessages(sessionId, 200),
           memory: this.memory,
           sessionId,
+          agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
           modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
           toolDefinitions: llmTools,
         });
-        response = await this.llmRouter.chatStream(
-          { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
-          event => {
-            if (event.type === 'text_delta' && event.text) {
-              textBuffer += event.text;
-              emitDelta(event.text);
-            }
-          },
-          this.getEffectiveProvider(),
+        risLlmStart = Date.now();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction },
+            event => {
+              if (event.type === 'text_delta' && event.text) {
+                textBuffer += event.text;
+                emitDelta(event.text);
+              }
+            },
+            this.getEffectiveProvider(),
+          ),
+          'RespondInSession LLM continuation',
         );
-        this.updateTokensUsed(response.usage.inputTokens + response.usage.outputTokens);
+        risTokens = response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(risTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
+        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, durationMs: Date.now() - risLlmStart, success: true });
       }
 
       flushText();
@@ -2573,6 +2716,10 @@ export class Agent {
 
   getContextEngine(): ContextEngine {
     return this.contextEngine;
+  }
+
+  setSemanticSearch(ss: import('./memory/semantic-search.js').SemanticMemorySearch): void {
+    this.semanticSearch = ss;
   }
 
   private getDeliverableContext(query?: string): string | undefined {
@@ -3171,6 +3318,7 @@ export class Agent {
       await this.handleMessage(flushPrompt, undefined, undefined, {
         ephemeral: true,
         maxHistory: 25,
+        scenario: 'heartbeat',
       });
       log.info('Memory flush completed before compaction', { agentId: this.id, sessionId });
     } catch (error) {
@@ -3184,8 +3332,13 @@ export class Agent {
    * 2. Generate daily report (writes to MEMORY.md long-term store)
    * 3. Log the consolidation activity
    */
+  private lastDreamDate = '';
+  private lastDailyReportDate = '';
+
   private async consolidateMemory(): Promise<void> {
     try {
+      const today = new Date().toISOString().slice(0, 10);
+
       // 1. Compact main session if it exists and is large
       if (this.currentSessionId) {
         const session = this.memory.getSession(this.currentSessionId);
@@ -3202,18 +3355,195 @@ export class Agent {
         }
       }
 
-      // 2. Auto-generate daily report once per day
-      const today = new Date().toISOString().slice(0, 10);
-      const existingLongTerm = this.memory.getLongTermMemory();
-      if (!existingLongTerm.includes(`daily-report-${today}`)) {
+      // 2. Auto-generate daily report once per day (writes to daily-logs/, not MEMORY.md)
+      if (this.lastDailyReportDate !== today) {
+        this.lastDailyReportDate = today;
         this.generateDailyReport().catch(e =>
           log.warn('Auto daily report generation failed', { error: String(e) })
         );
       }
 
+      // 3. Memory dream: prune, deduplicate, merge — once per day when entries are large
+      const entries = this.memory.getEntries();
+      if (entries.length >= 50 && this.lastDreamDate !== today) {
+        this.lastDreamDate = today;
+        await this.dreamConsolidateMemory(entries);
+        this.pruneMemoryMd();
+      }
+
       log.debug('Memory consolidation completed', { agentId: this.id });
     } catch (error) {
       log.warn('Memory consolidation failed', { agentId: this.id, error: String(error) });
+    }
+  }
+
+  /**
+   * "Dream" cycle: send memory entries to the LLM to identify duplicates,
+   * outdated items, and merge opportunities. Apply changes programmatically.
+   */
+  private async dreamConsolidateMemory(entries: import('./memory/types.js').MemoryEntry[]): Promise<void> {
+    const MAX_ENTRIES_FOR_LLM = 200;
+    const truncated = entries.length > MAX_ENTRIES_FOR_LLM;
+    const batch = truncated ? entries.slice(-MAX_ENTRIES_FOR_LLM) : entries;
+
+    const entryList = batch.map((e, i) => {
+      const tags = Array.isArray(e.metadata?.tags) ? ` [tags: ${(e.metadata!.tags as string[]).join(', ')}]` : '';
+      return `[${i}] id=${e.id} type=${e.type} date=${e.timestamp?.slice(0, 10) ?? '?'}${tags}\n${e.content.slice(0, 200)}`;
+    }).join('\n\n');
+
+    log.info('Dream cycle starting', {
+      agentId: this.id,
+      totalEntries: entries.length,
+      batchSize: batch.length,
+      truncated,
+    });
+
+    const prompt = [
+      '[MEMORY CONSOLIDATION — Dream Cycle]',
+      '',
+      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and identify:`,
+      '1. **Duplicates**: entries saying essentially the same thing',
+      '2. **Outdated**: entries superseded by newer information',
+      '3. **Merge candidates**: multiple entries about the same topic that can be combined',
+      '',
+      'Respond with ONLY a JSON object (no markdown fences):',
+      '{',
+      '  "remove": ["id1", "id2"],       // IDs to delete (duplicates, outdated)',
+      '  "merge": [                       // groups to merge into single entries',
+      '    { "removeIds": ["id3", "id4"], "mergedContent": "combined text", "tags": ["tag1"] }',
+      '  ]',
+      '}',
+      '',
+      'Rules:',
+      '- Be conservative. Only remove entries you are confident are redundant or outdated.',
+      '- When merging, preserve all unique information from the originals.',
+      '- If nothing needs consolidation, return { "remove": [], "merge": [] }',
+      '- Keep lessons and best-practices entries unless truly duplicated.',
+      '',
+      '## Current Memory Entries',
+      '',
+      entryList,
+    ].join('\n');
+
+    try {
+      const response = await this.handleMessage(prompt, undefined, undefined, {
+        ephemeral: true,
+        maxHistory: 5,
+      });
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log.debug('Dream cycle: no valid JSON in response, skipping');
+        return;
+      }
+
+      const plan = JSON.parse(jsonMatch[0]) as {
+        remove?: string[];
+        merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
+      };
+
+      log.info('Dream cycle plan', {
+        agentId: this.id,
+        toRemove: plan.remove?.length ?? 0,
+        toMerge: plan.merge?.length ?? 0,
+        removeIds: plan.remove?.slice(0, 10),
+        mergeGroups: plan.merge?.map(g => ({ removeIds: g.removeIds, contentPreview: g.mergedContent.slice(0, 80) })).slice(0, 5),
+      });
+
+      let removedCount = 0;
+      let mergedCount = 0;
+
+      if (plan.remove?.length) {
+        removedCount = this.memory.removeEntries(plan.remove);
+        if (this.semanticSearch?.isEnabled()) {
+          for (const id of plan.remove) {
+            this.semanticSearch.deleteMemory(id).catch(() => {});
+          }
+        }
+      }
+
+      if (plan.merge?.length) {
+        for (const group of plan.merge) {
+          if (!group.removeIds?.length || !group.mergedContent) continue;
+          const newEntry = {
+            id: `merged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: new Date().toISOString(),
+            type: 'note' as const,
+            content: group.mergedContent,
+            metadata: { tags: group.tags ?? ['consolidated'], dreamCycle: true },
+          };
+          this.memory.replaceEntries(group.removeIds, newEntry);
+          if (this.semanticSearch?.isEnabled()) {
+            for (const id of group.removeIds) {
+              this.semanticSearch.deleteMemory(id).catch(() => {});
+            }
+            this.semanticSearch.indexMemory(newEntry, this.id).catch(() => {});
+          }
+          mergedCount++;
+        }
+      }
+
+      if (removedCount > 0 || mergedCount > 0) {
+        log.info('Dream cycle completed', {
+          agentId: this.id,
+          entriesBefore: entries.length,
+          removed: removedCount,
+          merged: mergedCount,
+          entriesAfter: this.memory.getEntries().length,
+        });
+      } else {
+        log.debug('Dream cycle: no changes needed', { agentId: this.id });
+      }
+    } catch (error) {
+      log.warn('Dream cycle failed', { agentId: this.id, error: String(error) });
+    }
+  }
+
+  /**
+   * Enforce MEMORY.md hygiene: remove daily-report sections (they belong in
+   * daily-logs/), strip leaked LLM <think> blocks, and enforce section size limits.
+   */
+  private pruneMemoryMd(): void {
+    const content = this.memory.getLongTermMemory();
+    if (!content) return;
+
+    // Pass 1: remove ## daily-report-* sections (they belong in daily-logs/)
+    const lines = content.split('\n');
+    const afterSectionPrune: string[] = [];
+    let inDailyReport = false;
+
+    for (const line of lines) {
+      if (line.startsWith('## daily-report-')) {
+        inDailyReport = true;
+        continue;
+      }
+      if (inDailyReport && line.startsWith('## ')) {
+        inDailyReport = false;
+      }
+      if (!inDailyReport) afterSectionPrune.push(line);
+    }
+
+    // Pass 2: strip <think>...</think> blocks leaked from LLM output
+    const outputLines: string[] = [];
+    let inThinkBlock = false;
+
+    for (const line of afterSectionPrune) {
+      if (line.trim() === '<think>') {
+        inThinkBlock = true;
+        continue;
+      }
+      if (inThinkBlock && line.trim() === '</think>') {
+        inThinkBlock = false;
+        continue;
+      }
+      if (!inThinkBlock) outputLines.push(line);
+    }
+
+    const pruned = outputLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (pruned !== content.trim()) {
+      const memoryMdPath = join(this.dataDir, 'MEMORY.md');
+      writeFileSync(memoryMdPath, pruned + '\n');
+      log.info('Pruned MEMORY.md: removed daily-report sections and LLM artifacts', { agentId: this.id });
     }
   }
 }

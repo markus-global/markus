@@ -2544,7 +2544,26 @@ export class APIServer {
       return;
     }
 
-    // Agent recent activities — list summary of in-memory activities
+    // Agent activities — persistent history from SQLite (session-grouped)
+    if (path.match(/^\/api\/agents\/[^/]+\/activities$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const typeFilter = url.searchParams.get('type') ?? undefined;
+      const limit = parseInt(url.searchParams.get('limit') ?? '30', 10);
+      const before = url.searchParams.get('before') ?? undefined;
+      try {
+        if (this.storage?.activityRepo) {
+          const activities = this.storage.activityRepo.queryActivities(agentId, { type: typeFilter, limit, before });
+          this.json(res, 200, { activities });
+        } else {
+          this.json(res, 200, { activities: [] });
+        }
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to query activities: ${String(err)}` });
+      }
+      return;
+    }
+
+    // Agent recent activities — list summary of in-memory activities (live)
     if (path.match(/^\/api\/agents\/[^/]+\/recent-activities$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
       try {
@@ -2557,7 +2576,7 @@ export class APIServer {
       return;
     }
 
-    // Agent activity logs — fetch in-memory activity log for a given activity ID
+    // Agent activity logs — in-memory for live activities, SQLite for historical
     if (path.match(/^\/api\/agents\/[^/]+\/activity-logs$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
       const activityId = url.searchParams.get('activityId');
@@ -2567,11 +2586,20 @@ export class APIServer {
       }
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const logs = agent.getActivityLogs(activityId);
-        const activity = agent.getCurrentActivity();
-        this.json(res, 200, { logs, activity: activity?.id === activityId ? activity : undefined });
-      } catch {
-        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+        const currentActivity = agent.getCurrentActivity();
+        if (currentActivity?.id === activityId) {
+          const logs = agent.getActivityLogs(activityId);
+          this.json(res, 200, { logs, activity: currentActivity });
+          return;
+        }
+      } catch { /* agent not found, try SQLite */ }
+
+      if (this.storage?.activityRepo) {
+        const activity = this.storage.activityRepo.getActivity(activityId);
+        const logs = this.storage.activityRepo.getActivityLogs(activityId);
+        this.json(res, 200, { logs, activity });
+      } else {
+        this.json(res, 200, { logs: [], activity: undefined });
       }
       return;
     }

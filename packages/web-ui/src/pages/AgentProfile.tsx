@@ -1,22 +1,22 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
 
-type ProfileTab = 'overview' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files' | 'tasks';
+type ProfileTab = 'overview' | 'activity' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
 const TABS: Array<{ key: ProfileTab; label: string; icon: string }> = [
   { key: 'overview', label: 'Overview', icon: '▦' },
+  { key: 'activity', label: 'Activity', icon: '⏱' },
   { key: 'files', label: 'Files', icon: '📄' },
   { key: 'tools', label: 'Tools', icon: '⚒' },
   { key: 'skills', label: 'Skills', icon: '◆' },
   { key: 'memory', label: 'Memory', icon: '🧠' },
   { key: 'heartbeat', label: 'Heartbeat', icon: '♡' },
-  { key: 'tasks', label: 'Tasks', icon: '☑' },
 ];
 
 const STATUS_DOT: Record<string, string> = {
@@ -96,7 +96,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
           </div>
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
-          {TABS.filter(t => !externalInfo || ['overview', 'tasks'].includes(t.key)).map(t => (
+          {TABS.filter(t => !externalInfo || ['overview', 'activity'].includes(t.key)).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === t.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
@@ -107,12 +107,12 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
       </div>
       <div className="p-5">
         {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
+        {tab === 'activity' && <ActivityTab agentId={agentId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} onUpdate={reload} />}
         {tab === 'memory' && <MemoryTab agentId={agentId} />}
         {tab === 'heartbeat' && <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />}
-        {tab === 'tasks' && <TasksTab agentId={agentId} activeTaskIds={agent.state.activeTaskIds ?? []} />}
       </div>
     </div>
   );
@@ -1349,60 +1349,6 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   );
 }
 
-// ─── Tasks Tab ───────────────────────────────────────────────────────────────
-
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-const TASK_STATUS_DOT: Record<string, string> = { pending: 'bg-gray-400', assigned: 'bg-blue-400', in_progress: 'bg-brand-400 animate-pulse', blocked: 'bg-amber-400', completed: 'bg-green-400', failed: 'bg-red-400', cancelled: 'bg-gray-600' };
-
-function TasksTab({ agentId, activeTaskIds }: { agentId: string; activeTaskIds: string[] }) {
-  const [tasks, setTasks] = useState<TaskInfo[]>([]);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  const loadTasks = useCallback(() => {
-    api.tasks.list({ assignedAgentId: agentId })
-      .then(d => { setTasks(d.tasks); })
-      .catch(() => {});
-  }, [agentId]);
-
-  useEffect(() => { loadTasks(); const unsub = wsClient.on('task:update', () => loadTasks()); return unsub; }, [loadTasks]);
-
-  const sorted = [...tasks].sort((a, b) => {
-    const rank = (s: string) => s === 'in_progress' ? 0 : TERMINAL.has(s) ? 2 : 1;
-    return rank(a.status) - rank(b.status);
-  });
-
-  return (
-    <div className="space-y-4">
-      <Card title="Tasks" action={<span className="text-xs text-fg-tertiary">{sorted.length} total</span>}>
-        {sorted.length === 0 ? <Empty text="No tasks assigned" /> : (
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {sorted.map(task => {
-              const isExpanded = expandedId === task.id;
-              const isExecuting = activeTaskIds.includes(task.id) || task.status === 'in_progress';
-              const hasLogs = task.status === 'in_progress' || task.status === 'failed' || task.status === 'completed';
-              return (
-                <div key={task.id}>
-                  <button onClick={() => hasLogs ? setExpandedId(isExpanded ? null : task.id) : undefined}
-                    className={`w-full flex items-center gap-3 px-5 py-3 text-left transition-colors ${hasLogs ? 'hover:bg-surface-elevated/40 cursor-pointer' : 'cursor-default'}`}>
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_STATUS_DOT[task.status] ?? 'bg-gray-500'}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className={`text-xs font-medium truncate ${TERMINAL.has(task.status) ? 'text-fg-tertiary' : 'text-fg-primary'}`}>{task.title}</div>
-                      <div className="text-[10px] text-fg-tertiary mt-0.5 capitalize">{task.status.replace(/_/g, ' ')}</div>
-                    </div>
-                    {isExecuting && <span className="w-3 h-3 border-2 border-brand-400 border-t-transparent rounded-full animate-spin shrink-0" />}
-                    {hasLogs && <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>}
-                  </button>
-                  {isExpanded && <div className="border-t border-border-default/60 bg-surface-primary/40"><TaskLog taskId={task.id} isLive={isExecuting} /></div>}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-    </div>
-  );
-}
-
 // ─── Task Log ────────────────────────────────────────────────────────────────
 
 function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
@@ -1524,3 +1470,139 @@ function fmtBytesLocal(bytes: number): string {
   const val = bytes / Math.pow(1024, i);
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
+
+// ─── Activity Tab ─────────────────────────────────────────────────────────────
+
+const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'task', label: 'Task' },
+  { key: 'chat', label: 'Chat' },
+  { key: 'heartbeat', label: 'Heartbeat' },
+  { key: 'a2a', label: 'A2A' },
+  { key: 'internal', label: 'Internal' },
+  { key: 'respond_in_session', label: 'Session' },
+];
+
+const ACTIVITY_ICONS: Record<string, string> = {
+  task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
+};
+
+function ActivityTab({ agentId }: { agentId: string }) {
+  const [activities, setActivities] = useState<ActivityRecord[]>([]);
+  const [filter, setFilter] = useState<AgentActivityType | 'all'>('all');
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+
+  const loadActivities = useCallback(async (before?: string) => {
+    setLoading(true);
+    try {
+      const typeParam = filter === 'all' ? undefined : filter;
+      const resp = await api.agents.getActivities(agentId, { type: typeParam, limit: 30, before });
+      if (before) {
+        setActivities(prev => [...prev, ...resp.activities]);
+      } else {
+        setActivities(resp.activities);
+      }
+      setHasMore(resp.activities.length >= 30);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [agentId, filter]);
+
+  useEffect(() => {
+    setActivities([]);
+    setExpandedId(null);
+    loadActivities();
+  }, [loadActivities]);
+
+  const loadMore = () => {
+    if (activities.length > 0) {
+      const last = activities[activities.length - 1]!;
+      loadActivities(last.startedAt);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-1.5 flex-wrap">
+        {ACTIVITY_FILTERS.map(f => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+              filter === f.key
+                ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {loading && activities.length === 0 && (
+        <div className="text-xs text-fg-tertiary text-center py-8">Loading activities...</div>
+      )}
+
+      {!loading && activities.length === 0 && (
+        <div className="text-xs text-fg-tertiary text-center py-8">No activity history found.</div>
+      )}
+
+      <div className="space-y-1.5">
+        {activities.map(act => (
+          <div key={act.id} className="bg-surface-2 rounded-lg border border-border-subtle">
+            <button
+              className="w-full px-3 py-2.5 flex items-start gap-2.5 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
+              onClick={() => setExpandedId(expandedId === act.id ? null : act.id)}
+            >
+              <span className="text-sm mt-0.5">{expandedId === act.id ? '▾' : '▸'}</span>
+              <span className="text-sm">{ACTIVITY_ICONS[act.type] ?? '●'}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-fg-primary truncate">{act.label}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                    act.success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
+                  }`}>
+                    {act.success ? '✓' : '✗'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2">
+                  <span>{new Date(act.startedAt).toLocaleString()}</span>
+                  {act.endedAt && (
+                    <span>→ {new Date(act.endedAt).toLocaleTimeString()}</span>
+                  )}
+                  {act.totalTokens > 0 && <span>{fmtNum(act.totalTokens)} tokens</span>}
+                  {act.totalTools > 0 && <span>{act.totalTools} tools</span>}
+                </div>
+              </div>
+              <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{act.type}</span>
+            </button>
+
+            {expandedId === act.id && (
+              <div className="border-t border-border-subtle">
+                {act.type === 'task' && act.taskId ? (
+                  <TaskLog taskId={act.taskId} isLive={!act.endedAt} />
+                ) : (
+                  <ActivityLog agentId={agentId} activityId={act.id} />
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {hasMore && activities.length > 0 && (
+        <div className="text-center">
+          <button
+            onClick={loadMore}
+            disabled={loading}
+            className="text-xs text-brand-400 hover:text-brand-300 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Loading...' : 'Load Earlier...'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+

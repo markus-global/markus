@@ -317,7 +317,15 @@ export class EnhancedMemorySystem implements IMemoryStore {
   search(query: string): MemoryEntry[] {
     return this.baseStore.search(query);
   }
-  
+
+  removeEntries(ids: string[]): number {
+    return this.baseStore.removeEntries(ids);
+  }
+
+  replaceEntries(removedIds: string[], newEntry: MemoryEntry): void {
+    this.baseStore.replaceEntries(removedIds, newEntry);
+  }
+
   getSession(sessionId: string): ConversationSession | undefined {
     return this.baseStore.getSession(sessionId);
   }

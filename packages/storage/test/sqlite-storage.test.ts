@@ -13,7 +13,6 @@ import {
   SqliteTeamRepo,
   SqliteChatSessionRepo,
   SqliteChannelMessageRepo,
-  SqliteMemoryRepo,
   SqliteMessageRepo,
   SqliteMarketplaceTemplateRepo,
   SqliteMarketplaceSkillRepo,

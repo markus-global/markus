@@ -265,6 +265,11 @@ export class AgentManager {
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
   ) => void;
+  private activityCallbacks?: {
+    onStart: (activity: AgentActivity & { agentId: string }) => void;
+    onLog: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+  };
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
   private templateRegistry?: TemplateRegistry;
@@ -766,6 +771,7 @@ export class AgentManager {
 
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
+      agent.setSemanticSearch(this.semanticSearch);
     }
 
     // Register agent on A2A bus for structured message delivery
@@ -1024,6 +1030,9 @@ export class AgentManager {
     }
     if (this.stateChangeHandler) {
       agent.setStateChangeCallback(this.stateChangeHandler);
+    }
+    if (this.activityCallbacks) {
+      agent.setActivityCallbacks(this.activityCallbacks);
     }
 
     if (config.teamId) {
@@ -1312,6 +1321,7 @@ export class AgentManager {
 
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
+      agent.setSemanticSearch(this.semanticSearch);
     }
 
     this.a2aBus.registerAgent(id, async envelope => {
@@ -1515,6 +1525,9 @@ export class AgentManager {
     if (this.stateChangeHandler) {
       agent.setStateChangeCallback(this.stateChangeHandler);
     }
+    if (this.activityCallbacks) {
+      agent.setActivityCallbacks(this.activityCallbacks);
+    }
 
     if (config.teamId) {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
@@ -1715,6 +1728,17 @@ export class AgentManager {
     this.stateChangeHandler = handler;
     for (const [, agent] of this.agents) {
       agent.setStateChangeCallback(handler);
+    }
+  }
+
+  setActivityCallbacks(cbs: {
+    onStart: (activity: AgentActivity & { agentId: string }) => void;
+    onLog: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+  }): void {
+    this.activityCallbacks = cbs;
+    for (const [, agent] of this.agents) {
+      agent.setActivityCallbacks(cbs);
     }
   }
 

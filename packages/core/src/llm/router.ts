@@ -351,12 +351,22 @@ export class LLMRouter {
     return router;
   }
 
+  private resolveMaxTokens(request: LLMRequest, providerName: string): LLMRequest {
+    if (request.maxTokens) return request;
+    const catalogMax = this.getModelMaxOutput(providerName);
+    if (catalogMax && catalogMax > 4096) {
+      return { ...request, maxTokens: catalogMax };
+    }
+    return request;
+  }
+
   async chat(request: LLMRequest, providerName?: string): Promise<LLMResponse> {
     const primary = this.selectProvider(request, providerName);
     const provider = this.providers.get(primary);
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
+    request = this.resolveMaxTokens(request, primary);
 
     log.debug(`Sending request to ${primary}`, { model: provider.model, messageCount: request.messages.length });
 
@@ -405,6 +415,7 @@ export class LLMRouter {
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
+    request = this.resolveMaxTokens(request, primary);
 
     const span = startSpan('llm.chatStream', { provider: primary, model: provider.model });
     const startTime = Date.now();

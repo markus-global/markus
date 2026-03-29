@@ -346,21 +346,32 @@ export class ContextEngine {
     }
 
     if (opts.assignedTasks && opts.assignedTasks.length > 0) {
+      const priorityOrder = ['critical', 'high', 'medium', 'low'];
+      const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
+        (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
+
       const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
       const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-      const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+      const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
       const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+
+      const MY_TASK_LIMIT = 15;
+      const TEAM_TASK_LIMIT = 10;
 
       parts.push('\n## Task Board');
 
       parts.push('### My Tasks (assigned to you):');
       if (myActive.length > 0) {
-        for (const t of myActive) {
+        const shown = myActive.slice(0, MY_TASK_LIMIT);
+        for (const t of shown) {
           parts.push(
             `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
           );
-          if (t.description) parts.push(`  ${t.description.slice(0, 200)}`);
+          if (t.description) parts.push(`  ${t.description.slice(0, 150)}`);
+        }
+        if (myActive.length > MY_TASK_LIMIT) {
+          parts.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
         }
       } else {
         parts.push('No active tasks assigned to you.');
@@ -370,15 +381,19 @@ export class ContextEngine {
       }
 
       if (otherTasks.length > 0) {
-        const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status));
+        const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
         const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
         if (otherActive.length > 0) {
           parts.push('### Team Tasks (assigned to others):');
-          for (const t of otherActive) {
+          const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
+          for (const t of shown) {
             const owner = t.assignedAgentName ?? t.assignedAgentId ?? 'unassigned';
             parts.push(
               `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, assignee: ${owner}, priority: ${t.priority})`
             );
+          }
+          if (otherActive.length > TEAM_TASK_LIMIT) {
+            parts.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
           }
         }
         if (otherDone.length > 0) {
@@ -658,6 +673,7 @@ export class ContextEngine {
     sessionMessages: LLMMessage[];
     memory: IMemoryStore;
     sessionId: string;
+    agentId?: string;
     modelContextWindow?: number;
     modelMaxOutput?: number;
     toolDefinitions?: Array<{
@@ -667,8 +683,8 @@ export class ContextEngine {
     }>;
   }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
-    const rawMaxOutput = opts.modelMaxOutput ?? 4096;
-    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.1));
+    const rawMaxOutput = opts.modelMaxOutput ?? 16384;
+    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions
@@ -691,7 +707,7 @@ export class ContextEngine {
 
     // ── Stage 1: Count-based summarization (too many messages) ──────────
     if (messages.length > 60) {
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 40);
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 40, opts.agentId);
     }
 
     // ── Stage 2: Per-message size cap (shrink oversized individual messages) ─
@@ -725,7 +741,7 @@ export class ContextEngine {
         messageCount: messages.length,
         keepLast: keepCount,
       });
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount);
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount, opts.agentId);
       messages = this.sanitizeMessageSequence(messages);
       totalTokens = this.sumTokens(messages);
     }
@@ -737,7 +753,7 @@ export class ContextEngine {
         messageBudget,
         messageCount: messages.length,
       });
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, Math.max(6, Math.floor(messages.length * 0.3)));
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, Math.max(6, Math.floor(messages.length * 0.3)), opts.agentId);
       messages = this.sanitizeMessageSequence(messages);
       // Re-shrink after summarization in case the summary itself is large
       messages = this.shrinkOversizedMessages(messages, perMessageCap);
@@ -803,6 +819,7 @@ export class ContextEngine {
     sessionId: string,
     messages: LLMMessage[],
     keepLast: number,
+    agentId?: string,
   ): Promise<LLMMessage[]> {
     if (messages.length <= keepLast) return messages;
 
@@ -834,7 +851,7 @@ export class ContextEngine {
             role: 'user',
             content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
           };
-          memory.writeDailyLog(sessionId, summary);
+          memory.writeDailyLog(agentId ?? sessionId, summary);
           return [...protectedPrefix, summaryMessage, ...retained];
         }
       } catch (err) {
@@ -912,6 +929,29 @@ export class ContextEngine {
     }
 
     return parts.length > 0 ? parts.join('\n') : null;
+  }
+
+  /**
+   * Lightweight compression for ephemeral sessions that skip the full prepareMessages pipeline.
+   * Caps each message to a reasonable size relative to the context window and drops
+   * the oldest non-system messages when total estimate exceeds 80% of the window.
+   */
+  shrinkEphemeralMessages(messages: LLMMessage[], contextWindow: number): LLMMessage[] {
+    const maxPerMsg = Math.max(3000, Math.floor(contextWindow / 20));
+    let result = this.shrinkOversizedMessages(messages, maxPerMsg);
+
+    const totalChars = result.reduce((sum, m) => sum + getTextContent(m.content).length, 0);
+    const estimatedTokens = totalChars / 3.5;
+    const budget = contextWindow * 0.7;
+    if (estimatedTokens > budget) {
+      const system = result.filter(m => m.role === 'system');
+      const nonSystem = result.filter(m => m.role !== 'system');
+      while (nonSystem.length > 2 && (nonSystem.reduce((s, m) => s + getTextContent(m.content).length, 0) / 3.5) > budget) {
+        nonSystem.shift();
+      }
+      result = [...system, ...nonSystem];
+    }
+    return result;
   }
 
   /**

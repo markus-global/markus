@@ -31,14 +31,27 @@ export interface AgentMetricsSnapshot {
   uptime: number;
 }
 
-interface AuditEvent {
-  type: string;
-  action: string;
-  tokensUsed?: number;
-  durationMs?: number;
-  success: boolean;
-  detail?: string;
-  timestamp: number;
+interface AuditCounters {
+  totalTokens: number;
+  requestCount: number;
+  toolCalls: number;
+  errorCount: number;
+  totalEvents: number;
+  totalLlmDurationMs: number;
+  lastSuccessTimestamp: number;
+  tokensToday: number;
+  requestsToday: number;
+  toolCallsToday: number;
+  todayCutoffDate: string;
+}
+
+function freshCounters(): AuditCounters {
+  return {
+    totalTokens: 0, requestCount: 0, toolCalls: 0, errorCount: 0,
+    totalEvents: 0, totalLlmDurationMs: 0, lastSuccessTimestamp: 0,
+    tokensToday: 0, requestsToday: 0, toolCallsToday: 0,
+    todayCutoffDate: new Date().toISOString().slice(0, 10),
+  };
 }
 
 interface TaskEvent {
@@ -58,10 +71,11 @@ interface HeartbeatEvent {
  * Wired in via Agent's auditCallback and event bus.
  */
 export class AgentMetricsCollector {
-  private auditEvents: AuditEvent[] = [];
+  private counters: AuditCounters = freshCounters();
   private taskEvents: TaskEvent[] = [];
   private heartbeatEvents: HeartbeatEvent[] = [];
   private startTime = Date.now();
+  private lastErrorDetail: { message: string; timestamp: number } | null = null;
   private static readonly MAX_EVENTS = 10_000;
   private dataDir?: string;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,6 +88,10 @@ export class AgentMetricsCollector {
     if (dataDir) this.loadFromDisk();
   }
 
+  /**
+   * Lightweight counter update — no longer stores full event history.
+   * Full audit trail is persisted to SQLite via activity callbacks.
+   */
   recordAudit(event: {
     type: string;
     action: string;
@@ -82,19 +100,40 @@ export class AgentMetricsCollector {
     success: boolean;
     detail?: string;
   }): void {
-    this.auditEvents.push({ ...event, timestamp: Date.now() });
-    this.trimEvents(this.auditEvents);
+    const c = this.counters;
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== c.todayCutoffDate) {
+      c.tokensToday = 0;
+      c.requestsToday = 0;
+      c.toolCallsToday = 0;
+      c.todayCutoffDate = today;
+    }
+
+    c.totalEvents++;
+    if (!event.success) c.errorCount++;
+    if (event.success) c.lastSuccessTimestamp = Date.now();
+
+    if (event.type === 'llm_request') {
+      const tokens = event.tokensUsed ?? 0;
+      c.totalTokens += tokens;
+      c.requestCount++;
+      c.tokensToday += tokens;
+      c.requestsToday++;
+      if (event.durationMs) c.totalLlmDurationMs += event.durationMs;
+    } else if (event.type === 'tool_call') {
+      c.toolCalls++;
+      c.toolCallsToday++;
+    }
+
+    if (event.type === 'error' && event.detail) {
+      this.lastErrorDetail = { message: event.detail, timestamp: Date.now() };
+    }
+
     this.scheduleSave();
   }
 
   getLastError(): { message: string; timestamp: number } | null {
-    for (let i = this.auditEvents.length - 1; i >= 0; i--) {
-      const e = this.auditEvents[i]!;
-      if (e.type === 'error' && e.detail) {
-        return { message: e.detail, timestamp: e.timestamp };
-      }
-    }
-    return null;
+    return this.lastErrorDetail;
   }
 
   recordTaskCompletion(
@@ -115,16 +154,16 @@ export class AgentMetricsCollector {
 
   getMetrics(period: '1h' | '24h' | '7d' = '24h'): AgentMetricsSnapshot {
     const cutoff = this.periodCutoff(period);
+    const c = this.counters;
 
-    const audits = this.auditEvents.filter(e => e.timestamp >= cutoff);
     const tasks = this.taskEvents.filter(e => e.timestamp >= cutoff);
     const heartbeats = this.heartbeatEvents.filter(e => e.timestamp >= cutoff);
 
-    const tokenUsage = this.computeTokenUsage(audits);
+    const tokenUsage = this.computeTokenUsageFromCounters(c);
     const taskMetrics = this.computeTaskMetrics(tasks);
     const heartbeatSuccessRate = this.computeHeartbeatRate(heartbeats);
-    const errorRate = this.computeErrorRate(audits);
-    const averageResponseTimeMs = this.computeAverageResponseTime(audits);
+    const errorRate = c.totalEvents > 0 ? c.errorCount / c.totalEvents : 0;
+    const averageResponseTimeMs = c.requestCount > 0 ? Math.round(c.totalLlmDurationMs / c.requestCount) : 0;
     const healthScore = this.computeHealthScore(heartbeatSuccessRate, taskMetrics, errorRate);
 
     return {
@@ -137,7 +176,7 @@ export class AgentMetricsCollector {
       heartbeatSuccessRate,
       errorRate,
       averageResponseTimeMs,
-      totalInteractions: audits.filter(e => e.type === 'llm_request').length,
+      totalInteractions: c.requestCount,
       uptime: Date.now() - this.startTime,
     };
   }
@@ -157,45 +196,20 @@ export class AgentMetricsCollector {
     toolCallsToday: number;
     estimatedCost: number;
   } {
-    const todayCutoff = Date.now() - 86400_000;
-
-    let totalTokens = 0;
-    let requestCount = 0;
-    let toolCalls = 0;
-    let tokensToday = 0;
-    let requestsToday = 0;
-    let toolCallsToday = 0;
-
-    for (const e of this.auditEvents) {
-      if (e.type === 'llm_request') {
-        const tokens = e.tokensUsed ?? 0;
-        totalTokens += tokens;
-        requestCount++;
-        if (e.timestamp >= todayCutoff) {
-          tokensToday += tokens;
-          requestsToday++;
-        }
-      } else if (e.type === 'tool_call') {
-        toolCalls++;
-        if (e.timestamp >= todayCutoff) {
-          toolCallsToday++;
-        }
-      }
-    }
-
-    const input = Math.round(totalTokens * 0.7);
-    const output = totalTokens - input;
+    const c = this.counters;
+    const input = Math.round(c.totalTokens * 0.7);
+    const output = c.totalTokens - input;
     const estimatedCost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
 
     return {
-      totalTokens,
+      totalTokens: c.totalTokens,
       promptTokens: input,
       completionTokens: output,
-      requestCount,
-      toolCalls,
-      tokensToday,
-      requestsToday,
-      toolCallsToday,
+      requestCount: c.requestCount,
+      toolCalls: c.toolCalls,
+      tokensToday: c.tokensToday,
+      requestsToday: c.requestsToday,
+      toolCallsToday: c.toolCallsToday,
       estimatedCost: Math.round(estimatedCost * 10000) / 10000,
     };
   }
@@ -221,8 +235,7 @@ export class AgentMetricsCollector {
     const errorComponent = (1 - errorRate) * 20;
 
     const now = Date.now();
-    const lastSuccessfulAudit = [...this.auditEvents].reverse().find(e => e.success);
-    const recencyMs = lastSuccessfulAudit ? now - lastSuccessfulAudit.timestamp : Infinity;
+    const recencyMs = this.counters.lastSuccessTimestamp > 0 ? now - this.counters.lastSuccessTimestamp : Infinity;
     const recencyComponent = recencyMs < 3600_000 ? 10 : recencyMs < 86400_000 ? 5 : 0;
 
     return Math.round(
@@ -230,17 +243,10 @@ export class AgentMetricsCollector {
     );
   }
 
-  private computeTokenUsage(audits: AuditEvent[]): TokenUsage {
-    let totalTokens = 0;
-    for (const e of audits) {
-      if (e.tokensUsed) totalTokens += e.tokensUsed;
-    }
-    // Rough split: assume ~70% input, 30% output for typical conversation
-    const input = Math.round(totalTokens * 0.7);
-    const output = totalTokens - input;
-    // Rough cost estimate at ~$3/1M input, ~$15/1M output (Anthropic Claude 3.5 Sonnet ballpark)
+  private computeTokenUsageFromCounters(c: AuditCounters): TokenUsage {
+    const input = Math.round(c.totalTokens * 0.7);
+    const output = c.totalTokens - input;
     const cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
-
     return { input, output, cost: Math.round(cost * 10000) / 10000 };
   }
 
@@ -268,19 +274,6 @@ export class AgentMetricsCollector {
     if (heartbeats.length === 0) return 1;
     const successes = heartbeats.filter(h => h.success).length;
     return successes / heartbeats.length;
-  }
-
-  private computeErrorRate(audits: AuditEvent[]): number {
-    if (audits.length === 0) return 0;
-    const errors = audits.filter(e => !e.success).length;
-    return errors / audits.length;
-  }
-
-  private computeAverageResponseTime(audits: AuditEvent[]): number {
-    const llmRequests = audits.filter(e => e.type === 'llm_request' && e.durationMs);
-    if (llmRequests.length === 0) return 0;
-    const total = llmRequests.reduce((sum, e) => sum + (e.durationMs ?? 0), 0);
-    return Math.round(total / llmRequests.length);
   }
 
   private periodCutoff(period: '1h' | '24h' | '7d'): number {
@@ -324,9 +317,10 @@ export class AgentMetricsCollector {
       const file = join(this.dataDir, 'metrics.json');
       const data = {
         startTime: this.startTime,
-        auditEvents: this.auditEvents.slice(-2000),
+        counters: this.counters,
         taskEvents: this.taskEvents.slice(-2000),
         heartbeatEvents: this.heartbeatEvents.slice(-2000),
+        lastErrorDetail: this.lastErrorDetail,
       };
       writeFileSync(file, JSON.stringify(data));
     } catch {
@@ -341,7 +335,8 @@ export class AgentMetricsCollector {
       if (!existsSync(file)) return;
       const raw = JSON.parse(readFileSync(file, 'utf-8'));
       if (raw.startTime) this.startTime = raw.startTime;
-      if (Array.isArray(raw.auditEvents)) this.auditEvents = raw.auditEvents;
+      if (raw.counters) this.counters = { ...freshCounters(), ...raw.counters };
+      if (raw.lastErrorDetail) this.lastErrorDetail = raw.lastErrorDetail;
       if (Array.isArray(raw.taskEvents)) this.taskEvents = raw.taskEvents;
       if (Array.isArray(raw.heartbeatEvents)) this.heartbeatEvents = raw.heartbeatEvents;
     } catch {

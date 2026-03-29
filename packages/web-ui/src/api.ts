@@ -285,9 +285,11 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
+
 export interface AgentActivityInfo {
   id: string;
-  type: 'task' | 'heartbeat' | 'chat';
+  type: AgentActivityType;
   label: string;
   taskId?: string;
   heartbeatName?: string;
@@ -296,7 +298,7 @@ export interface AgentActivityInfo {
 
 export interface AgentActivityLogEntry {
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request';
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
@@ -304,12 +306,26 @@ export interface AgentActivityLogEntry {
 
 export interface ActivitySummary {
   id: string;
-  type: 'task' | 'heartbeat' | 'chat';
+  type: AgentActivityType;
   label: string;
   taskId?: string;
   heartbeatName?: string;
   startedAt: string;
   logCount: number;
+}
+
+export interface ActivityRecord {
+  id: string;
+  agentId: string;
+  type: AgentActivityType;
+  label: string;
+  taskId?: string | null;
+  startedAt: string;
+  endedAt?: string | null;
+  totalTokens: number;
+  totalTools: number;
+  success: boolean;
+  createdAt: string;
 }
 
 export interface AgentInfo {
@@ -664,6 +680,14 @@ export const api = {
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
+    getActivities: (id: string, opts?: { type?: string; limit?: number; before?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.type) params.set('type', opts.type);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.before) params.set('before', opts.before);
+      const qs = params.toString();
+      return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
+    },
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null): Promise<{ content: string; sessionId?: string }> => {

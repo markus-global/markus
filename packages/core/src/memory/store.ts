@@ -54,6 +54,21 @@ export class MemoryStore implements IMemoryStore {
     return this.entries.filter((e) => e.content.toLowerCase().includes(lower));
   }
 
+  removeEntries(ids: string[]): number {
+    const idSet = new Set(ids);
+    const before = this.entries.length;
+    this.entries = this.entries.filter(e => !idSet.has(e.id));
+    const removed = before - this.entries.length;
+    if (removed > 0) this.saveToDisk();
+    return removed;
+  }
+
+  replaceEntries(removedIds: string[], newEntry: MemoryEntry): void {
+    this.removeEntries(removedIds);
+    this.entries.push(newEntry);
+    this.saveToDisk();
+  }
+
   getSession(sessionId: string): ConversationSession | undefined {
     return this.sessions.get(sessionId);
   }

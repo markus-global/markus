@@ -401,6 +401,32 @@ CREATE TABLE IF NOT EXISTS gateway_message_queue (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_gw_msg_target ON gateway_message_queue(target_agent_id, delivered);
+
+CREATE TABLE IF NOT EXISTS agent_activities (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  task_id TEXT,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  total_tokens INTEGER DEFAULT 0,
+  total_tools INTEGER DEFAULT 0,
+  success INTEGER DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_activities_agent ON agent_activities(agent_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_activity_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  activity_id TEXT NOT NULL REFERENCES agent_activities(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_activity ON agent_activity_logs(activity_id, seq);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -1346,44 +1372,6 @@ export class SqliteMessageRepo {
     return this.db
       .prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC')
       .all(threadId);
-  }
-}
-
-export class SqliteMemoryRepo {
-  constructor(private db: Database.Database) {}
-
-  create(data: { id: string; agentId: string; type: string; content: string; metadata?: unknown }) {
-    this.db
-      .prepare(
-        'INSERT INTO memories (id, agent_id, type, content, metadata, created_at) VALUES (?,?,?,?,?,?)'
-      )
-      .run(data.id, data.agentId, data.type, data.content, toJson(data.metadata ?? {}), now());
-    return this.db.prepare('SELECT * FROM memories WHERE id = ?').get(data.id);
-  }
-
-  findByAgent(agentId: string, type?: string, limit = 20) {
-    if (type) {
-      return this.db
-        .prepare(
-          'SELECT * FROM memories WHERE agent_id = ? AND type = ? ORDER BY created_at DESC LIMIT ?'
-        )
-        .all(agentId, type, limit);
-    }
-    return this.db
-      .prepare('SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(agentId, limit);
-  }
-
-  search(agentId: string, query: string, limit = 10) {
-    return this.db
-      .prepare(
-        'SELECT * FROM memories WHERE agent_id = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?'
-      )
-      .all(agentId, `%${query}%`, limit);
-  }
-
-  deleteByAgent(agentId: string) {
-    this.db.prepare('DELETE FROM memories WHERE agent_id = ?').run(agentId);
   }
 }
 
@@ -2667,6 +2655,143 @@ export class SqliteDeliverableRepo {
       accessCount: (r['access_count'] as number) ?? 0,
       createdAt: r['created_at'] ? new Date(r['created_at'] as string) : new Date(),
       updatedAt: r['updated_at'] ? new Date(r['updated_at'] as string) : new Date(),
+    };
+  }
+}
+
+// ─── Activity Repository ──────────────────────────────────────────────────────
+
+export interface ActivityRecord {
+  id: string;
+  agentId: string;
+  type: string;
+  label: string;
+  taskId?: string | null;
+  startedAt: string;
+  endedAt?: string | null;
+  totalTokens: number;
+  totalTools: number;
+  success: boolean;
+  createdAt: string;
+}
+
+export interface ActivityLogRecord {
+  id: number;
+  activityId: string;
+  seq: number;
+  type: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export class SqliteActivityRepo {
+  constructor(private db: Database.Database) {}
+
+  insertActivity(data: {
+    id: string;
+    agentId: string;
+    type: string;
+    label: string;
+    taskId?: string;
+    startedAt: string;
+  }): void {
+    this.db
+      .prepare(
+        'INSERT INTO agent_activities (id, agent_id, type, label, task_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(data.id, data.agentId, data.type, data.label, data.taskId ?? null, data.startedAt, now());
+  }
+
+  updateActivity(
+    activityId: string,
+    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean }
+  ): void {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (update.endedAt !== undefined) { sets.push('ended_at = ?'); vals.push(update.endedAt); }
+    if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
+    if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
+    if (update.success !== undefined) { sets.push('success = ?'); vals.push(update.success ? 1 : 0); }
+    if (sets.length === 0) return;
+    vals.push(activityId);
+    this.db.prepare(`UPDATE agent_activities SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  insertActivityLog(data: {
+    activityId: string;
+    seq: number;
+    type: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+  }): void {
+    this.db
+      .prepare(
+        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run(data.activityId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), now());
+  }
+
+  queryActivities(
+    agentId: string,
+    opts?: { type?: string; limit?: number; before?: string }
+  ): ActivityRecord[] {
+    const conditions = ['agent_id = ?'];
+    const params: unknown[] = [agentId];
+
+    if (opts?.type) {
+      const types = opts.type.split(',').map(t => t.trim()).filter(Boolean);
+      if (types.length > 0) {
+        conditions.push(`type IN (${types.map(() => '?').join(',')})`);
+        params.push(...types);
+      }
+    }
+    if (opts?.before) {
+      conditions.push('started_at < ?');
+      params.push(opts.before);
+    }
+
+    const limit = opts?.limit ?? 30;
+    params.push(limit);
+
+    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map(r => this.mapActivity(r));
+  }
+
+  getActivityLogs(activityId: string): ActivityLogRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM agent_activity_logs WHERE activity_id = ? ORDER BY seq ASC')
+      .all(activityId) as Record<string, unknown>[];
+    return rows.map(r => ({
+      id: r['id'] as number,
+      activityId: r['activity_id'] as string,
+      seq: r['seq'] as number,
+      type: r['type'] as string,
+      content: r['content'] as string,
+      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
+      createdAt: r['created_at'] as string,
+    }));
+  }
+
+  getActivity(activityId: string): ActivityRecord | null {
+    const r = this.db.prepare('SELECT * FROM agent_activities WHERE id = ?').get(activityId) as Record<string, unknown> | undefined;
+    return r ? this.mapActivity(r) : null;
+  }
+
+  private mapActivity(r: Record<string, unknown>): ActivityRecord {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      type: r['type'] as string,
+      label: r['label'] as string,
+      taskId: r['task_id'] as string | null,
+      startedAt: r['started_at'] as string,
+      endedAt: r['ended_at'] as string | null,
+      totalTokens: (r['total_tokens'] as number) ?? 0,
+      totalTools: (r['total_tools'] as number) ?? 0,
+      success: (r['success'] as number) !== 0,
+      createdAt: r['created_at'] as string,
     };
   }
 }

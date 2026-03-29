@@ -25,6 +25,8 @@ export interface IMemoryStore {
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[];
   getEntriesByTag(tag: string, limit?: number): MemoryEntry[];
   search(query: string): MemoryEntry[];
+  removeEntries(ids: string[]): number;
+  replaceEntries(removedIds: string[], newEntry: MemoryEntry): void;
 
   getSession(sessionId: string): ConversationSession | undefined;
   listSessions(agentId?: string): ConversationSession[];

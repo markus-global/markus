@@ -31,10 +31,12 @@ export interface ChannelBinding {
   role: 'member' | 'observer';
 }
 
+export type AgentActivityType = 'task' | 'heartbeat' | 'chat' | 'a2a' | 'internal' | 'respond_in_session';
+
 export interface AgentActivity {
   /** Unique ID for this activity session */
   id: string;
-  type: 'task' | 'heartbeat' | 'chat';
+  type: AgentActivityType;
   label: string;
   /** For task type, the task ID */
   taskId?: string;
@@ -45,7 +47,7 @@ export interface AgentActivity {
 
 export interface AgentActivityLogEntry {
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request';
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: string;

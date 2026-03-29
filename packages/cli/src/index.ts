@@ -694,6 +694,41 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   }
 
+  // Wire activity persistence to SQLite
+  if (storage?.activityRepo) {
+    const actRepo = storage.activityRepo;
+    agentManager.setActivityCallbacks({
+      onStart: (activity) => {
+        try {
+          actRepo.insertActivity({
+            id: activity.id,
+            agentId: activity.agentId,
+            type: activity.type,
+            label: activity.label,
+            taskId: activity.taskId,
+            startedAt: activity.startedAt,
+          });
+        } catch (err) {
+          log.warn('Failed to persist activity start', { activityId: activity.id, error: String(err) });
+        }
+      },
+      onLog: (data) => {
+        try {
+          actRepo.insertActivityLog(data);
+        } catch (err) {
+          log.warn('Failed to persist activity log', { activityId: data.activityId, error: String(err) });
+        }
+      },
+      onEnd: (activityId, summary) => {
+        try {
+          actRepo.updateActivity(activityId, summary);
+        } catch (err) {
+          log.warn('Failed to persist activity end', { activityId, error: String(err) });
+        }
+      },
+    });
+  }
+
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
     apiServer.getWSBroadcaster().broadcast({
