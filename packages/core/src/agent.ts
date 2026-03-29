@@ -3188,7 +3188,7 @@ export class Agent {
         '  3. **Blockers & risks**: Anything stalled or at risk',
         '  4. **Plan for tomorrow**: Top priorities for the next day',
         '- Keep it under 500 words. No filler. Every sentence must carry information.',
-        `- After creating the deliverable, call \`memory_save\` with key \`daily-report:${todayDate}\` and value "created" to prevent duplicate reports.`,
+        '- The system will automatically mark the report as created after this heartbeat.',
         '',
       ].join('\n');
     }
@@ -3258,6 +3258,16 @@ export class Agent {
         });
         this.state.lastHeartbeat = new Date().toISOString();
         this.metricsCollector.recordHeartbeat(true);
+
+        if (dailyReportSection) {
+          this.memory.addEntry({
+            id: `daily_report_${todayDate}`,
+            timestamp: new Date().toISOString(),
+            type: 'note',
+            content: `daily-report:${todayDate} created`,
+            metadata: { tags: ['daily-report'] },
+          });
+        }
 
         const isOk = reply?.trim() === 'HEARTBEAT_OK';
         if (reply && !isOk && reply.length > 20) {
