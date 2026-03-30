@@ -123,12 +123,16 @@ function loadTeamTemplateFromDir(dirPath: string): TeamTemplate | null {
 export function createDefaultTeamTemplates(): TeamTemplateRegistry {
   const registry = new TeamTemplateRegistry();
 
-  // Resolve templates/teams/ relative to the package root
   let templatesDir: string;
   try {
     const thisFile = fileURLToPath(import.meta.url);
-    // packages/core/src/workflow/team-template.ts -> root/templates/teams
-    templatesDir = resolve(dirname(thisFile), '..', '..', '..', '..', 'templates', 'teams');
+    const thisDir = dirname(thisFile);
+    const candidates = [
+      resolve(thisDir, '..', 'templates', 'teams'),                // npm global: dist/ → ../templates/teams
+      resolve(thisDir, '..', '..', '..', '..', 'templates', 'teams'), // monorepo: packages/core/dist/workflow/ → root
+      resolve(process.cwd(), 'templates', 'teams'),                // cwd fallback
+    ];
+    templatesDir = candidates.find(d => existsSync(d)) ?? candidates[candidates.length - 1];
   } catch {
     templatesDir = resolve(process.cwd(), 'templates', 'teams');
   }
