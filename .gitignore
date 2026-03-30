@@ -10,6 +10,13 @@ dist/
 coverage/
 .turbo/
 .markus/
+.cursor/
+
+# Private / non-publishable
+competitive-research/
+workspace/
+tweets_forum.json
+docs/BUSINESS-PLAN.md
 
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/
