@@ -3,6 +3,8 @@ import type { AgentToolHandler } from '../agent.js';
 
 const log = createLogger('browser-session');
 
+const TARGET_ID_PARAM_NAMES = ['targetId', 'id', 'pageId', 'target'];
+
 /**
  * Tracks browser tab ownership across agents and wraps chrome-devtools MCP
  * tool handlers to enforce strict tab isolation.
@@ -11,12 +13,15 @@ const log = createLogger('browser-session');
  * processes), each can see all tabs. This manager ensures agents can ONLY
  * operate on tabs they explicitly created via `new_page`.
  *
- * Strict ownership model:
- * - list_pages: only shows pages this agent created
- * - select_page: only allows selecting pages this agent created
- * - close_page: only allows closing pages this agent created
- * - navigate_page: warns if agent has no owned pages (should call new_page first)
- * - All other tools: pass through but log if agent has no owned pages
+ * Defense-in-depth:
+ *  1. new_page  → registers the tab as owned by the calling agent
+ *  2. list_pages → only returns this agent's owned tabs
+ *  3. select_page / close_page → blocked unless targeting an owned tab
+ *  4. navigate_page → blocked if no owned pages OR targeting a non-owned tab
+ *  5. ALL other tools (click, fill, snapshot, evaluate_script, …) →
+ *     blocked if the agent has no owned pages yet (prevents operating on
+ *     the MCP's default auto-connected tab before new_page is called),
+ *     AND blocked if args contain a targetId/pageId that isn't owned.
  */
 export class BrowserSessionManager {
   /** agentId → set of owned target/page IDs */
@@ -33,6 +38,20 @@ export class BrowserSessionManager {
 
   private isOwnedByMe(agentId: string, targetId: string): boolean {
     return this.getOwned(agentId).has(targetId);
+  }
+
+  /**
+   * Check tool args for any target/page ID parameter and return it if found.
+   * Returns empty string if none present.
+   */
+  private extractTargetIdFromArgs(args: Record<string, unknown>): string {
+    for (const key of TARGET_ID_PARAM_NAMES) {
+      if (args[key] !== undefined && args[key] !== null) {
+        const val = String(args[key]);
+        if (val) return val;
+      }
+    }
+    return '';
   }
 
   /**
@@ -57,11 +76,15 @@ export class BrowserSessionManager {
 
   /**
    * Wrap an array of chrome-devtools tool handlers with strict tab isolation.
-   * Tab-management tools enforce ownership; navigate_page gets a safety check.
+   *
+   * - Tab management tools get specific ownership wrappers.
+   * - ALL other tools get a generic guard that blocks execution when the agent
+   *   has no owned pages (i.e. hasn't called new_page yet) or when args
+   *   contain a targetId pointing to a non-owned page.
    */
   wrapToolHandlers(handlers: AgentToolHandler[], agentId: string): AgentToolHandler[] {
     return handlers.map((h) => {
-      const baseName = h.name.split('__').pop();
+      const baseName = h.name.split('__').pop() ?? h.name;
       switch (baseName) {
         case 'new_page':
           return this.wrapNewPage(h, agentId);
@@ -74,7 +97,7 @@ export class BrowserSessionManager {
         case 'navigate_page':
           return this.wrapNavigatePage(h, agentId);
         default:
-          return h;
+          return this.wrapGenericTool(h, agentId, baseName);
       }
     });
   }
@@ -131,7 +154,7 @@ export class BrowserSessionManager {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
-        const targetId = String(args.targetId ?? args.id ?? args.pageId ?? '');
+        const targetId = this.extractTargetIdFromArgs(args);
         if (targetId && !this.isOwnedByMe(agentId, targetId)) {
           const msg = `Cannot select page ${targetId}: you can only select pages you created with new_page. Use new_page to open your own tab.`;
           log.warn(msg, { agentId, targetId });
@@ -147,7 +170,7 @@ export class BrowserSessionManager {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
-        const targetId = String(args.targetId ?? args.id ?? args.pageId ?? '');
+        const targetId = this.extractTargetIdFromArgs(args);
         if (targetId && !this.isOwnedByMe(agentId, targetId)) {
           const msg = `Cannot close page ${targetId}: you can only close pages you created with new_page. Do not close tabs you did not open.`;
           log.warn(msg, { agentId, targetId });
@@ -163,8 +186,9 @@ export class BrowserSessionManager {
   }
 
   /**
-   * Safety check for navigate_page: warn if agent has no owned pages,
-   * which means it's about to navigate a tab it doesn't own.
+   * Block navigate_page if:
+   *  - agent has no owned pages (hasn't called new_page)
+   *  - args include a targetId pointing to a non-owned page
    */
   private wrapNavigatePage(handler: AgentToolHandler, agentId: string): AgentToolHandler {
     return {
@@ -172,8 +196,45 @@ export class BrowserSessionManager {
       execute: async (args: Record<string, unknown>) => {
         const owned = this.getOwned(agentId);
         if (owned.size === 0) {
-          const msg = 'Warning: You have no owned pages. Call new_page first to create your own tab before navigating. Navigating without an owned page may affect other agents or user tabs.';
+          const msg = 'You have no owned pages. Call new_page first to create your own tab before navigating.';
           log.warn(`Agent ${agentId} called navigate_page with no owned pages`, { agentId, url: args.url });
+          return JSON.stringify({ error: msg });
+        }
+        const targetId = this.extractTargetIdFromArgs(args);
+        if (targetId && !owned.has(targetId)) {
+          const msg = `Cannot navigate page ${targetId}: it is not a page you own. Use new_page to create your own tab.`;
+          log.warn(msg, { agentId, targetId });
+          return JSON.stringify({ error: msg });
+        }
+        return handler.execute(args);
+      },
+    };
+  }
+
+  /**
+   * Generic guard for ALL interaction tools (click, fill, snapshot, etc.).
+   *
+   * Two checks:
+   *  1. Agent must have at least one owned page. This prevents the tool from
+   *     operating on the MCP process's auto-connected default tab, which
+   *     belongs to the user or another agent.
+   *  2. If the tool args contain a targetId/pageId, it must be an owned page.
+   *     This prevents agents from targeting specific non-owned tabs.
+   */
+  private wrapGenericTool(handler: AgentToolHandler, agentId: string, toolName: string): AgentToolHandler {
+    return {
+      ...handler,
+      execute: async (args: Record<string, unknown>) => {
+        const owned = this.getOwned(agentId);
+        if (owned.size === 0) {
+          const msg = `Cannot use ${toolName} before creating a tab. Call new_page first to create your own tab.`;
+          log.warn(`Agent ${agentId} called ${toolName} with no owned pages`, { agentId });
+          return JSON.stringify({ error: msg });
+        }
+        const targetId = this.extractTargetIdFromArgs(args);
+        if (targetId && !owned.has(targetId)) {
+          const msg = `Cannot use ${toolName} on page ${targetId}: it is not a page you own. Only interact with pages you created via new_page.`;
+          log.warn(msg, { agentId, targetId, toolName });
           return JSON.stringify({ error: msg });
         }
         return handler.execute(args);
