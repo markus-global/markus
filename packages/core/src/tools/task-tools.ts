@@ -33,6 +33,7 @@ export interface AgentTaskContext {
       description: string;
       status: string;
       priority: string;
+      updatedAt: string;
       assignedAgentId?: string;
       requirementId?: string;
     }>
@@ -306,6 +307,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               title: t.title,
               status: t.status,
               priority: t.priority,
+              updatedAt: t.updatedAt,
               ...(t.assignedAgentId ? { assignedAgentId: t.assignedAgentId } : {}),
               ...(t.requirementId ? { requirementId: t.requirementId } : {}),
             })),

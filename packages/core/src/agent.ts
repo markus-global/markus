@@ -3174,20 +3174,31 @@ export class Agent {
     const isManager = this.config.agentRole === 'manager';
     let dailyReportSection = '';
     if (isManager && currentHour >= 20 && !this.hasTodayDailyReport()) {
+      const todayLog = this.memory.getDailyLog(todayDate);
       dailyReportSection = [
         '',
         '## Daily Report Required',
         `It is now past 20:00 and no daily report exists for ${todayDate}. You MUST produce one now.`,
+        '',
+        `**CRITICAL — date boundary**: This report covers **only ${todayDate}**.`,
+        'Do NOT include tasks completed or work done before today.',
+        'When checking task_list, use the `updatedAt` field to determine if activity happened today.',
+        'Base your report primarily on the activity log below and current task statuses.',
+        '',
+        todayLog
+          ? `**Today's activity log (${todayDate})**:\n\`\`\`\n${todayLog.slice(0, 3000)}\n\`\`\``
+          : `**Today's activity log**: No activity recorded for ${todayDate}.`,
         '',
         '**Report format** — create a deliverable via `deliverable_create`:',
         `- **title**: "Daily Report — ${todayDate}"`,
         '- **type**: "file"',
         '- **Content must be concise, clear, and accurate**:',
         '  1. **My work today**: What you personally accomplished (tasks reviewed, approved/rejected, decisions made)',
-        '  2. **Team progress**: What each team member accomplished (use `task_list` and `team_status` for data)',
+        '  2. **Team progress**: What each team member accomplished today (cross-reference with activity log)',
         '  3. **Blockers & risks**: Anything stalled or at risk',
         '  4. **Plan for tomorrow**: Top priorities for the next day',
         '- Keep it under 500 words. No filler. Every sentence must carry information.',
+        '- If no meaningful activity happened today, say so honestly — do not fabricate work.',
         '- The system will automatically mark the report as created after this heartbeat.',
         '',
       ].join('\n');

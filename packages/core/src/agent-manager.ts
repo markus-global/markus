@@ -142,6 +142,7 @@ export interface TaskServiceBridge {
     description: string;
     status: string;
     priority: string;
+    updatedAt: string;
     assignedAgentId?: string;
     requirementId?: string;
   }>;
