@@ -1,5 +1,5 @@
 {
-  "name": "@markus/cli",
+  "name": "@markus-global/cli",
   "version": "0.2.0",
   "description": "Markus — AI Digital Workforce Platform",
   "type": "module",

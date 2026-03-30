@@ -21,7 +21,7 @@
     "test:gui": "tsx test-gui-integration.ts",
     "example:gui": "tsx examples/gui-automation-workflow.ts",
     "markus": "node packages/cli/dist/index.js",
-    "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus/cli build:bundle"
+    "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus-global/cli build:bundle"
   },
   "engines": {
     "node": ">=20.0.0",

@@ -98,7 +98,7 @@ info "Building Web UI..."
 pnpm --filter @markus/web-ui build
 
 info "Building CLI bundle..."
-pnpm --filter @markus/cli build:bundle
+pnpm --filter @markus-global/cli build:bundle
 
 ok "Build complete"
 
@@ -133,11 +133,11 @@ if [[ "$PUB_CONFIRM" != "y" ]]; then
   printf "  cd packages/cli && npm publish --access public\n"
 else
   # ── Step 5: Publish to npm ────────────────────────────────────────────────
-  info "Publishing @markus/cli@$NEW_VERSION to npm..."
+  info "Publishing @markus-global/cli@$NEW_VERSION to npm..."
   cd packages/cli
   npm publish --access public
   cd "$ROOT_DIR"
-  ok "Published @markus/cli@$NEW_VERSION"
+  ok "Published @markus-global/cli@$NEW_VERSION"
 fi
 
 # ── Step 6: Git tag & commit ────────────────────────────────────────────────
@@ -174,6 +174,6 @@ else
 fi
 
 printf "\n${GREEN}${BOLD}Release v$NEW_VERSION complete!${NC}\n\n"
-printf "  npm:     https://www.npmjs.com/package/@markus/cli\n"
+printf "  npm:     https://www.npmjs.com/package/@markus-global/cli\n"
 printf "  install: curl -fsSL https://markus.global/install.sh | bash\n"
 printf "  docker:  docker pull markus/markus:$NEW_VERSION\n\n"

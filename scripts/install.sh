@@ -6,7 +6,7 @@
 set -euo pipefail
 
 VERSION="latest"
-NPM_PACKAGE="@markus/cli"
+NPM_PACKAGE="@markus-global/cli"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -146,18 +146,18 @@ main() {
   fi
   ok "npm $(npm -v)"
 
-  # Step 3: Install @markus/cli
+  # Step 3: Install @markus-global/cli
   info "Installing ${NPM_PACKAGE}..."
   printf "\n"
 
   if npm install -g "${NPM_PACKAGE}@${VERSION}"; then
-    ok "Installed @markus/cli"
+    ok "Installed @markus-global/cli"
   else
     printf "\n"
     warn "Global install failed (may need elevated permissions)."
     info "Trying with sudo..."
     if sudo npm install -g "${NPM_PACKAGE}@${VERSION}"; then
-      ok "Installed @markus/cli (with sudo)"
+      ok "Installed @markus-global/cli (with sudo)"
     else
       error "Installation failed. Try manually:"
       printf "    npm install -g ${NPM_PACKAGE}\n"

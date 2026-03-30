@@ -10,15 +10,13 @@ Use it via `shell_execute` to manage agents, projects, tasks, teams, and more.
 
 ## How to invoke
 
-Use `markus` via `shell_execute`. The binary is automatically available in PATH when the Markus server is running (the server injects `node_modules/.bin` into PATH at startup).
+Use `markus` via `shell_execute`. The binary is automatically available in PATH — either from npm global install (`npm install -g @markus-global/cli`) or injected by the server at startup in source-dev mode.
 
 ```bash
 markus agent list --json
 markus project task get tsk_abc123 --json
 markus admin system status --json
 ```
-
-**Important**: Do NOT use `npx markus` — there is an unrelated `markus` package on npm. Always use `markus` directly.
 
 ## Prerequisites
 
@@ -84,22 +82,29 @@ markus <domain> --help                   # See all subcommands
 | `admin settings` | LLM and platform settings | markus-admin-cli |
 | `admin external-agent` | External agent registration | markus-admin-cli |
 
-## System Update
-
-To check for updates and update the platform:
+## Installation & Update
 
 ```bash
-# Check current version and whether updates are available
+# Install via npm (recommended)
+npm install -g @markus-global/cli
+
+# Or one-line install
+curl -fsSL https://markus.global/install.sh | bash
+
+# Check current version
 markus admin system version --json
 
-# Update to latest version (pulls from GitHub, installs deps, rebuilds)
+# Update to latest (npm mode)
+npm update -g @markus-global/cli
+
+# Update to latest (source mode — pulls from GitHub, installs deps, rebuilds)
 markus admin system update
 
 # Preview update without making changes
 markus admin system update --dry-run
 ```
 
-**Always confirm with the user before running `markus admin system update`** — updating requires a service restart which interrupts running agents.
+**Always confirm with the user before updating** — it requires a service restart which interrupts running agents.
 
 ## Tips
 

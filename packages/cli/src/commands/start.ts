@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
@@ -236,11 +236,17 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 async function startServer(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
   console.log('Starting Markus server...');
 
-  // Inject project node_modules/.bin into PATH so agents can invoke `markus` via shell_execute
-  const projectBin = join(process.cwd(), 'node_modules', '.bin');
+  // Ensure `markus` is available in PATH for agents invoking it via shell_execute.
+  // In npm-global mode: process.argv[1] is the installed binary (e.g. /usr/local/bin/markus)
+  // In source-dev mode: node_modules/.bin contains the symlink
   const currentPath = process.env['PATH'] ?? '';
-  if (!currentPath.includes(projectBin)) {
-    process.env['PATH'] = `${projectBin}:${currentPath}`;
+  const extraPaths: string[] = [];
+  const selfBinDir = dirname(resolve(process.argv[1] ?? ''));
+  if (selfBinDir && !currentPath.includes(selfBinDir)) extraPaths.push(selfBinDir);
+  const cwdBin = join(process.cwd(), 'node_modules', '.bin');
+  if (existsSync(cwdBin) && !currentPath.includes(cwdBin)) extraPaths.push(cwdBin);
+  if (extraPaths.length > 0) {
+    process.env['PATH'] = `${extraPaths.join(':')}:${currentPath}`;
   }
 
   // Propagate markus.json security settings into env so downstream services can read them
