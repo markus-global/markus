@@ -32,7 +32,13 @@ async function main() {
     target: 'node20',
     format: 'esm',
     external,
-    banner: { js: '#!/usr/bin/env node\n' },
+    banner: {
+      js: [
+        '#!/usr/bin/env node',
+        "import { createRequire } from 'module';",
+        'const require = createRequire(import.meta.url);',
+      ].join('\n'),
+    },
     sourcemap: false,
     minify: false,
     treeShaking: true,
