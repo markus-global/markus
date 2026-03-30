@@ -1,0 +1,104 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Build Web UI
+        run: pnpm --filter @markus/web-ui build
+
+      - name: Bundle CLI for publishing
+        run: pnpm --filter @markus/cli build:bundle
+
+      - name: Verify bundle
+        run: |
+          ls -lh packages/cli/dist/markus.mjs
+          ls -d packages/cli/dist/web-ui || echo "Warning: Web UI not bundled"
+          ls -d packages/cli/templates || echo "Warning: templates not bundled"
+
+      - name: Publish to npm
+        run: cd packages/cli && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-docker:
+    runs-on: ubuntu-latest
+    needs: publish-npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            markus/markus:${{ steps.version.outputs.VERSION }}
+            markus/markus:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  github-release:
+    runs-on: ubuntu-latest
+    needs: [publish-npm, publish-docker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            # One-line install
+            curl -fsSL https://markus.global/install.sh | bash
+
+            # Or via npm
+            npm install -g @markus/cli@${{ steps.version.outputs.VERSION }}
+
+            # Or via Docker
+            docker pull markus/markus:${{ steps.version.outputs.VERSION }}
+            ```
