@@ -59,12 +59,24 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   code_search:          { label: 'Searching code',         icon: '🔍' },
   project_structure:    { label: 'Project structure',      icon: '🗂' },
   code_stats:           { label: 'Code stats',             icon: '📊' },
-  browser_navigate:     { label: 'Opening page',           icon: '🌐' },
-  browser_click:        { label: 'Clicking element',       icon: '👆' },
-  browser_type:         { label: 'Typing text',            icon: '⌨' },
-  browser_screenshot:   { label: 'Screenshot',             icon: '📸' },
-  browser_extract:      { label: 'Extracting content',     icon: '📋' },
-  browser_evaluate:     { label: 'Running script',         icon: '⚙' },
+  navigate_page:        { label: 'Opening page',           icon: '🌐' },
+  new_page:             { label: 'Opening new tab',        icon: '🌐' },
+  close_page:           { label: 'Closing tab',            icon: '🌐' },
+  select_page:          { label: 'Switching tab',          icon: '🌐' },
+  list_pages:           { label: 'Listing tabs',           icon: '🌐' },
+  click:                { label: 'Clicking element',       icon: '👆' },
+  hover:                { label: 'Hovering element',       icon: '👆' },
+  fill:                 { label: 'Filling field',          icon: '⌨' },
+  fill_form:            { label: 'Filling form',           icon: '⌨' },
+  type_text:            { label: 'Typing text',            icon: '⌨' },
+  press_key:            { label: 'Pressing key',           icon: '⌨' },
+  take_screenshot:      { label: 'Screenshot',             icon: '📸' },
+  take_snapshot:        { label: 'Page snapshot',          icon: '📋' },
+  evaluate_script:      { label: 'Running script',         icon: '⚙' },
+  wait_for:             { label: 'Waiting',                icon: '⏳' },
+  list_console_messages: { label: 'Console logs',          icon: '🔍' },
+  list_network_requests: { label: 'Network requests',      icon: '🔍' },
+  lighthouse_audit:     { label: 'Running audit',          icon: '📊' },
   agent_send_message:   { label: 'Messaging colleague',    icon: '💬' },
   agent_list:           { label: 'Checking team',          icon: '👥' },
   memory_save:          { label: 'Saving memory',          icon: '💾' },
@@ -74,8 +86,9 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
 };
 
 export function getToolMeta(tool: string): { label: string; icon: string } {
-  return TOOL_META[tool] ?? {
-    label: tool.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+  const baseName = tool.includes('__') ? tool.split('__').pop()! : tool;
+  return TOOL_META[baseName] ?? TOOL_META[tool] ?? {
+    label: baseName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
     icon: '⚙',
   };
 }

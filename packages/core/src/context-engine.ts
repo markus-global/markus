@@ -991,7 +991,7 @@ export class ContextEngine {
   private isResearchToolResult(content: string): boolean {
     const markers = [
       'search_results', 'web_search', 'SearchResult',
-      'browser_snapshot', 'browser_navigate', 'page_content',
+      'accessibility tree', 'snapshot', 'page_content',
       '<title>', '<meta', 'README', '```markdown',
       'http://', 'https://',
     ];
@@ -1110,8 +1110,10 @@ export class ContextEngine {
     }
 
     const RESEARCH_TOOLS = new Set([
-      'web_search', 'browser_navigate', 'browser_snapshot',
-      'browser_click', 'browser_type', 'browser_scroll',
+      'web_search', 'web_fetch',
+      'navigate_page', 'take_snapshot', 'take_screenshot',
+      'click', 'fill', 'type_text',
+      'list_network_requests', 'evaluate_script',
       'file_read',
     ]);
 
@@ -1127,7 +1129,8 @@ export class ContextEngine {
     for (let i = 0; i < toolCalls.length; i++) {
       const tc = toolCalls[i]!;
       const result = toolResults[i];
-      const isResearch = RESEARCH_TOOLS.has(tc.name);
+      const baseName = tc.name.includes('__') ? tc.name.split('__').pop()! : tc.name;
+      const isResearch = RESEARCH_TOOLS.has(baseName);
       // Deterministic serialization: sorted keys prevent cache-busting from key order differences
       const argsStr = JSON.stringify(tc.arguments, Object.keys(tc.arguments ?? {}).sort()).slice(
         0,

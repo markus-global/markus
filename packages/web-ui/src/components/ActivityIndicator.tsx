@@ -33,11 +33,16 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   git_add:              { label: 'Git add',                icon: '➕' },
   git_commit:           { label: 'Git commit',             icon: '💾' },
   code_search:          { label: 'Searching code',         icon: '🔍' },
-  browser_navigate:     { label: 'Opening page',           icon: '🌐' },
-  browser_click:        { label: 'Clicking element',       icon: '👆' },
-  browser_type:         { label: 'Typing text',            icon: '⌨' },
-  browser_screenshot:   { label: 'Screenshot',             icon: '📸' },
-  browser_extract:      { label: 'Extracting content',     icon: '📋' },
+  navigate_page:        { label: 'Opening page',           icon: '🌐' },
+  new_page:             { label: 'Opening new tab',        icon: '🌐' },
+  close_page:           { label: 'Closing tab',            icon: '🌐' },
+  select_page:          { label: 'Switching tab',          icon: '🌐' },
+  click:                { label: 'Clicking element',       icon: '👆' },
+  fill:                 { label: 'Filling field',          icon: '⌨' },
+  type_text:            { label: 'Typing text',            icon: '⌨' },
+  take_screenshot:      { label: 'Screenshot',             icon: '📸' },
+  take_snapshot:        { label: 'Page snapshot',          icon: '📋' },
+  evaluate_script:      { label: 'Running script',         icon: '⚙' },
   agent_send_message:   { label: 'Messaging colleague',    icon: '💬' },
   agent_list:           { label: 'Checking team',          icon: '👥' },
   create_task:          { label: 'Creating task',          icon: '📌' },
@@ -46,7 +51,8 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
 };
 
 function getToolMeta(tool: string) {
-  return TOOL_META[tool] ?? { label: tool.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), icon: '⚙' };
+  const baseName = tool.includes('__') ? tool.split('__').pop()! : tool;
+  return TOOL_META[baseName] ?? TOOL_META[tool] ?? { label: baseName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), icon: '⚙' };
 }
 
 interface ToolItem {

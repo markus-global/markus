@@ -688,6 +688,12 @@ export class Agent {
     return `Task ${taskId}`;
   }
 
+  private static readonly BROWSER_INTERACTIVE_TOOLS = new Set([
+    'take_snapshot', 'take_screenshot', 'evaluate_script',
+    'list_console_messages', 'list_network_requests', 'get_network_request',
+    'lighthouse_audit', 'performance_stop_trace', 'performance_analyze_insight',
+  ]);
+
   private offloadLargeResult(toolName: string, result: string): string {
     const OFFLOAD_THRESHOLD = 50_000;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
@@ -696,6 +702,10 @@ export class Agent {
     // to avoid the infinite loop where reading the offloaded file triggers another offload.
     if (toolName === 'file_read') return result;
 
+    const baseName = toolName.includes('__') ? toolName.split('__').pop()! : toolName;
+    const isBrowserTool = Agent.BROWSER_INTERACTIVE_TOOLS.has(baseName);
+    const previewSize = isBrowserTool ? 30_000 : 2_000;
+
     try {
       const offloadDir = join(this.dataDir, 'tool-outputs');
       mkdirSync(offloadDir, { recursive: true });
@@ -703,20 +713,20 @@ export class Agent {
       const filepath = join(offloadDir, filename);
       writeFileSync(filepath, result);
 
-      const PREVIEW_SIZE = 2000;
-      const preview = result.slice(0, PREVIEW_SIZE);
+      const preview = result.slice(0, previewSize);
       const lineCount = result.split('\n').length;
       return [
         `[FULL output (${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
-        `[NOTE: The content below is only the first ${PREVIEW_SIZE} chars. The complete, untruncated result is in the file above.]`,
+        `[NOTE: The content below is only the first ${previewSize} chars. The complete, untruncated result is in the file above.]`,
         `[To read the full content, use file_read with offset and limit parameters to read in chunks, e.g.: file_read(path="${filepath}", offset=1, limit=500)]`,
         ``,
         preview,
         ``,
-        `[... remaining ${result.length - PREVIEW_SIZE} chars in file ...]`,
+        `[... remaining ${result.length - previewSize} chars in file ...]`,
       ].join('\n');
     } catch {
-      return result.slice(0, 8000) + `\n\n[... output truncated at 8000 of ${result.length} total chars due to file-save failure ...]`;
+      const fallbackSize = isBrowserTool ? 30_000 : 8_000;
+      return result.slice(0, fallbackSize) + `\n\n[... output truncated at ${fallbackSize} of ${result.length} total chars due to file-save failure ...]`;
     }
   }
 

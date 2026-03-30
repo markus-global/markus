@@ -110,27 +110,30 @@ If you encounter a tool call timeout, inform the user and suggest these steps (i
 
 ## Best practices
 
-1. **Snapshot before interaction**: Always call `take_snapshot` before clicking or filling.
+1. **Always open your own tab first**: Call `new_page` before any browser interaction.
+   Never reuse existing tabs — they may belong to the user or another agent.
+
+2. **Snapshot before interaction**: Always call `take_snapshot` before clicking or filling.
    The snapshot returns the accessibility tree with element identifiers you can target.
 
-2. **Screenshot for visual verification**: After important interactions, take a screenshot
+3. **Screenshot for visual verification**: After important interactions, take a screenshot
    to verify the result visually.
 
-3. **Wait after navigation**: After `navigate_page` or actions that trigger navigation,
+4. **Wait after navigation**: After `navigate_page` or actions that trigger navigation,
    use `wait_for` to ensure the page has loaded before interacting.
 
-4. **Prefer `fill` over `type_text`**: Use `fill` for form inputs — it clears the field first.
+5. **Prefer `fill` over `type_text`**: Use `fill` for form inputs — it clears the field first.
    Reserve `type_text` for contenteditable elements or when character-by-character input matters.
 
-5. **Use `evaluate_script` sparingly**: Prefer dedicated tools (click, fill, snapshot) over
+6. **Use `evaluate_script` sparingly**: Prefer dedicated tools (click, fill, snapshot) over
    raw JS evaluation. Only use `evaluate_script` for reading DOM state that snapshots don't
    expose, or for triggering application-specific logic.
 
-6. **Handle dialogs proactively**: If an action might trigger an alert/confirm/prompt,
+7. **Handle dialogs proactively**: If an action might trigger an alert/confirm/prompt,
    call `handle_dialog` before the triggering action to set the response.
 
-7. **Tab management**: When working with multiple pages, use `list_pages` to see all tabs,
-   then `select_page` to switch context before interacting.
+8. **Tab management**: Use `list_pages` to see your owned tabs, `select_page` to switch
+   between them. You will only see tabs you created — this is by design.
 
 ## Security rules
 
@@ -143,62 +146,112 @@ If you encounter a tool call timeout, inform the user and suggest these steps (i
 - **Form data**: When filling forms with sensitive data (passwords, payment info), confirm
   with the user before proceeding.
 
-## Multi-agent browser usage
+## Multi-agent browser usage — Tab Ownership Discipline
 
-This skill uses **per-agent isolation**: each agent gets its own MCP server process with
-independent page state. Multiple agents can use Chrome simultaneously without interfering
-with each other's navigation or interactions.
+Multiple agents share the same Chrome browser. To prevent agents from interfering with
+each other (closing tabs, navigating away from pages another agent is using), **strict
+tab ownership** is enforced at both the code and prompt level.
 
-**How it works:**
-- Your browser tool calls are routed to your own dedicated MCP process.
-- You only see tabs that you created; other agents' tabs are hidden from `list_pages`.
-- You cannot `select_page` or `close_page` on tabs owned by another agent.
+### Core rule: You can ONLY interact with tabs you created
 
-**Best practices for concurrent browser work:**
-1. Always use `new_page` to open a dedicated tab for your task instead of reusing
-   pre-existing user tabs.
-2. Close your tabs with `close_page` when the task is complete to avoid tab clutter.
-3. Be aware that **cookies and login sessions are shared** across all agents (same
-   Chrome instance). If one agent logs out of a site, other agents lose that session too.
-4. Avoid actions that affect global browser state (clearing cookies, changing settings)
-   unless the task explicitly requires it.
+The system enforces strict ownership. You will only see, select, and close tabs that
+**you** explicitly opened with `new_page`. All other tabs (user tabs, other agents' tabs)
+are invisible to you and cannot be operated on.
+
+### Mandatory workflow
+
+1. **ALWAYS start with `new_page`**: Before doing anything in the browser, call `new_page`
+   to create your own tab. Even if you know a page with the right URL already exists in
+   the browser, you MUST open a fresh tab. That existing tab may belong to the user or
+   another agent.
+
+2. **Track your owned tabs**: Remember the `targetId` returned by `new_page`. This is
+   your tab. When working with multiple tabs, keep a mental list of all targetIds you own.
+
+3. **Only navigate your own tabs**: After `new_page`, use `navigate_page` to go to your
+   target URL. If you call `navigate_page` without first creating a tab with `new_page`,
+   the call will be blocked.
+
+4. **Only close your own tabs**: When your task is done, close tabs you opened with
+   `close_page`. Never attempt to close tabs you did not create — the system will
+   reject the call.
+
+5. **Never reuse existing tabs**: Even if `list_pages` shows a tab at the URL you need,
+   open a new one. That tab may be actively used by another agent or the user.
+
+### What the system enforces (code-level)
+
+| Tool | Enforcement |
+|------|-------------|
+| `new_page` | Creates a tab and registers it as yours |
+| `list_pages` | Only returns tabs you created (all others are hidden) |
+| `select_page` | Blocked unless the target tab is one you created |
+| `close_page` | Blocked unless the target tab is one you created |
+| `navigate_page` | Blocked if you have no owned tabs (must call `new_page` first) |
+
+### Shared state warning
+
+- **Cookies and login sessions are shared** across all agents (same Chrome instance).
+  If one agent logs out of a site, other agents lose that session too.
+- Avoid actions that affect global browser state (clearing cookies, changing Chrome
+  settings, closing all tabs) unless the task explicitly requires it.
+
+### Example: correct multi-agent workflow
+
+```
+Agent A:                              Agent B:
+1. new_page → gets tab T1             1. new_page → gets tab T2
+2. navigate_page T1 → localhost:3000  2. navigate_page T2 → localhost:3000
+3. (test feature X on T1)             3. (test feature Y on T2)
+4. close_page T1                      4. close_page T2
+```
+
+Both agents work on the same URL but in separate tabs without interference.
 
 ## Common workflows
 
 ### Web testing
 ```
-1. navigate_page → target URL
-2. wait_for → page loaded
-3. take_snapshot → understand page structure
-4. click / fill / press_key → interact with elements
-5. take_screenshot → verify result
+1. new_page → create your own tab (remember targetId)
+2. navigate_page → target URL
+3. wait_for → page loaded
+4. take_snapshot → understand page structure
+5. click / fill / press_key → interact with elements
+6. take_screenshot → verify result
+7. close_page → clean up when done
 ```
 
 ### Form automation
 ```
-1. navigate_page → form URL
-2. take_snapshot → identify form fields
-3. fill_form → fill all fields at once
-4. click → submit button
-5. wait_for → response/redirect
-6. take_screenshot → confirm submission
+1. new_page → create your own tab
+2. navigate_page → form URL
+3. take_snapshot → identify form fields
+4. fill_form → fill all fields at once
+5. click → submit button
+6. wait_for → response/redirect
+7. take_screenshot → confirm submission
+8. close_page → clean up when done
 ```
 
 ### Debugging frontend issues
 ```
-1. navigate_page → problematic page
-2. list_console_messages → check for errors
-3. list_network_requests → check for failed requests
-4. evaluate_script → inspect specific DOM state
-5. take_screenshot → capture visual state
+1. new_page → create your own tab
+2. navigate_page → problematic page
+3. list_console_messages → check for errors
+4. list_network_requests → check for failed requests
+5. evaluate_script → inspect specific DOM state
+6. take_screenshot → capture visual state
+7. close_page → clean up when done
 ```
 
 ### Performance analysis
 ```
-1. navigate_page → target page
-2. performance_start_trace
-3. (perform user actions that need profiling)
-4. performance_stop_trace → get trace data
-5. performance_analyze_insight → interpret results
-6. lighthouse_audit → comprehensive audit
+1. new_page → create your own tab
+2. navigate_page → target page
+3. performance_start_trace
+4. (perform user actions that need profiling)
+5. performance_stop_trace → get trace data
+6. performance_analyze_insight → interpret results
+7. lighthouse_audit → comprehensive audit
+8. close_page → clean up when done
 ```
