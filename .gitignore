@@ -12,11 +12,8 @@ coverage/
 .markus/
 .cursor/
 
-# Private / non-publishable
-competitive-research/
-workspace/
-tweets_forum.json
-docs/BUSINESS-PLAN.md
+# Build artifacts copied during bundle (packages/cli/build.mjs)
+packages/cli/templates/
 
 # Auto-generated API docs (regenerate via typedoc)
 docs/api/
