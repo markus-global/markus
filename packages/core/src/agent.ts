@@ -30,7 +30,21 @@ import { ToolSelector } from './tool-selector.js';
 import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
+
+/**
+ * Per-task async context — propagates the executing taskId and task-local
+ * tool overrides through the async call chain of _executeTaskInternal,
+ * so concurrent tasks each resolve their own taskId and use their own
+ * tool bindings (e.g. worktree-scoped tools) without cross-contamination.
+ */
+interface TaskAsyncContext {
+  taskId: string;
+  /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
+  tools?: Map<string, AgentToolHandler>;
+}
+const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
@@ -550,9 +564,13 @@ export class Agent {
     return Array.from(this.activeTasks).map(taskId => ({ taskId }));
   }
 
-  /** Returns the task ID currently being executed (set at the start of executeTask). */
+  /**
+   * Returns the task ID currently being executed.
+   * Prefers the per-task AsyncLocalStorage context (safe for concurrent tasks)
+   * over the shared instance field which can be overwritten by a later task.
+   */
   getCurrentTaskId(): string | undefined {
-    return this.currentTaskId;
+    return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
   }
 
   /**
@@ -1976,11 +1994,13 @@ export class Agent {
     }
 
     // 使用TaskExecutor执行任务
+    // Wrap in AsyncLocalStorage context so concurrent task executions each
+    // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      async () => {
-        return this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace, executionRound);
-      },
+      () => taskAsyncContext.run({ taskId }, () =>
+        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace, executionRound)
+      ),
       {
         priority,
         onProgress: (progress: number, currentStep?: string) => {
@@ -2050,12 +2070,11 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
-    // Rebind tools to worktree path for project-bound tasks
-    let savedTools: Map<string, AgentToolHandler> | undefined;
+    // Rebind tools to worktree path for project-bound tasks.
+    // Use task-local tools (stored in AsyncLocalStorage) instead of mutating
+    // the shared this.tools — prevents concurrent worktree tasks from
+    // overwriting each other's tool bindings.
     if (taskWorkspace) {
-      savedTools = new Map(this.tools);
-      // Build a worktree-specific path policy inheriting shared workspace and adding
-      // the project repo as read-only (for referencing the base branch)
       const worktreePolicy: PathAccessPolicy = {
         primaryWorkspace: taskWorkspace.worktreePath,
         sharedWorkspace: this.pathPolicy?.sharedWorkspace,
@@ -2071,10 +2090,15 @@ export class Agent {
         workspacePath: taskWorkspace.worktreePath,
         pathPolicy: worktreePolicy,
       });
+      const taskLocalTools = new Map(this.tools);
       for (const tool of worktreeTools) {
-        this.tools.set(tool.name, tool);
+        taskLocalTools.set(tool.name, tool);
       }
-      log.info('Tools rebound to worktree workspace', {
+      const ctx = taskAsyncContext.getStore();
+      if (ctx) {
+        ctx.tools = taskLocalTools;
+      }
+      log.info('Tools rebound to worktree workspace (task-local)', {
         taskId, agentId: this.id, worktreePath: taskWorkspace.worktreePath,
       });
     }
@@ -2412,11 +2436,8 @@ export class Agent {
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
 
-      // Restore original tools if they were rebound for a worktree
-      if (savedTools) {
-        this.tools = savedTools;
-        log.info('Tools restored to agent default workspace', { taskId, agentId: this.id });
-      }
+      // Worktree tools are now task-local (stored in AsyncLocalStorage) and
+      // automatically discarded when the async context ends — no restore needed.
 
       // Only remove from activeTasks if this execution is still the latest one.
       // A newer execution for the same taskId bumps the generation counter;
@@ -2751,7 +2772,7 @@ export class Agent {
   private getLLMMetadata(sessionId?: string): { agentId: string; taskId?: string; sessionId?: string } {
     return {
       agentId: this.id,
-      taskId: this.currentTaskId,
+      taskId: this.getCurrentTaskId(),
       sessionId,
     };
   }
@@ -2774,8 +2795,10 @@ export class Agent {
     // Include tools the agent explicitly requested via discover_tools
     const recentPlusActivated = [...this.recentToolNames, ...this.activatedExtraTools];
 
+    const effectiveTools = taskAsyncContext.getStore()?.tools ?? this.tools;
+
     const tools = this.toolSelector.selectTools({
-      allTools: this.tools,
+      allTools: effectiveTools,
       userMessage: context?.userMessage ?? '',
       recentToolNames: recentPlusActivated,
       isManager,
@@ -3006,7 +3029,8 @@ export class Agent {
       }
     }
 
-    const handler = this.tools.get(toolCall.name);
+    const effectiveTools = taskAsyncContext.getStore()?.tools ?? this.tools;
+    const handler = effectiveTools.get(toolCall.name);
     if (!handler) {
       this.recordToolUsage(toolCall.name, false);
       this.handleFailure(`Unknown tool: ${toolCall.name}`);

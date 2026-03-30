@@ -39,9 +39,10 @@ const log = createLogger('agent-manager');
 
 /**
  * Resolve the task ID for submitForReview.
- * Prefers the agent's currentTaskId (set by executeTask) over blindly picking
- * activeTasks[0], which may be stale or belong to a different concurrent execution.
- * Falls back to the first active task whose status is still 'in_progress'.
+ * Prefers the agent's getCurrentTaskId() — which reads from the per-task
+ * AsyncLocalStorage context when available, making it safe for concurrent
+ * task executions. Falls back to the first active task whose status is
+ * still 'in_progress'.
  */
 function resolveCurrentTaskId(
   agentObj: Agent | undefined,
