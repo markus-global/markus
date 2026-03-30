@@ -280,7 +280,6 @@ export function DeliverablesPage() {
   const loadPreview = async (d: DeliverableInfo) => {
     if (!d.reference) return;
     if (d.type === 'directory') { setShowCopyPath(true); return; }
-    if (d.type === 'url') return;
 
     setPreviewLoading(true);
     try {
@@ -638,12 +637,7 @@ export function DeliverablesPage() {
                   >{copiedPath ? 'Copied!' : 'Copy'}</button>
                 </div>
               )}
-              {selected.reference && selected.type === 'url' && (
-                <div className="mt-2">
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-500 hover:underline break-all">{selected.reference}</a>
-                </div>
-              )}
-              {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && selected.type !== 'url' && (
+              {selected.reference && selected.type !== 'file' && selected.type !== 'directory' && (
                 <div className="mt-2">
                   <span className="text-xs text-fg-tertiary font-mono break-all">{selected.reference}</span>
                 </div>
@@ -678,9 +672,7 @@ export function DeliverablesPage() {
               </div>
             ) : (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                {selected.type === 'url' && selected.reference ? (
-                  <a href={selected.reference} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:underline text-sm break-all">{selected.reference}</a>
-                ) : previewLoading ? (
+                {previewLoading ? (
                   <div className="flex items-center gap-2 text-fg-tertiary text-sm"><Spinner /> Loading preview...</div>
                 ) : previewImage ? (
                   <div className="flex flex-col items-center gap-2">
