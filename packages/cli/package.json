@@ -1,21 +1,37 @@
 {
   "name": "@markus/cli",
   "version": "0.1.0",
-  "private": true,
+  "description": "Markus — AI Digital Workforce Platform",
   "type": "module",
+  "license": "AGPL-3.0-or-later",
   "bin": {
-    "markus": "dist/index.js"
+    "markus": "dist/markus.mjs"
+  },
+  "files": [
+    "dist/",
+    "templates/"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
   },
   "scripts": {
     "build": "tsc -b",
+    "build:bundle": "node build.mjs",
     "dev": "tsc -b --watch",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo templates/"
   },
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "sharp": "^0.34.5",
+    "rfb2": "^0.2.2",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
     "@markus/comms": "workspace:*",
     "@markus/core": "workspace:*",
     "@markus/org-manager": "workspace:*",
     "@markus/shared": "workspace:*",
-    "commander": "^14.0.3"
+    "commander": "^14.0.3",
+    "esbuild": "^0.27.4"
   }
 }

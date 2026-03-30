@@ -20,7 +20,8 @@
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",
     "example:gui": "tsx examples/gui-automation-workflow.ts",
-    "markus": "node packages/cli/dist/index.js"
+    "markus": "node packages/cli/dist/index.js",
+    "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus/cli build:bundle"
   },
   "engines": {
     "node": ">=20.0.0",
@@ -43,7 +44,8 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3"
+      "better-sqlite3",
+      "esbuild"
     ]
   }
 }

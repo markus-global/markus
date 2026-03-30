@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
   loadConfig,
   getDefaultConfigPath,
@@ -67,7 +68,8 @@ export function registerStartCommand(program: Command) {
 }
 
 async function createServices(config: ReturnType<typeof loadConfig>) {
-  const templateDirs = [resolve(process.cwd(), 'templates', 'roles')];
+  const templateDirs = allTemplateDirs('roles');
+  if (templateDirs.length === 0) templateDirs.push(resolveTemplatesDir('roles'));
   const roleLoader = new RoleLoader(templateDirs);
 
   const providerConfigs: Record<string, LLMProviderConfig> = {};
@@ -170,9 +172,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   const llmLogger = new LLMLogger();
   llmRouter.setLogCallback((entry: LLMLogEntry) => llmLogger.log(entry));
 
-  const builtinSkillsDir = resolve(process.cwd(), 'templates', 'skills');
+  const skillDirs = allTemplateDirs('skills');
   const skillRegistry = await createDefaultSkillRegistry({
-    extraSkillDirs: existsSync(builtinSkillsDir) ? [builtinSkillsDir] : [],
+    extraSkillDirs: skillDirs,
   });
 
   const storage = await initStorage(config.database?.url);
@@ -314,6 +316,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   apiServer.setLLMRouter(llmRouter);
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
   if (config.hub?.url) apiServer.setHubUrl(config.hub.url);
+
+  // Serve pre-built Web UI if available
+  const webUiDir = resolveWebUiDir();
+  if (webUiDir) {
+    apiServer.setWebUiDir(webUiDir);
+    log.info('Web UI static files enabled', { dir: webUiDir });
+  }
 
   // Wire storage for chat persistence and auth
   const firstOrgId = 'default';
@@ -678,11 +687,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
 
   const webPort = config.server.webPort;
+  const webUiLine = webUiDir
+    ? `  Web UI:      http://localhost:${apiPort}  (built-in)`
+    : `  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)`;
   console.log(`
   Markus is running!
 
   API Server:  http://localhost:${apiPort}
-  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)
+${webUiLine}
   WebUI Comm:  http://localhost:${commPort}
 
   Press Ctrl+C to stop.

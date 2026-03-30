@@ -181,6 +181,7 @@ export class APIServer {
   private llmRouter?: LLMRouter;
   private markusConfigPath?: string;
   private hubUrl = 'https://markus.global';
+  private webUiDir?: string;
   private gateway?: ExternalAgentGateway;
   private gatewaySecret?: string;
   private syncHandler?: GatewaySyncHandler;
@@ -428,6 +429,10 @@ export class APIServer {
 
   setHubUrl(url: string): void {
     this.hubUrl = url;
+  }
+
+  setWebUiDir(dir: string): void {
+    this.webUiDir = dir;
   }
 
   initWorkflowEngine(): WorkflowEngine {
@@ -6697,7 +6702,52 @@ export class APIServer {
       return;
     }
 
+    // Serve pre-built Web UI static files as SPA fallback
+    if (this.webUiDir) {
+      const safePath = path.replace(/\.\./g, '').replace(/\/\//g, '/');
+      const filePath = join(this.webUiDir, safePath === '/' ? 'index.html' : safePath);
+      if (existsSync(filePath) && statSync(filePath).isFile()) {
+        this.serveStaticFile(res, filePath);
+        return;
+      }
+      // SPA fallback: serve index.html for non-API routes
+      const indexPath = join(this.webUiDir, 'index.html');
+      if (existsSync(indexPath) && !path.startsWith('/api/')) {
+        this.serveStaticFile(res, indexPath);
+        return;
+      }
+    }
+
     this.json(res, 404, { error: 'Not found' });
+  }
+
+  private serveStaticFile(res: ServerResponse, filePath: string): void {
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+    const MIME: Record<string, string> = {
+      html: 'text/html; charset=utf-8',
+      js: 'application/javascript; charset=utf-8',
+      mjs: 'application/javascript; charset=utf-8',
+      css: 'text/css; charset=utf-8',
+      json: 'application/json; charset=utf-8',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      svg: 'image/svg+xml',
+      ico: 'image/x-icon',
+      woff: 'font/woff',
+      woff2: 'font/woff2',
+      ttf: 'font/ttf',
+      map: 'application/json',
+    };
+    const contentType = MIME[ext] ?? 'application/octet-stream';
+    const body = readFileSync(filePath);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': body.byteLength,
+      'Cache-Control': ext === 'html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    });
+    res.end(body);
   }
 
   private projectService?: ProjectService;

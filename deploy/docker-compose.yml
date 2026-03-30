@@ -1,7 +1,7 @@
-version: "3.8"
-
 services:
   markus:
+    # Use pre-built image from Docker Hub (or build locally with `docker compose build`)
+    image: markus/markus:latest
     build:
       context: ..
       dockerfile: Dockerfile
@@ -11,15 +11,20 @@ services:
       - "${API_PORT:-8056}:8056"
       - "${COMM_PORT:-8058}:8058"
       - "${FEISHU_WEBHOOK_PORT:-9000}:9000"
+    env_file:
+      - .env
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
-      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - NODE_ENV=production
       - LOG_LEVEL=${LOG_LEVEL:-info}
     volumes:
       - markus-data:/app/.markus
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8056/api/health').then(r=>{if(!r.ok)throw r.status}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - markus-net
 

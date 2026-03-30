@@ -1,19 +1,21 @@
 import { Command } from 'commander';
 import { resolve } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { loadConfig, saveConfig, getDefaultConfigPath } from '@markus/shared';
+import { loadConfig, saveConfig, getDefaultConfigPath, APP_VERSION } from '@markus/shared';
+import { resolveTemplatesDir } from '../paths.js';
 
 export function registerInitCommand(program: Command) {
   program
     .command('init')
-    .description('Quick setup: configure LLM keys, DB, and create default agents')
-    .action(async () => {
-      await quickInit();
+    .description('Interactive setup wizard: configure LLM provider, API keys, and server settings')
+    .option('--force', 'Overwrite existing configuration')
+    .action(async (opts) => {
+      await quickInit({ force: opts.force });
     });
 }
 
-export async function quickInit() {
+export async function quickInit(options?: { force?: boolean }) {
   const { writeFileSync, mkdirSync } = await import('node:fs');
   const { join: pathJoin } = await import('node:path');
   const readline = await import('node:readline');
@@ -23,6 +25,27 @@ export async function quickInit() {
     new Promise(r =>
       rl.question(`${q}${def ? ` [${def}]` : ''}: `, ans => r(ans.trim() || def || ''))
     );
+
+  // Welcome banner
+  console.log(`
+  ┌─────────────────────────────────────┐
+  │         Markus v${APP_VERSION.padEnd(22)}│
+  │   AI Digital Workforce Platform     │
+  └─────────────────────────────────────┘
+  `);
+
+  // Check for existing config
+  const configPath = getDefaultConfigPath();
+  if (existsSync(configPath) && !options?.force) {
+    console.log(`  Existing configuration found: ${configPath}`);
+    const overwrite = await ask('  Overwrite? (y/n)', 'n');
+    if (overwrite.toLowerCase() !== 'y') {
+      console.log('  Keeping existing config. Use --force to overwrite.');
+      rl.close();
+      return;
+    }
+    console.log('');
+  }
 
   const MODEL_MAP: Record<string, string> = {
     anthropic: 'claude-opus-4-6',
@@ -43,7 +66,7 @@ export async function quickInit() {
     { provider: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1' },
   ];
 
-  console.log('\n  Markus Setup\n');
+  console.log('  [1/3] LLM Provider Configuration\n');
 
   // --- Step 1: Auto-detect available sources ---
   const envProviders: Array<{ provider: string; label: string; key: string; baseUrl?: string }> = [];
@@ -165,11 +188,13 @@ export async function quickInit() {
     }
   }
 
-  // --- Step 4: API port ---
-  const port = await ask('\n  API Port', '8056');
+  // --- Step 4: Server settings ---
+  console.log('\n  [2/3] Server Settings\n');
+  const port = await ask('  API Port', '8056');
   rl.close();
 
   // --- Step 5: Save config ---
+  console.log('\n  [3/3] Saving Configuration\n');
   const configUpdates: Record<string, unknown> = {
     llm: {
       defaultProvider,
@@ -181,7 +206,7 @@ export async function quickInit() {
 
   try {
     saveConfig(configUpdates as any);
-    console.log(`\n  Config saved to ${getDefaultConfigPath()}`);
+    console.log(`  Config saved to ${configPath}`);
     if (Object.keys(providers).length > 0) {
       console.log(`  Providers: ${Object.keys(providers).join(', ')} (default: ${defaultProvider})`);
     }
@@ -189,12 +214,22 @@ export async function quickInit() {
     console.error(`\n  Failed to save config: ${e}`);
   }
 
-  // Ensure templates/roles directory exists with a default developer role
-  const rolesDir = pathJoin(process.cwd(), 'templates', 'roles', 'developer');
-  if (!existsSync(rolesDir)) {
-    mkdirSync(rolesDir, { recursive: true });
+  // Seed user-local templates from the built-in package templates
+  const userTemplatesDir = pathJoin(homedir(), '.markus', 'templates');
+  const builtinTemplatesDir = resolveTemplatesDir('roles');
+  if (builtinTemplatesDir && existsSync(builtinTemplatesDir) && !existsSync(userTemplatesDir)) {
+    const builtinRoot = resolve(builtinTemplatesDir, '..');
+    mkdirSync(userTemplatesDir, { recursive: true });
+    cpSync(builtinRoot, userTemplatesDir, { recursive: true });
+    console.log(`  Copied templates to ${userTemplatesDir}`);
+  }
+
+  // Ensure a default developer role exists
+  const devRoleDir = pathJoin(userTemplatesDir || pathJoin(process.cwd(), 'templates'), 'roles', 'developer');
+  if (!existsSync(devRoleDir)) {
+    mkdirSync(devRoleDir, { recursive: true });
     writeFileSync(
-      pathJoin(rolesDir, 'ROLE.md'),
+      pathJoin(devRoleDir, 'ROLE.md'),
       [
         '---',
         'name: Developer',
@@ -210,5 +245,20 @@ export async function quickInit() {
     console.log('  Created default developer role template.');
   }
 
-  console.log('\n  Setup complete! Run `markus start` to launch.\n');
+  const apiPort = parseInt(port) || 8056;
+  console.log(`
+  ┌─────────────────────────────────────┐
+  │         Setup Complete!             │
+  └─────────────────────────────────────┘
+
+  Next steps:
+
+    markus start          Start the server
+    markus agent list     List agents
+    markus --help         Show all commands
+
+  Config:  ${configPath}
+  Data:    ${pathJoin(homedir(), '.markus')}
+  Server:  http://localhost:${apiPort}
+  `);
 }
