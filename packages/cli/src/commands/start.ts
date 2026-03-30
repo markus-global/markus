@@ -246,6 +246,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     process.env['ADMIN_PASSWORD'] = config.security.adminPassword;
   }
 
+  // Propagate markus.json search API keys into env so web_search tool can read them
+  if (config.integrations?.search?.serperApiKey && !process.env['SERPER_API_KEY']) {
+    process.env['SERPER_API_KEY'] = config.integrations.search.serperApiKey;
+  }
+  if (config.integrations?.search?.braveApiKey && !process.env['BRAVE_SEARCH_API_KEY']) {
+    process.env['BRAVE_SEARCH_API_KEY'] = config.integrations.search.braveApiKey;
+  }
+
   const {
     orgService,
     taskService,
