@@ -693,18 +693,24 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
 
   const webPort = config.server.webPort;
-  const webUiLine = webUiDir
-    ? `  Web UI:      http://localhost:${apiPort}  (built-in)`
-    : `  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)`;
-  console.log(`
+  if (webUiDir) {
+    console.log(`
   Markus is running!
 
-  API Server:  http://localhost:${apiPort}
-${webUiLine}
-  WebUI Comm:  http://localhost:${commPort}
+  Dashboard:   http://localhost:${apiPort}
 
   Press Ctrl+C to stop.
   `);
+  } else {
+    console.log(`
+  Markus is running!
+
+  API Server:  http://localhost:${apiPort}
+  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)
+
+  Press Ctrl+C to stop.
+  `);
+  }
 
   // Start restored agents in background (server is already accepting requests)
   orgService.startRestoredAgentsInBackground();
