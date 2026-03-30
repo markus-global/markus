@@ -1280,6 +1280,7 @@ export class Agent {
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
+        builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
@@ -1648,6 +1649,7 @@ export class Agent {
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
+        builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
@@ -2184,6 +2186,7 @@ export class Agent {
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
+        builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
@@ -2487,6 +2490,7 @@ export class Agent {
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
+        builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,

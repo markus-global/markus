@@ -145,6 +145,7 @@ export class ContextEngine {
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
+      builderArtifactsDir?: string;
     };
     agentDataDir?: string;
     dynamicContext?: string;
@@ -210,6 +211,9 @@ export class ContextEngine {
       if (opts.agentWorkspace?.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
+      if (opts.agentWorkspace?.builderArtifactsDir) {
+        parts.push(`- Builder artifacts directory: \`${opts.agentWorkspace.builderArtifactsDir}\` (write agent/team/skill packages here — the Builder page reads from this directory)`);
+      }
       if (opts.agentDataDir) {
         parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
       }
@@ -219,6 +223,9 @@ export class ContextEngine {
       parts.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
       if (opts.agentWorkspace.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
+      }
+      if (opts.agentWorkspace.builderArtifactsDir) {
+        parts.push(`- Builder artifacts directory: \`${opts.agentWorkspace.builderArtifactsDir}\` (write agent/team/skill packages here — the Builder page reads from this directory)`);
       }
       if (opts.agentDataDir) {
         parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);

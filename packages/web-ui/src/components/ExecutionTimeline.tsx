@@ -8,7 +8,8 @@
  */
 import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { api, type TaskLogEntry, type AgentActivityLogEntry } from '../api.ts';
+import { api, wsClient, type TaskLogEntry, type AgentActivityLogEntry } from '../api.ts';
+import { navBus } from '../navBus.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
@@ -424,7 +425,7 @@ function parseTaskApprovalFromResult(tool: string, result?: string): TaskApprova
   if (!result) return null;
   try {
     const parsed = JSON.parse(result);
-    if (parsed.status !== 'pending_approval' || !parsed.task) return null;
+    if (!parsed.task) return null;
     const t = parsed.task;
     return {
       taskId: t.id,
@@ -445,40 +446,93 @@ const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
   low: 'text-fg-tertiary',
 };
 
+type TaskCardState = 'loading' | 'pending' | 'approving' | 'rejecting' | 'in_progress' | 'completed' | 'review' | 'blocked' | 'failed' | 'cancelled' | 'archived';
+
+const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
+  pending_approval: 'pending',
+  in_progress: 'in_progress',
+  completed: 'completed',
+  review: 'review',
+  blocked: 'blocked',
+  failed: 'failed',
+  cancelled: 'cancelled',
+  archived: 'archived',
+};
+
+const TASK_STATUS_CONFIG: Record<string, { icon: string; label: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: '⏳', label: 'Pending Approval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  approving:   { icon: '⏳', label: 'Approving…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  rejecting:   { icon: '⏳', label: 'Rejecting…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  in_progress: { icon: '▶',  label: 'In Progress',      borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
+  completed:   { icon: '✅', label: 'Completed',         borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
+  review:      { icon: '👀', label: 'In Review',         borderClass: 'border-purple-500/40',      bgClass: 'bg-purple-500/5',         badgeClass: 'bg-purple-500/15 text-purple-500', textClass: 'text-purple-500' },
+  blocked:     { icon: '🚫', label: 'Blocked',           borderClass: 'border-orange-500/40',      bgClass: 'bg-orange-500/5',         badgeClass: 'bg-orange-500/15 text-orange-500', textClass: 'text-orange-500' },
+  failed:      { icon: '❌', label: 'Failed',            borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  cancelled:   { icon: '⊘',  label: 'Cancelled',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  archived:    { icon: '📦', label: 'Archived',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  loading:     { icon: '⏳', label: 'Loading…',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+};
+
 export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
-  const [state, setState] = useState<'idle' | 'approving' | 'rejecting' | 'approved' | 'rejected'>('idle');
+  const [cardState, setCardState] = useState<TaskCardState>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    api.tasks.get(info.taskId).then(({ task }) => {
+      if (cancelled) return;
+      setCardState(TASK_STATUS_TO_CARD_STATE[task.status] ?? 'pending');
+    }).catch(() => {
+      if (!cancelled) setCardState('pending');
+    });
+    return () => { cancelled = true; };
+  }, [info.taskId]);
+
+  useEffect(() => {
+    return wsClient.on('task:update', (event) => {
+      const p = event.payload;
+      if ((p['taskId'] as string) === info.taskId && p['status']) {
+        setCardState(TASK_STATUS_TO_CARD_STATE[p['status'] as string] ?? 'pending');
+      }
+    });
+  }, [info.taskId]);
 
   const handleApprove = async () => {
-    setState('approving');
+    setCardState('approving');
     try {
       await api.tasks.approve(info.taskId);
-      setState('approved');
+      setCardState('in_progress');
     } catch {
-      setState('idle');
+      setCardState('pending');
     }
   };
 
   const handleReject = async () => {
-    setState('rejecting');
+    setCardState('rejecting');
     try {
       await api.tasks.reject(info.taskId);
-      setState('rejected');
+      setCardState('cancelled');
     } catch {
-      setState('idle');
+      setCardState('pending');
     }
   };
 
-  const isDone = state === 'approved' || state === 'rejected';
+  const isPending = cardState === 'pending' || cardState === 'approving' || cardState === 'rejecting';
+  const cfg = TASK_STATUS_CONFIG[cardState] ?? TASK_STATUS_CONFIG['loading']!;
+
+  const goToTask = () => navBus.navigate('tasks', { openTask: info.taskId });
 
   return (
-    <div className={`my-2 rounded-lg border ${isDone ? 'border-border-default/40 bg-surface-secondary/30' : 'border-amber-500/40 bg-amber-500/5'} p-3 max-w-md`}>
-      <div className="flex items-start gap-2 mb-2">
-        <span className="text-amber-500 text-sm mt-0.5">{isDone ? (state === 'approved' ? '✅' : '❌') : '⏳'}</span>
+    <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>
+      <div className="flex items-start gap-2 mb-1 cursor-pointer group" role="button" tabIndex={0} onClick={goToTask} onKeyDown={e => e.key === 'Enter' && goToTask()}>
+        <span className="text-sm mt-0.5">{cfg.icon}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 font-medium">Task</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>Task</span>
+            {!isPending && cardState !== 'loading' && (
+              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{cfg.label}</span>
+            )}
           </div>
-          <div className="text-sm font-medium text-fg-primary truncate mt-1">{info.title}</div>
+          <div className={`text-sm font-medium truncate mt-1 group-hover:underline ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
           {info.description && (
             <div className="text-xs text-fg-secondary mt-0.5 line-clamp-2">{info.description}</div>
           )}
@@ -493,33 +547,22 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
         </div>
       </div>
 
-      {!isDone && (
+      {isPending && (
         <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default/30">
           <button
             onClick={handleApprove}
-            disabled={state !== 'idle'}
+            disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {state === 'approving' ? 'Approving...' : 'Approve'}
+            {cardState === 'approving' ? 'Approving…' : 'Approve'}
           </button>
           <button
             onClick={handleReject}
-            disabled={state !== 'idle'}
+            disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {state === 'rejecting' ? 'Rejecting...' : 'Reject'}
+            {cardState === 'rejecting' ? 'Rejecting…' : 'Reject'}
           </button>
-        </div>
-      )}
-
-      {state === 'approved' && (
-        <div className="text-xs text-green-500 mt-1.5">
-          Task approved — executing in task context
-        </div>
-      )}
-      {state === 'rejected' && (
-        <div className="text-xs text-fg-tertiary mt-1.5">
-          Task rejected
         </div>
       )}
     </div>

@@ -184,6 +184,16 @@ const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   blocked:          { label: 'Blocked',   cls: 'bg-amber-500/15 text-amber-600' },
   failed:           { label: 'Failed',    cls: 'bg-red-500/15 text-red-500' },
 };
+const TASK_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending_approval: { label: 'Pending Approval', cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress:      { label: 'In Progress',      cls: 'bg-blue-500/15 text-blue-500' },
+  blocked:          { label: 'Blocked',           cls: 'bg-orange-500/15 text-orange-500' },
+  review:           { label: 'In Review',         cls: 'bg-purple-500/15 text-purple-500' },
+  completed:        { label: 'Completed',         cls: 'bg-green-500/15 text-green-600' },
+  failed:           { label: 'Failed',            cls: 'bg-red-500/15 text-red-500' },
+  cancelled:        { label: 'Cancelled',         cls: 'bg-gray-500/15 text-fg-tertiary' },
+  archived:         { label: 'Archived',          cls: 'bg-gray-500/15 text-fg-tertiary' },
+};
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
@@ -827,6 +837,19 @@ function TaskDetailModal({
     return unsub;
   }, [task.id]);
 
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
+
+  useEffect(() => {
+    const unsub = wsClient.on('task:update', (event) => {
+      const p = event.payload as Record<string, unknown>;
+      if ((p.taskId as string) !== task.id) return;
+      void loadSubtasks();
+      onRefreshRef.current();
+    });
+    return unsub;
+  }, [task.id, loadSubtasks]);
+
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
@@ -847,9 +870,21 @@ function TaskDetailModal({
       <div className={`bg-surface-secondary border border-border-default rounded-xl flex flex-col shadow-2xl ${
         isMobile ? 'w-full max-h-full' : 'w-[780px] max-w-[95vw] max-h-[88vh]'
       }`} onClick={e => e.stopPropagation()}>
-        {/* Header – title & close only */}
+        {/* Header – title, status & close */}
         <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
-          <h3 className="text-base font-semibold leading-snug flex-1 min-w-0 pr-4">{task.title}</h3>
+          <div className="flex-1 min-w-0 pr-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
+              {(() => {
+                const badge = TASK_STATUS_BADGE[task.status];
+                return badge ? (
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
+                );
+              })()}
+            </div>
+          </div>
           <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>
         </div>
 

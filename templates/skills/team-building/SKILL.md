@@ -13,7 +13,7 @@ This skill teaches you how to create Markus team packages — self-contained dir
 
 ## Artifact Directory
 
-Team artifacts are saved under:
+**CRITICAL**: Team artifacts MUST be saved under this exact path — the Builder page, install system, and deliverable detection all depend on it:
 
 ```
 ~/.markus/builder-artifacts/teams/{team-name}/
@@ -28,6 +28,8 @@ Team artifacts are saved under:
         ├── ROLE.md              # Worker identity (you write via file_write)
         └── POLICIES.md          # Worker constraints (you write via file_write, optional)
 ```
+
+**Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/teams/` is recognized by the system.
 
 ### Where files are deployed on install
 
@@ -149,6 +151,7 @@ Once all files are written, tell the user:
 - **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
 - **DO NOT** leave skills empty when relevant skills are available. Review the skills list!
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
+- **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/teams/{name}/`.
 - **The `name` field MUST be English kebab-case**.
 - Every team MUST have exactly **one** member with `"role": "manager"` and at least **one** `"worker"`.
 - Write each ROLE.md with **full attention** — at least 5 substantive paragraphs per member.

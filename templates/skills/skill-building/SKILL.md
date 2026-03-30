@@ -14,7 +14,7 @@ Most skills are instruction-based. Use MCP-based skills when the capability requ
 
 ## Artifact Directory
 
-Skill artifacts are saved under:
+**CRITICAL**: Skill artifacts MUST be saved under this exact path — the Builder page, install system, and deliverable detection all depend on it:
 
 ```
 ~/.markus/builder-artifacts/skills/{skill-name}/
@@ -23,6 +23,8 @@ Skill artifacts are saved under:
 ├── README.md        # Human-readable documentation (optional)
 └── ...              # Any other files: scripts, MCP servers, configs, templates, etc.
 ```
+
+**Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/skills/` is recognized by the system.
 
 A skill directory can contain **any files** needed for the skill to work — not just SKILL.md and README.md. For example:
 - **MCP server scripts** (e.g., `server.mjs`) that provide new tools to the agent
@@ -165,5 +167,6 @@ Once all files are written, tell the user:
 
 - **DO NOT** use names that conflict with built-in skills. Check the dynamic context for existing skill names.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
+- **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/skills/{name}/`.
 - **The `name` field MUST be English kebab-case** (e.g., `git-changelog`, not `网页抓取器`). This is the directory name and package identifier.
 - The `name` field and `SKILL.md` frontmatter `name` must match exactly.

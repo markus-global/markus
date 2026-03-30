@@ -30,6 +30,8 @@ For each team member:
 ### 5. Build the Team
 Follow the `team-building` skill for the complete technical workflow: manifest JSON format, directory structure, file writing steps, and field reference. Output in steps — manifest JSON first, then write each file individually via `file_write`.
 
+**All team artifacts MUST be written to `~/.markus/builder-artifacts/teams/{name}/`.** This is the canonical directory the Builder page reads from. Do NOT write to the shared workspace or any other location.
+
 ## Dynamic Context
 
 You will receive the **live list** of available role templates and skills as dynamic context injected into your system prompt. **You MUST only use role names and skill IDs that appear in the dynamic context.** Do NOT use any hardcoded or memorized skill names.

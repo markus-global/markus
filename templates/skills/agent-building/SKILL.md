@@ -9,7 +9,7 @@ This skill teaches you how to create Markus agent packages — self-contained di
 
 ## Artifact Directory
 
-Agent artifacts are saved under:
+**CRITICAL**: Agent artifacts MUST be saved under this exact path — the Builder page, install system, and deliverable detection all depend on it:
 
 ```
 ~/.markus/builder-artifacts/agents/{agent-name}/
@@ -18,6 +18,8 @@ Agent artifacts are saved under:
 ├── POLICIES.md      # Constraints & guardrails (you write via file_write, optional)
 └── CONTEXT.md       # Domain context & references (you write via file_write, optional)
 ```
+
+**Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/agents/` is recognized by the system.
 
 When the user **installs** the artifact, files are deployed to `~/.markus/agents/{agentId}/role/`. The `ROLE.md` is loaded as the agent's system prompt and **overrides** the base role template's default prompt.
 
@@ -131,6 +133,7 @@ Once all files are written, tell the user:
 - **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** default skills to `[]` when relevant skills are available. Check the skills list!
+- **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/agents/{name}/`.
 - **The `name` field MUST be English kebab-case**.
 - The `ROLE.md` is what makes the agent unique — write at least 5 substantive paragraphs. A generic one-liner is useless.
 - Default `temperature` to 0.7 for general tasks, lower (0.3-0.5) for precision tasks, higher (0.8-1.0) for creative tasks.
