@@ -103,7 +103,7 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
         const startIdx = Math.max(0, offset - 1);
         const AUTO_LINE_LIMIT = 500;
         const MAX_CHARS = 40_000;
-        const userSpecifiedLimit = limit != null;
+        const userSpecifiedLimit = limit !== null && limit !== undefined;
         let endIdx = limit ? Math.min(startIdx + limit, totalLines) : totalLines;
 
         // Auto-limit: if no explicit limit and file is large, cap to avoid
@@ -114,7 +114,7 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
           autoLimited = true;
         }
 
-        let selectedLines = lines.slice(startIdx, endIdx);
+        const selectedLines = lines.slice(startIdx, endIdx);
         let numbered = selectedLines.map((line, i) => `${startIdx + i + 1}|${line}`).join('\n');
 
         // If still too large in chars (e.g. lines are very long), trim further

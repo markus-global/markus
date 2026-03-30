@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger, type AuthProfile, type LLMAuthType, type OAuthTokens } from '@markus/shared';
@@ -53,7 +53,6 @@ export class AuthProfileStore {
       writeFileSync(this.lockPath, lockContent, { flag: 'wx' });
       return () => {
         try {
-          const { unlinkSync } = require('node:fs') as typeof import('node:fs');
           unlinkSync(this.lockPath);
         } catch { /* already released */ }
       };
@@ -66,7 +65,6 @@ export class AuthProfileStore {
           writeFileSync(this.lockPath, lockContent, { mode: 0o600 });
           return () => {
             try {
-              const { unlinkSync } = require('node:fs') as typeof import('node:fs');
               unlinkSync(this.lockPath);
             } catch { /* ok */ }
           };

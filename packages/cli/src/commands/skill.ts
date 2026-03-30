@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Command } from 'commander';
+import type { Command } from 'commander';
 import { createClient, ApiError } from '../api-client.js';
 import { table, success, fail, extractRows } from '../output.js';
 

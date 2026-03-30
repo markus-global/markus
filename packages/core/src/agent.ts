@@ -21,7 +21,8 @@ import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { MemoryStore } from './memory/store.js';
-import type { IMemoryStore } from './memory/types.js';
+import type { IMemoryStore, MemoryEntry } from './memory/types.js';
+import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { EnhancedMemorySystem } from './enhanced-memory-system.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer } from './context-engine.js';
@@ -135,7 +136,7 @@ export class Agent {
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
   private userMessageSender?: (message: string) => Promise<{ sessionId: string; messageId: string }>;
-  private semanticSearch?: import('./memory/semantic-search.js').SemanticMemorySearch;
+  private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
@@ -2540,7 +2541,7 @@ export class Agent {
         modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
         toolDefinitions: llmTools,
       });
-      let messages = prepared.messages;
+      const messages = prepared.messages;
 
       let risLlmStart = Date.now();
       let response = await this.withNetworkRetry(
@@ -2758,7 +2759,7 @@ export class Agent {
     return this.contextEngine;
   }
 
-  setSemanticSearch(ss: import('./memory/semantic-search.js').SemanticMemorySearch): void {
+  setSemanticSearch(ss: SemanticMemorySearch): void {
     this.semanticSearch = ss;
   }
 
@@ -3435,7 +3436,7 @@ export class Agent {
    * "Dream" cycle: send memory entries to the LLM to identify duplicates,
    * outdated items, and merge opportunities. Apply changes programmatically.
    */
-  private async dreamConsolidateMemory(entries: import('./memory/types.js').MemoryEntry[]): Promise<void> {
+  private async dreamConsolidateMemory(entries: MemoryEntry[]): Promise<void> {
     const MAX_ENTRIES_FOR_LLM = 200;
     const truncated = entries.length > MAX_ENTRIES_FOR_LLM;
     const batch = truncated ? entries.slice(-MAX_ENTRIES_FOR_LLM) : entries;

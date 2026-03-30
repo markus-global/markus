@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import type { Command } from 'commander';
 import { resolve } from 'node:path';
 import { readFileSync, existsSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';

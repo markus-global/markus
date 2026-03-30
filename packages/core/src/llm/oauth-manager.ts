@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import { createLogger, type OAuthTokens, type OAuthProviderConfig, type AuthProfile } from '@markus/shared';
-import { AuthProfileStore } from './auth-profiles.js';
+import type { AuthProfileStore } from './auth-profiles.js';
 
 const log = createLogger('oauth-manager');
 

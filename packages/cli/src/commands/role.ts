@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import type { Command } from 'commander';
 import { createClient, ApiError } from '../api-client.js';
 import { table, detail, fail, extractRows } from '../output.js';
 
