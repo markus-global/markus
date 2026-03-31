@@ -75,7 +75,15 @@ export function App() {
 
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
-    window.location.hash = _savedPageHashes[normalized] || normalized;
+    const savedHash = _savedPageHashes[normalized];
+    if (savedHash && savedHash !== normalized) {
+      // Silently push the base page hash first so that browser-back from
+      // the sub-path (e.g. #chat/d) lands on the list (#chat), not the previous page.
+      history.pushState(null, '', '#' + normalized);
+      window.location.hash = savedHash;
+    } else {
+      window.location.hash = normalized;
+    }
   }, [isMobile]);
 
   useEffect(() => {
