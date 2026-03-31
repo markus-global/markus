@@ -131,6 +131,8 @@ export {
   createPatchTool,
   createBackgroundExecTool,
   createProcessTool,
+  onBackgroundCompletion,
+  drainCompletedNotifications,
   MCPClientManager,
   createBuiltinTools,
   createManagerTools,
@@ -139,6 +141,8 @@ export {
   type A2AContext,
   createStructuredA2ATools,
   type StructuredA2AContext,
+  createSubagentTool,
+  type SubagentContext,
 } from './tools/index.js';
 export {
   ToolLoopDetector,

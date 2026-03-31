@@ -16,6 +16,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:web': ['web_search', 'web_fetch', 'web_extract'],
   'group:messaging': ['message', 'send_message'],
   'group:a2a': ['delegate_task', 'query_agent', 'team_broadcast'],
+  'group:agent': ['spawn_subagent', 'todo_write', 'todo_read'],
 };
 
 /**
@@ -24,7 +25,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
  */
 const PROFILE_ALLOWLISTS: Record<ToolProfile, string[] | null> = {
   full: null, // null means allow everything
-  coding: ['group:fs', 'group:runtime', 'group:memory', 'group:web'],
+  coding: ['group:fs', 'group:runtime', 'group:memory', 'group:web', 'group:agent'],
   messaging: ['group:messaging', 'group:memory'],
   minimal: ['memory_search', 'memory_list'],
 };

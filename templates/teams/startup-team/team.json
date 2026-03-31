@@ -2,19 +2,41 @@
   "type": "team",
   "name": "startup-team",
   "displayName": "Startup All-in-One",
-  "version": "1.0.0",
-  "description": "A lean startup team covering product strategy, development, marketing, and operations. Each member wears multiple hats and moves fast.",
+  "version": "2.0.0",
+  "description": "A lean startup team built for speed. Product Manager drives strategy, Full-Stack Dev ships features rapidly, Growth Lead handles marketing and analytics, and DevOps keeps everything running. Each member owns their domain end-to-end. Designed for MVP development, rapid iteration, and growth experiments with subagent-assisted research and background deployment.",
   "author": "Markus Team",
   "category": "startup",
-  "tags": ["startup", "lean", "mvp", "product", "growth"],
+  "tags": ["startup", "lean", "mvp", "product", "growth", "iteration", "agile"],
   "icon": "zap",
   "team": {
     "members": [
-      { "name": "COO", "role": "manager", "roleName": "org-manager", "count": 1, "skills": [] },
-      { "name": "Product Manager", "role": "worker", "roleName": "product-manager", "count": 1, "skills": [] },
-      { "name": "Full-Stack Dev", "role": "worker", "roleName": "developer", "count": 1, "skills": [] },
-      { "name": "Marketing Lead", "role": "worker", "roleName": "marketing", "count": 1, "skills": [] },
-      { "name": "Ops Manager", "role": "worker", "roleName": "operations", "count": 1, "skills": [] }
-    ]
+      {
+        "name": "Product Manager",
+        "role": "manager",
+        "roleName": "product-manager",
+        "count": 1,
+        "skills": ["markus-project-cli", "self-evolution"]
+      },
+      {
+        "name": "Full-Stack Developer",
+        "role": "worker",
+        "roleName": "developer",
+        "count": 2,
+        "skills": ["chrome-devtools", "self-evolution"]
+      },
+      {
+        "name": "Growth Lead",
+        "role": "worker",
+        "roleName": "marketing",
+        "count": 1,
+        "skills": ["self-evolution"]
+      }
+    ],
+    "workflow": {
+      "phases": ["discover", "build", "ship", "measure"],
+      "parallelImplementation": true,
+      "worktreeIsolation": true,
+      "requireReviewBeforeComplete": false
+    }
   }
 }

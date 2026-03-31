@@ -132,7 +132,7 @@ export class WorkspaceManager {
     repoPath: string,
     taskBranch: string,
     targetBranch: string
-  ): Promise<{ mergeable: boolean; conflicts?: string[] }> {
+  ): Promise<{ mergeable: boolean; conflicts?: string[]; error?: string }> {
     try {
       const { stdout: mergeBase } = await execAsync(
         `git merge-base "${targetBranch}" "${taskBranch}"`,
@@ -149,8 +149,9 @@ export class WorkspaceManager {
         return { mergeable: false, conflicts: conflictFiles };
       }
       return { mergeable: true };
-    } catch {
-      return { mergeable: true };
+    } catch (err) {
+      log.warn('checkMergeability failed', { taskBranch, targetBranch, error: String(err) });
+      return { mergeable: false, error: `Mergeability check failed: ${String(err)}` };
     }
   }
 

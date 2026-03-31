@@ -1,0 +1,56 @@
+{
+  "type": "team",
+  "name": "engineering-pod",
+  "displayName": "Engineering Pod",
+  "version": "1.0.0",
+  "description": "A full-featured engineering pod with an architect who designs, multiple developers who implement in parallel across layers (backend, frontend, infrastructure), a dedicated reviewer, and a DevOps engineer. Designed for complex multi-layer projects requiring cross-cutting coordination, API contracts, and production deployment. Each member owns a clear domain to prevent file conflicts.",
+  "author": "Markus Team",
+  "category": "development",
+  "tags": ["engineering", "full-stack", "architecture", "devops", "deployment", "multi-layer"],
+  "icon": "server",
+  "team": {
+    "members": [
+      {
+        "name": "Architect",
+        "role": "manager",
+        "roleName": "project-manager",
+        "count": 1,
+        "skills": ["markus-project-cli", "team-building", "self-evolution"]
+      },
+      {
+        "name": "Backend Engineer",
+        "role": "worker",
+        "roleName": "developer",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "Frontend Engineer",
+        "role": "worker",
+        "roleName": "developer",
+        "count": 1,
+        "skills": ["chrome-devtools", "self-evolution"]
+      },
+      {
+        "name": "Infra Engineer",
+        "role": "worker",
+        "roleName": "devops",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "Senior Reviewer",
+        "role": "worker",
+        "roleName": "reviewer",
+        "count": 1,
+        "skills": ["self-evolution"]
+      }
+    ],
+    "workflow": {
+      "phases": ["design", "contract", "implement", "integrate", "review", "deploy"],
+      "parallelImplementation": true,
+      "worktreeIsolation": true,
+      "requireReviewBeforeComplete": true
+    }
+  }
+}

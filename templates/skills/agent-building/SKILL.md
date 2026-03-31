@@ -72,10 +72,12 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 
 **Write files in this order:**
 
-1. **ROLE.md** (REQUIRED) — The agent's primary identity document. At least 5 substantive paragraphs covering:
+1. **ROLE.md** (REQUIRED) — The agent's primary identity document. **Before writing, read the existing base role template** via `file_read` (path shown in dynamic context) to understand expected depth and conventions. At least 5 substantive paragraphs covering:
    - Who this agent is (identity, personality, expertise)
    - Core responsibilities and capabilities
-   - Workflow and methodology
+   - **Workflow with platform capabilities** — when and how to use `spawn_subagent` (focused subtasks), `background_exec` (long-running commands with auto-notifications), `shell_execute` (git/gh operations), `web_search`/`web_fetch` (research), `deliverable_create` (artifacts), `memory_save` (persistent knowledge)
+   - For code-writing agents: worktree isolation (`task/<id>` branches), TDD, submit-for-review flow, file ownership rules
+   - For review agents: review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`
    - Output standards and quality criteria
    - Domain-specific knowledge and context
 

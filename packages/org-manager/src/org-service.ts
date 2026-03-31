@@ -993,7 +993,32 @@ export class OrganizationService {
       for (const r of roleNames) {
         parts.push(`- \`${r}\``);
       }
+
+      const templateDirs = this.roleLoader.getTemplateDirs();
+      if (templateDirs.length > 0) {
+        parts.push('');
+        parts.push('**Tip**: You can read existing role templates for reference when writing custom ROLE.md files.');
+        parts.push(`Use \`file_read\` to inspect any template, e.g.: \`file_read("${templateDirs[0]}/developer/ROLE.md")\``);
+        parts.push('This is especially useful for understanding the level of detail and workflow guidance expected in a good ROLE.md.');
+      }
     }
+
+    // Platform capabilities — so builders write ROLE.md that leverages the system
+    parts.push('');
+    parts.push('## Platform Capabilities (reference when writing ROLE.md)');
+    parts.push('');
+    parts.push('When writing custom ROLE.md for agents, reference these platform capabilities where relevant:');
+    parts.push('');
+    parts.push('- **`spawn_subagent`** — Spawn lightweight in-process subagents for focused subtasks (deep analysis, research, boilerplate generation) without polluting the parent agent\'s context');
+    parts.push('- **`background_exec`** — Run long-running commands (builds, test suites, deployments) in background with automatic completion notifications');
+    parts.push('- **`shell_execute`** — Execute any shell command, including `git` (merge, diff, branch) and `gh` CLI (PRs, issues, releases) for Git/GitHub operations');
+    parts.push('- **Worktree isolation** — Each task gets an isolated git worktree (`task/<id>` branch). Developers work in isolation; the reviewer merges after approval.');
+    parts.push('- **`web_search` / `web_fetch`** — Search the web and fetch page content for research, documentation lookup, and real-time information');
+    parts.push('- **Task dependencies** — Use `blockedBy` to express dependencies between tasks. Blocked tasks auto-start when dependencies complete.');
+    parts.push('- **Deliverables** — Use `deliverable_create` to register outputs (files, conventions, architecture decisions) as trackable artifacts');
+    parts.push('- **Memory** — Use `memory_save` / `memory_search` for persistent knowledge across sessions');
+    parts.push('');
+    parts.push('Include workflow guidance in ROLE.md that tells the agent *when* and *how* to use these capabilities for their specific role.');
 
     return parts.join('\n');
   }

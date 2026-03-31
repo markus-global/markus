@@ -33,6 +33,8 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
+import { createSubagentTool, type SubagentContext } from './tools/subagent.js';
+import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -200,6 +202,7 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+  private _bgCompletionUnsub?: () => void;
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
@@ -239,6 +242,38 @@ export class Agent {
         this.tools.set(tool.name, tool);
       }
     }
+
+    // Register the lightweight subagent spawning tool
+    const subagentCtx: SubagentContext = {
+      llmRouter: this.llmRouter,
+      contextEngine: this.contextEngine,
+      getTools: () => taskAsyncContext.getStore()?.tools ?? this.tools,
+      getProvider: () => this.getEffectiveProvider(),
+      agentId: this.id,
+      offloadLargeResult: (toolName, result) => this.offloadLargeResult(toolName, result),
+    };
+    this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
+
+    // Register background process completion notifications.
+    // When a background_exec session finishes, inject a notification into the
+    // current chat session so the model sees it on its next turn.
+    this._bgCompletionUnsub = onBackgroundCompletion((notification) => {
+      const sessionId = this.currentSessionId;
+      if (!sessionId) return;
+      const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
+      const parts = [
+        `[BACKGROUND PROCESS COMPLETED] Session ${notification.sessionId} ${status}.`,
+        `Command: ${notification.command}`,
+        `Duration: ${Math.round(notification.durationMs / 1000)}s`,
+      ];
+      if (notification.exitCode !== 0 && notification.stderrTail) {
+        parts.push(`Stderr (last lines):\n${notification.stderrTail}`);
+      }
+      if (notification.exitCode === 0 && notification.stdoutTail) {
+        parts.push(`Output (last lines):\n${notification.stdoutTail}`);
+      }
+      this.injectUserMessage(sessionId, parts.join('\n'));
+    });
 
     // Initialize task executor
     this.taskExecutor = new TaskExecutor({
@@ -351,6 +386,7 @@ export class Agent {
 
   async stop(): Promise<void> {
     this.heartbeat.stop();
+    this._bgCompletionUnsub?.();
     if (this.memoryConsolidationTimer) {
       clearInterval(this.memoryConsolidationTimer);
       this.memoryConsolidationTimer = undefined;
@@ -2071,6 +2107,37 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
+    // Create a real git worktree for task isolation when a project workspace is provided.
+    // The task-service passes worktreePath=repoRoot — we upgrade it to an isolated
+    // .worktrees/task-<id> directory so concurrent tasks don't clobber each other.
+    let createdWorktreePath: string | undefined;
+    if (taskWorkspace && taskWorkspace.branch) {
+      const repoRoot = taskWorkspace.worktreePath;
+      const isolatedPath = join(repoRoot, '.worktrees', `task-${taskId}`);
+      try {
+        const { exec: execCb } = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execAsync = promisify(execCb);
+        await execAsync(
+          `git worktree add "${isolatedPath}" -b "${taskWorkspace.branch}" "${taskWorkspace.baseBranch}"`,
+          { cwd: repoRoot },
+        );
+        taskWorkspace = { ...taskWorkspace, worktreePath: isolatedPath };
+        createdWorktreePath = isolatedPath;
+        emit('status', `worktree created: ${isolatedPath}`, { branch: taskWorkspace.branch });
+        log.info('Git worktree created for task', { taskId, path: isolatedPath, branch: taskWorkspace.branch });
+      } catch (wtErr: unknown) {
+        const msg = String((wtErr as Record<string, string>).message ?? wtErr);
+        if (msg.includes('already exists')) {
+          taskWorkspace = { ...taskWorkspace, worktreePath: isolatedPath };
+          createdWorktreePath = isolatedPath;
+          log.warn('Worktree already exists, reusing', { taskId, path: isolatedPath });
+        } else {
+          log.warn('Failed to create worktree, falling back to repo root', { taskId, error: msg });
+        }
+      }
+    }
+
     // Rebind tools to worktree path for project-bound tasks.
     // Use task-local tools (stored in AsyncLocalStorage) instead of mutating
     // the shared this.tools — prevents concurrent worktree tasks from
@@ -3259,12 +3326,30 @@ export class Agent {
       'Skip if nothing meaningful happened since last heartbeat.',
     ].join('\n');
 
+    // Drain any background process completion notifications
+    const bgCompletions = drainCompletedNotifications();
+    let bgCompletionSection = '';
+    if (bgCompletions.length > 0) {
+      const lines = bgCompletions.map(n => {
+        const status = n.exitCode === 0 ? 'OK' : `FAILED (exit ${n.exitCode})`;
+        return `- [${status}] \`${n.command}\` (${Math.round(n.durationMs / 1000)}s)${n.exitCode !== 0 && n.stderrTail ? `\n  stderr: ${n.stderrTail.slice(0, 200)}` : ''}`;
+      });
+      bgCompletionSection = [
+        '',
+        '## Background Processes Completed',
+        `${bgCompletions.length} background process(es) finished since last check:`,
+        ...lines,
+        'Review any failures and take action if needed.',
+      ].join('\n');
+    }
+
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
       '## Your Checklist',
       checklist,
       lastHeartbeatSummary,
+      bgCompletionSection,
       failedTaskRecoverySection,
       dailyReportSection,
       selfEvolutionSection,

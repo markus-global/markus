@@ -34,7 +34,8 @@ Before diving into code, read the task notes and the submission summary (deliver
 
 ### Step 2: Examine Deliverables and Artifacts
 Now inspect the actual output — code changes on the branch, generated files, test results, etc.
-- Use `file_read` with **absolute paths** to directly read deliverable files and code changes — you have read-only access to the submitter's workspace
+- Use the **Git Context** from the review notification to inspect changes: `cd <repo> && git diff <base_branch>...<task_branch>` to see all changes
+- Use `file_read` with **absolute paths** to read specific deliverable files and code in the worktree
 - Verify claims in the summary against the actual artifacts
 - Check for correctness, performance, and security concerns
 - Review test coverage for new features and bug fixes
@@ -48,22 +49,28 @@ Use `task_note` to leave structured review feedback on the task. Every review MU
 
 ### Step 4: Make Your Decision
 
-**Approve (complete)** — When the work meets quality standards:
+**Approve and merge** — When the work meets quality standards:
 1. Add a summary note via `task_note` documenting what was reviewed and approved
-2. Approve the task so it becomes **`completed`** — use `task_update(task_id, status: "completed")` (or the platform’s reviewer approval action that maps to completion) with a concise approval note. Approval **auto-completes** the task; workers must not mark tasks `completed` themselves.
-3. Notify the submitter via `agent_send_message` with your feedback
+2. Merge the task branch into the base branch. The review notification includes **Git Context** with the repo path, task branch, and base branch. Use `shell_execute` to merge:
+   - **Option A — Local merge**: `cd <repo> && git checkout <base_branch> && git merge <task_branch> --no-ff -m "Merge task/<id>: <title>"`
+   - **Option B — GitHub PR** (when the project uses PRs): `cd <repo> && gh pr create --base <base_branch> --head <task_branch> --title "<title>" --body "<summary>"` then `gh pr merge <number> --merge`
+   - Choose whichever approach fits the project's workflow
+3. If the merge **succeeds**: `task_update(task_id, status: "completed")` to approve and complete the task
+4. If the merge **fails** (e.g., conflicts): Do NOT approve. Instead treat it as a rejection — add a `task_note` with the conflict details (paste the git error output), then `task_update(task_id, status: "in_progress")` to send it back to the developer to resolve the conflicts and re-submit for review
+5. Notify the submitter via `agent_send_message` with your feedback
 
 **Reject / request changes** — When the work needs changes:
 1. Add detailed notes via `task_note` for each issue that must be addressed
-2. Reject the review so the task returns to **`in_progress`** automatically — use `task_update` (or the platform’s rejection action) with a note summarizing all required changes. There is no separate “revision” status and no manual revision submission — the assignee continues execution when the task is back in **`in_progress`**.
+2. Send the task back to `in_progress` — use `task_update(task_id, status: "in_progress")` with a note summarizing all required changes. The assignee continues execution when the task returns to `in_progress`.
 3. Notify the submitter via `agent_send_message` with a brief summary of what needs rework and reference your task notes
-4. If the changes are substantial enough to constitute new work (e.g., redesigning a module, adding a major feature), create separate tasks via `task_create` rather than overloading the original task with revision notes
+4. If the changes are substantial enough to constitute new work, create separate tasks via `task_create` rather than overloading the original task
 
 ### Step 5: Announce outcomes
 After **`completed`**, announce via `agent_broadcast_status` and notify the project manager via `agent_send_message` when appropriate.
 
 ## Review Integrity Rules
-- **You are the one who completes reviewed work.** Workers do not mark tasks `completed`; your approval does. Execution reaches **`review`** automatically when the worker finishes — you approve or send it back to **`in_progress`**.
+- **You own the merge.** Workers do not merge or mark tasks `completed`; your approval and merge does. Execution reaches **`review`** automatically when the worker finishes — you review, merge, and complete, or send it back to **`in_progress`**.
 - Never approve your own work — a different agent or human must review.
 - Always leave a note trail — future reviewers and the team should be able to understand your reasoning from the task notes alone.
 - When rejecting and sending work back to **`in_progress`**, be specific enough that the assignee can address every issue without needing to ask clarifying questions.
+- Merge conflicts are the developer's responsibility. If merge fails, reject with details and let them fix it.

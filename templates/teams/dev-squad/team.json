@@ -2,18 +2,55 @@
   "type": "team",
   "name": "dev-squad",
   "displayName": "Development Squad",
-  "version": "1.0.0",
-  "description": "A focused development team with a PM who coordinates, developers who build, a reviewer who ensures quality, and a QA engineer who validates. Suitable for feature development sprints and product iteration.",
+  "version": "2.0.0",
+  "description": "A high-performance development team that follows a structured Plan → Implement → Review → Validate workflow. Features parallel implementation with worktree isolation, two-stage review (code + QA), subagent-driven deep analysis, and dependency-aware task scheduling. Suitable for feature sprints, refactoring campaigns, and production-grade software delivery.",
   "author": "Markus Team",
   "category": "development",
-  "tags": ["development", "agile", "sprint", "feature", "software"],
+  "tags": ["development", "agile", "sprint", "feature", "software", "tdd", "code-review"],
   "icon": "users",
   "team": {
     "members": [
-      { "name": "PM", "role": "manager", "roleName": "project-manager", "count": 1, "skills": [] },
-      { "name": "Developer", "role": "worker", "roleName": "developer", "count": 2, "skills": [] },
-      { "name": "Code Reviewer", "role": "worker", "roleName": "reviewer", "count": 1, "skills": [] },
-      { "name": "QA", "role": "worker", "roleName": "qa-engineer", "count": 1, "skills": [] }
-    ]
+      {
+        "name": "Tech Lead",
+        "role": "manager",
+        "roleName": "project-manager",
+        "count": 1,
+        "skills": ["markus-project-cli", "team-building"]
+      },
+      {
+        "name": "Backend Developer",
+        "role": "worker",
+        "roleName": "developer",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "Frontend Developer",
+        "role": "worker",
+        "roleName": "developer",
+        "count": 1,
+        "skills": ["chrome-devtools", "self-evolution"]
+      },
+      {
+        "name": "Code Reviewer",
+        "role": "worker",
+        "roleName": "reviewer",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "QA Engineer",
+        "role": "worker",
+        "roleName": "qa-engineer",
+        "count": 1,
+        "skills": ["self-evolution"]
+      }
+    ],
+    "workflow": {
+      "phases": ["plan", "implement", "review", "validate"],
+      "parallelImplementation": true,
+      "worktreeIsolation": true,
+      "requireReviewBeforeComplete": true
+    }
   }
 }

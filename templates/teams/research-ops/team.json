@@ -1,0 +1,18 @@
+{
+  "type": "team",
+  "name": "research-ops",
+  "displayName": "Research & Analysis Ops",
+  "version": "1.0.0",
+  "description": "A research-focused team that scopes questions, investigates in parallel with competing hypotheses, challenges findings, and synthesizes evidence into structured deliverables. Uses subagents, task dependencies, memory, deliverables, and web tools for rigorous analysis.",
+  "author": "Markus Team",
+  "category": "research",
+  "tags": ["research", "analysis", "investigation", "report", "knowledge"],
+  "icon": "search",
+  "team": {
+    "members": [
+      { "name": "Research Lead", "role": "manager", "roleName": "project-manager", "count": 1, "skills": [] },
+      { "name": "Research Analyst", "role": "worker", "roleName": "research-assistant", "count": 2, "skills": [] },
+      { "name": "Tech Writer / Synthesizer", "role": "worker", "roleName": "tech-writer", "count": 1, "skills": [] }
+    ]
+  }
+}

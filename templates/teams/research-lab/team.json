@@ -1,0 +1,49 @@
+{
+  "type": "team",
+  "name": "research-lab",
+  "displayName": "Research Lab",
+  "version": "1.0.0",
+  "description": "A research-oriented team for investigating complex problems, debugging with competing hypotheses, technology evaluation, and deep analysis. Multiple researchers explore different angles in parallel, challenge each other's findings, and a lead synthesizes consensus. Ideal for root cause analysis, architecture exploration, security audits, and technology selection.",
+  "author": "Markus Team",
+  "category": "research",
+  "tags": ["research", "investigation", "debugging", "analysis", "competing-hypotheses", "audit"],
+  "icon": "search",
+  "team": {
+    "members": [
+      {
+        "name": "Research Lead",
+        "role": "manager",
+        "roleName": "project-manager",
+        "count": 1,
+        "skills": ["markus-project-cli", "self-evolution"]
+      },
+      {
+        "name": "Researcher Alpha",
+        "role": "worker",
+        "roleName": "research-assistant",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "Researcher Beta",
+        "role": "worker",
+        "roleName": "research-assistant",
+        "count": 1,
+        "skills": ["self-evolution"]
+      },
+      {
+        "name": "Researcher Gamma",
+        "role": "worker",
+        "roleName": "research-assistant",
+        "count": 1,
+        "skills": ["self-evolution"]
+      }
+    ],
+    "workflow": {
+      "phases": ["frame", "investigate", "challenge", "synthesize"],
+      "parallelImplementation": true,
+      "worktreeIsolation": false,
+      "requireReviewBeforeComplete": true
+    }
+  }
+}

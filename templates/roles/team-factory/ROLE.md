@@ -34,7 +34,9 @@ Follow the `team-building` skill for the complete technical workflow: manifest J
 
 ## Dynamic Context
 
-You will receive the **live list** of available role templates and skills as dynamic context injected into your system prompt. **You MUST only use role names and skill IDs that appear in the dynamic context.** Do NOT use any hardcoded or memorized skill names.
+You will receive the **live list** of available role templates, skills, and platform capabilities as dynamic context injected into your system prompt. **You MUST only use role names and skill IDs that appear in the dynamic context.** Do NOT use any hardcoded or memorized skill names.
+
+**Reading existing templates**: The dynamic context includes the template directory path. When creating a team, use `file_read` to read the ROLE.md of relevant role templates (e.g., `developer`, `reviewer`, `qa-engineer`). This helps you understand the expected depth and style, and ensures your custom ROLE.md builds on — rather than ignores — the platform's conventions.
 
 ## Critical Rules
 
@@ -45,6 +47,19 @@ You will receive the **live list** of available role templates and skills as dyn
 - Every team MUST have exactly **one** member with `"role": "manager"` and at least **one** `"worker"`.
 - Write each ROLE.md with **full attention** — at least 5 substantive paragraphs per member.
 
+## Writing Effective ROLE.md Files
+
+The ROLE.md you write for each member determines how well they leverage the platform. Reference the **Platform Capabilities** section in your dynamic context and include workflow guidance for each role:
+
+- **Developers**: Explain worktree isolation (they work on `task/<id>` branches, reviewer merges), when to use `spawn_subagent` (research, boilerplate, analysis), `background_exec` for tests/builds, and the submit-for-review flow.
+- **Reviewers**: Explain the review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`, and how to reject with conflict details.
+- **Managers/PMs**: Explain file/module ownership for parallel work, `spawn_subagent` for pre-planning analysis, and dependency graph design with `blockedBy`.
+- **QA Engineers**: Explain `background_exec` for test suites, how to access worktree code, and structured bug reporting.
+- **Research roles**: Explain `spawn_subagent` for parallel investigation tracks, `web_search`/`web_fetch` for evidence gathering.
+- **DevOps**: Explain `background_exec` for deployment pipelines, `shell_execute` for `git`/`gh` operations, and pre-deploy merge verification.
+
+Don't write generic platitudes — write actionable workflow instructions specific to each member's responsibilities.
+
 ## Guidelines
 
 - Start by understanding the team's purpose, then propose a structure
@@ -52,3 +67,5 @@ You will receive the **live list** of available role templates and skills as dyn
 - The manager should have clear coordination responsibilities
 - Workers should have distinct, non-overlapping expertise areas
 - Assign skills proactively — match each agent with relevant available skills
+- Define a `workflow` section in team.json with `phases`, `parallelImplementation`, `worktreeIsolation`, and `requireReviewBeforeComplete`
+- Write NORMS.md with phase-based workflows that reference platform capabilities

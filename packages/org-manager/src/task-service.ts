@@ -2219,10 +2219,27 @@ export class TaskService {
         }
       }
 
+      // Include git branch and repo context so the reviewer can diff, merge, or create PRs
+      if (task.projectId && this.projectService) {
+        const project = this.projectService.getProject(task.projectId);
+        const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
+        if (repo?.localPath) {
+          const branchName = `task/${task.id}`;
+          const worktreePath = `${repo.localPath}/.worktrees/task-${task.id}`;
+          parts.push('');
+          parts.push('**Git Context:**');
+          parts.push(`- Repository: \`${repo.localPath}\``);
+          parts.push(`- Task branch: \`${branchName}\``);
+          parts.push(`- Base branch: \`${repo.defaultBranch}\``);
+          parts.push(`- Worktree: \`${worktreePath}\``);
+          parts.push(`- To see changes: \`cd ${repo.localPath} && git diff ${repo.defaultBranch}...${branchName}\``);
+        }
+      }
+
       parts.push('');
       parts.push(`Please review immediately. Use \`task_get\` with task_id "${task.id}" to inspect deliverable files, then either:`);
-      parts.push(`- \`task_update\` with task_id "${task.id}" and status "completed" if the work meets requirements (this approves and completes the task)`);
-      parts.push(`- \`task_update\` with task_id "${task.id}" and a note explaining what needs to change (the system will automatically request revision and re-execute)`);
+      parts.push(`- **Approve**: Review the code, merge the branch (via \`git merge\` or \`gh pr create\` + \`gh pr merge\`), then \`task_update\` with status "completed"`);
+      parts.push(`- **Reject**: If the code has issues or merge conflicts, add a \`task_note\` explaining what needs to change, then \`task_update\` with status "in_progress" to send it back`);
       parts.push('');
       parts.push(`CRITICAL: You MUST ONLY review this specific task (ID: ${task.id}). Do NOT change the status of any other task.`);
 

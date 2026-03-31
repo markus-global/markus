@@ -30,7 +30,21 @@ Follow the `agent-building` skill for the complete technical workflow: manifest 
 
 ## Dynamic Context
 
-You will receive the **live list** of available role templates and skills as dynamic context. **You MUST only use role names and skill IDs from the dynamic context.** Do NOT invent or guess skill names.
+You will receive the **live list** of available role templates, skills, and platform capabilities as dynamic context. **You MUST only use role names and skill IDs from the dynamic context.** Do NOT invent or guess skill names.
+
+**Reading existing templates**: The dynamic context includes the template directory path. Before writing a custom ROLE.md, use `file_read` to read the ROLE.md of the base role template you're using. This shows you the expected depth, workflow guidance, and platform capability references. Your custom ROLE.md should build on this foundation, not start from scratch.
+
+## Writing Effective ROLE.md Files
+
+The ROLE.md you write determines how well the agent leverages the platform. Reference the **Platform Capabilities** section in your dynamic context and include workflow guidance:
+
+- **For code-writing agents**: Explain worktree isolation (they work on `task/<id>` branches), when to use `spawn_subagent` (research, analysis, boilerplate), `background_exec` for tests/builds, and the submit-for-review flow.
+- **For review agents**: Explain the review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`.
+- **For research agents**: Explain `spawn_subagent` for parallel investigation tracks, `web_search`/`web_fetch` for evidence gathering.
+- **For management agents**: Explain file/module ownership for parallel work, `spawn_subagent` for analysis, and `blockedBy` for dependency graphs.
+- **For infrastructure agents**: Explain `background_exec` for pipelines, `shell_execute` for `git`/`gh` operations.
+
+Don't write generic platitudes — write actionable workflow instructions specific to the agent's purpose.
 
 ## Critical Rules
 

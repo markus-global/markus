@@ -83,7 +83,13 @@ This JSON contains ONLY metadata and structure — **no file content**.
         "count": 1,
         "skills": ["skill-id-1", "skill-id-2"]
       }
-    ]
+    ],
+    "workflow": {
+      "phases": ["plan", "implement", "review", "validate"],
+      "parallelImplementation": true,
+      "worktreeIsolation": true,
+      "requireReviewBeforeComplete": true
+    }
   }
 }
 ```
@@ -96,16 +102,24 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 
 **Write files in this order:**
 
-1. **ANNOUNCEMENT.md** — Team mission, member introduction, collaboration goals. At least 3 paragraphs.
+1. **ANNOUNCEMENT.md** — Team mission, member introduction, how the team works, key capabilities. At least 3 paragraphs.
 
-2. **NORMS.md** — Communication protocols, quality standards, escalation rules. Specific to this team's domain.
+2. **NORMS.md** — Phase-based workflow documentation aligned with `team.workflow.phases`. This is critical for team effectiveness. Structure it as:
+   - A section for each workflow phase (e.g., "### 1. Plan", "### 2. Implement", "### 3. Review & Merge")
+   - Each phase explains what happens, who is responsible, and which platform capabilities to use
+   - Include file/module ownership rules if the team does parallel development
+   - Include communication protocols (when to use `agent_send_message`, `agent_broadcast_status`)
+   - Reference platform capabilities: `spawn_subagent`, `background_exec`, `shell_execute` (git/gh), worktree isolation, `deliverable_create`, etc.
 
-3. **Each member's ROLE.md** — Write one at a time. Each ROLE.md should be at least 5 paragraphs, covering:
+3. **Each member's ROLE.md** — Write one at a time. **Before writing, read the existing base role template** via `file_read` to understand the expected depth and conventions. Each ROLE.md should be at least 5 paragraphs, covering:
    - Who this agent is (identity, personality)
    - Core expertise and responsibilities
-   - Workflow and methodology
+   - **Workflow with platform capabilities** — when to use `spawn_subagent`, `background_exec`, `shell_execute`, etc.
    - Output standards and quality criteria
    - Collaboration expectations within the team
+   - For developers: worktree isolation, TDD, submit-for-review flow
+   - For reviewers: review-then-merge workflow (git merge or gh pr)
+   - For managers: file ownership planning, dependency graphs, `spawn_subagent` for analysis
 
 4. **POLICIES.md** (optional) — For members that need specific constraints.
 
@@ -137,6 +151,12 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 - **`roleName`**: Base role template from the dynamic context
 - **`count`**: Number of instances (default 1)
 - **`skills`**: Skill IDs from the dynamic context. **Actively assign skills — don't leave empty!**
+
+### `team.workflow` — Workflow Configuration (recommended)
+- **`phases`**: Array of phase names defining the team's workflow (e.g., `["plan", "implement", "review", "validate"]`)
+- **`parallelImplementation`**: `true` if multiple members work in parallel during implementation
+- **`worktreeIsolation`**: `true` if developers should work in isolated git worktrees (recommended for coding teams)
+- **`requireReviewBeforeComplete`**: `true` if tasks must pass review before completion
 
 ## After Creation
 

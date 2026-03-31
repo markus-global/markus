@@ -11,15 +11,91 @@ interface BackgroundSession {
   stdout: string[];
   stderr: string[];
   process: ChildProcess;
+  /** Whether the completion has been consumed via drainCompletedNotifications */
+  notified: boolean;
 }
 
 const sessions = new Map<string, BackgroundSession>();
 let sessionCounter = 0;
 
+export type CompletionCallback = (notification: {
+  sessionId: string;
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  stderrTail: string;
+  stdoutTail: string;
+}) => void;
+
+const completionListeners: CompletionCallback[] = [];
+
+/**
+ * Register a listener that fires when any background session completes.
+ * Used by the agent to inject completion notifications into conversations.
+ */
+export function onBackgroundCompletion(cb: CompletionCallback): () => void {
+  completionListeners.push(cb);
+  return () => {
+    const idx = completionListeners.indexOf(cb);
+    if (idx >= 0) completionListeners.splice(idx, 1);
+  };
+}
+
+/**
+ * Drain all sessions that completed since the last drain but haven't been
+ * notified yet. Returns summaries suitable for injecting into agent context.
+ */
+export function drainCompletedNotifications(): Array<{
+  sessionId: string;
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  stderrTail: string;
+  stdoutTail: string;
+}> {
+  const results: Array<{
+    sessionId: string;
+    command: string;
+    exitCode: number;
+    durationMs: number;
+    stderrTail: string;
+    stdoutTail: string;
+  }> = [];
+  for (const s of sessions.values()) {
+    if (s.exitCode !== null && !s.notified) {
+      s.notified = true;
+      results.push({
+        sessionId: s.id,
+        command: s.command.slice(0, 200),
+        exitCode: s.exitCode,
+        durationMs: Date.now() - s.startedAt,
+        stderrTail: s.stderr.slice(-10).join('\n'),
+        stdoutTail: s.stdout.slice(-10).join('\n'),
+      });
+    }
+  }
+  return results;
+}
+
+function notifyCompletion(session: BackgroundSession): void {
+  if (completionListeners.length === 0) return;
+  const notification = {
+    sessionId: session.id,
+    command: session.command.slice(0, 200),
+    exitCode: session.exitCode ?? -1,
+    durationMs: Date.now() - session.startedAt,
+    stderrTail: session.stderr.slice(-10).join('\n'),
+    stdoutTail: session.stdout.slice(-10).join('\n'),
+  };
+  for (const cb of completionListeners) {
+    try { cb(notification); } catch { /* listener errors should not crash the manager */ }
+  }
+}
+
 export function createBackgroundExecTool(workspacePath?: string): AgentToolHandler {
   return {
     name: 'background_exec',
-    description: 'Run a shell command in the background. Returns immediately with a session ID. Use the "process" tool to poll for results, view logs, or kill the process. Ideal for long-running commands like dev servers, test suites, or builds.',
+    description: 'Run a shell command in the background. Returns immediately with a session ID. Use the "process" tool to poll for results, view logs, or kill the process. Ideal for long-running commands like dev servers, test suites, or builds. You will be automatically notified when the process completes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -58,12 +134,12 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         stdout: [],
         stderr: [],
         process: child,
+        notified: false,
       };
 
       child.stdout?.on('data', (chunk: Buffer) => {
         const lines = chunk.toString().split('\n');
         session.stdout.push(...lines);
-        // Keep at most 2000 lines
         if (session.stdout.length > 2000) {
           session.stdout = session.stdout.slice(-1500);
         }
@@ -79,9 +155,13 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
 
       child.on('close', (code) => {
         session.exitCode = code ?? -1;
+        notifyCompletion(session);
       });
       child.on('exit', (code) => {
-        if (session.exitCode === null) session.exitCode = code ?? -1;
+        if (session.exitCode === null) {
+          session.exitCode = code ?? -1;
+          notifyCompletion(session);
+        }
       });
 
       // Auto-kill timeout
@@ -90,6 +170,7 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
           if (session.exitCode === null) {
             child.kill('SIGTERM');
             session.exitCode = -1;
+            notifyCompletion(session);
           }
         }, timeoutSec * 1000);
       }
