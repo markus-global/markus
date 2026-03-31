@@ -2,7 +2,7 @@
 
 Official command-line interface for [Markus](https://github.com/markus-global/markus) — install, configure, and run the open-source AI team platform from your terminal.
 
-The CLI wraps interactive setup (`markus init`) and platform startup (`markus start`) so you can go from zero to a running dashboard without cloning the monorepo.
+The CLI wraps platform startup (`markus start`) so you can go from zero to a running dashboard without cloning the monorepo.
 
 ## Install
 
@@ -13,7 +13,7 @@ npm install -g @markus-global/cli
 ## Quick start
 
 ```bash
-markus init && markus start
+markus start
 ```
 
 Then open the app in your browser (default: `http://localhost:8056`).

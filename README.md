@@ -92,8 +92,7 @@ curl -fsSL https://markus.global/install.sh | bash
 
 ```bash
 npm install -g @markus-global/cli
-markus init     # Interactive setup wizard
-markus start    # Launch the platform
+markus start
 ```
 
 Open **[http://localhost:8056](http://localhost:8056)** — default login: `admin@markus.local` / `markus123`

@@ -449,7 +449,6 @@ Agent 通过三个层次了解整个工作流和治理规则：
 
 ```bash
 npm install -g @markus-global/cli
-markus init     # 交互式配置向导
 markus start
 ```
 

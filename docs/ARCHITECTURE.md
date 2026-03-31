@@ -444,7 +444,6 @@ Agents understand the workflow and governance rules through three layers:
 
 ```bash
 npm install -g @markus-global/cli
-markus init     # Interactive setup wizard
 markus start
 ```
 

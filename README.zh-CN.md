@@ -55,8 +55,7 @@ curl -fsSL https://markus.global/install.sh | bash
 
 ```bash
 npm install -g @markus-global/cli
-markus init     # 交互式配置向导
-markus start    # 启动平台
+markus start
 ```
 
 打开 **[http://localhost:8056](http://localhost:8056)**。默认账号：`admin@markus.local` / `markus123`
