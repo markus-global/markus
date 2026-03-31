@@ -73,16 +73,17 @@ export function App() {
     if (curFull !== curBase) _savedPageHashes[curBase] = curFull;
     else delete _savedPageHashes[curBase];
 
-    // Set hash BEFORE React state so that when the page renders, components
-    // (e.g. Chat) can read the final hash immediately — avoids a flash of the
-    // list view before the detail appears.
+    // Use pushState (silent, no events) for all URL changes, then dispatch
+    // hashchange synchronously so external stores (e.g. Chat's hash store)
+    // update in the same React render batch as setPage — eliminates flash.
     const savedHash = _savedPageHashes[normalized];
     if (savedHash && savedHash !== normalized) {
       history.pushState(null, '', '#' + normalized);
-      window.location.hash = savedHash;
+      history.pushState(null, '', '#' + savedHash);
     } else {
-      window.location.hash = normalized;
+      history.pushState(null, '', '#' + normalized);
     }
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
   }, [isMobile]);
