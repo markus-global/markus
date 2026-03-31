@@ -1557,7 +1557,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* ── Left sidebar (ChatTeamSidebar) — always mounted on mobile to preserve scroll ── */}
-      <div className={isMobile ? 'flex-1 min-w-0 flex flex-col overflow-hidden' : 'contents'}
+      <div className={isMobile ? 'flex-1 min-w-0 flex flex-col' : 'contents'}
         style={isMobile && mobileShowChat ? { display: 'none' } : undefined}>
         <ChatTeamSidebar
           authUser={authUser}
