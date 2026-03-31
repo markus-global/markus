@@ -30,11 +30,14 @@
 
 ## 核心特性
 
-- **自主 AI Agent** -- 拥有角色定义、技能、记忆和主动心跳行为的数字员工
+- **自主 AI Agent** -- 拥有角色定义、技能、五层记忆和主动心跳行为的数字员工
 - **多 Agent 团队** -- 将 Agent 组织成团队，包含管理者、执行者和人类成员
+- **子代理派生** -- Agent 可派生轻量并行子代理处理聚焦子任务
 - **任务治理** -- 审批工作流、渐进式信任等级、工作区隔离、正式交付评审
+- **可配置自治** -- 每个 Agent 可独立配置工具迭代上限、信任等级
+- **后台进程监控** -- Agent 自动感知长时间运行的构建/测试完成
 - **项目管理** -- 项目迭代、看板、自动化报告
-- **知识系统** -- 三层记忆（会话 / 日志 / 长期）+ 共享知识库
+- **知识系统** -- 五层记忆（会话 / 结构化 / 日志 / 长期知识 / 身份）+ 共享知识库
 - **通信中心** -- Web UI 聊天、智能路由、频道，以及飞书/Slack/WhatsApp 适配器
 - **Agent 间协议** -- Agent 通过结构化 A2A 消息协作
 - **工具生态** -- Shell、文件、Git、网络搜索、代码搜索、MCP 集成、GUI 自动化
@@ -42,41 +45,29 @@
 
 ## 快速开始
 
-### 前置要求
+### 一行安装
 
-- Node.js >= 20
-- pnpm >= 9
-- LLM API Key（Anthropic、OpenAI 或 Google）
+```bash
+curl -fsSL https://markus.global/install.sh | bash
+```
 
-### 安装与运行
+### 或通过 npm
+
+```bash
+npm install -g @markus-global/cli
+markus init     # 交互式配置向导
+markus start    # 启动平台
+```
+
+打开 **[http://localhost:8056](http://localhost:8056)**。默认账号：`admin@markus.local` / `markus123`
+
+### 源码开发
 
 ```bash
 git clone https://github.com/markus-global/markus.git
-cd markus
-pnpm install
-pnpm build
-
-# 配置 — 复制示例配置到 ~/.markus/markus.json
-cp markus.json.example ~/.markus/markus.json
-# 编辑 ~/.markus/markus.json，至少设置一个 LLM API Key
-
-# 启动所有服务（API + Web UI）
+cd markus && pnpm install && pnpm build
 pnpm dev
 ```
-
-在浏览器中打开 **http://localhost:8057**。使用 `admin@markus.local` / `markus123` 登录（首次登录会要求修改密码）。
-
-API 服务运行在 `http://localhost:8056`。
-
-<details>
-<summary>Docker Compose 部署</summary>
-
-```bash
-cd deploy
-docker compose up -d
-```
-
-</details>
 
 ## 架构
 
@@ -92,7 +83,7 @@ packages/
   a2a/           Agent 间协议
   gui/           GUI 自动化（VNC + OmniParser）
   web-ui/        Web 管理界面（React + Vite + Tailwind）
-  cli/           CLI 入口 + 服务编排
+  cli/           CLI 入口 — `npm install -g @markus-global/cli`
 ```
 
 ```mermaid

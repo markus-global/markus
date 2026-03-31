@@ -50,7 +50,6 @@ packages/
 ├── core/         # Agent runtime (core engine) + WorkspaceManager + ReviewService
 ├── storage/      # Database schema + Repository layer
 ├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
-├── compute/      # Docker sandbox management (optional)
 ├── comms/        # Communication adapters (Feishu, etc.)
 ├── a2a/          # Agent-to-Agent protocol
 ├── gui/          # GUI automation (VNC + OmniParser)
@@ -75,6 +74,8 @@ Each Agent consists of:
 | `POLICIES.md` | Behavior rules and boundaries |
 | `MEMORY.md` | Long-term memory (Agent-maintained) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
+
+The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks, and a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution remains uncapped.
 
 **Agent role types:**
 - `worker` -- Regular digital employee, executes tasks
@@ -141,6 +142,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `file_read` / `file_write` / `file_edit` | File read/write/edit (restricted to worktree path) |
 | `file_list` | List directory contents |
 | `web_fetch` / `web_search` | HTTP requests / web search |
+| `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
 | `code_search` | Code search (ripgrep) |
 | `git_*` | Git operations |
 | `agent_send_message` | Send message to another Agent (A2A) |
@@ -413,7 +415,8 @@ After Agent startup, HeartbeatScheduler triggers periodic tasks at configured in
 - **Heartbeat includes task retrospective**: calls task_list to check active tasks and update stale states
 - **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
 - **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
-- Infinite loop protection via `MAX_TOOL_ITERATIONS` safety cap (200), not artificial per-heartbeat limits
+- Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
+- **Background process notifications**: finished `background_exec` sessions enqueue completions for injection into the agent’s session; heartbeat drains them so the model sees a `[BACKGROUND PROCESS COMPLETED]` notification on the next turn
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---
@@ -437,7 +440,17 @@ Agents understand the workflow and governance rules through three layers:
 
 ## 11. Deployment
 
-### Local Development
+### Quick start (npm)
+
+```bash
+npm install -g @markus-global/cli
+markus init     # Interactive setup wizard
+markus start
+```
+
+Open the dashboard at `http://localhost:8056`.
+
+### Local development (from source)
 
 ```bash
 pnpm install && pnpm build
@@ -445,14 +458,7 @@ cp markus.json.example ~/.markus/markus.json   # Add API keys
 node packages/cli/dist/index.js start
 ```
 
-Visit: `http://localhost:8057` (Web UI) / `http://localhost:8056` (API)
-
-### Docker Compose
-
-```bash
-cd deploy
-docker compose up -d
-```
+Same dashboard URL: `http://localhost:8056`.
 
 ### Environment Variables
 

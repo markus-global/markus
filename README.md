@@ -38,7 +38,7 @@
 
 Most AI agents work in isolation — they don't know what other agents are doing, can't delegate tasks, and you can't easily track what's happening.
 
-Markus is an **open-source platform for building AI Agent teams that actually work together**. Unlike single-agent solutions, Markus is designed from the ground up for collaboration.
+Markus is an **open-source platform for AI teams that ship work, not just chat**. Agents collaborate with clear roles and delegation, **spawn subagents** for parallel focused tasks, respect **configurable tool-iteration limits**, watch **background processes** (builds, tests) and pick up when they finish, and lean on a **five-layer memory system** so context stays structured and useful over time.
 
 ### The Difference
 
@@ -57,13 +57,19 @@ Markus is an **open-source platform for building AI Agent teams that actually wo
 ### 🤝 Team Collaboration First
 - **Role-based architecture**: Define clear roles (researcher, writer, reviewer) for each agent
 - **Task delegation**: Agents assign subtasks to other agents based on capabilities
+- **Subagent spawning**: Agents delegate focused subtasks to lightweight parallel workers
 - **Dependency management**: Tasks wait for prerequisites to complete
 - **Team-level state sync**: Agents share context and progress
+
+### ⚙️ Configurable Autonomy
+- **Per-agent limits**: `maxToolIterations` and related controls tuned per agent
+- **Progressive trust**: Ramp autonomy as you validate behavior
 
 ### 🏢 Enterprise-Ready from Day One
 - **Code & deliverable review**: Every change goes through formal review
 - **Permission controls**: Define who can create, modify, or delete agents
 - **Iteration management**: Sprint and Kanban boards for AI team progress
+- **Background process monitoring**: Agents get notified when long-running builds or tests complete
 - **Full audit trail**: Know exactly what each agent did and when
 
 ### 👁️ Visual + Open Source
@@ -76,35 +82,28 @@ Markus is an **open-source platform for building AI Agent teams that actually wo
 
 ## Quick Start
 
-### 5-Minute Setup
+### One-Line Install
+
+```bash
+curl -fsSL https://markus.global/install.sh | bash
+```
+
+### Or via npm
+
+```bash
+npm install -g @markus-global/cli
+markus init     # Interactive setup wizard
+markus start    # Launch the platform
+```
+
+Open **[http://localhost:8056](http://localhost:8056)** — default login: `admin@markus.local` / `markus123`
+
+### Source Development
 
 ```bash
 git clone https://github.com/markus-global/markus.git
-cd markus
-
-# Install dependencies
-pnpm install && pnpm build
-
-# Configure — copy example config to ~/.markus/markus.json
-cp markus.json.example ~/.markus/markus.json
-# Edit ~/.markus/markus.json and add your LLM API key
-
-# Start everything
+cd markus && pnpm install && pnpm build
 pnpm dev
-```
-
-**Open your browser:**
-- Web UI: [http://localhost:8057](http://localhost:8057)
-- API: [http://localhost:8056](http://localhost:8056)
-
-**Default login:** `admin@markus.local` / `markus123`
-
-### Docker Deployment
-
-```bash
-cd deploy
-# Mount your ~/.markus/markus.json into the container (see docker-compose.yml)
-docker compose up -d
 ```
 
 ---
@@ -119,7 +118,7 @@ packages/
 ├── storage/       SQLite/PostgreSQL persistence layer
 ├── org-manager/   REST API + governance services
 ├── web-ui/        React + Vite + Tailwind management interface
-├── cli/           CLI entry point for local development
+├── cli/           CLI entry point — `npm install -g @markus-global/cli`
 ├── a2a/           Agent-to-Agent communication protocol
 ├── comms/         External integrations (Feishu, Slack, WhatsApp)
 ├── gui/           GUI automation (VNC + OmniParser)
@@ -149,6 +148,11 @@ packages/
 - ✅ Zero learning curve with visual UI
 - ✅ Team collaboration first
 - ✅ Built-in task management
+
+### vs Claude Code / Cursor
+- ✅ Multi-agent teams, not single-agent assistance
+- ✅ Proactive work via heartbeat — agents work while you sleep
+- ✅ Full project management with tasks, reviews, and approvals
 
 ---
 

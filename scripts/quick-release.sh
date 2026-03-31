@@ -51,7 +51,8 @@ for f in package.json packages/*/package.json; do
 done
 
 # ── Commit, tag, push ────────────────────────────────────────────────────
-git add package.json packages/*/package.json
+git add -u  # stage all modified tracked files (version bumps + any pending changes)
+git add packages/*/README.md 2>/dev/null || true  # include new package READMEs if present
 git commit -m "release v${VER}: ${MSG}"
 git tag -a "v${VER}" -m "v${VER} — ${MSG}"
 git push origin main "v${VER}"

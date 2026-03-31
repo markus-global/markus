@@ -50,7 +50,6 @@ packages/
 ├── core/         # Agent 运行时（核心引擎）+ WorkspaceManager + ReviewService
 ├── storage/      # 数据库 Schema + Repository 层
 ├── org-manager/  # 组织管理 + REST API + 治理服务（Project/Report/Knowledge/Trust）
-├── compute/      # Docker 沙箱管理（可选）
 ├── comms/        # 通信适配器（飞书等）
 ├── a2a/          # Agent-to-Agent 协议
 ├── gui/          # GUI 自动化（VNC + OmniParser）
@@ -75,6 +74,8 @@ packages/
 | `POLICIES.md` | 行为规则和边界 |
 | `MEMORY.md` | 长期记忆（Agent 自动维护） |
 | `CONTEXT.md` | 组织上下文（共享知识库） |
+
+运行时还支持**轻量子代理派生**（`spawn_subagent` / `spawn_subagents`）用于并行子任务委派，以及**可配置的工具迭代上限**（`AgentOptions.maxToolIterations`，默认 200，范围 1–10000）——任务执行路径不设上限。
 
 **Agent 角色类型：**
 - `worker` — 普通数字员工，执行具体任务
@@ -141,6 +142,7 @@ Organization (Org)
 | `file_read` / `file_write` / `file_edit` | 文件读写编辑（限定在 worktree 路径内） |
 | `file_list` | 列举目录文件 |
 | `web_fetch` / `web_search` | HTTP 请求 / 网络搜索 |
+| `spawn_subagent` / `spawn_subagents` | 派生轻量 LLM 子代理执行聚焦子任务（支持并行） |
 | `code_search` | 代码搜索（ripgrep） |
 | `git_*` | Git 操作 |
 | `agent_send_message` | 发消息给其他 Agent (A2A) |
@@ -418,7 +420,8 @@ Agent 启动后，HeartbeatScheduler 按配置间隔触发定时任务：
 - **心跳包含任务复盘**：调用 task_list 检查活跃任务状态、更新过时状态
 - **允许轻量动作**：检查状态、发送消息、创建任务、重试失败任务、快速评审、保存洞察
 - **复杂工作交给任务系统**：发现需要深度处理的问题时，心跳创建任务并通知用户，用户批准后执行
-- 通过 `MAX_TOOL_ITERATIONS`（200）安全阀防止无限循环，不人为限制每次心跳的工具调用次数
+- 通过可配置的工具迭代安全阀（默认 200，`maxToolIterations`）防止无限循环，不人为限制每次心跳的工具调用次数
+- **后台进程通知**：`background_exec` 完成后会将通知注入 agent 会话，心跳期间会排空这些通知，模型在下一轮能看到 `[BACKGROUND PROCESS COMPLETED]` 消息
 - **治理模式下**：服务启动时不自动恢复 in_progress 任务，需人工触发
 
 ---
@@ -442,7 +445,17 @@ Agent 通过三个层次了解整个工作流和治理规则：
 
 ## 十一、部署
 
-### 本地开发
+### 快速开始（npm）
+
+```bash
+npm install -g @markus-global/cli
+markus init     # 交互式配置向导
+markus start
+```
+
+访问仪表盘：`http://localhost:8056`
+
+### 本地开发（源码）
 
 ```bash
 pnpm install && pnpm build
@@ -450,14 +463,7 @@ cp markus.json.example ~/.markus/markus.json   # 填入 API key
 node packages/cli/dist/index.js start
 ```
 
-访问：`http://localhost:8057`（Web UI）/ `http://localhost:8056`（API）
-
-### Docker Compose
-
-```bash
-cd deploy
-docker compose up -d
-```
+同样访问：`http://localhost:8056`
 
 ### 环境变量
 

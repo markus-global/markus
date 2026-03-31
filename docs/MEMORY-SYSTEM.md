@@ -347,6 +347,8 @@ As part of the Dream Cycle, `pruneMemoryMd()` enforces MEMORY.md health:
 
 Every agent operation (task execution, chat, heartbeat, A2A communication, internal operations like daily reports and memory flushes) produces an **activity session** with ordered **log entries**. This data is persisted to SQLite and surfaced in the frontend Activity tab.
 
+**Background processes:** Completions from `background_exec` are tracked; when a background session finishes, a notification is injected into the agent’s current chat session so the model sees it on the next turn (heartbeat processing also drains these notifications).
+
 ### Storage Design
 
 | Data | Location | Role |

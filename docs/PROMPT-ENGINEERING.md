@@ -203,12 +203,12 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 
 | Harness | Location | Loop Condition | max_tokens Handling | Loop Detection | Network Retry | Iteration Limit |
 |---------|----------|----------------|--------------------|--------------------|---------------|-----------------|
-| `handleMessage` | Chat (non-stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | 200 |
-| `handleMessageStream` | Chat (stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | 200 |
+| `handleMessage` | Chat (non-stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | configurable (default 200) |
+| `handleMessageStream` | Chat (stream) | `tool_use \|\| max_tokens` | ✅ Continuation prompt | ✅ `ToolLoopDetector` | ✅ `withNetworkRetry` | configurable (default 200) |
 | `_executeTaskInternal` | Task execution | `tool_use \|\| max_tokens` | ✅ Continuation prompt | — (uses reminder instead) | ✅ `withNetworkRetry` | None |
 | `respondInSession` | Session reply | `tool_use \|\| max_tokens` | ✅ Continuation prompt | — | ✅ `withNetworkRetry` | 200 |
 
-**Design rationale for iteration limits**: Task execution has **no hard iteration limit**. Complex tasks (writing code, running tests, debugging) legitimately require 100+ tool calls. Natural limiters are sufficient: the context window triggers compression, cancel tokens allow external stop, and the model naturally finishes by calling `task_submit_review`. Chat paths retain a generous 200-iteration safety net as a last resort — real loop protection comes from `ToolLoopDetector`, not from this cap.
+**Design rationale for iteration limits**: Task execution has **no hard iteration limit**. Complex tasks (writing code, running tests, debugging) legitimately require 100+ tool calls. Natural limiters are sufficient: the context window triggers compression, cancel tokens allow external stop, and the model naturally finishes by calling `task_submit_review`. Chat and similar paths use a **configurable** safety cap via `AgentOptions.maxToolIterations` and the system settings API (range 1–10000, default 200) — not a hardcoded 200. Real loop protection still comes primarily from `ToolLoopDetector`, not from this cap.
 
 ### 4.2 Common Harness Flow
 
@@ -227,6 +227,8 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 ### 4.3 Tool Execution
 
 All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
+
+`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools.
 
 Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` with a preview in context (Manus-inspired "restorable compression").
 
@@ -288,7 +290,8 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 5. Daily report section (managers, after 20:00)
 6. Self-evolution reflection instructions
 7. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
-8. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
+8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
+9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
 Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `send_user_message`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
 
@@ -364,7 +367,7 @@ This ensures that modern models with large output windows are not artificially c
 
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
-1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, etc.)
+1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, etc.)
 2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`)
 3. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
 4. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity

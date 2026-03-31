@@ -1,6 +1,6 @@
 {
   "name": "@markus-global/cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Markus — AI Digital Workforce Platform",
   "type": "module",
   "license": "AGPL-3.0-or-later",
