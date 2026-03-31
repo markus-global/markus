@@ -73,17 +73,18 @@ export function App() {
     if (curFull !== curBase) _savedPageHashes[curBase] = curFull;
     else delete _savedPageHashes[curBase];
 
-    setPage(normalized);
-    setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
+    // Set hash BEFORE React state so that when the page renders, components
+    // (e.g. Chat) can read the final hash immediately — avoids a flash of the
+    // list view before the detail appears.
     const savedHash = _savedPageHashes[normalized];
     if (savedHash && savedHash !== normalized) {
-      // Silently push the base page hash first so that browser-back from
-      // the sub-path (e.g. #chat/d) lands on the list (#chat), not the previous page.
       history.pushState(null, '', '#' + normalized);
       window.location.hash = savedHash;
     } else {
       window.location.hash = normalized;
     }
+    setPage(normalized);
+    setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
   }, [isMobile]);
 
   useEffect(() => {
