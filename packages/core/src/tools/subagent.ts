@@ -2,10 +2,22 @@ import { createLogger, type LLMMessage, type LLMTool } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
 import type { ContextEngine } from '../context-engine.js';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 
 const log = createLogger('subagent');
 
 const DEFAULT_MAX_SUBAGENT_ITERATIONS = 200;
+
+/**
+ * Progress callback for subagent execution.
+ * Emitted for each significant step so the caller can relay to the frontend.
+ */
+export type SubagentProgressCallback = (event: {
+  type: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+}) => void;
 
 export interface SubagentContext {
   llmRouter: LLMRouter;
@@ -15,6 +27,10 @@ export interface SubagentContext {
   agentId: string;
   offloadLargeResult: (toolName: string, result: string) => string;
   maxToolIterations?: number;
+  /** Directory to persist subagent logs (e.g. agent's dataDir) */
+  dataDir?: string;
+  /** Retrieve the progress callback from the current execution context (e.g. via ALS) */
+  getProgressCallback?: () => SubagentProgressCallback | undefined;
 }
 
 function isErrorResult(result: string): boolean {
@@ -54,6 +70,79 @@ function buildToolMap(
 }
 
 /**
+ * Strip `<think>...</think>` blocks leaked by reasoning models (DeepSeek, Qwen, etc.).
+ * These are internal chain-of-thought and should not appear in tool results or final output.
+ */
+function stripThinkTags(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/^\s*\n/, '');
+}
+
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+const MAX_LLM_RETRIES = 2;
+const RETRY_BASE_MS = 2000;
+
+function isRetryableError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes('rate limit') || msg.includes('429') || msg.includes('too many requests')) return true;
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true;
+  if (msg.includes('server_error') || msg.includes('internal server error')) return true;
+  if (msg.includes('timeout') || msg.includes('econnreset') || msg.includes('fetch failed')) return true;
+  for (const code of RETRYABLE_STATUS_CODES) {
+    if (msg.includes(`${code}`)) return true;
+  }
+  return false;
+}
+
+async function llmCallWithRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableError(err) || attempt >= MAX_LLM_RETRIES) {
+        throw err;
+      }
+      const delay = RETRY_BASE_MS * Math.pow(2, attempt);
+      log.warn(`${label}: retryable error, attempt ${attempt + 1}/${MAX_LLM_RETRIES + 1}`, {
+        error: String(err).slice(0, 200),
+        delay,
+      });
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}
+
+interface SubagentLogEntry {
+  ts: string;
+  role: string;
+  content?: string;
+  toolCalls?: Array<{ name: string; arguments?: unknown }>;
+  toolCallId?: string;
+  toolName?: string;
+}
+
+function persistSubagentLog(dataDir: string, subagentId: string, entries: SubagentLogEntry[]): string | undefined {
+  try {
+    const logsDir = join(dataDir, 'subagent-logs');
+    if (!existsSync(logsDir)) {
+      mkdirSync(logsDir, { recursive: true });
+    }
+    const filePath = join(logsDir, `${subagentId}.jsonl`);
+    const content = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
+    writeFileSync(filePath, content);
+    log.debug('Subagent log persisted', { path: filePath, entries: entries.length });
+    return filePath;
+  } catch (err) {
+    log.warn('Failed to persist subagent log', { error: String(err) });
+    return undefined;
+  }
+}
+
+/**
  * Run a lightweight subagent loop: independent messages[], parent's tools, sync return.
  *
  * Claude Code subagent pattern (learn-claude-code s04):
@@ -71,10 +160,15 @@ export async function runSubagentLoop(
     systemPrompt?: string;
     allowedTools?: string[];
     maxIterations?: number;
+    onProgress?: SubagentProgressCallback;
   },
 ): Promise<string> {
   const hardCap = ctx.maxToolIterations ?? DEFAULT_MAX_SUBAGENT_ITERATIONS;
   const maxIter = Math.min(opts?.maxIterations ?? hardCap, hardCap);
+  const onProgress = opts?.onProgress;
+
+  const subagentId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const logEntries: SubagentLogEntry[] = [];
 
   const parentTools = ctx.getTools();
   const provider = ctx.getProvider();
@@ -96,18 +190,31 @@ export async function runSubagentLoop(
     { role: 'user', content: task },
   ];
 
+  logEntries.push({ ts: new Date().toISOString(), role: 'system', content: systemContent });
+  logEntries.push({ ts: new Date().toISOString(), role: 'user', content: task });
+
   log.info('Subagent started', {
     parentAgent: ctx.agentId,
+    subagentId,
     taskLength: task.length,
     toolCount: toolMap.size,
     maxIterations: maxIter,
   });
 
-  let response = await ctx.llmRouter.chat({
-    messages,
-    tools: llmTools.length > 0 ? llmTools : undefined,
-    metadata: { agentId: ctx.agentId, sessionId: `subagent_${Date.now()}` },
-  }, provider);
+  onProgress?.({
+    type: 'started',
+    content: `Subagent ${subagentId} started`,
+    metadata: { subagentId, toolCount: toolMap.size, taskPreview: task.slice(0, 200) },
+  });
+
+  let response = await llmCallWithRetry(
+    () => ctx.llmRouter.chat({
+      messages,
+      tools: llmTools.length > 0 ? llmTools : undefined,
+      metadata: { agentId: ctx.agentId, sessionId: subagentId },
+    }, provider),
+    `subagent-${subagentId}-init`,
+  );
 
   let iterations = 0;
 
@@ -116,12 +223,20 @@ export async function runSubagentLoop(
     response.finishReason === 'max_tokens'
   ) {
     if (++iterations > maxIter) {
-      log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, iterations });
+      log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, subagentId, iterations });
+      onProgress?.({ type: 'error', content: `Subagent hit max iterations (${maxIter})` });
       break;
     }
 
+    onProgress?.({
+      type: 'iteration',
+      content: `Iteration ${iterations}/${maxIter}`,
+      metadata: { iteration: iterations, finishReason: response.finishReason },
+    });
+
     if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
       messages.push({ role: 'assistant', content: response.content });
+      logEntries.push({ ts: new Date().toISOString(), role: 'assistant', content: response.content });
       messages.push({
         role: 'user',
         content: '[Continue from where you left off. Do not repeat what you already said.]',
@@ -132,10 +247,31 @@ export async function runSubagentLoop(
         content: response.content,
         toolCalls: response.toolCalls,
       });
+      logEntries.push({
+        ts: new Date().toISOString(),
+        role: 'assistant',
+        content: response.content,
+        toolCalls: response.toolCalls?.map(tc => ({ name: tc.name, arguments: tc.arguments })),
+      });
+
+      if (response.content) {
+        onProgress?.({
+          type: 'thinking',
+          content: stripThinkTags(response.content).slice(0, 500),
+        });
+      }
 
       for (const tc of response.toolCalls!) {
         const handler = toolMap.get(tc.name);
         let result: string;
+
+        onProgress?.({
+          type: 'tool_start',
+          content: tc.name,
+          metadata: { toolCallId: tc.id, arguments: tc.arguments },
+        });
+
+        const toolStart = Date.now();
         if (!handler) {
           result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
         } else {
@@ -146,26 +282,72 @@ export async function runSubagentLoop(
             result = `Error: ${String(err)}`;
           }
         }
+        const toolDuration = Date.now() - toolStart;
+
+        onProgress?.({
+          type: 'tool_end',
+          content: tc.name,
+          metadata: {
+            toolCallId: tc.id,
+            durationMs: toolDuration,
+            success: !isErrorResult(result),
+            resultPreview: result.slice(0, 200),
+          },
+        });
+
+        logEntries.push({
+          ts: new Date().toISOString(),
+          role: 'tool',
+          content: result.slice(0, 5000),
+          toolCallId: tc.id,
+          toolName: tc.name,
+        });
+
         messages.push({ role: 'tool', content: result, toolCallId: tc.id });
       }
     }
 
     messages = ctx.contextEngine.shrinkEphemeralMessages(messages, contextWindow);
 
-    response = await ctx.llmRouter.chat({
-      messages,
-      tools: llmTools.length > 0 ? llmTools : undefined,
-      metadata: { agentId: ctx.agentId, sessionId: `subagent_${Date.now()}` },
-    }, provider);
+    response = await llmCallWithRetry(
+      () => ctx.llmRouter.chat({
+        messages,
+        tools: llmTools.length > 0 ? llmTools : undefined,
+        metadata: { agentId: ctx.agentId, sessionId: subagentId },
+      }, provider),
+      `subagent-${subagentId}-iter${iterations}`,
+    );
+  }
+
+  const rawResult = response.content;
+  const cleanResult = stripThinkTags(rawResult);
+
+  logEntries.push({
+    ts: new Date().toISOString(),
+    role: 'assistant',
+    content: cleanResult,
+  });
+
+  let logPath: string | undefined;
+  if (ctx.dataDir) {
+    logPath = persistSubagentLog(ctx.dataDir, subagentId, logEntries);
   }
 
   log.info('Subagent completed', {
     parentAgent: ctx.agentId,
+    subagentId,
     iterations,
-    resultLength: response.content.length,
+    resultLength: cleanResult.length,
+    logPath,
   });
 
-  return response.content;
+  onProgress?.({
+    type: 'completed',
+    content: `Subagent completed in ${iterations} iterations`,
+    metadata: { subagentId, iterations, logPath, resultLength: cleanResult.length },
+  });
+
+  return cleanResult;
 }
 
 /**
@@ -214,6 +396,7 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
           systemPrompt: args['system_prompt'] as string | undefined,
           allowedTools: args['allowed_tools'] as string[] | undefined,
           maxIterations: args['max_iterations'] as number | undefined,
+          onProgress: ctx.getProgressCallback?.(),
         });
         return JSON.stringify({ status: 'completed', result });
       } catch (err) {
@@ -227,7 +410,7 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
 /**
  * Creates the spawn_subagents tool (parallel batch execution).
  *
- * Runs multiple subagent loops concurrently via Promise.all.
+ * Runs multiple subagent loops concurrently via Promise.allSettled.
  * Each subagent gets an independent context and tool set.
  * All results are collected and returned together.
  *
@@ -284,6 +467,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
     },
 
     async execute(args: Record<string, unknown>): Promise<string> {
+      const onProgress = ctx.getProgressCallback?.();
       const tasks = args['tasks'] as Array<{
         id: string;
         task: string;
@@ -310,14 +494,29 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         taskIds: tasks.map(t => t.id),
       });
 
+      onProgress?.({
+        type: 'started',
+        content: `Spawning ${tasks.length} parallel subagents`,
+        metadata: { taskIds: tasks.map(t => t.id) },
+      });
+
       const startTime = Date.now();
 
       const results = await Promise.allSettled(
         tasks.map(async (t) => {
+          const perTaskProgress: SubagentProgressCallback | undefined = onProgress
+            ? (event) => onProgress({
+                ...event,
+                content: `[${t.id}] ${event.content}`,
+                metadata: { ...event.metadata, parallelTaskId: t.id },
+              })
+            : undefined;
+
           const result = await runSubagentLoop(ctx, t.task, {
             systemPrompt: sharedSystemPrompt,
             allowedTools: t.allowed_tools,
             maxIterations: t.max_iterations,
+            onProgress: perTaskProgress,
           });
           return { id: t.id, result };
         })
@@ -337,18 +536,25 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       const completed = output.filter(o => o.status === 'completed').length;
       const failed = output.filter(o => o.status === 'error').length;
+      const durationMs = Date.now() - startTime;
 
       log.info('Parallel subagents finished', {
         parentAgent: ctx.agentId,
         completed,
         failed,
-        totalDurationMs: Date.now() - startTime,
+        totalDurationMs: durationMs,
+      });
+
+      onProgress?.({
+        type: 'completed',
+        content: `${completed}/${tasks.length} subagents completed (${durationMs}ms)`,
+        metadata: { completed, failed, durationMs },
       });
 
       return JSON.stringify({
         status: 'completed',
         summary: `${completed}/${tasks.length} subagents completed successfully${failed > 0 ? `, ${failed} failed` : ''}`,
-        durationMs: Date.now() - startTime,
+        durationMs,
         results: output,
       });
     },

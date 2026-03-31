@@ -33,7 +33,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
-import { createSubagentTool, createParallelSubagentTool, type SubagentContext } from './tools/subagent.js';
+import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 
 /**
@@ -46,6 +46,8 @@ interface TaskAsyncContext {
   taskId: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
+  /** When set, subagent tools emit progress events through this callback */
+  subagentProgress?: SubagentProgressCallback;
 }
 const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
@@ -257,6 +259,8 @@ export class Agent {
       agentId: this.id,
       offloadLargeResult: (toolName, result) => this.offloadLargeResult(toolName, result),
       maxToolIterations: this._maxToolIterations,
+      dataDir: this.dataDir,
+      getProgressCallback: () => taskAsyncContext.getStore()?.subagentProgress,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -2115,9 +2119,20 @@ export class Agent {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
     const emitDelta = (text: string) => {
-      // text_delta: real-time streaming, not persisted individually
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
     };
+
+    // Wire subagent progress events into task execution logs so the frontend
+    // can render subagent steps (tool calls, thinking, completion) in real-time.
+    const subagentProgress: SubagentProgressCallback = (event) => {
+      const prefix = event.type === 'started' || event.type === 'completed' || event.type === 'error'
+        ? `subagent_${event.type}` : `subagent_${event.type}`;
+      emit(prefix, event.content, event.metadata);
+    };
+    const alsStore = taskAsyncContext.getStore();
+    if (alsStore) {
+      alsStore.subagentProgress = subagentProgress;
+    }
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 

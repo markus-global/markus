@@ -145,6 +145,7 @@ export {
   createParallelSubagentTool,
   runSubagentLoop,
   type SubagentContext,
+  type SubagentProgressCallback,
 } from './tools/index.js';
 export {
   ToolLoopDetector,

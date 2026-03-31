@@ -159,7 +159,7 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
 
   return {
     name: 'file_write',
-    description: 'Write content to a file. Creates parent directories if needed.',
+    description: 'Write content to a file. Creates parent directories if needed. WARNING: Do NOT write very large content (>200 lines) in a single call — this causes output truncation and timeouts. For large documents, write the first section with file_write, then append remaining sections with file_edit.',
     inputSchema: {
       type: 'object',
       properties: {

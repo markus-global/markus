@@ -417,8 +417,9 @@ export class ContextEngine {
     parts.push('- **Create**: `task_create` (with `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
     parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` (MANDATORY). System auto-fills task_id/reviewer/branch.');
     parts.push('- **Review**: Reviewer approves `task_update(status:"completed")` or rejects `task_update(note:"...")` (auto-restarts). Workers MUST NOT set status=completed.');
-    parts.push('- **DAG decomposition**: For complex goals, create multiple tasks with `blocked_by` dependencies to form a directed acyclic graph. Assign each task to the most appropriate team member based on their role and skills. Use `team_list` to identify the right agent.');
-    parts.push('- **Manager coordination**: If the goal requires synthesized output from multiple tasks, create a final summarization task assigned to a manager or senior agent, blocked by all prerequisite tasks. The manager task reviews deliverables from dependencies and produces the consolidated output.');
+    parts.push('- **CRITICAL — `blocked_by` dependencies**: When creating multiple tasks, you **MUST** use `blocked_by` to express ALL dependency relationships. If task B needs output or deliverables from task A, then B **MUST** include A\'s task ID in its `blocked_by` array. Without `blocked_by`, tasks execute in parallel and downstream tasks will NOT have upstream deliverables. Think about the dependency graph BEFORE creating any tasks.');
+    parts.push('- **DAG decomposition**: For complex goals, create multiple tasks forming a directed acyclic graph (DAG). Assign each task to the most appropriate team member based on their role and skills. Use `team_list` to identify the right agent. Independent tasks (no dependency) will run in parallel; dependent tasks will wait for predecessors to complete.');
+    parts.push('- **Manager coordination**: If the goal requires synthesized output from multiple tasks, create a final summarization task assigned to a manager or senior agent, `blocked_by` ALL prerequisite tasks. The manager task reviews deliverables from dependencies and produces the consolidated output.');
     parts.push('- **Work Discovery**: `list_projects`→`requirement_list`→`task_list`. Use memory tools for personal notes; deliverable tools for shared outputs.');
 
     if (opts.environment) {
@@ -447,6 +448,7 @@ export class ContextEngine {
 
     parts.push('\n## Working Strategy');
     parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files. (6) For heavy subtasks that need many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your own context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+    parts.push('**CRITICAL — Large file writing**: NEVER attempt to write a large document (>200 lines or >4000 characters) in a single `file_write` call. This causes LLM output truncation, token limit errors, and tool call timeouts. Instead: (a) Write the file **section by section** — first call `file_write` with the initial section, then use `file_edit` to append subsequent sections, or (b) Split the deliverable into multiple smaller files. Plan the document structure first, then write each section in a separate tool call.');
 
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
@@ -486,12 +488,13 @@ export class ContextEngine {
         lines.push('');
         lines.push('**How to create tasks from chat:**');
         lines.push('1. Analyze the user\'s request and identify the work needed');
-        lines.push('2. If the work is complex, decompose into multiple tasks forming a DAG (use `blocked_by` for dependencies)');
-        lines.push('3. Assign each task to the most appropriate team member (use `team_list` to find agents by role/skills)');
-        lines.push('4. If the goal requires consolidated output, create a final summarization task assigned to a manager agent, blocked by all prerequisite tasks');
-        lines.push('5. Create the tasks via `task_create`. Then STOP — do NOT start executing the work yourself.');
-        lines.push('6. Reply to the user with a summary: what tasks were created, who they are assigned to, and their dependency structure');
-        lines.push('7. Tell the user: "Please review and approve the tasks. Once approved, they will execute automatically in the task execution context."');
+        lines.push('2. If the work is complex, decompose into multiple tasks. **Plan the dependency graph first** — identify which tasks produce outputs that other tasks consume');
+        lines.push('3. Create tasks in dependency order (create upstream tasks first so you have their IDs for `blocked_by`). **CRITICAL**: Every task that depends on another task\'s output MUST include that task\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks will fail due to missing inputs.');
+        lines.push('4. Assign each task to the most appropriate team member (use `team_list` to find agents by role/skills)');
+        lines.push('5. If the goal requires consolidated output, create a final summarization task assigned to a manager agent, `blocked_by` ALL prerequisite tasks');
+        lines.push('6. Create the tasks via `task_create`. Then STOP — do NOT start executing the work yourself.');
+        lines.push('7. Reply to the user with a summary: what tasks were created, who they are assigned to, and their **dependency structure** (which tasks block which)');
+        lines.push('8. Tell the user: "Please review and approve the tasks. Once approved, they will execute automatically in the task execution context."');
         lines.push('');
         lines.push('**CRITICAL — STOP AFTER CREATING TASKS:**');
         lines.push('After calling `task_create`, your job in this chat is DONE for that request. Do NOT:');
@@ -544,6 +547,7 @@ export class ContextEngine {
         lines.push('- Use all available tools to produce thorough, high-quality output');
         lines.push('- If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action');
         lines.push('- Large outputs should be saved to files and referenced by path in deliverables');
+        lines.push('- **NEVER write a large file in one shot.** If the output is >200 lines or >4000 chars, write it section by section: `file_write` the first section (with a heading/skeleton), then `file_edit` to append each subsequent section. This prevents LLM output truncation and tool call timeouts.');
         break;
 
       case 'heartbeat':

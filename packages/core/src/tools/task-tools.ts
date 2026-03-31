@@ -114,7 +114,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Tasks MUST reference an approved requirement_id.',
         'If you want to propose new work, use requirement_propose instead.',
         'IMPORTANT: assigned_agent_id and reviewer_agent_id are REQUIRED — every task must have an assignee and an independent reviewer. Call agent_list_colleagues or team_list first to pick both.',
-        'Use subtask_create to break a task into smaller steps.',
+        'CRITICAL: When creating multiple tasks for a complex goal, you MUST use `blocked_by` to express ALL dependency relationships between them.',
+        'Think carefully about the execution order — a task that needs output from another task MUST list that task ID in its `blocked_by` array.',
+        'Tasks without dependencies will execute in parallel; tasks with `blocked_by` will wait for their prerequisites to complete first.',
+        'Use subtask_create to break a task into smaller steps within a single task.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -149,7 +152,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           blocked_by: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Array of task IDs that must complete before this task can start. Use this to express dependencies between tasks.',
+            description: 'Array of task IDs that MUST complete before this task can start. CRITICAL for multi-task workflows: if task B depends on output from task A, task B MUST include task A\'s ID here. Without this, tasks run in parallel and B will not have A\'s deliverables.',
           },
           task_type: {
             type: 'string',
