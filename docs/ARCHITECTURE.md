@@ -409,9 +409,11 @@ Connection: `ws://localhost:8056`
 
 After Agent startup, HeartbeatScheduler triggers periodic tasks at configured intervals:
 
-- Each run executes checks with `[HEARTBEAT TASK]` prompt
+- Each run executes checks with `[HEARTBEAT CHECK-IN]` prompt under the "Patrol, Don't Build" principle
 - **Heartbeat includes task retrospective**: calls task_list to check active tasks and update stale states
-- Max 5 tool calls per heartbeat to avoid infinite loops
+- **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
+- **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
+- Infinite loop protection via `MAX_TOOL_ITERATIONS` safety cap (200), not artificial per-heartbeat limits
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---

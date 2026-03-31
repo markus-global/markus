@@ -204,6 +204,10 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     mcpServers: config.mcpServers,
   });
 
+  if (config.agent?.maxToolIterations) {
+    agentManager.maxToolIterations = config.agent.maxToolIterations;
+  }
+
   taskService.setAgentManager(agentManager);
 
   const orgService = new OrganizationService(agentManager, roleLoader, storage ?? undefined);

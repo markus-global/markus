@@ -5,11 +5,7 @@ import type { ContextEngine } from '../context-engine.js';
 
 const log = createLogger('subagent');
 
-/**
- * Maximum tool iterations per subagent invocation.
- * Lower than the parent agent limit since subagents handle focused subtasks.
- */
-const MAX_SUBAGENT_ITERATIONS = 50;
+const DEFAULT_MAX_SUBAGENT_ITERATIONS = 200;
 
 export interface SubagentContext {
   /** Parent agent's LLM router for model calls */
@@ -24,6 +20,8 @@ export interface SubagentContext {
   agentId: string;
   /** Offload large results to filesystem */
   offloadLargeResult: (toolName: string, result: string) => string;
+  /** Configurable max tool iterations (from system config) */
+  maxToolIterations?: number;
 }
 
 function isErrorResult(result: string): boolean {
@@ -52,7 +50,8 @@ async function runSubagentLoop(
     maxIterations?: number;
   },
 ): Promise<string> {
-  const maxIter = Math.min(opts.maxIterations ?? MAX_SUBAGENT_ITERATIONS, MAX_SUBAGENT_ITERATIONS);
+  const hardCap = ctx.maxToolIterations ?? DEFAULT_MAX_SUBAGENT_ITERATIONS;
+  const maxIter = Math.min(opts.maxIterations ?? hardCap, hardCap);
 
   const parentTools = ctx.getTools();
   const provider = ctx.getProvider();
@@ -196,7 +195,7 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
         },
         max_iterations: {
           type: 'number',
-          description: `Max tool iterations (default: ${MAX_SUBAGENT_ITERATIONS}, hard cap: ${MAX_SUBAGENT_ITERATIONS}). Lower this for quick tasks.`,
+          description: `Max tool iterations (default and hard cap come from system config). Lower this for quick tasks.`,
         },
       },
       required: ['task'],

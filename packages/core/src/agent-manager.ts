@@ -274,6 +274,7 @@ export class AgentManager {
   };
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
+  private _maxToolIterations = 200;
   private templateRegistry?: TemplateRegistry;
   private groupChatHandlers?: {
     sendGroupMessage: (
@@ -466,6 +467,14 @@ export class AgentManager {
     mkdirSync(this.dataDir, { recursive: true });
   }
 
+  get maxToolIterations(): number {
+    return this._maxToolIterations;
+  }
+
+  set maxToolIterations(value: number) {
+    this._maxToolIterations = Math.max(1, Math.min(value, 10000));
+  }
+
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
   }
@@ -610,6 +619,7 @@ export class AgentManager {
       orgContext: request.orgContext,
       pathPolicy,
       skillRegistry: this.skillRegistry,
+      maxToolIterations: this._maxToolIterations,
     };
 
     const agent = new Agent(agentOpts);
@@ -1176,6 +1186,7 @@ export class AgentManager {
       pathPolicy,
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
       skillRegistry: this.skillRegistry,
+      maxToolIterations: this._maxToolIterations,
     });
 
     // Inject always-on builtin skill instructions into every agent (text only, no MCP)

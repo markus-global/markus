@@ -35,6 +35,10 @@ export interface MarkusConfig {
     args?: string[];
     env?: Record<string, string>;
   }>;
+  agent?: {
+    /** Safety cap on tool iterations per agent turn (default: 200) */
+    maxToolIterations?: number;
+  };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };
     search?: { serperApiKey?: string; braveApiKey?: string };

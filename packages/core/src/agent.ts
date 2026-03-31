@@ -105,6 +105,8 @@ export interface AgentOptions {
   pathPolicy?: PathAccessPolicy;
   /** Restored state from DB (used during server restart recovery) */
   restoredState?: { tokensUsedToday?: number };
+  /** Safety cap on tool iterations per agent turn (from system config) */
+  maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
 }
@@ -202,6 +204,8 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+  private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
+  private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
 
   constructor(options: AgentOptions) {
@@ -223,6 +227,7 @@ export class Agent {
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
+    this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.eventBus = new EventBus();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
@@ -251,6 +256,7 @@ export class Agent {
       getProvider: () => this.getEffectiveProvider(),
       agentId: this.id,
       offloadLargeResult: (toolName, result) => this.offloadLargeResult(toolName, result),
+      maxToolIterations: this._maxToolIterations,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
 
@@ -877,6 +883,14 @@ export class Agent {
   }
 
 
+  get maxToolIterations(): number {
+    return this._maxToolIterations;
+  }
+
+  set maxToolIterations(value: number) {
+    this._maxToolIterations = Math.max(1, Math.min(value, 10000));
+  }
+
   setOrgContext(ctx: OrgContext): void {
     this.orgContext = ctx;
   }
@@ -1400,14 +1414,13 @@ export class Agent {
         success: true,
       });
 
-      const MAX_TOOL_ITERATIONS = 200;
       let toolIterations = 0;
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
         response.finishReason === 'max_tokens'
       ) {
-        if (++toolIterations > MAX_TOOL_ITERATIONS) {
+        if (++toolIterations > this._maxToolIterations) {
           log.warn('Tool loop hit max iterations', {
             agentId: this.id,
             iterations: toolIterations,
@@ -3354,18 +3367,41 @@ export class Agent {
       dailyReportSection,
       selfEvolutionSection,
       '',
-      '## Rules',
+      '## Core Principle: Patrol, Don\'t Build',
+      'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
+      '',
+      '## What You CAN Do (lightweight actions)',
+      '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
+      '- **Send messages**: `agent_send_message`, `send_user_message` — notify people of issues or updates',
+      '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
+      '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
+      '- **Retry failed tasks**: If tasks assigned to you are in `failed` status, retry via `task_update(status: "in_progress")` with a note',
+      '- **Quick reviews**: If tasks are in `review` where you are the reviewer, review them now (may need more tool calls)',
+      '- **Save insights**: `memory_save` — record observations, lessons, and patterns',
+      '- **Propose requirements**: `requirement_propose` — suggest work based on what you observe',
+      '',
+      '## What You Must NOT Do',
+      '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
+      '- If you identify something complex that needs doing:',
+      '  1. Notify the user via `send_user_message` explaining what you found and why it matters',
+      '  2. Create a task via `task_create` with clear description and acceptance criteria',
+      '  3. The user will approve and the task system handles execution',
+      '',
+      '## Conditional Actions',
+      '- If background processes failed → check the error, notify the responsible developer or user',
+      '- If tasks are blocked for too long → investigate blockers, send a message to the assignee or PM',
+      '- If a dependency task completed → check if downstream tasks can be unblocked',
+      '- If you notice a recurring pattern → save it as a lesson via `memory_save`',
+      '',
+      '## Finishing Up',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
-      '- For routine checks: max 5 tool calls. This is monitoring, not a work session.',
-      '- **Exception — review duty**: If you find tasks in `review` where you are the reviewer, you MUST review them now. Reviews may require more tool calls (task_get, file_read, task_note, task_update). Complete the review fully.',
-      '- **Exception — failed tasks**: If you find tasks assigned to you in `failed` status, retry them via `task_update(status: "in_progress")` with a note.',
-      '- **Exception — daily report**: If the Daily Report Required section is present above, you MUST produce the report. This may require additional tool calls.',
-      '- At the end, call `memory_save` with key `heartbeat:summary` — one line per finding.',
+      '- If the Daily Report Required section is present above, you MUST produce the report.',
+      '- Call `memory_save` with key `heartbeat:summary` — one line per finding.',
       '- If nothing needs attention and no daily report is due, respond with exactly: HEARTBEAT_OK',
     ].join('\n');
 
     const baseTools = [
-      'task_list', 'task_update', 'task_get', 'task_note',
+      'task_create', 'task_list', 'task_update', 'task_get', 'task_note',
       'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list',
       'memory_save', 'memory_search', 'memory_update_longterm',

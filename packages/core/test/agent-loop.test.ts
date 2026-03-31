@@ -93,8 +93,8 @@ describe('Agent Loop Improvements', () => {
 
     const result = await agent.handleMessage('infinite loop test');
 
-    // MAX_TOOL_ITERATIONS = 25, so total calls = 1 (initial) + 25 (loop) = 26
-    expect(callCount).toBeLessThanOrEqual(27);
+    // MAX_TOOL_ITERATIONS = 200 (safety cap against infinite loops)
+    expect(callCount).toBeLessThanOrEqual(202);
     expect(callCount).toBeGreaterThan(1);
     expect(result).toBeDefined();
   });

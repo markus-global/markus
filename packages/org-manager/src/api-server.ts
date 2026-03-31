@@ -4967,6 +4967,38 @@ export class APIServer {
       return;
     }
 
+    // Settings — Agent configuration (maxToolIterations etc.)
+    if (path === '/api/settings/agent' && req.method === 'GET') {
+      const am = this.orgService.getAgentManager();
+      this.json(res, 200, { maxToolIterations: am.maxToolIterations });
+      return;
+    }
+
+    if (path === '/api/settings/agent' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const am = this.orgService.getAgentManager();
+      let changed = false;
+      if (typeof body['maxToolIterations'] === 'number') {
+        am.maxToolIterations = body['maxToolIterations'];
+        changed = true;
+      }
+      if (changed) {
+        try {
+          saveConfig({ agent: { maxToolIterations: am.maxToolIterations } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist agent settings to config file', { error: String(e) });
+        }
+        for (const info of am.listAgents()) {
+          const agent = am.getAgent(info.id);
+          if (agent) agent.maxToolIterations = am.maxToolIterations;
+        }
+      }
+      this.json(res, 200, { maxToolIterations: am.maxToolIterations });
+      return;
+    }
+
     if (path === '/api/settings/llm/models' && req.method === 'GET') {
       if (!this.llmRouter) {
         this.json(res, 200, { models: [] });

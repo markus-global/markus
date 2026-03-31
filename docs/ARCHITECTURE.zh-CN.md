@@ -414,9 +414,11 @@ audit_logs (id, org_id, agent_id, task_id, project_id, event_type,
 
 Agent 启动后，HeartbeatScheduler 按配置间隔触发定时任务：
 
-- 每次触发时，Agent 以 `[HEARTBEAT TASK]` 为提示执行检查
+- 每次触发时，Agent 以 `[HEARTBEAT CHECK-IN]` 为提示，遵循"巡逻不施工"原则
 - **心跳包含任务复盘**：调用 task_list 检查活跃任务状态、更新过时状态
-- 最多执行 5 次工具调用，避免无限循环
+- **允许轻量动作**：检查状态、发送消息、创建任务、重试失败任务、快速评审、保存洞察
+- **复杂工作交给任务系统**：发现需要深度处理的问题时，心跳创建任务并通知用户，用户批准后执行
+- 通过 `MAX_TOOL_ITERATIONS`（200）安全阀防止无限循环，不人为限制每次心跳的工具调用次数
 - **治理模式下**：服务启动时不自动恢复 in_progress 任务，需人工触发
 
 ---

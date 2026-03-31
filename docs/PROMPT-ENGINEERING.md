@@ -106,7 +106,7 @@ Four distinct instruction sets depending on `scenario` parameter:
 |----------|-----------------|
 | `chat` | Inline only simple queries (≤3 tool calls). Complex work → `task_create`. **Stop after creating tasks.** |
 | `task_execution` | Decompose into subtasks. Work systematically. Call `task_submit_review` when done (mandatory). |
-| `heartbeat` | Brief check-in. Review duty first, then status, failed tasks, daily report, self-evolution. Max 5 tool calls (exceptions for reviews/reports). |
+| `heartbeat` | Patrol mode: observe, triage, take lightweight actions. Can check status, send messages, create tasks, retry failed tasks, do quick reviews, save insights. No complex implementation — heavy work goes into tasks. |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. |
 
 ### 2.3 Skill Filtering
@@ -287,9 +287,10 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 4. Failed task recovery instructions
 5. Daily report section (managers, after 20:00)
 6. Self-evolution reflection instructions
-7. Rules (compare against last heartbeat, max 5 tool calls with exceptions)
+7. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
+8. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `send_user_message`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `send_user_message`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
 
 Retry: 3 retries with exponential backoff (3s base).
 

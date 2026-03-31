@@ -990,6 +990,9 @@ export const api = {
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
+    getAgent: () => request<{ maxToolIterations: number }>('/settings/agent'),
+    updateAgent: (settings: { maxToolIterations?: number }) =>
+      request<{ maxToolIterations: number }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),

@@ -59,6 +59,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   // Track if user dismissed the setup guide
   const [setupDismissed, setSetupDismissed] = useState(false);
 
+  // Agent settings
+  const [agentMaxIter, setAgentMaxIter] = useState(200);
+  const [agentSaving, setAgentSaving] = useState(false);
+  const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   // Storage transparency
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
@@ -99,13 +104,19 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const loadAgentSettings = useCallback(() => {
+    api.settings.getAgent()
+      .then(d => { if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations); })
+      .catch(() => {});
+  }, []);
+
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
     api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadStorage]);
+  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -762,6 +773,43 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               </div>
             )}
             {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
+          </div>
+        </Section>
+
+        <Section title="Agent Execution">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">Max Tool Iterations</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Safety cap on tool call loops per agent turn (applies to all agents and subagents)</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={agentMaxIter}
+                  onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
+                  className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                />
+                <button
+                  disabled={agentSaving}
+                  onClick={async () => {
+                    setAgentSaving(true); setAgentMsg(null);
+                    try {
+                      const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
+                      setAgentMaxIter(d.maxToolIterations);
+                      setAgentMsg({ type: 'ok', text: 'Saved' });
+                    } catch { setAgentMsg({ type: 'err', text: 'Failed to save' }); }
+                    setAgentSaving(false);
+                  }}
+                  className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                >
+                  {agentSaving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+            {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
           </div>
         </Section>
 
