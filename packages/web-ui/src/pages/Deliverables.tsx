@@ -414,10 +414,9 @@ export function DeliverablesPage() {
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* Left sidebar */}
-      {(!isMobile || !mobileShowDetail) && (
+      {/* Left sidebar — always mounted on mobile to preserve scroll position */}
       <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} border-r border-border-default flex flex-col bg-surface-primary`}
-        style={isMobile ? undefined : { width: listPanel.width }}>
+        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : { width: listPanel.width }}>
         <div className="p-4 border-b border-border-default space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-fg-secondary">
@@ -556,7 +555,6 @@ export function DeliverablesPage() {
           )}
         </div>
       </div>
-      )}
 
       {/* Resize handle */}
       {!isMobile && (

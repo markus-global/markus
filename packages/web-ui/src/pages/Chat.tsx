@@ -1552,13 +1552,13 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     selectedAgent ? 'Type a message…' : 'Select an agent to start chatting';
 
   // ── Render ────────────────────────────────────────────────────────────────────
-  const showSidebarOnMobile = isMobile && !mobileShowChat;
   const showChatOnMobile = isMobile && mobileShowChat;
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* ── Left sidebar (ChatTeamSidebar) ── */}
-      {(!isMobile || showSidebarOnMobile) && (
+      {/* ── Left sidebar (ChatTeamSidebar) — always mounted on mobile to preserve scroll ── */}
+      <div className={isMobile ? 'flex-1 min-w-0 flex flex-col overflow-hidden' : 'contents'}
+        style={isMobile && mobileShowChat ? { display: 'none' } : undefined}>
         <ChatTeamSidebar
           authUser={authUser}
           agents={agents}
@@ -1580,7 +1580,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           width={isMobile ? undefined : chatSidebar.width}
           onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         />
-      )}
+      </div>
 
       {/* ── Main area ── */}
       {(!isMobile || showChatOnMobile) && (
