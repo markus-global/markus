@@ -81,6 +81,7 @@ const BASE_TOOL_NAMES = new Set([
   'deliverable_search',
   'deliverable_create',
   'spawn_subagent',
+  'spawn_subagents',
 ]);
 
 export class ToolSelector {

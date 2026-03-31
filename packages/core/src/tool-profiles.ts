@@ -16,7 +16,7 @@ const TOOL_GROUPS: Record<string, string[]> = {
   'group:web': ['web_search', 'web_fetch', 'web_extract'],
   'group:messaging': ['message', 'send_message'],
   'group:a2a': ['delegate_task', 'query_agent', 'team_broadcast'],
-  'group:agent': ['spawn_subagent', 'todo_write', 'todo_read'],
+  'group:agent': ['spawn_subagent', 'spawn_subagents', 'todo_write', 'todo_read'],
 };
 
 /**

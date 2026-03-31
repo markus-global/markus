@@ -33,7 +33,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
-import { createSubagentTool, type SubagentContext } from './tools/subagent.js';
+import { createSubagentTool, createParallelSubagentTool, type SubagentContext } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 
 /**
@@ -259,6 +259,7 @@ export class Agent {
       maxToolIterations: this._maxToolIterations,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
+    this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
 
     // Register background process completion notifications.
     // When a background_exec session finishes, inject a notification into the

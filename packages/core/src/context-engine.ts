@@ -446,7 +446,7 @@ export class ContextEngine {
     }
 
     parts.push('\n## Working Strategy');
-    parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files.');
+    parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files. (6) For heavy subtasks that need many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your own context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
 
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
@@ -517,6 +517,28 @@ export class ContextEngine {
         lines.push('3. **Stay focused**: Do NOT wander into unrelated work. Do NOT create new top-level tasks — only subtasks within your assigned task.');
         lines.push('4. **Handle blockers**: If you cannot proceed, set status to `blocked` with a clear explanation.');
         lines.push('5. **Submit for review**: When ALL subtasks are complete, call `task_submit_review` with summary + deliverables (MANDATORY — the task does NOT complete without this).');
+        lines.push('');
+        lines.push('**Delegating subtasks to subagents (`spawn_subagent` / `spawn_subagents`):**');
+        lines.push('');
+        lines.push('Subagents are lightweight child loops with independent context windows. They inherit your tools but do NOT pollute your conversation history. Use them strategically:');
+        lines.push('');
+        lines.push('*DELEGATE to a subagent when the subtask is:*');
+        lines.push('- **Deep exploration / analysis**: reading and cross-referencing many files (>5), codebase-wide searches, architecture analysis — a subagent keeps your own context clean');
+        lines.push('- **Independent code modifications**: editing files in separate modules that don\'t depend on each other — perfect for `spawn_subagents` (parallel)');
+        lines.push('- **Research & information gathering**: web searches, reading long documents, comparing alternatives — heavy context that you don\'t need to retain');
+        lines.push('- **Test generation**: writing tests for already-implemented code — self-contained work with clear inputs/outputs');
+        lines.push('- **Documentation / content generation**: producing docs, READMEs, changelogs from existing code — doesn\'t need your live reasoning context');
+        lines.push('- **Repetitive multi-file refactoring**: renaming, format migrations, pattern replacements across many files — especially in parallel');
+        lines.push('');
+        lines.push('*Do NOT delegate when:*');
+        lines.push('- The subtask is quick (≤3 tool calls) — overhead of spawning a subagent is not worth it');
+        lines.push('- The next subtask depends on detailed intermediate reasoning from this one — keep it in your own context');
+        lines.push('- The subtask requires back-and-forth decisions that depend on your overall plan');
+        lines.push('');
+        lines.push('*Parallel execution pattern (`spawn_subagents`):*');
+        lines.push('When you have N independent subtasks, use `spawn_subagents` with an array of tasks to run them all concurrently. Example: implementing separate API endpoints, writing tests for different modules, analyzing different components.');
+        lines.push('');
+        lines.push('*Workflow:* `subtask_create` (track) → `spawn_subagent`/`spawn_subagents` (execute) → verify result → `subtask_complete` (mark done).');
         lines.push('');
         lines.push('**Quality standards:**');
         lines.push('- Use all available tools to produce thorough, high-quality output');

@@ -142,6 +142,8 @@ export {
   createStructuredA2ATools,
   type StructuredA2AContext,
   createSubagentTool,
+  createParallelSubagentTool,
+  runSubagentLoop,
   type SubagentContext,
 } from './tools/index.js';
 export {
