@@ -45,12 +45,6 @@
         "count": 1,
         "skills": ["self-evolution"]
       }
-    ],
-    "workflow": {
-      "phases": ["design", "contract", "implement", "integrate", "review", "deploy"],
-      "parallelImplementation": true,
-      "worktreeIsolation": true,
-      "requireReviewBeforeComplete": true
-    }
+    ]
   }
 }

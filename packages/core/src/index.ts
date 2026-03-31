@@ -232,12 +232,3 @@ export {
   type AgentDataProvider,
   type AgentDataRestorer,
 } from './agent-snapshot.js';
-export {
-  PromptStudio,
-  type PromptTemplate,
-  type PromptVersion,
-  type ABTestConfig,
-  type ABTestMetrics,
-  type EvaluationResult,
-  type PromptExecutor,
-} from './prompt-studio.js';

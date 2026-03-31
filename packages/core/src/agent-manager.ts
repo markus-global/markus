@@ -715,7 +715,7 @@ export class AgentManager {
       if (sender) agent.setUserMessageSender(sender);
     }
 
-    // A2A tools — every agent can message colleagues
+    // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
       selfId: id,
       selfName: config.name,
@@ -959,11 +959,14 @@ export class AgentManager {
       }
     }
 
-    // If this is a manager agent, inject manager-specific tools
+    // If this is a manager agent, inject manager-specific tools (scoped to own team)
     if (request.agentRole === 'manager') {
+      const myTeamId = config.teamId;
+      const filterByTeam = <T extends { teamId?: string }>(list: T[]): T[] =>
+        myTeamId ? list.filter(a => a.teamId === myTeamId) : list;
       const managerTools = createManagerTools({
         listAgents: () =>
-          this.listAgents().map(a => {
+          filterByTeam(this.listAgents()).map(a => {
             try {
               const ag = this.getAgent(a.id);
               return { ...a, skills: ag.config.skills };
@@ -977,7 +980,7 @@ export class AgentManager {
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
-          this.listAgents().map(a => {
+          filterByTeam(this.listAgents()).map(a => {
             try {
               const ag = this.getAgent(a.id);
               const state = ag.getState();
@@ -1479,9 +1482,12 @@ export class AgentManager {
     }
 
     if (config.agentRole === 'manager') {
+      const restoredTeamId = config.teamId;
+      const filterByTeamRestored = <T extends { teamId?: string }>(list: T[]): T[] =>
+        restoredTeamId ? list.filter(a => a.teamId === restoredTeamId) : list;
       const managerTools = createManagerTools({
         listAgents: () =>
-          this.listAgents().map(a => {
+          filterByTeamRestored(this.listAgents()).map(a => {
             try {
               const ag = this.getAgent(a.id);
               return { ...a, skills: ag.config.skills };
@@ -1495,7 +1501,7 @@ export class AgentManager {
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
-          this.listAgents().map(a => {
+          filterByTeamRestored(this.listAgents()).map(a => {
             try {
               const ag = this.getAgent(a.id);
               const state = ag.getState();
@@ -2145,24 +2151,55 @@ export class AgentManager {
 
   /**
    * Rebuild and inject identity context for all agents in an organization.
-   * Should be called after agents are added/removed or humans join/leave.
+   * Colleagues are scoped to the agent's own team; other teams are listed for cross-team awareness.
    */
-  refreshIdentityContexts(orgId: string, orgName: string, humans: HumanUser[]): void {
+  refreshIdentityContexts(
+    orgId: string,
+    orgName: string,
+    humans: HumanUser[],
+    teams?: Array<{ id: string; name: string; description?: string; memberAgentIds: string[] }>,
+  ): void {
     const orgAgents = [...this.agents.values()].filter(a => a.config.orgId === orgId);
 
-    const managerAgent = orgAgents.find(a => a.config.agentRole === 'manager');
+    const agentTeamMap = new Map<string, string>();
+    for (const t of teams ?? []) {
+      for (const aid of t.memberAgentIds) agentTeamMap.set(aid, t.id);
+    }
 
     for (const agent of orgAgents) {
-      const colleagues = orgAgents
-        .filter(a => a.id !== agent.id)
-        .map(a => ({
-          id: a.id,
-          name: a.config.name,
-          role: a.role.name,
-          type: 'agent' as const,
-          skills: a.config.skills,
-          status: a.getState().status,
-        }));
+      const myTeamId = agent.config.teamId ?? agentTeamMap.get(agent.id);
+      const myTeam = teams?.find(t => t.id === myTeamId);
+
+      const sameTeamAgents = myTeamId
+        ? orgAgents.filter(a => a.id !== agent.id && (a.config.teamId === myTeamId || agentTeamMap.get(a.id) === myTeamId))
+        : orgAgents.filter(a => a.id !== agent.id);
+
+      const colleagues = sameTeamAgents.map(a => ({
+        id: a.id,
+        name: a.config.name,
+        role: a.role.name,
+        type: 'agent' as const,
+        skills: a.config.skills,
+        status: a.getState().status,
+      }));
+
+      const teamManager = sameTeamAgents.find(a => a.config.agentRole === 'manager');
+
+      const otherTeams = (teams ?? [])
+        .filter(t => t.id !== myTeamId)
+        .map(t => ({
+          id: t.id,
+          name: t.name,
+          members: t.memberAgentIds
+            .map(aid => {
+              try {
+                const a = this.getAgent(aid);
+                return { id: a.id, name: a.config.name, role: a.role.name };
+              } catch { return null; }
+            })
+            .filter((m): m is { id: string; name: string; role: string } => m !== null),
+        }))
+        .filter(t => t.members.length > 0);
 
       const identity: IdentityContext = {
         self: {
@@ -2173,11 +2210,13 @@ export class AgentManager {
           skills: agent.config.skills,
         },
         organization: { id: orgId, name: orgName },
+        team: myTeam ? { id: myTeam.id, name: myTeam.name, description: myTeam.description } : undefined,
         colleagues,
+        otherTeams: otherTeams.length > 0 ? otherTeams : undefined,
         humans: humans.map(h => ({ id: h.id, name: h.name, role: h.role })),
         manager:
-          managerAgent && managerAgent.id !== agent.id
-            ? { id: managerAgent.id, name: managerAgent.config.name }
+          teamManager && teamManager.id !== agent.id
+            ? { id: teamManager.id, name: teamManager.config.name }
             : undefined,
       };
 

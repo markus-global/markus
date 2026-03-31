@@ -31,12 +31,6 @@
         "count": 1,
         "skills": ["self-evolution"]
       }
-    ],
-    "workflow": {
-      "phases": ["discover", "build", "ship", "measure"],
-      "parallelImplementation": true,
-      "worktreeIsolation": true,
-      "requireReviewBeforeComplete": false
-    }
+    ]
   }
 }

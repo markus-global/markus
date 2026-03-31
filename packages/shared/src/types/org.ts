@@ -77,7 +77,20 @@ export interface IdentityContext {
     id: string;
     name: string;
   };
+  /** Team this agent belongs to (if any) */
+  team?: {
+    id: string;
+    name: string;
+    description?: string;
+  };
+  /** Same-team colleagues (primary working group) */
   colleagues: ColleagueInfo[];
+  /** Other teams in the org, for cross-team awareness */
+  otherTeams?: Array<{
+    id: string;
+    name: string;
+    members: Array<{ id: string; name: string; role: string }>;
+  }>;
   humans: Array<{
     id: string;
     name: string;

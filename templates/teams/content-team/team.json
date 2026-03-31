@@ -38,12 +38,6 @@
         "count": 1,
         "skills": ["self-evolution"]
       }
-    ],
-    "workflow": {
-      "phases": ["research", "brief", "draft", "edit", "publish"],
-      "parallelImplementation": true,
-      "worktreeIsolation": false,
-      "requireReviewBeforeComplete": true
-    }
+    ]
   }
 }

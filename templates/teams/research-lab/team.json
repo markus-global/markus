@@ -2,8 +2,8 @@
   "type": "team",
   "name": "research-lab",
   "displayName": "Research Lab",
-  "version": "1.0.0",
-  "description": "A research-oriented team for investigating complex problems, debugging with competing hypotheses, technology evaluation, and deep analysis. Multiple researchers explore different angles in parallel, challenge each other's findings, and a lead synthesizes consensus. Ideal for root cause analysis, architecture exploration, security audits, and technology selection.",
+  "version": "1.1.0",
+  "description": "Structured research team for investigating complex problems: debugging with competing hypotheses, technology evaluation, security audits, and deep analysis. Multiple researchers explore different angles in parallel, challenge each other's findings, and a synthesizer produces high-quality deliverables. Uses subagents for deep dives, web tools for evidence, memory for knowledge accumulation, and deliverables for traceable outputs.",
   "author": "Markus Team",
   "category": "research",
   "tags": ["research", "investigation", "debugging", "analysis", "competing-hypotheses", "audit"],
@@ -32,18 +32,12 @@
         "skills": ["self-evolution"]
       },
       {
-        "name": "Researcher Gamma",
+        "name": "Synthesizer",
         "role": "worker",
-        "roleName": "research-assistant",
+        "roleName": "content-writer",
         "count": 1,
         "skills": ["self-evolution"]
       }
-    ],
-    "workflow": {
-      "phases": ["frame", "investigate", "challenge", "synthesize"],
-      "parallelImplementation": true,
-      "worktreeIsolation": false,
-      "requireReviewBeforeComplete": true
-    }
+    ]
   }
 }

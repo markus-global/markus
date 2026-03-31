@@ -573,11 +573,18 @@ export class ContextEngine {
 
     if (opts.identity) {
       const self = opts.identity.self;
+      const teamName = opts.identity.team?.name;
       lines.push(`- Name: ${self.name}`);
       lines.push(`- Role: ${opts.role.name} (${opts.role.description})`);
-      lines.push(
-        `- Position: ${self.agentRole === 'manager' ? 'Organization Manager — you lead the AI team' : 'Team Member'}`
-      );
+      if (self.agentRole === 'manager' && teamName) {
+        lines.push(`- Position: Team Manager of **${teamName}**`);
+      } else if (self.agentRole === 'manager') {
+        lines.push(`- Position: Team Manager`);
+      } else if (teamName) {
+        lines.push(`- Position: Member of **${teamName}**`);
+      } else {
+        lines.push(`- Position: Team Member`);
+      }
       if (self.skills.length > 0) {
         lines.push(`- Active Skills: ${self.skills.join(', ')}`);
       }
@@ -594,29 +601,33 @@ export class ContextEngine {
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);
-      // KV-Cache optimization: move timestamp to end of context (not prefix),
-      // and only use date precision to avoid invalidating cache every second.
-      // See: Manus "Context Engineering" — keep prefix stable for cache hits.
 
       if (opts.identity.manager && opts.identity.self.agentRole !== 'manager') {
         lines.push(`\n### Your Manager`);
         lines.push(
-          `- ${opts.identity.manager.name} (AI Organization Manager) — report progress and escalate issues to them`
+          `- ${opts.identity.manager.name} (Team Manager) — report progress and escalate issues to them`
         );
       }
 
       if (opts.identity.colleagues.length > 0) {
-        lines.push(`\n### Your Colleagues`);
+        lines.push(teamName ? `\n### Your Team — ${teamName}` : '\n### Your Team');
         for (const c of opts.identity.colleagues) {
           const statusTag = c.status ? ` [${c.status}]` : '';
           lines.push(
-            `- ${c.name} (${c.role}, ${c.type})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
+            `- ${c.name} (${c.role})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
           );
         }
       }
 
+      if (opts.identity.otherTeams && opts.identity.otherTeams.length > 0) {
+        lines.push('\n### Other Teams (for cross-team coordination)');
+        for (const t of opts.identity.otherTeams) {
+          lines.push(`- **${t.name}**: ${t.members.map(m => `${m.name} (${m.role})`).join(', ')}`);
+        }
+      }
+
       if (opts.identity.humans.length > 0) {
-        lines.push(`\n### Human Team Members`);
+        lines.push(`\n### Human Users`);
         for (const h of opts.identity.humans) {
           const tag = h.role === 'owner' ? ' ★ Owner' : h.role === 'admin' ? ' Admin' : '';
           lines.push(`- ${h.name}${tag}`);
@@ -625,15 +636,11 @@ export class ContextEngine {
 
       if (opts.identity.self.agentRole === 'manager') {
         lines.push(`\n### Manager Responsibilities`);
-        lines.push('As Organization Manager, you are responsible for:');
-        lines.push(
-          '1. **Routing** — When receiving vague messages, determine which team member should handle it'
-        );
-        lines.push('2. **Coordination** — Assign tasks to the right agents based on their skills');
-        lines.push('3. **Reporting** — Proactively report team progress to human stakeholders');
-        lines.push(
-          '4. **Training** — Help new agents understand their roles and the organization context'
-        );
+        lines.push(`You manage${teamName ? ` the **${teamName}** team` : ' your team'}. Your scope is your own team members listed above.`);
+        lines.push('1. **Routing** — Determine which team member should handle incoming requests');
+        lines.push('2. **Coordination** — Assign tasks to team members based on their skills and availability');
+        lines.push('3. **Reporting** — Report your team\'s progress to human stakeholders');
+        lines.push('4. **Cross-team** — Coordinate with other team managers via `agent_send_message` when work crosses team boundaries');
         lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
       }
     } else {

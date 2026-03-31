@@ -1,6 +1,5 @@
 import { createLogger, generateId, readManifest } from '@markus/shared';
 import type { AgentTemplate } from '../templates/types.js';
-import type { WorkflowDefinition } from './types.js';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,8 +24,6 @@ export interface TeamTemplate {
   version: string;
   author: string;
   members: TeamMemberSpec[];
-  /** Optional workflow that defines how team members collaborate */
-  workflow?: WorkflowDefinition;
   tags?: string[];
   category?: string;
   icon?: string;
@@ -55,7 +52,6 @@ export class TeamTemplateRegistry {
     this.templates.set(template.id, template);
     log.info(`Team template registered: ${template.name}`, {
       members: template.members.length,
-      hasWorkflow: !!template.workflow,
     });
   }
 

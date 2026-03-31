@@ -660,7 +660,13 @@ export class OrganizationService {
     const org = this.orgs.get(targetOrgId);
     if (!org) return;
     const humans = this.listHumanUsers(targetOrgId);
-    this.agentManager.refreshIdentityContexts(targetOrgId, org.name, humans);
+    const teams = this.listTeams(targetOrgId).map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      memberAgentIds: t.memberAgentIds,
+    }));
+    this.agentManager.refreshIdentityContexts(targetOrgId, org.name, humans, teams);
   }
 
   listAvailableRoles(): string[] {
