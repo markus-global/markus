@@ -1556,31 +1556,29 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   return (
     <div className="flex-1 overflow-hidden flex">
-      {/* ── Left sidebar (ChatTeamSidebar) — always mounted on mobile to preserve scroll ── */}
-      <div className={isMobile ? 'flex-1 min-w-0 flex flex-col' : 'contents'}
-        style={isMobile && mobileShowChat ? { display: 'none' } : undefined}>
-        <ChatTeamSidebar
-          authUser={authUser}
-          agents={agents}
-          teams={teams}
-          humans={humans}
-          tasks={tasks}
-          externalAgents={externalAgents}
-          groupChats={groupChats}
-          chatMode={chatMode}
-          selectedAgent={selectedAgent}
-          activeChannel={activeChannel}
-          activeDmUserId={activeDmUserId}
-          onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
-          onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
-          onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
-          onRefreshTeams={refreshTeams}
-          onRefreshAgents={refreshAgents}
-          onViewProfile={handleViewProfile}
-          width={isMobile ? undefined : chatSidebar.width}
-          onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
-        />
-      </div>
+      {/* ── Left sidebar (ChatTeamSidebar) — always mounted to preserve scroll ── */}
+      <ChatTeamSidebar
+        authUser={authUser}
+        agents={agents}
+        teams={teams}
+        humans={humans}
+        tasks={tasks}
+        externalAgents={externalAgents}
+        groupChats={groupChats}
+        chatMode={chatMode}
+        selectedAgent={selectedAgent}
+        activeChannel={activeChannel}
+        activeDmUserId={activeDmUserId}
+        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+        onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+        onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); if (isMobile) enterMobileDetail(); }}
+        onRefreshTeams={refreshTeams}
+        onRefreshAgents={refreshAgents}
+        onViewProfile={handleViewProfile}
+        width={isMobile ? undefined : chatSidebar.width}
+        onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
+        hidden={isMobile && mobileShowChat}
+      />
 
       {/* ── Main area ── */}
       {(!isMobile || showChatOnMobile) && (

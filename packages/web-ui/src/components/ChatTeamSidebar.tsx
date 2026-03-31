@@ -39,6 +39,7 @@ interface ChatTeamSidebarProps {
   onViewProfile: (agentId: string) => void;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
+  hidden?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ export function ChatTeamSidebar({
   chatMode, selectedAgent, activeChannel, activeDmUserId,
   onSelectAgent, onSelectChannel, onSelectDm,
   onRefreshTeams, onRefreshAgents, onViewProfile,
-  width, onResizeStart,
+  width, onResizeStart, hidden,
 }: ChatTeamSidebarProps) {
   const isMobile = useIsMobile();
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
@@ -552,7 +553,7 @@ export function ChatTeamSidebar({
 
   return (
     <>
-      <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={width != null ? { width } : undefined}>
+      <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title */}
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">Chat</h2>
