@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { Command } from 'commander';

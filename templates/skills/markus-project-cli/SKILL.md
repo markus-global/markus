@@ -129,9 +129,8 @@ markus project report usage --json
 
 | Command | Key Options |
 |---------|-------------|
-| `project report generate` | `--period` (required: daily/weekly/monthly) `--scope` `--org` `--project` |
 | `project report list` | `--scope` `--scope-id` `--type` |
-| `project report get <id>` | |
+| `project report generate` | `--period` (required: daily/weekly/monthly) `--scope` `--org` |
 | `project report usage` | `--org` |
 
 ## Code Reviews (nested under project)

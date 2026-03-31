@@ -6,6 +6,35 @@ export function registerReportCommands(program: Command) {
   const root = program.command('report').description('Reports and usage');
 
   root
+    .command('list')
+    .option('--scope <s>')
+    .option('--scope-id <id>')
+    .option('--type <t>')
+    .action(async (opts, cmd) => {
+      const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
+      const client = createClient(g);
+      const out = { json: !!g.json };
+      try {
+        const data = await client.get<Record<string, unknown>>('/reports', {
+          scope: opts.scope,
+          scopeId: opts.scopeId,
+          type: opts.type,
+        });
+        const rows = extractRows(data);
+        table(rows, [
+          { key: 'id', header: 'ID', width: 20 },
+          { key: 'type', header: 'Type', width: 10 },
+          { key: 'scope', header: 'Scope', width: 10 },
+          { key: 'period', header: 'Period', width: 10 },
+          { key: 'createdAt', header: 'Created', width: 22 },
+        ], { ...out, title: 'Reports' });
+      } catch (e) {
+        if (e instanceof ApiError) fail(e.message);
+        throw e;
+      }
+    });
+
+  root
     .command('generate')
     .requiredOption('--period <p>', 'daily | weekly | monthly')
     .option('--scope <s>')
