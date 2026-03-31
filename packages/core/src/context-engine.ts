@@ -211,9 +211,12 @@ export class ContextEngine {
       if (opts.agentWorkspace?.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
-      if (opts.agentWorkspace?.builderArtifactsDir) {
-        parts.push(`- Builder artifacts directory: \`${opts.agentWorkspace.builderArtifactsDir}\` (write agent/team/skill packages here — the Builder page reads from this directory)`);
-      }
+      parts.push('- Builder artifacts directory: `~/.markus/builder-artifacts/`');
+      parts.push('  **CRITICAL**: When creating agents, teams, or skills, you MUST place them in the correct subdirectory:');
+      parts.push('  - Agents → `~/.markus/builder-artifacts/agents/{agent-name}/`');
+      parts.push('  - Teams → `~/.markus/builder-artifacts/teams/{team-name}/`');
+      parts.push('  - Skills → `~/.markus/builder-artifacts/skills/{skill-name}/`');
+      parts.push('  The Builder page and install system ONLY recognize these paths. Writing artifacts anywhere else will make them invisible.');
       if (opts.agentDataDir) {
         parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
       }
@@ -224,9 +227,12 @@ export class ContextEngine {
       if (opts.agentWorkspace.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
-      if (opts.agentWorkspace.builderArtifactsDir) {
-        parts.push(`- Builder artifacts directory: \`${opts.agentWorkspace.builderArtifactsDir}\` (write agent/team/skill packages here — the Builder page reads from this directory)`);
-      }
+      parts.push('- Builder artifacts directory: `~/.markus/builder-artifacts/`');
+      parts.push('  **CRITICAL**: When creating agents, teams, or skills, you MUST place them in the correct subdirectory:');
+      parts.push('  - Agents → `~/.markus/builder-artifacts/agents/{agent-name}/`');
+      parts.push('  - Teams → `~/.markus/builder-artifacts/teams/{team-name}/`');
+      parts.push('  - Skills → `~/.markus/builder-artifacts/skills/{skill-name}/`');
+      parts.push('  The Builder page and install system ONLY recognize these paths. Writing artifacts anywhere else will make them invisible.');
       if (opts.agentDataDir) {
         parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
       }
