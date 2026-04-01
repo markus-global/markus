@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -1660,8 +1660,21 @@ export class APIServer {
       const status = url.searchParams.get('status') as TaskStatus | undefined;
       const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const tasks = this.taskService.listTasks({ orgId, status, assignedAgentId, projectId });
-      this.json(res, 200, { tasks });
+      const requirementId = url.searchParams.get('requirementId') ?? undefined;
+      const priority = url.searchParams.get('priority') as TaskPriority | undefined;
+      const search = url.searchParams.get('search') ?? undefined;
+      const sortBy = url.searchParams.get('sortBy') as TaskSortField | undefined;
+      const sortOrder = url.searchParams.get('sortOrder') as SortOrder | undefined;
+      const pageParam = url.searchParams.get('page');
+      const pageSizeParam = url.searchParams.get('pageSize');
+      const page = pageParam ? parseInt(pageParam, 10) : undefined;
+      const pageSize = pageSizeParam ? parseInt(pageSizeParam, 10) : undefined;
+
+      const result = this.taskService.queryTasks({
+        orgId, status, assignedAgentId, projectId, requirementId,
+        priority, search, sortBy, sortOrder, page, pageSize,
+      });
+      this.json(res, 200, result);
       return;
     }
 

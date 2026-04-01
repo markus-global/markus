@@ -95,6 +95,34 @@ export interface Task {
   scheduleConfig?: ScheduleConfig;
 }
 
+export type TaskSortField = 'createdAt' | 'updatedAt' | 'priority' | 'status' | 'title';
+export type SortOrder = 'asc' | 'desc';
+
+export interface TaskQueryOptions {
+  orgId?: string;
+  status?: TaskStatus;
+  assignedAgentId?: string;
+  priority?: TaskPriority;
+  projectId?: string;
+  requirementId?: string;
+  /** Full-text search across title and description */
+  search?: string;
+  sortBy?: TaskSortField;
+  sortOrder?: SortOrder;
+  /** 1-based page number (default: 1) */
+  page?: number;
+  /** Items per page (default: 20, max: 100) */
+  pageSize?: number;
+}
+
+export interface TaskQueryResult {
+  tasks: Task[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 export interface TaskResult {
   success: boolean;
   summary: string;

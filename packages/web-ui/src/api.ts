@@ -739,13 +739,31 @@ export const api = {
     list: (orgId?: string) => request<{ agents: ExternalAgentInfo[] }>(`/external-agents?orgId=${orgId ?? 'default'}`),
   },
   tasks: {
-    list: (filters?: { assignedAgentId?: string; status?: string; projectId?: string }) => {
+    list: (filters?: {
+      assignedAgentId?: string;
+      status?: string;
+      projectId?: string;
+      requirementId?: string;
+      priority?: string;
+      search?: string;
+      sortBy?: string;
+      sortOrder?: string;
+      page?: number;
+      pageSize?: number;
+    }) => {
       const params = new URLSearchParams();
       if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.requirementId) params.set('requirementId', filters.requirementId);
+      if (filters?.priority) params.set('priority', filters.priority);
+      if (filters?.search) params.set('search', filters.search);
+      if (filters?.sortBy) params.set('sortBy', filters.sortBy);
+      if (filters?.sortOrder) params.set('sortOrder', filters.sortOrder);
+      if (filters?.page != null) params.set('page', String(filters.page));
+      if (filters?.pageSize != null) params.set('pageSize', String(filters.pageSize));
       const qs = params.toString();
-      return request<{ tasks: TaskInfo[] }>(`/tasks${qs ? `?${qs}` : ''}`);
+      return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
     create: (title: string, description: string, assignedAgentId: string, reviewerAgentId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string }) =>

@@ -25,9 +25,20 @@ export interface AgentTaskContext {
       maxRuns?: number;
     };
   }) => Promise<{ id: string; title: string; status: string }>;
-  /** List tasks — defaults to tasks assigned to this agent */
-  listTasks: (filter?: { assignedToMe?: boolean; status?: string; requirementId?: string; projectId?: string }) => Promise<
-    Array<{
+  /** List tasks with filtering, search, sorting and pagination */
+  listTasks: (filter?: {
+    assignedToMe?: boolean;
+    status?: string;
+    requirementId?: string;
+    projectId?: string;
+    priority?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: string;
+    page?: number;
+    pageSize?: number;
+  }) => Promise<{
+    tasks: Array<{
       id: string;
       title: string;
       description: string;
@@ -36,8 +47,12 @@ export interface AgentTaskContext {
       updatedAt: string;
       assignedAgentId?: string;
       requirementId?: string;
-    }>
-  >;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  }>;
   /** Update a task's status (e.g. in_progress, blocked, completed, failed) */
   updateTaskStatus: (
     taskId: string,
@@ -249,8 +264,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_list',
       description: [
-        'List tasks from the team task board.',
-        'By default shows tasks assigned to you. Use filters to see all tasks or by status.',
+        'List tasks from the team task board with filtering, search, sorting and pagination.',
+        'By default shows tasks assigned to you, sorted by updatedAt desc, 20 per page.',
+        'Use search to find tasks by keyword in title/description.',
         'Use requirement_id to see all tasks belonging to a specific requirement.',
         'Use project_id to see all tasks in a project.',
         'Check this regularly to know what you should be working on.',
@@ -277,13 +293,40 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             ],
             description: 'Filter by status (optional)',
           },
+          priority: {
+            type: 'string',
+            enum: ['low', 'medium', 'high', 'urgent'],
+            description: 'Filter by priority (optional)',
+          },
           requirement_id: {
             type: 'string',
-            description: 'Filter tasks by requirement ID. Use this to see all tasks under a specific requirement.',
+            description: 'Filter tasks by requirement ID.',
           },
           project_id: {
             type: 'string',
-            description: 'Filter tasks by project ID. Use this to see all tasks in a project.',
+            description: 'Filter tasks by project ID.',
+          },
+          search: {
+            type: 'string',
+            description: 'Search keyword — matches against task title and description (case-insensitive).',
+          },
+          sort_by: {
+            type: 'string',
+            enum: ['createdAt', 'updatedAt', 'priority', 'status', 'title'],
+            description: 'Field to sort by (default: updatedAt)',
+          },
+          sort_order: {
+            type: 'string',
+            enum: ['asc', 'desc'],
+            description: 'Sort direction (default: desc)',
+          },
+          page: {
+            type: 'number',
+            description: 'Page number, 1-based (default: 1)',
+          },
+          page_size: {
+            type: 'number',
+            description: 'Number of tasks per page, 1-100 (default: 20)',
           },
         },
       },
@@ -291,21 +334,30 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         try {
           const requirementId = args['requirement_id'] as string | undefined;
           const projectId = args['project_id'] as string | undefined;
-          // When filtering by requirement or project, default assigned_to_me to false
           const assignedToMeDefault = !requirementId && !projectId;
           const assignedToMe = args['assigned_to_me'] !== undefined
             ? (args['assigned_to_me'] as boolean)
             : assignedToMeDefault;
-          const tasks = await ctx.listTasks({
+          const result = await ctx.listTasks({
             assignedToMe,
             status: args['status'] as string | undefined,
+            priority: args['priority'] as string | undefined,
             requirementId,
             projectId,
+            search: args['search'] as string | undefined,
+            sortBy: args['sort_by'] as string | undefined,
+            sortOrder: args['sort_order'] as string | undefined,
+            page: args['page'] as number | undefined,
+            pageSize: args['page_size'] as number | undefined,
           });
           return JSON.stringify({
             status: 'success',
-            count: tasks.length,
-            tasks: tasks.map(t => ({
+            total: result.total,
+            page: result.page,
+            pageSize: result.pageSize,
+            totalPages: result.totalPages,
+            count: result.tasks.length,
+            tasks: result.tasks.map(t => ({
               id: t.id,
               title: t.title,
               status: t.status,

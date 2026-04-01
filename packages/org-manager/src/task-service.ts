@@ -14,6 +14,9 @@ import {
   type BuilderArtifactType,
   manifestFilename,
   type PackageType,
+  type TaskQueryOptions,
+  type TaskQueryResult,
+  type TaskSortField,
 } from '@markus/shared';
 import type { AgentManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -1574,6 +1577,69 @@ export class TaskService {
     if (filters?.projectId) result = result.filter(t => t.projectId === filters.projectId);
     if (filters?.requirementId) result = result.filter(t => t.requirementId === filters.requirementId);
     return result;
+  }
+
+  queryTasks(opts?: TaskQueryOptions): TaskQueryResult {
+    let result = [...this.tasks.values()];
+
+    // ── Filters ──
+    if (opts?.orgId) result = result.filter(t => t.orgId === opts.orgId);
+    if (opts?.status) result = result.filter(t => t.status === opts.status);
+    if (opts?.assignedAgentId) result = result.filter(t => t.assignedAgentId === opts.assignedAgentId);
+    if (opts?.priority) result = result.filter(t => t.priority === opts.priority);
+    if (opts?.projectId) result = result.filter(t => t.projectId === opts.projectId);
+    if (opts?.requirementId) result = result.filter(t => t.requirementId === opts.requirementId);
+
+    // ── Search (case-insensitive substring match on title + description) ──
+    if (opts?.search) {
+      const q = opts.search.toLowerCase();
+      result = result.filter(
+        t => t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q),
+      );
+    }
+
+    const total = result.length;
+
+    // ── Sort ──
+    const sortBy: TaskSortField = opts?.sortBy ?? 'updatedAt';
+    const sortOrder = opts?.sortOrder ?? 'desc';
+    const priorityRank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+    const statusRank: Record<string, number> = {
+      in_progress: 0, blocked: 1, review: 2, pending_approval: 3,
+      completed: 4, failed: 5, cancelled: 6, archived: 7,
+    };
+
+    result.sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case 'priority':
+          cmp = (priorityRank[a.priority] ?? 99) - (priorityRank[b.priority] ?? 99);
+          break;
+        case 'status':
+          cmp = (statusRank[a.status] ?? 99) - (statusRank[b.status] ?? 99);
+          break;
+        case 'title':
+          cmp = a.title.localeCompare(b.title);
+          break;
+        case 'createdAt':
+          cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          break;
+        case 'updatedAt':
+        default:
+          cmp = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
+          break;
+      }
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+
+    // ── Pagination ──
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 20, 1), 100);
+    const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+    const page = Math.min(Math.max(opts?.page ?? 1, 1), totalPages);
+    const start = (page - 1) * pageSize;
+    const paged = result.slice(start, start + pageSize);
+
+    return { tasks: paged, total, page, pageSize, totalPages };
   }
 
   getTasksByAgent(agentId: string): Task[] {

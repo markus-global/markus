@@ -147,6 +147,34 @@ export interface TaskServiceBridge {
     assignedAgentId?: string;
     requirementId?: string;
   }>;
+  queryTasks(opts?: {
+    orgId?: string;
+    status?: string;
+    assignedAgentId?: string;
+    priority?: string;
+    projectId?: string;
+    requirementId?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: string;
+    page?: number;
+    pageSize?: number;
+  }): {
+    tasks: Array<{
+      id: string;
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+      updatedAt: string;
+      assignedAgentId?: string;
+      requirementId?: string;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  };
   updateTaskStatus(id: string, status: string, updatedBy?: string): { id: string; title: string; status: string };
   getTask(
     id: string
@@ -825,12 +853,18 @@ export class AgentManager {
           });
         },
         listTasks: async filter => {
-          return ts.listTasks({
+          return ts.queryTasks({
             orgId,
-            status: filter?.status,
+            status: filter?.status as any,
             assignedAgentId: filter?.assignedToMe ? id : undefined,
+            priority: filter?.priority as any,
             requirementId: filter?.requirementId,
             projectId: filter?.projectId,
+            search: filter?.search,
+            sortBy: filter?.sortBy as any,
+            sortOrder: filter?.sortOrder as any,
+            page: filter?.page,
+            pageSize: filter?.pageSize,
           });
         },
         updateTaskStatus: async (taskId, status) => {
@@ -1361,12 +1395,18 @@ export class AgentManager {
         agentName: config.name,
         createTask: async params => ts.createTask({ orgId, ...params, createdBy: id, creatorRole: 'worker' }),
         listTasks: async filter =>
-          ts.listTasks({
+          ts.queryTasks({
             orgId,
-            status: filter?.status,
+            status: filter?.status as any,
             assignedAgentId: filter?.assignedToMe ? id : undefined,
+            priority: filter?.priority as any,
             requirementId: filter?.requirementId,
             projectId: filter?.projectId,
+            search: filter?.search,
+            sortBy: filter?.sortBy as any,
+            sortOrder: filter?.sortOrder as any,
+            page: filter?.page,
+            pageSize: filter?.pageSize,
           }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
