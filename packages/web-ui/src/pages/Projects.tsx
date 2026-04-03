@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -495,11 +495,13 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
       .map(log => ({ log, entry: taskLogToEntry(log) }))
       .filter((p): p is { log: TaskLogEntry; entry: ExecEntry } => p.entry != null);
     const filteredEntries = filterCompletedStarts(rawPairs.map(p => p.entry));
+    const enrichedEntries = attachSubagentLogsToEntries(logs, filteredEntries);
+    const enrichedSet = new Map(enrichedEntries.map((e, i) => [filteredEntries[i], e]));
     const kept = new Set(filteredEntries);
     const items: TimelineItem[] = [
       ...rawPairs.filter(p => kept.has(p.entry)).map(({ log, entry }) => ({
         kind: 'log' as const,
-        entry,
+        entry: enrichedSet.get(entry) ?? entry,
         time: new Date(entry.timestamp ?? entry.time ?? 0).getTime(),
         executionRound: log.executionRound ?? seqToRound.get(log.seq) ?? 1,
       })),

@@ -50,6 +50,12 @@ interface TaskAsyncContext {
   subagentProgress?: SubagentProgressCallback;
 }
 const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
+
+interface ChatSubagentContext {
+  subagentProgress: SubagentProgressCallback;
+}
+const chatSubagentContext = new AsyncLocalStorage<ChatSubagentContext>();
+
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
@@ -260,7 +266,9 @@ export class Agent {
       offloadLargeResult: (toolName, result) => this.offloadLargeResult(toolName, result),
       maxToolIterations: this._maxToolIterations,
       dataDir: this.dataDir,
-      getProgressCallback: () => taskAsyncContext.getStore()?.subagentProgress,
+      getProgressCallback: () =>
+        taskAsyncContext.getStore()?.subagentProgress
+        ?? chatSubagentContext.getStore()?.subagentProgress,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -1829,6 +1837,13 @@ export class Agent {
           });
 
           // Execute all tool calls in parallel
+          const subagentProgressCb: SubagentProgressCallback = (event) => {
+            onEvent({
+              type: 'subagent_progress',
+              tool: 'spawn_subagents',
+              subagentEvent: { eventType: event.type, content: event.content, metadata: event.metadata },
+            });
+          };
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
@@ -1836,8 +1851,12 @@ export class Agent {
               const toolOutputCb: ToolOutputCallback = (chunk) => {
                 onEvent({ type: 'tool_output', tool: tc.name, text: chunk });
               };
+              const runTool = () => this.executeTool(tc, toolOutputCb);
               try {
-                let result = await this.executeTool(tc, toolOutputCb);
+                const isSubagentTool = tc.name === 'spawn_subagent' || tc.name === 'spawn_subagents';
+                let result = isSubagentTool
+                  ? await chatSubagentContext.run({ subagentProgress: subagentProgressCb }, runTool)
+                  : await runTool();
                 result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
                 const durationMs = Date.now() - toolStart;

@@ -141,8 +141,14 @@ export interface LLMResponse {
   compactionContent?: string;
 }
 
+export interface SubagentProgressEvent {
+  eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface LLMStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool' | 'thinking_delta' | 'tool_output';
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'message_end' | 'agent_tool' | 'thinking_delta' | 'tool_output' | 'subagent_progress';
   text?: string;
   thinking?: string;
   toolCall?: Partial<LLMToolCall>;
@@ -156,4 +162,6 @@ export interface LLMStreamEvent {
   result?: string;
   error?: string;
   durationMs?: number;
+  // subagent_progress event fields
+  subagentEvent?: SubagentProgressEvent;
 }

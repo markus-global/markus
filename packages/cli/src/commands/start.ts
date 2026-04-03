@@ -168,6 +168,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  // Load custom models from config
+  if (config.llm.customModels) {
+    for (const [providerName, models] of Object.entries(config.llm.customModels)) {
+      for (const model of models) {
+        llmRouter.addCustomModel(providerName, model as any);
+      }
+    }
+  }
+
   // Wire LLM audit logging
   const llmLogger = new LLMLogger();
   llmRouter.setLogCallback((entry: LLMLogEntry) => llmLogger.log(entry));

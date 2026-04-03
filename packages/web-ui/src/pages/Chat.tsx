@@ -10,7 +10,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
-  taskLogToEntry, activityLogToEntry, filterCompletedStarts,
+  taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries,
   type ExecEntry,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
@@ -25,7 +25,7 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
   | { type: 'text'; content: string; thinking?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string };
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[] };
 
 interface ChatMsg {
   id: string;
@@ -361,7 +361,7 @@ function AgentMessageBody({
         {segments.map((seg, i) => {
           const isLastSeg = i === segments.length - 1;
           if (seg.type === 'tool') {
-            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, liveOutput: seg.liveOutput }} isLast={isLastSeg && !isWaiting} />;
+            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, liveOutput: seg.liveOutput, subagentLogs: seg.subagentLogs }} isLast={isLastSeg && !isWaiting} />;
           }
           // text segment
           return (
@@ -1128,8 +1128,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
       /** Handle a tool event: start adds a 'running' segment, end updates it, output appends live text */
       const handleToolEvent = (event: AgentToolEvent) => {
-        if (event.phase !== 'output') {
-          appendConvActivity(sendKey, { ...event, ts: Date.now() });
+        if (event.phase === 'start' || event.phase === 'end') {
+          appendConvActivity(sendKey, { ...event, phase: event.phase, ts: Date.now() });
         }
         if (event.phase === 'start') {
           updateConvMsgs(sendKey, prev => {
@@ -1168,6 +1168,22 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
                 segs[i] = { ...s, liveOutput: (s.liveOutput ?? '') + (event.output ?? '') };
+                break;
+              }
+            }
+            u[idx] = { ...u[idx]!, segments: segs };
+            return u;
+          });
+        } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
+          updateConvMsgs(sendKey, prev => {
+            const u = [...prev];
+            const idx = u.findIndex(m => m.id === agentMsgId);
+            if (idx < 0) return prev;
+            const segs = [...(u[idx]!.segments ?? [])];
+            for (let i = segs.length - 1; i >= 0; i--) {
+              const s = segs[i]!;
+              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
+                segs[i] = { ...s, subagentLogs: [...(s.subagentLogs ?? []), event.subagentEvent!] };
                 break;
               }
             }
@@ -2309,9 +2325,13 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
             <div className="text-center py-8 text-xs text-fg-tertiary">Loading logs…</div>
           ) : currentTask && taskLogs.length > 0 ? (
             <>
-              {filterCompletedStarts(taskLogs.slice(-60).map(taskLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
-                <ExecEntryRow key={`t-${i}`} entry={entry} showTime />
-              ))}
+              {(() => {
+                const recentLogs = taskLogs.slice(-60);
+                const raw = filterCompletedStarts(recentLogs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
+                return attachSubagentLogsToEntries(recentLogs, raw).map((entry, i) => (
+                  <ExecEntryRow key={`t-${i}`} entry={entry} showTime />
+                ));
+              })()}
             </>
           ) : activityLogs.length > 0 ? (
             <>

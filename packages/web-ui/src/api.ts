@@ -1,14 +1,21 @@
 const BASE = '/api';
 
+export interface SubagentProgressEvent {
+  eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface AgentToolEvent {
   tool: string;
-  phase: 'start' | 'end' | 'output';
+  phase: 'start' | 'end' | 'output' | 'subagent_progress';
   success?: boolean;
   arguments?: unknown;
   result?: string;
   error?: string;
   durationMs?: number;
   output?: string;
+  subagentEvent?: SubagentProgressEvent;
 }
 
 export interface AuthUser {
@@ -687,6 +694,8 @@ export const api = {
                   else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 } else if (event.type === 'tool_output' && event.tool) {
                   onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
+                } else if (event.type === 'subagent_progress' && event.tool) {
+                  onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
                 }
               } catch { /* skip */ }
             }
@@ -904,6 +913,8 @@ export const api = {
                   else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 } else if (event.type === 'tool_output' && event.tool) {
                   onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
+                } else if (event.type === 'subagent_progress' && event.tool) {
+                  onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
                 }
               } catch { /* skip */ }
             }

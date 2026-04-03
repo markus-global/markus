@@ -14,3 +14,4 @@ export { createStructuredA2ATools, type StructuredA2AContext } from './a2a-struc
 export { createAgentTaskTools, type AgentTaskContext } from './task-tools.js';
 export { createMemoryTools, type AgentMemoryContext } from './memory.js';
 export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type SubagentContext, type SubagentProgressCallback } from './subagent.js';
+export { createSettingsTools, type SettingsToolsContext } from './settings.js';

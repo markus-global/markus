@@ -16,6 +16,17 @@ export interface MarkusConfig {
       model?: string;
       enabled?: boolean;
     }>;
+    /** Custom model definitions added via UI/API, keyed by provider name */
+    customModels?: Record<string, Array<{
+      id: string;
+      name: string;
+      provider: string;
+      contextWindow: number;
+      maxOutputTokens: number;
+      cost: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+      reasoning?: boolean;
+      inputTypes?: Array<'text' | 'image'>;
+    }>>;
     /** Request timeout in ms for all LLM providers (default: 90s) */
     timeoutMs?: number;
   };

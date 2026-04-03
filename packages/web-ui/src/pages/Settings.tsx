@@ -324,6 +324,150 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
     if (oauthPollRef.current) clearInterval(oauthPollRef.current);
   }, []);
 
+  // Add/Edit/Delete provider state
+  const [showAddProvider, setShowAddProvider] = useState(false);
+  const [addProviderForm, setAddProviderForm] = useState({ name: '', apiKey: '', baseUrl: '', model: '' });
+  const [addProviderSaving, setAddProviderSaving] = useState(false);
+  const [addProviderMsg, setAddProviderMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [editingProvider, setEditingProvider] = useState<string | null>(null);
+  const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '' });
+  const [editProviderSaving, setEditProviderSaving] = useState(false);
+  const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
+
+  // Add custom model state
+  const [addingModelProvider, setAddingModelProvider] = useState<string | null>(null);
+  const [addModelForm, setAddModelForm] = useState({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false });
+  const [addModelSaving, setAddModelSaving] = useState(false);
+
+  const addProvider = async () => {
+    if (!addProviderForm.name || !addProviderForm.model) return;
+    setAddProviderSaving(true); setAddProviderMsg(null);
+    try {
+      const res = await fetch('/api/settings/llm/providers', {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({
+          name: addProviderForm.name,
+          apiKey: addProviderForm.apiKey || undefined,
+          baseUrl: addProviderForm.baseUrl || undefined,
+          model: addProviderForm.model,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setLlm(data as LLMSettings);
+        setShowAddProvider(false);
+        setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '' });
+        setAddProviderMsg({ type: 'ok', text: `Provider ${addProviderForm.name} added` });
+      } else {
+        setAddProviderMsg({ type: 'err', text: (data as { error: string }).error ?? 'Failed to add' });
+      }
+    } catch { setAddProviderMsg({ type: 'err', text: 'Network error' }); }
+    finally { setAddProviderSaving(false); }
+  };
+
+  const startEditProvider = (name: string, info: ProviderInfo) => {
+    setEditingProvider(name);
+    setEditProviderForm({ apiKey: '', baseUrl: info.baseUrl ?? '', model: info.model });
+  };
+
+  const saveEditProvider = async (name: string) => {
+    setEditProviderSaving(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editProviderForm.apiKey) body.apiKey = editProviderForm.apiKey;
+      if (editProviderForm.baseUrl !== undefined) body.baseUrl = editProviderForm.baseUrl;
+      if (editProviderForm.model) body.model = editProviderForm.model;
+      const res = await fetch(`/api/settings/llm/providers/${name}`, {
+        method: 'PUT', headers: authHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+        setEditingProvider(null);
+      }
+    } catch { /* ignore */ }
+    finally { setEditProviderSaving(false); }
+  };
+
+  const deleteProvider = async (name: string) => {
+    setDeletingProvider(name);
+    try {
+      const res = await fetch(`/api/settings/llm/providers/${name}`, {
+        method: 'DELETE', headers: authHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+        setSelectedProvider(data.defaultProvider);
+      }
+    } catch { /* ignore */ }
+    finally { setDeletingProvider(null); }
+  };
+
+  const addCustomModel = async (providerName: string) => {
+    if (!addModelForm.id || !addModelForm.name) return;
+    setAddModelSaving(true);
+    try {
+      const res = await fetch(`/api/settings/llm/providers/${providerName}/models`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({
+          id: addModelForm.id,
+          name: addModelForm.name,
+          contextWindow: addModelForm.contextWindow,
+          maxOutputTokens: addModelForm.maxOutputTokens,
+          cost: { input: addModelForm.costInput, output: addModelForm.costOutput },
+          reasoning: addModelForm.reasoning || undefined,
+          inputTypes: addModelForm.vision ? ['text', 'image'] : ['text'],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+        setAddingModelProvider(null);
+        setAddModelForm({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false });
+      }
+    } catch { /* ignore */ }
+    finally { setAddModelSaving(false); }
+  };
+
+  const deleteCustomModel = async (providerName: string, modelId: string) => {
+    try {
+      const res = await fetch(`/api/settings/llm/providers/${providerName}/models/${encodeURIComponent(modelId)}`, {
+        method: 'DELETE', headers: authHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const BUILTIN_MODEL_IDS = new Set([
+    'claude-opus-4-6', 'claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022',
+    'gpt-5.4', 'gpt-4o', 'o4-mini',
+    'gemini-3-1-pro', 'gemini-2.5-flash',
+    'MiniMax-M2.7', 'MiniMax-M2.5',
+    'xiaomi/mimo-v2-pro', 'anthropic/claude-opus-4-6', 'openai/gpt-5.4', 'google/gemini-3-1-pro',
+  ]);
+
+  const [switchingModel, setSwitchingModel] = useState<string | null>(null);
+
+  const switchProviderModel = async (providerName: string, modelId: string) => {
+    setSwitchingModel(`${providerName}:${modelId}`);
+    try {
+      const res = await fetch(`/api/settings/llm/providers/${providerName}/model`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ model: modelId }),
+      });
+      if (res.ok) {
+        const data = await res.json() as LLMSettings;
+        setLlm(data);
+      }
+    } catch { /* ignore */ }
+    finally { setSwitchingModel(null); }
+  };
+
   const enabledProviders = llm?.providers
     ? Object.entries(llm.providers).filter(([, v]) => v.configured && v.enabled).map(([k]) => k) : [];
 
@@ -627,12 +771,65 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 {expandedProvider === name && (
                   <div className="px-5 pb-4 border-t border-border-default pt-4 space-y-4">
                     {info.configured && (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <MiniStat label="Model" value={info.model} />
-                        <MiniStat label="Context Window" value={info.contextWindow ? `${(info.contextWindow / 1000).toFixed(0)}K tokens` : 'N/A'} />
-                        <MiniStat label="Max Output" value={info.maxOutputTokens ? `${(info.maxOutputTokens / 1000).toFixed(0)}K tokens` : 'N/A'} />
-                        <MiniStat label="Base URL" value={info.baseUrl ?? 'Default'} />
-                      </div>
+                      <>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <MiniStat label="Model" value={info.model} />
+                          <MiniStat label="Context Window" value={info.contextWindow ? `${(info.contextWindow / 1000).toFixed(0)}K tokens` : 'N/A'} />
+                          <MiniStat label="Max Output" value={info.maxOutputTokens ? `${(info.maxOutputTokens / 1000).toFixed(0)}K tokens` : 'N/A'} />
+                          <MiniStat label="Base URL" value={info.baseUrl ?? 'Default'} />
+                        </div>
+
+                        {/* Edit / Delete provider actions */}
+                        {editingProvider === name ? (
+                          <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
+                            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Edit Provider</div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                                <input type="password" value={editProviderForm.apiKey}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, apiKey: e.target.value })}
+                                  placeholder="Leave blank to keep current"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL</label>
+                                <input type="text" value={editProviderForm.baseUrl}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, baseUrl: e.target.value })}
+                                  placeholder="Default"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Model</label>
+                                <input type="text" value={editProviderForm.model}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, model: e.target.value })}
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none" />
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
+                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                                {editProviderSaving ? 'Saving...' : 'Save'}
+                              </button>
+                              <button onClick={() => setEditingProvider(null)}
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
+                              className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                              Edit
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); if (confirm(`Delete provider "${info.displayName ?? name}"?`)) void deleteProvider(name); }}
+                              disabled={deletingProvider === name}
+                              className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
+                              {deletingProvider === name ? 'Deleting...' : 'Delete'}
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {info.cost && (
@@ -647,30 +844,132 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                       </div>
                     )}
 
-                    {info.models && info.models.length > 0 && (
-                      <div>
-                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-2">Available Models</div>
-                        <div className="space-y-1.5">
-                          {info.models.map(m => (
-                            <div key={m.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-elevated/30 text-xs">
-                              <div className="flex items-center gap-2">
-                                <span className="text-fg-secondary">{m.name}</span>
-                                {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">reasoning</span>}
-                                {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">vision</span>}
-                              </div>
-                              <div className="flex items-center gap-3 text-fg-tertiary">
-                                <span>{(m.contextWindow / 1000).toFixed(0)}K ctx</span>
-                                <span>${m.cost.input}/${m.cost.output}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                    {/* Available Models */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Available Models</div>
+                        {info.configured && addingModelProvider !== name && (
+                          <button onClick={() => { setAddingModelProvider(name); setAddModelForm({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false }); }}
+                            className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">
+                            + Add Model
+                          </button>
+                        )}
                       </div>
-                    )}
+
+                      {/* Add model form */}
+                      {addingModelProvider === name && (
+                        <div className="bg-surface-elevated/40 rounded-lg p-3 mb-2 space-y-2">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                            <input type="text" placeholder="Model ID" value={addModelForm.id}
+                              onChange={e => setAddModelForm({ ...addModelForm, id: e.target.value })}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                            <input type="text" placeholder="Display Name" value={addModelForm.name}
+                              onChange={e => setAddModelForm({ ...addModelForm, name: e.target.value })}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                            <input type="number" placeholder="Context (tokens)" value={addModelForm.contextWindow}
+                              onChange={e => setAddModelForm({ ...addModelForm, contextWindow: Number(e.target.value) })}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
+                            <input type="number" placeholder="Max Output" value={addModelForm.maxOutputTokens}
+                              onChange={e => setAddModelForm({ ...addModelForm, maxOutputTokens: Number(e.target.value) })}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-fg-tertiary">$/1M in:</span>
+                              <input type="number" step="0.01" value={addModelForm.costInput}
+                                onChange={e => setAddModelForm({ ...addModelForm, costInput: Number(e.target.value) })}
+                                className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-fg-tertiary">out:</span>
+                              <input type="number" step="0.01" value={addModelForm.costOutput}
+                                onChange={e => setAddModelForm({ ...addModelForm, costOutput: Number(e.target.value) })}
+                                className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
+                            </div>
+                            <label className="flex items-center gap-1 text-[10px] text-fg-tertiary cursor-pointer">
+                              <input type="checkbox" checked={addModelForm.reasoning}
+                                onChange={e => setAddModelForm({ ...addModelForm, reasoning: e.target.checked })} className="rounded" />
+                              reasoning
+                            </label>
+                            <label className="flex items-center gap-1 text-[10px] text-fg-tertiary cursor-pointer">
+                              <input type="checkbox" checked={addModelForm.vision}
+                                onChange={e => setAddModelForm({ ...addModelForm, vision: e.target.checked })} className="rounded" />
+                              vision
+                            </label>
+                            <div className="flex-1" />
+                            <button onClick={() => void addCustomModel(name)} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
+                              className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors">
+                              {addModelSaving ? 'Adding...' : 'Add'}
+                            </button>
+                            <button onClick={() => setAddingModelProvider(null)}
+                              className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {info.models && info.models.length > 0 && (
+                        <div className="space-y-1.5">
+                          {info.models.map(m => {
+                            const isActive = m.id === info.model;
+                            const isSwitching = switchingModel === `${name}:${m.id}`;
+                            const isCustom = !BUILTIN_MODEL_IDS.has(m.id);
+                            return (
+                              <div
+                                key={m.id}
+                                className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors ${
+                                  isActive
+                                    ? 'bg-brand-500/15 border border-brand-500/30'
+                                    : info.configured
+                                      ? 'bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer'
+                                      : 'bg-surface-elevated/30'
+                                }`}
+                                onClick={() => {
+                                  if (!isActive && info.configured && !isSwitching) {
+                                    void switchProviderModel(name, m.id);
+                                  }
+                                }}
+                              >
+                                <div className="flex items-center gap-2">
+                                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0" />}
+                                  <span className={isActive ? 'text-brand-500 font-medium' : 'text-fg-secondary'}>{m.name}</span>
+                                  {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">reasoning</span>}
+                                  {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">vision</span>}
+                                  {isCustom && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">custom</span>}
+                                </div>
+                                <div className="flex items-center gap-3 text-fg-tertiary">
+                                  <span>{(m.contextWindow / 1000).toFixed(0)}K ctx</span>
+                                  <span>${m.cost.input}/${m.cost.output}</span>
+                                  {info.configured && !isActive && (
+                                    <span className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
+                                      isSwitching
+                                        ? 'bg-brand-500/30 text-brand-400'
+                                        : 'bg-surface-overlay text-fg-tertiary hover:bg-brand-500/20 hover:text-brand-500'
+                                    }`}>
+                                      {isSwitching ? 'Switching...' : 'Use'}
+                                    </span>
+                                  )}
+                                  {isActive && (
+                                    <span className="text-[9px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">active</span>
+                                  )}
+                                  {isCustom && !isActive && (
+                                    <button onClick={e => { e.stopPropagation(); void deleteCustomModel(name, m.id); }}
+                                      className="text-red-400 hover:text-red-300 transition-colors" title="Delete custom model">
+                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
                     {!info.configured && (
                       <div className="text-xs text-fg-tertiary">
-                        Configure the API key in <code className="text-fg-secondary">~/.markus/markus.json</code> or environment variables to enable this provider.
+                        Not configured. Use the "Add Provider" button below, or set API keys in environment variables.
                       </div>
                     )}
                   </div>
@@ -679,9 +978,59 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             ))}
           </div>
 
-          <div className="text-xs text-fg-tertiary px-1 mt-3">
-            Configure API keys in <code className="text-fg-tertiary">~/.markus/markus.json</code> or environment variables
-          </div>
+          {/* Add Provider */}
+          {!showAddProvider ? (
+            <button onClick={() => setShowAddProvider(true)}
+              className="w-full mt-3 px-4 py-3 border border-dashed border-border-default hover:border-brand-500/50 hover:bg-brand-500/5 rounded-xl text-sm text-fg-tertiary hover:text-brand-500 transition-colors">
+              + Add Provider
+            </button>
+          ) : (
+            <div className="mt-3 bg-surface-secondary border border-brand-500/30 rounded-xl p-5 space-y-4">
+              <div className="text-sm font-medium text-fg-primary">Add New Provider</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Provider Name</label>
+                  <input type="text" value={addProviderForm.name}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, name: e.target.value })}
+                    placeholder="e.g. deepseek, openrouter, my-provider"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                  <div className="text-[10px] text-fg-tertiary mt-1">Use anthropic, openai, google, ollama for first-party; any other name uses OpenAI-compatible API</div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                  <input type="password" value={addProviderForm.apiKey}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, apiKey: e.target.value })}
+                    placeholder="sk-..."
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL (optional)</label>
+                  <input type="text" value={addProviderForm.baseUrl}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, baseUrl: e.target.value })}
+                    placeholder="https://api.example.com/v1"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Default Model</label>
+                  <input type="text" value={addProviderForm.model}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, model: e.target.value })}
+                    placeholder="e.g. deepseek-chat, gpt-4o"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || !addProviderForm.model}
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                  {addProviderSaving ? 'Adding...' : 'Add Provider'}
+                </button>
+                <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); }}
+                  className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                  Cancel
+                </button>
+              </div>
+              {addProviderMsg && <Msg type={addProviderMsg.type} text={addProviderMsg.text} />}
+            </div>
+          )}
         </Section>
 
         <div className="border-t border-border-default" />

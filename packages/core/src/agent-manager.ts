@@ -25,6 +25,8 @@ import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
+import { createSettingsTools } from './tools/settings.js';
+import { saveConfig } from '@markus/shared';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
@@ -809,6 +811,14 @@ export class AgentManager {
       agent.registerTool(tool);
     }
 
+    // Settings tools — agents can list providers and switch models via chat
+    for (const tool of createSettingsTools({
+      llmRouter: this.llmRouter,
+      persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
+    })) {
+      agent.registerTool(tool);
+    }
+
     if (this.semanticSearch) {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
       agent.setSemanticSearch(this.semanticSearch);
@@ -1365,6 +1375,13 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+    })) {
+      agent.registerTool(tool);
+    }
+
+    for (const tool of createSettingsTools({
+      llmRouter: this.llmRouter,
+      persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
     })) {
       agent.registerTool(tool);
     }

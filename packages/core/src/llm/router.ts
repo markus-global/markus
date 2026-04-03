@@ -66,6 +66,7 @@ export class LLMRouter {
   private fallbackOrder: string[] = [];
   private health = new Map<string, ProviderHealth>();
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
+  private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
 
   private _profileStore?: AuthProfileStore;
@@ -212,6 +213,67 @@ export class LLMRouter {
   registerProvider(name: string, provider: LLMProviderInterface): void {
     this.providers.set(name, provider);
     log.info(`Registered LLM provider: ${name}`, { model: provider.model });
+  }
+
+  unregisterProvider(name: string): void {
+    this.providers.delete(name);
+    this.health.delete(name);
+    this.customModelConfigs.delete(name);
+    this.disabledProviders.delete(name);
+    log.info(`Unregistered LLM provider: ${name}`);
+
+    if (this.defaultProvider === name) {
+      const remaining = this.listProviders();
+      this.defaultProvider = remaining[0] ?? 'anthropic';
+    }
+    this.refreshTiers();
+  }
+
+  /**
+   * Create and register a provider from config at runtime.
+   * Uses the appropriate provider class based on the name.
+   */
+  registerProviderFromConfig(name: string, config: LLMProviderConfig): void {
+    let provider: LLMProviderInterface;
+    if (name === 'anthropic') {
+      provider = new AnthropicProvider(config);
+    } else if (name === 'google') {
+      provider = new GoogleProvider(config);
+    } else if (name === 'ollama') {
+      provider = new OllamaProvider(config);
+    } else {
+      provider = new OpenAIProvider({ ...config, provider: name as any });
+    }
+    this.registerProvider(name, provider);
+    this.refreshTiers();
+  }
+
+  private refreshTiers(): void {
+    const providerNames = this.listProviders();
+    if (providerNames.length > 1) {
+      this.autoSelect = true;
+      this.providerTiers = buildTiers(providerNames, this.defaultProvider);
+      this.fallbackOrder = [this.defaultProvider, ...providerNames.filter(n => n !== this.defaultProvider)];
+    } else {
+      this.autoSelect = false;
+      this.providerTiers = [];
+      this.fallbackOrder = [];
+    }
+  }
+
+  addCustomModel(providerName: string, model: ModelDefinition): void {
+    const existing = this.customModelCatalog.get(providerName) ?? [];
+    const filtered = existing.filter(m => m.id !== model.id);
+    filtered.push(model);
+    this.customModelCatalog.set(providerName, filtered);
+    log.info(`Added custom model ${model.id} for provider ${providerName}`);
+  }
+
+  removeCustomModel(providerName: string, modelId: string): void {
+    const existing = this.customModelCatalog.get(providerName);
+    if (!existing) return;
+    this.customModelCatalog.set(providerName, existing.filter(m => m.id !== modelId));
+    log.info(`Removed custom model ${modelId} from provider ${providerName}`);
   }
 
   enableAutoSelect(tiers?: ProviderTier[]): void {
@@ -535,16 +597,20 @@ export class LLMRouter {
       const modelDef = BUILTIN_MODEL_CATALOG.find(m => m.id === p.model || m.provider === name);
       const customModels = this.customModelConfigs.get(name);
       const oauthProfile = this._profileStore?.getDefaultProfile(name);
+      const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
+      const customCatalogModels = this.customModelCatalog.get(name) ?? [];
+      const mergedModels = [...builtinModels, ...customCatalogModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
       providers[name] = {
         name,
         displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
         model: p.model,
+        baseUrl: (p as any).baseUrl,
         configured: true,
         enabled: this.isProviderEnabled(name),
         contextWindow: customModels?.contextWindow ?? modelDef?.contextWindow,
         maxOutputTokens: customModels?.maxOutputTokens ?? modelDef?.maxOutputTokens,
         cost: customModels?.cost ?? modelDef?.cost,
-        models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+        models: mergedModels,
         authType: oauthProfile?.authType,
         oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
         oauthAccountId: oauthProfile?.oauth?.accountId,
@@ -554,13 +620,16 @@ export class LLMRouter {
     for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
+        const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
+        const customCatalogModels = this.customModelCatalog.get(name) ?? [];
+        const mergedModels = [...builtinModels, ...customCatalogModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
         providers[name] = {
           name,
           displayName: PROVIDER_DISPLAY_NAMES[name] ?? name,
           model: '',
           configured: false,
           enabled: this.isProviderEnabled(name),
-          models: BUILTIN_MODEL_CATALOG.filter(m => m.provider === name),
+          models: mergedModels,
           authType: oauthProfile?.authType,
           oauthConnected: oauthProfile?.authType === 'oauth' && !!oauthProfile?.oauth,
           oauthAccountId: oauthProfile?.oauth?.accountId,
@@ -579,6 +648,32 @@ export class LLMRouter {
     log.info(`Updated model config for ${providerName}`, config);
   }
 
+  /**
+   * Change the active model for a registered provider at runtime.
+   * Calls the provider's configure() method and optionally updates the custom
+   * model config (context window, max output, cost) from the built-in catalog.
+   */
+  setProviderModel(providerName: string, modelId: string): void {
+    const provider = this.providers.get(providerName);
+    if (!provider) {
+      throw new Error(`Provider not found: ${providerName}. Available: ${[...this.providers.keys()].join(', ')}`);
+    }
+    const oldModel = provider.model;
+    provider.configure({ provider: providerName as any, model: modelId });
+    log.info(`Provider ${providerName} model changed: ${oldModel} → ${modelId}`);
+
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(
+      m => m.id === modelId && m.provider === providerName,
+    ) ?? this.customModelCatalog.get(providerName)?.find(m => m.id === modelId);
+    if (catalogEntry) {
+      this.customModelConfigs.set(providerName, {
+        contextWindow: catalogEntry.contextWindow,
+        maxOutputTokens: catalogEntry.maxOutputTokens,
+        cost: catalogEntry.cost,
+      });
+    }
+  }
+
   setProviderEnabled(providerName: string, enabled: boolean): void {
     if (enabled) {
       this.disabledProviders.delete(providerName);
@@ -593,7 +688,15 @@ export class LLMRouter {
   }
 
   getModelCatalog(): ModelDefinition[] {
-    return [...BUILTIN_MODEL_CATALOG];
+    const all = [...BUILTIN_MODEL_CATALOG];
+    for (const models of this.customModelCatalog.values()) {
+      for (const m of models) {
+        if (!all.some(b => b.id === m.id && b.provider === m.provider)) {
+          all.push(m);
+        }
+      }
+    }
+    return all;
   }
 
   /**
@@ -610,7 +713,8 @@ export class LLMRouter {
     if (!provider) return 64000;
     const custom = this.customModelConfigs.get(name);
     if (custom?.contextWindow) return custom.contextWindow;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name);
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
+      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
     return catalogEntry?.contextWindow ?? 64000;
   }
 
@@ -624,7 +728,8 @@ export class LLMRouter {
     if (!provider) return 4096;
     const custom = this.customModelConfigs.get(name);
     if (custom?.maxOutputTokens) return custom.maxOutputTokens;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name);
+    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
+      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
     return catalogEntry?.maxOutputTokens ?? 4096;
   }
 

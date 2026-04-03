@@ -14,6 +14,12 @@ import { MarkdownMessage } from './MarkdownMessage.tsx';
 
 // ─── Shared Types ─────────────────────────────────────────────────────────────
 
+export interface SubagentLogEntry {
+  eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ToolCallInfo {
   tool: string;
   status: 'running' | 'done' | 'error' | 'stopped';
@@ -22,6 +28,7 @@ export interface ToolCallInfo {
   error?: string;
   durationMs?: number;
   liveOutput?: string;
+  subagentLogs?: SubagentLogEntry[];
 }
 
 export type ExecEntry =
@@ -84,6 +91,8 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   memory_search:        { label: 'Searching memory',       icon: '🔍' },
   feishu_send_message:  { label: 'Sending Feishu msg',     icon: '✉' },
   feishu_search_docs:   { label: 'Searching Feishu',       icon: '🔍' },
+  spawn_subagent:       { label: 'Spawn Subagent',         icon: '◎' },
+  spawn_subagents:      { label: 'Spawn Subagents',        icon: '◎' },
 };
 
 export function getToolMeta(tool: string): { label: string; icon: string } {
@@ -187,6 +196,48 @@ export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
     default:
       return null;
   }
+}
+
+/**
+ * Post-process TaskLogEntry[] to attach subagent_* logs to parent spawn_subagent(s) tool entries.
+ * Subagent logs appear between tool_start and tool_end for spawn_subagent(s) in the raw log stream.
+ */
+export function attachSubagentLogsToEntries(rawLogs: TaskLogEntry[], entries: ExecEntry[]): ExecEntry[] {
+  const subagentLogsByRange: Map<number, SubagentLogEntry[]> = new Map();
+  let currentSpawnStartSeq: number | null = null;
+
+  for (const log of rawLogs) {
+    if (log.type === 'tool_start' && (log.content === 'spawn_subagent' || log.content === 'spawn_subagents')) {
+      currentSpawnStartSeq = log.seq;
+      subagentLogsByRange.set(log.seq, []);
+    } else if (log.type === 'tool_end' && (log.content === 'spawn_subagent' || log.content === 'spawn_subagents')) {
+      if (currentSpawnStartSeq !== null) {
+        const logs = subagentLogsByRange.get(currentSpawnStartSeq);
+        if (logs) subagentLogsByRange.set(log.seq, logs);
+      }
+      currentSpawnStartSeq = null;
+    } else if (currentSpawnStartSeq !== null && log.type.startsWith('subagent_')) {
+      const eventType = log.type.replace('subagent_', '') as SubagentLogEntry['eventType'];
+      const meta = log.metadata as Record<string, unknown> | undefined;
+      subagentLogsByRange.get(currentSpawnStartSeq)?.push({
+        eventType,
+        content: log.content,
+        metadata: meta,
+      });
+    }
+  }
+
+  return entries.map(entry => {
+    if (entry.type !== 'tool') return entry;
+    const key = entry.key;
+    if (!key) return entry;
+    const seqStr = key.replace(/^t[se]_/, '');
+    const seq = parseInt(seqStr, 10);
+    if (isNaN(seq)) return entry;
+    const logs = subagentLogsByRange.get(seq);
+    if (!logs || logs.length === 0) return entry;
+    return { ...entry, info: { ...entry.info, subagentLogs: logs } };
+  });
 }
 
 // ─── Conversion: AgentActivityLogEntry → ExecEntry ────────────────────────────
@@ -339,6 +390,160 @@ function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorR
         )}
       </div>
       <div className="px-3 py-1 border-t border-border-default text-[10px] text-fg-tertiary shrink-0">Click to expand full details</div>
+    </div>,
+    document.body,
+  );
+}
+
+// ─── Subagent Log Popover ─────────────────────────────────────────────────────
+
+const SUBAGENT_EVENT_ICON: Record<string, string> = {
+  started: '▶',
+  tool_start: '⚙',
+  tool_end: '✓',
+  thinking: '💭',
+  iteration: '🔄',
+  completed: '✅',
+  error: '❌',
+};
+
+const SUBAGENT_EVENT_COLOR: Record<string, string> = {
+  started: 'text-blue-500',
+  tool_start: 'text-brand-500',
+  tool_end: 'text-green-600',
+  thinking: 'text-fg-secondary',
+  iteration: 'text-fg-tertiary',
+  completed: 'text-green-500',
+  error: 'text-red-500',
+};
+
+function SubagentLogPopover({ logs, isRunning, anchorRef, onHover }: {
+  logs: SubagentLogEntry[];
+  isRunning: boolean;
+  anchorRef: RefObject<HTMLElement | null>;
+  onHover: (v: boolean) => void;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number; direction: 'above' | 'below' } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (anchorRef.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      const above = rect.top > 320;
+      setPos({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 420)),
+        top: above ? rect.top - 6 : rect.bottom + 6,
+        direction: above ? 'above' : 'below',
+      });
+    }
+  }, [anchorRef]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [logs.length]);
+
+  if (!pos) return null;
+
+  const toolLogs = logs.filter(l => l.eventType === 'tool_start' || l.eventType === 'tool_end');
+  const completedTools = new Set<string>();
+  const runningTools = new Set<string>();
+  for (const l of toolLogs) {
+    const toolName = l.content?.replace(/^\[.*?\]\s*/, '') ?? '';
+    if (l.eventType === 'tool_end') completedTools.add(l.metadata?.toolCallId as string ?? toolName);
+    else runningTools.add(l.metadata?.toolCallId as string ?? toolName);
+  }
+  const totalToolCalls = completedTools.size + runningTools.size;
+
+  const completedSubs = logs.filter(l => l.eventType === 'completed').length;
+  const startedSubs = logs.filter(l => l.eventType === 'started').length;
+  const errorSubs = logs.filter(l => l.eventType === 'error').length;
+
+  const style: React.CSSProperties = {
+    position: 'fixed',
+    left: pos.left,
+    ...(pos.direction === 'above' ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
+    zIndex: 9999,
+  };
+
+  return createPortal(
+    <div
+      style={style}
+      className="w-[420px] max-w-[92vw] max-h-[50vh] bg-surface-secondary border border-border-default rounded-lg shadow-xl text-xs flex flex-col"
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+    >
+      {/* Header */}
+      <div className="px-3 py-2 border-b border-border-default flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-fg-primary">Subagent Execution</span>
+          {isRunning && (
+            <svg className="w-3 h-3 animate-spin text-brand-500" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-fg-tertiary">
+          {startedSubs > 0 && <span>{completedSubs}/{startedSubs} agents</span>}
+          {totalToolCalls > 0 && <span>{completedTools.size} tools</span>}
+          {errorSubs > 0 && <span className="text-red-500">{errorSubs} errors</span>}
+        </div>
+      </div>
+
+      {/* Log entries */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 px-1 py-1">
+        {logs.length === 0 && (
+          <div className="px-3 py-3 text-fg-tertiary italic text-center">Waiting for subagent activity...</div>
+        )}
+        {logs.map((log, i) => {
+          const icon = SUBAGENT_EVENT_ICON[log.eventType] ?? '•';
+          const color = SUBAGENT_EVENT_COLOR[log.eventType] ?? 'text-fg-tertiary';
+          const toolMeta = (log.eventType === 'tool_start' || log.eventType === 'tool_end')
+            ? getToolMeta(log.content?.replace(/^\[.*?\]\s*/, '') ?? '')
+            : null;
+
+          return (
+            <div key={i} className="flex items-start gap-1.5 px-2 py-0.5 rounded hover:bg-surface-elevated/30">
+              <span className={`shrink-0 mt-px text-[10px] ${color}`}>{icon}</span>
+              <div className="flex-1 min-w-0">
+                <span className={`text-[11px] leading-snug ${color}`}>
+                  {toolMeta ? (
+                    <>
+                      <span className="opacity-60">{toolMeta.icon}</span>{' '}
+                      {toolMeta.label}
+                      {log.eventType === 'tool_end' && log.metadata?.durationMs != null && (
+                        <span className="text-fg-tertiary ml-1">{formatDuration(log.metadata.durationMs as number)}</span>
+                      )}
+                      {log.eventType === 'tool_end' && log.metadata?.success === false && (
+                        <span className="text-red-500 ml-1">failed</span>
+                      )}
+                    </>
+                  ) : log.eventType === 'thinking' ? (
+                    <span className="italic">{truncate(log.content, 100)}</span>
+                  ) : (
+                    log.content
+                  )}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer */}
+      {isRunning && (
+        <div className="px-3 py-1 border-t border-border-default text-[10px] text-fg-tertiary shrink-0 flex items-center gap-1.5">
+          <span className="flex gap-0.5">
+            {[0, 150, 300].map(d => (
+              <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
+                style={{ animationDelay: `${d}ms`, animationDuration: '1s' }} />
+            ))}
+          </span>
+          <span>Executing...</span>
+        </div>
+      )}
     </div>,
     document.body,
   );
@@ -713,6 +918,9 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isDone = info.status !== 'running';
   const isStopped = info.status === 'stopped';
+  const isSubagentTool = info.tool === 'spawn_subagent' || info.tool === 'spawn_subagents';
+  const hasSubagentLogs = isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0;
+  const enableHover = isDone || hasSubagentLogs;
 
   const handleHover = useCallback((v: boolean) => {
     clearTimeout(hoverTimeout.current);
@@ -738,8 +946,8 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
     <>
       <div
         ref={rowRef}
-        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${isDone ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
-        onMouseEnter={() => isDone && handleHover(true)}
+        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${enableHover ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
+        onMouseEnter={() => enableHover && handleHover(true)}
         onMouseLeave={() => handleHover(false)}
         onClick={() => isDone && setExpanded(true)}
       >
@@ -774,6 +982,9 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             {info.durationMs != null && info.status !== 'running' && (
               <span className="text-[10px] text-fg-tertiary ml-0.5">{formatDuration(info.durationMs)}</span>
             )}
+            {hasSubagentLogs && (
+              <span className="text-[10px] text-fg-tertiary ml-0.5 opacity-60">({info.subagentLogs!.filter(l => l.eventType === 'tool_end').length} steps)</span>
+            )}
           </div>
           {/* Show shell command being executed */}
           {shellCmd && (
@@ -788,7 +999,12 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             </pre>
           )}
         </div>
-        {hovered && <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />}
+        {hovered && hasSubagentLogs && (
+          <SubagentLogPopover logs={info.subagentLogs!} isRunning={info.status === 'running'} anchorRef={rowRef} onHover={handleHover} />
+        )}
+        {hovered && !hasSubagentLogs && isDone && (
+          <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />
+        )}
       </div>
       {expanded && <ToolDetailModal info={info} onClose={() => setExpanded(false)} />}
       {isDone && (() => {

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
+import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
@@ -1399,7 +1399,8 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-fg-tertiary">No execution logs yet.</div>;
 
-  const entries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
+  const rawEntries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
+  const entries = attachSubagentLogsToEntries(logs, rawEntries);
 
   return (
     <div ref={logScrollRef} className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">

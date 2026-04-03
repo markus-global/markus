@@ -5043,6 +5043,257 @@ export class APIServer {
       return;
     }
 
+    // Settings — Add new provider
+    if (path === '/api/settings/llm/providers' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const { name, apiKey, baseUrl, model, enabled } = body as {
+        name?: string; apiKey?: string; baseUrl?: string; model?: string; enabled?: boolean;
+      };
+      if (!name || typeof name !== 'string') {
+        this.json(res, 400, { error: 'name (string) is required' });
+        return;
+      }
+      if (!model || typeof model !== 'string') {
+        this.json(res, 400, { error: 'model (string) is required' });
+        return;
+      }
+      if (name !== 'ollama' && (!apiKey || typeof apiKey !== 'string')) {
+        this.json(res, 400, { error: 'apiKey (string) is required' });
+        return;
+      }
+      try {
+        this.llmRouter.registerProviderFromConfig(name, {
+          provider: name as any,
+          model,
+          apiKey,
+          baseUrl,
+        });
+        if (enabled === false) {
+          this.llmRouter.setProviderEnabled(name, false);
+        }
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const providers = { ...currentConfig.llm.providers };
+          providers[name] = {
+            ...providers[name],
+            apiKey,
+            model,
+            ...(baseUrl ? { baseUrl } : {}),
+            enabled: enabled !== false,
+          };
+          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist new provider', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Update existing provider
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+$/) && req.method === 'PUT') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      const body = await this.readBody(req);
+      const { apiKey, baseUrl, model, enabled } = body as {
+        apiKey?: string; baseUrl?: string; model?: string; enabled?: boolean;
+      };
+      try {
+        const provider = this.llmRouter.getProvider(providerName);
+        if (provider) {
+          const configUpdate: any = { provider: providerName };
+          if (model) configUpdate.model = model;
+          if (apiKey) configUpdate.apiKey = apiKey;
+          if (baseUrl !== undefined) configUpdate.baseUrl = baseUrl;
+          provider.configure(configUpdate);
+        } else if (model) {
+          this.llmRouter.registerProviderFromConfig(providerName, {
+            provider: providerName as any,
+            model,
+            apiKey,
+            baseUrl,
+          });
+        }
+        if (typeof enabled === 'boolean') {
+          this.llmRouter.setProviderEnabled(providerName, enabled);
+        }
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const providers = { ...currentConfig.llm.providers };
+          const existing = providers[providerName] ?? {};
+          providers[providerName] = {
+            ...existing,
+            ...(apiKey ? { apiKey } : {}),
+            ...(model ? { model } : {}),
+            ...(baseUrl !== undefined ? { baseUrl: baseUrl || undefined } : {}),
+            ...(typeof enabled === 'boolean' ? { enabled } : {}),
+          };
+          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist provider update', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Delete provider
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+$/) && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      try {
+        this.llmRouter.unregisterProvider(providerName);
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const providers = { ...currentConfig.llm.providers };
+          delete providers[providerName];
+          const configUpdates: any = { llm: { providers } };
+          if (currentConfig.llm.defaultProvider === providerName) {
+            const remaining = Object.keys(providers).filter(k => providers[k]?.enabled !== false);
+            configUpdates.llm.defaultProvider = remaining[0] ?? 'anthropic';
+          }
+          saveConfig(configUpdates, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist provider deletion', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Add custom model to provider catalog
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/models$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      const body = await this.readBody(req);
+      const { id, name, contextWindow, maxOutputTokens, cost, reasoning, inputTypes } = body as {
+        id?: string; name?: string; contextWindow?: number; maxOutputTokens?: number;
+        cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+        reasoning?: boolean; inputTypes?: Array<'text' | 'image'>;
+      };
+      if (!id || !name || !contextWindow || !maxOutputTokens || !cost) {
+        this.json(res, 400, { error: 'id, name, contextWindow, maxOutputTokens, and cost are required' });
+        return;
+      }
+      try {
+        const modelDef = {
+          id, name, provider: providerName, contextWindow, maxOutputTokens, cost,
+          ...(reasoning != null ? { reasoning } : {}),
+          ...(inputTypes ? { inputTypes } : {}),
+        };
+        this.llmRouter.addCustomModel(providerName, modelDef);
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const customModels = { ...(currentConfig.llm.customModels ?? {}) };
+          const existing = customModels[providerName] ?? [];
+          customModels[providerName] = [...existing.filter(m => m.id !== id), modelDef];
+          saveConfig({ llm: { customModels } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist custom model', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Delete custom model from provider catalog
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/models\/[^/]+$/) && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const parts = path.split('/');
+      const providerName = parts[5]!;
+      const modelId = decodeURIComponent(parts[7]!);
+      try {
+        this.llmRouter.removeCustomModel(providerName, modelId);
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const customModels = { ...(currentConfig.llm.customModels ?? {}) };
+          if (customModels[providerName]) {
+            customModels[providerName] = customModels[providerName].filter(m => m.id !== modelId);
+            if (customModels[providerName].length === 0) delete customModels[providerName];
+          }
+          saveConfig({ llm: { customModels } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist custom model removal', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Settings — Switch provider model
+    if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/model$/) && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available' });
+        return;
+      }
+      const providerName = path.split('/')[5]!;
+      const body = await this.readBody(req);
+      const { model } = body as { model?: string };
+      if (!model || typeof model !== 'string') {
+        this.json(res, 400, { error: 'model (string) is required' });
+        return;
+      }
+      try {
+        this.llmRouter.setProviderModel(providerName, model);
+        try {
+          const { loadConfig: loadCfg } = await import('@markus/shared');
+          const currentConfig = loadCfg(this.markusConfigPath);
+          const providers = { ...currentConfig.llm.providers };
+          providers[providerName] = { ...providers[providerName], model };
+          saveConfig({ llm: { providers } } as any, this.markusConfigPath);
+        } catch (e) {
+          log.warn('Failed to persist provider model change', { error: String(e) });
+        }
+        this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
     // Settings — Toggle provider enabled/disabled
     if (path.match(/^\/api\/settings\/llm\/providers\/[^/]+\/toggle$/) && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
@@ -5184,7 +5435,31 @@ export class APIServer {
           applied.push(pu.provider);
         }
         saveConfig({ llm: { providers: updatedProviders } } as any, this.markusConfigPath);
-        this.json(res, 200, { applied, message: `Updated ${applied.length} provider(s) in markus.json` });
+        // Hot-register newly applied providers in the running router
+        if (this.llmRouter) {
+          for (const provName of applied) {
+            if (!this.llmRouter.getProvider(provName)) {
+              const cfg = updatedProviders[provName];
+              if (cfg?.apiKey || provName === 'ollama') {
+                try {
+                  this.llmRouter.registerProviderFromConfig(provName, {
+                    provider: provName as any,
+                    model: cfg.model ?? '',
+                    apiKey: cfg.apiKey,
+                    baseUrl: cfg.baseUrl,
+                  });
+                } catch (e) {
+                  log.warn(`Failed to hot-register provider ${provName}`, { error: String(e) });
+                }
+              }
+            }
+          }
+        }
+        this.json(res, 200, {
+          applied,
+          message: `Updated ${applied.length} provider(s) in markus.json`,
+          ...(this.llmRouter ? { settings: this.llmRouter.getEnhancedSettings() } : {}),
+        });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
