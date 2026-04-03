@@ -2625,7 +2625,7 @@ export class APIServer {
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const hb = (
-          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } } }
+          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number; initialDelayMs: number } } }
         ).heartbeat;
         const status = hb.getStatus();
 
@@ -2702,7 +2702,7 @@ export class APIServer {
           description: t.description,
         }));
         const hb = (
-          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } } }
+          agent as unknown as { heartbeat: { getStatus(): { running: boolean; uptimeMs: number; intervalMs: number; initialDelayMs: number } } }
         ).heartbeat;
         let heartbeatSummary: Record<string, unknown> = {};
         try {

@@ -371,7 +371,7 @@ export class Agent {
     });
   }
 
-  async start(): Promise<void> {
+  async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
     this.setStatus('idle');
 
     // Detect runtime environment (cached for 5 minutes)
@@ -390,7 +390,7 @@ export class Agent {
       );
     }
 
-    this.heartbeat.start();
+    this.heartbeat.start(options?.initialHeartbeatDelayMs);
 
     // Periodic memory consolidation: compact sessions and generate daily insights
     this.memoryConsolidationTimer = setInterval(() => {

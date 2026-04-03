@@ -1665,9 +1665,9 @@ export class AgentManager {
     }
   }
 
-  async startAgent(agentId: string): Promise<void> {
+  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
     const agent = this.getAgent(agentId);
-    await agent.start();
+    await agent.start(options);
   }
 
   async stopAgent(agentId: string): Promise<void> {
@@ -1919,12 +1919,23 @@ export class AgentManager {
 
   // ─── Batch Agent Control ───────────────────────────────────────────────────
 
-  async startAgentsByIds(ids: string[]): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+  async startAgentsByIds(
+    ids: string[],
+    options?: { staggerHeartbeats?: boolean },
+  ): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    const stagger = options?.staggerHeartbeats ?? true;
     const success: string[] = [];
     const failed: Array<{ id: string; error: string }> = [];
-    for (const id of ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!;
       try {
-        await this.startAgent(id);
+        let initialHeartbeatDelayMs: number | undefined;
+        if (stagger && ids.length > 1) {
+          const agent = this.getAgent(id);
+          const intervalMs = agent.config.heartbeatIntervalMs || 30 * 60 * 1000;
+          initialHeartbeatDelayMs = Math.floor((i / ids.length) * intervalMs);
+        }
+        await this.startAgent(id, { initialHeartbeatDelayMs });
         success.push(id);
       } catch (err) {
         failed.push({ id, error: String(err) });

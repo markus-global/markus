@@ -14,9 +14,11 @@ export interface HeartbeatConfig {
 }
 
 export class HeartbeatScheduler {
+  private initialTimer?: ReturnType<typeof setTimeout>;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private startTime = Date.now();
+  private effectiveInitialDelayMs = 0;
 
   constructor(
     private agentId: string,
@@ -24,7 +26,12 @@ export class HeartbeatScheduler {
     private config: HeartbeatConfig = { intervalMs: 30 * 60 * 1000, enabled: true },
   ) {}
 
-  start(): void {
+  /**
+   * @param initialDelayMs - Delay before the first heartbeat fires.
+   *   If omitted, uses random jitter in [0, intervalMs) to spread heartbeats
+   *   across the interval window and avoid traffic spikes.
+   */
+  start(initialDelayMs?: number): void {
     if (this.running || !this.config.enabled) return;
     if (this.config.intervalMs <= 0) {
       log.info('Heartbeat disabled (intervalMs <= 0)', { agentId: this.agentId });
@@ -33,16 +40,28 @@ export class HeartbeatScheduler {
     this.running = true;
     this.startTime = Date.now();
 
+    const delay = initialDelayMs ?? Math.floor(Math.random() * this.config.intervalMs);
+    this.effectiveInitialDelayMs = delay;
+
     log.info('Starting heartbeat scheduler', {
       agentId: this.agentId,
       intervalMs: this.config.intervalMs,
+      initialDelayMs: delay,
       activeHours: this.config.activeHours,
     });
 
-    this.timer = setInterval(() => this.tick(), this.config.intervalMs);
+    this.initialTimer = setTimeout(() => {
+      this.initialTimer = undefined;
+      this.tick();
+      this.timer = setInterval(() => this.tick(), this.config.intervalMs);
+    }, delay);
   }
 
   stop(): void {
+    if (this.initialTimer) {
+      clearTimeout(this.initialTimer);
+      this.initialTimer = undefined;
+    }
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
@@ -55,11 +74,12 @@ export class HeartbeatScheduler {
     return this.running;
   }
 
-  getStatus(): { running: boolean; uptimeMs: number; intervalMs: number } {
+  getStatus(): { running: boolean; uptimeMs: number; intervalMs: number; initialDelayMs: number } {
     return {
       running: this.running,
       uptimeMs: this.running ? Date.now() - this.startTime : 0,
       intervalMs: this.config.intervalMs,
+      initialDelayMs: this.effectiveInitialDelayMs,
     };
   }
 

@@ -815,13 +815,18 @@ export class OrganizationService {
     if (ids.length === 0) return;
 
     const STAGGER_MS = 1_000;
-    log.info(`Starting ${ids.length} restored agents in background...`);
+    const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
+    log.info(`Starting ${ids.length} restored agents in background (heartbeats will be staggered)...`);
 
     const startAll = async () => {
       let started = 0;
-      for (const id of ids) {
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i]!;
         try {
-          await this.agentManager.startAgent(id);
+          const initialHeartbeatDelayMs = ids.length > 1
+            ? Math.floor((i / ids.length) * DEFAULT_HEARTBEAT_INTERVAL_MS)
+            : undefined;
+          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs });
           started++;
           if (started < ids.length) {
             await new Promise(r => setTimeout(r, STAGGER_MS));
