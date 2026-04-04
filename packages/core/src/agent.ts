@@ -1483,7 +1483,7 @@ export class Agent {
                 this.emitActivityLog(currentActId, 'tool_start', tc.name, { arguments: tc.arguments });
               }
               try {
-                let result = await this.executeTool(tc);
+                let result = await this.executeTool(tc, undefined, sessionId);
                 // Manus-inspired: offload large results to filesystem instead of truncating
                 // This preserves full data (agent can re-read) while keeping context lean
                 result = this.offloadLargeResult(tc.name, result);
@@ -1851,7 +1851,7 @@ export class Agent {
               const toolOutputCb: ToolOutputCallback = (chunk) => {
                 onEvent({ type: 'tool_output', tool: tc.name, text: chunk });
               };
-              const runTool = () => this.executeTool(tc, toolOutputCb);
+              const runTool = () => this.executeTool(tc, toolOutputCb, this.currentSessionId);
               try {
                 const isSubagentTool = tc.name === 'spawn_subagent' || tc.name === 'spawn_subagents';
                 let result = isSubagentTool
@@ -2417,7 +2417,7 @@ export class Agent {
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
-              let result = await this.executeTool(tc);
+              let result = await this.executeTool(tc, undefined, sessionId);
               result = this.offloadLargeResult(tc.name, result);
               const isErr = isErrorResult(result);
               const durationMs = Date.now() - toolStart;
@@ -2702,7 +2702,7 @@ export class Agent {
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
-              let result = await this.executeTool(tc);
+              let result = await this.executeTool(tc, undefined, sessionId);
               result = this.offloadLargeResult(tc.name, result);
               const isErr = isErrorResult(result);
               const durationMs = Date.now() - toolStart;
@@ -3075,7 +3075,7 @@ export class Agent {
     return JSON.stringify(result);
   }
 
-  private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback): Promise<string> {
+  private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
       return await this.handleDiscoverTools(toolCall.arguments);
@@ -3179,7 +3179,10 @@ export class Agent {
         error: beforeResult.reason ?? 'Blocked by tool hook',
       });
     }
-    const effectiveArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
+    const baseArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
+    const effectiveArgs = sessionId
+      ? { ...baseArgs, _browserSessionId: sessionId }
+      : baseArgs;
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= Agent.TOOL_RETRY_MAX; attempt++) {
