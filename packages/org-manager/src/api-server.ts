@@ -1268,14 +1268,16 @@ export class APIServer {
             wsBroadcaster: this.ws,
             persistUserMessage: bindingPersist,
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
+            executionStreamRepo: this.storage?.executionStreamRepo,
           });
 
           await sseHandler.handle(res);
         } else {
           const userMsgPersisted = await bindingPersist(agentId!, userText, senderId, images, sessionId);
+          const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           try {
-            reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
+            reply = await agent.handleMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
@@ -1284,11 +1286,20 @@ export class APIServer {
             throw err;
           }
           this.json(res, 200, { reply, sessionId: userMsgPersisted });
+          const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
+          const segments: Array<Record<string, unknown>> = [];
+          if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
+          for (const te of toolEvents) {
+            segments.push({ type: 'tool', tool: te.tool, status: te.status, arguments: te.arguments, result: te.result, durationMs: te.durationMs });
+          }
+          if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
+          const meta = segments.length > 0 ? { segments } : undefined;
           void this.persistAssistantMessage(
             userMsgPersisted,
             agentId!,
             reply,
-            agent.getState().tokensUsedToday
+            agent.getState().tokensUsedToday,
+            meta
           );
         }
 
@@ -1998,6 +2009,27 @@ export class APIServer {
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // Unified execution stream logs
+    if (path === '/api/execution-logs' && req.method === 'GET') {
+      const sourceType = url.searchParams.get('sourceType');
+      const sourceId = url.searchParams.get('sourceId');
+      if (!sourceType || !sourceId) {
+        this.json(res, 400, { error: 'sourceType and sourceId required' });
+        return;
+      }
+      if (!this.storage?.executionStreamRepo) {
+        this.json(res, 200, { logs: [] });
+        return;
+      }
+      try {
+        const logs = this.storage.executionStreamRepo.getBySource(sourceType, sourceId);
+        this.json(res, 200, { logs });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
       }
       return;
     }
@@ -3253,7 +3285,7 @@ export class APIServer {
       return;
     }
 
-    // Message routing — smart routing to the right agent
+    // Message routing — route to the right agent
     if (path === '/api/message' && req.method === 'POST') {
       const body = await this.readBody(req);
       const targetOrgId = (body['orgId'] as string) ?? 'default';
@@ -3278,21 +3310,6 @@ export class APIServer {
       if (stream) {
         const userText = body['text'] as string;
 
-        // Persist user message to smart channel before LLM call so it's never lost
-        if (this.storage) {
-          void this.storage.channelMessageRepo
-            .append({
-              orgId: targetOrgId,
-              channel: 'smart:default',
-              senderId: senderId ?? 'anonymous',
-              senderType: 'human',
-              senderName: senderInfo?.name ?? 'You',
-              text: userText,
-              mentions: [],
-            })
-            .catch((err: unknown) => log.warn('Failed to persist smart user message', { error: String(err) }));
-        }
-
         const sseHandler = new SSEHandler({
           agentId: targetAgentId,
           agent,
@@ -3300,114 +3317,33 @@ export class APIServer {
           images,
           senderId,
           senderInfo,
-          onTextDelta: _text => {
-            // Smart channels don't need WebSocket broadcast
-          },
-          onToolEvent: _event => {
-            // Tool event handling hook
-          },
+          executionStreamRepo: this.storage?.executionStreamRepo,
           onComplete: async (reply, segments, tokensUsed) => {
-            const smartMeta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(
-              targetAgentId,
-              userText,
-              reply,
-              senderId,
-              tokensUsed,
-              smartMeta
-            );
-
-            if (this.storage) {
-              void this.storage.channelMessageRepo
-                .append({
-                  orgId: targetOrgId,
-                  channel: 'smart:default',
-                  senderId: targetAgentId,
-                  senderType: 'agent',
-                  senderName: agent.config.name,
-                  text: reply,
-                  mentions: [],
-                })
-                .catch((err: unknown) =>
-                  log.warn('Failed to persist smart agent reply', { error: String(err) })
-                );
-            }
-          },
-          onError: async (error) => {
-            if (!this.storage) return;
-            const errText = `⚠ AI service error: ${String(error).slice(0, 500)}`;
-            void this.storage.channelMessageRepo
-              .append({
-                orgId: targetOrgId,
-                channel: 'smart:default',
-                senderId: targetAgentId,
-                senderType: 'system',
-                senderName: 'System',
-                text: errText,
-                mentions: [],
-              })
-              .catch((e: unknown) => log.warn('Failed to persist smart error message', { error: String(e) }));
+            const meta = segments.length > 0 ? { segments } : undefined;
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta);
           },
         });
 
         await sseHandler.handle(res);
       } else {
         const userText = body['text'] as string;
-        // Persist user message before LLM call
-        if (this.storage) {
-          void this.storage.channelMessageRepo
-            .append({
-              orgId: targetOrgId,
-              channel: 'smart:default',
-              senderId: senderId ?? 'anonymous',
-              senderType: 'human',
-              senderName: senderInfo?.name ?? 'You',
-              text: userText,
-              mentions: [],
-            })
-            .catch((err: unknown) => log.warn('Failed to persist smart user message', { error: String(err) }));
-        }
+        const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
         try {
-          reply = await agent.handleMessage(userText, senderId, senderInfo, { images });
+          reply = await agent.handleMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
         } catch (err) {
-          const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
-          if (this.storage) {
-            void this.storage.channelMessageRepo
-              .append({
-                orgId: targetOrgId,
-                channel: 'smart:default',
-                senderId: targetAgentId,
-                senderType: 'system',
-                senderName: 'System',
-                text: errText,
-                mentions: [],
-              })
-              .catch((e: unknown) => log.warn('Failed to persist smart error message', { error: String(e) }));
-          }
           throw err;
         }
         this.json(res, 200, { reply, agentId: targetAgentId });
-        void this.persistChatTurn(
-          targetAgentId,
-          userText,
-          reply,
-          senderId,
-          agent.getState().tokensUsedToday
-        );
-        if (this.storage) {
-          void this.storage.channelMessageRepo
-            .append({
-              orgId: targetOrgId,
-              channel: 'smart:default',
-              senderId: targetAgentId,
-              senderType: 'agent',
-              senderName: agent.config.name,
-              text: reply,
-              mentions: [],
-            })
-            .catch((err: unknown) => log.warn('Failed to persist smart agent reply', { error: String(err) }));
+        const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
+        const segments: Array<Record<string, unknown>> = [];
+        if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
+        for (const te of toolEvents) {
+          segments.push({ type: 'tool', tool: te.tool, status: te.status, arguments: te.arguments, result: te.result, durationMs: te.durationMs });
         }
+        if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
+        const meta = segments.length > 0 ? { segments } : undefined;
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });

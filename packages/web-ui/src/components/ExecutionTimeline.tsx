@@ -1,299 +1,34 @@
 /**
- * Unified Execution Timeline — shared rendering for agent tool calls,
- * text output, status changes, and errors across all views:
- * - Chat message segments
- * - Task execution logs
- * - Agent activity modal (heartbeats, chat responses)
- * - Agent profile task logs
+ * Unified Execution Timeline — shared component rendering for agent tool calls,
+ * text output, status changes, and errors across all views.
+ *
+ * Non-component utilities (types, converters, helpers) live in execution-utils.ts
+ * to keep this file components-only for Vite HMR Fast Refresh compatibility.
  */
 import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { api, wsClient, type TaskLogEntry, type AgentActivityLogEntry } from '../api.ts';
+import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import {
+  getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgs, formatArgsDetail,
+  filterCompletedStarts, streamEntryToExecEntry, taskLogToEntry,
+  parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
+  type SubagentLogEntry, type ToolCallInfo, type ExecEntry, type ExecutionStreamEntryUI,
+  type TaskApprovalInfo, type RequirementApprovalInfo,
+} from './execution-utils.ts';
 
-// ─── Shared Types ─────────────────────────────────────────────────────────────
+// Re-export everything from execution-utils so existing imports keep working
+export {
+  getToolMeta, formatDuration, formatLogTime,
+  taskLogToEntry, activityLogToEntry, attachSubagentLogsToEntries, filterCompletedStarts,
+  streamEntryToExecEntry, parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
+  type SubagentLogEntry, type ToolCallInfo, type ExecEntry, type ExecutionStreamEntryUI,
+  type TaskApprovalInfo, type RequirementApprovalInfo,
+} from './execution-utils.ts';
 
-export interface SubagentLogEntry {
-  eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
-  content: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ToolCallInfo {
-  tool: string;
-  status: 'running' | 'done' | 'error' | 'stopped';
-  args?: unknown;
-  result?: string;
-  error?: string;
-  durationMs?: number;
-  liveOutput?: string;
-  subagentLogs?: SubagentLogEntry[];
-}
-
-export type ExecEntry =
-  | { type: 'text'; content: string; time?: string; timestamp?: string }
-  | { type: 'tool'; info: ToolCallInfo; time?: string; key?: string; timestamp?: string }
-  | { type: 'status'; content: string; time?: string; timestamp?: string }
-  | { type: 'error'; content: string; time?: string; timestamp?: string };
-
-// ─── Tool Metadata ────────────────────────────────────────────────────────────
-
-const TOOL_META: Record<string, { label: string; icon: string }> = {
-  shell_execute:        { label: 'Running command',        icon: '⌨' },
-  file_read:            { label: 'Reading file',           icon: '📄' },
-  file_write:           { label: 'Writing file',           icon: '✏' },
-  file_edit:            { label: 'Editing file',           icon: '✏' },
-  file_list:            { label: 'Listing files',          icon: '📂' },
-  web_fetch:            { label: 'Fetching page',          icon: '🌐' },
-  web_search:           { label: 'Searching web',          icon: '🔍' },
-  web_extract:          { label: 'Extracting content',     icon: '📑' },
-  create_task:          { label: 'Creating task',          icon: '📌' },
-  task_create:          { label: 'Creating task',          icon: '📌' },
-  create_subtask:       { label: 'Adding subtask',         icon: '📌' },
-  update_task:          { label: 'Updating task',          icon: '✅' },
-  task_update:          { label: 'Updating task',          icon: '✅' },
-  add_task_note:        { label: 'Adding note',            icon: '📝' },
-  task_add_note:        { label: 'Adding note',            icon: '📝' },
-  task_list:            { label: 'Listing tasks',          icon: '📋' },
-  requirement_propose:  { label: 'Proposing requirement',  icon: '📋' },
-  requirement_list:     { label: 'Listing requirements',   icon: '📋' },
-  git_status:           { label: 'Git status',             icon: '🔀' },
-  git_diff:             { label: 'Git diff',               icon: '🔀' },
-  git_log:              { label: 'Git log',                icon: '📜' },
-  git_branch:           { label: 'Git branch',             icon: '🌿' },
-  git_add:              { label: 'Git add',                icon: '➕' },
-  git_commit:           { label: 'Git commit',             icon: '💾' },
-  code_search:          { label: 'Searching code',         icon: '🔍' },
-  project_structure:    { label: 'Project structure',      icon: '🗂' },
-  code_stats:           { label: 'Code stats',             icon: '📊' },
-  navigate_page:        { label: 'Opening page',           icon: '🌐' },
-  new_page:             { label: 'Opening new tab',        icon: '🌐' },
-  close_page:           { label: 'Closing tab',            icon: '🌐' },
-  select_page:          { label: 'Switching tab',          icon: '🌐' },
-  list_pages:           { label: 'Listing tabs',           icon: '🌐' },
-  click:                { label: 'Clicking element',       icon: '👆' },
-  hover:                { label: 'Hovering element',       icon: '👆' },
-  fill:                 { label: 'Filling field',          icon: '⌨' },
-  fill_form:            { label: 'Filling form',           icon: '⌨' },
-  type_text:            { label: 'Typing text',            icon: '⌨' },
-  press_key:            { label: 'Pressing key',           icon: '⌨' },
-  take_screenshot:      { label: 'Screenshot',             icon: '📸' },
-  take_snapshot:        { label: 'Page snapshot',          icon: '📋' },
-  evaluate_script:      { label: 'Running script',         icon: '⚙' },
-  wait_for:             { label: 'Waiting',                icon: '⏳' },
-  list_console_messages: { label: 'Console logs',          icon: '🔍' },
-  list_network_requests: { label: 'Network requests',      icon: '🔍' },
-  lighthouse_audit:     { label: 'Running audit',          icon: '📊' },
-  agent_send_message:   { label: 'Messaging colleague',    icon: '💬' },
-  agent_list:           { label: 'Checking team',          icon: '👥' },
-  memory_save:          { label: 'Saving memory',          icon: '💾' },
-  memory_search:        { label: 'Searching memory',       icon: '🔍' },
-  feishu_send_message:  { label: 'Sending Feishu msg',     icon: '✉' },
-  feishu_search_docs:   { label: 'Searching Feishu',       icon: '🔍' },
-  spawn_subagent:       { label: 'Spawn Subagent',         icon: '◎' },
-  spawn_subagents:      { label: 'Spawn Subagents',        icon: '◎' },
-};
-
-export function getToolMeta(tool: string): { label: string; icon: string } {
-  const baseName = tool.includes('__') ? tool.split('__').pop()! : tool;
-  return TOOL_META[baseName] ?? TOOL_META[tool] ?? {
-    label: baseName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    icon: '⚙',
-  };
-}
-
-/** Extract the shell command text from tool args, if applicable */
-function getShellCommand(info: ToolCallInfo): string | null {
-  if (info.tool !== 'shell_execute' || !info.args || typeof info.args !== 'object') return null;
-  const cmd = (info.args as Record<string, unknown>).command;
-  return typeof cmd === 'string' ? cmd : null;
-}
-
-// ─── Format Helpers ───────────────────────────────────────────────────────────
-
-export function formatDuration(ms: number | undefined): string {
-  if (ms == null) return '';
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-}
-
-export function formatLogTime(isoStr: string): string {
-  const d = new Date(isoStr);
-  if (isNaN(d.getTime())) return isoStr;
-  const MM = String(d.getMonth() + 1).padStart(2, '0');
-  const DD = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${MM}-${DD} ${hh}:${mm}:${ss}`;
-}
-
-function truncate(s: string, len: number): string {
-  return s.length <= len ? s : s.slice(0, len) + '…';
-}
-
-function prettyJson(s: string): string {
-  try {
-    const parsed = JSON.parse(s);
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return s;
-  }
-}
-
-function formatArgs(args: unknown): string {
-  if (!args || typeof args !== 'object') return '';
-  const obj = args as Record<string, unknown>;
-  const parts: string[] = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (v == null) continue;
-    const val = typeof v === 'string' ? v : JSON.stringify(v);
-    parts.push(`${k}: ${truncate(val, 120)}`);
-  }
-  return parts.join(', ');
-}
-
-function formatArgsDetail(args: unknown): Array<{ key: string; value: string }> {
-  if (!args || typeof args !== 'object') return [];
-  const obj = args as Record<string, unknown>;
-  return Object.entries(obj)
-    .filter(([, v]) => v != null)
-    .map(([k, v]) => ({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }));
-}
-
-// ─── Conversion: TaskLogEntry → ExecEntry ─────────────────────────────────────
-
-export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
-  const time = formatLogTime(entry.createdAt);
-  const ts = entry.createdAt;
-  const meta = entry.metadata as Record<string, unknown> | undefined;
-  switch (entry.type) {
-    case 'text':
-      return { type: 'text', content: entry.content, time, timestamp: ts };
-    case 'status':
-      return { type: 'status', content: entry.content, time, timestamp: ts };
-    case 'error':
-      return { type: 'error', content: entry.content, time, timestamp: ts };
-    case 'tool_start':
-      return {
-        type: 'tool', time, timestamp: ts,
-        key: `ts_${entry.seq}`,
-        info: { tool: entry.content, status: 'running', args: meta?.arguments },
-      };
-    case 'tool_end':
-      return {
-        type: 'tool', time, timestamp: ts,
-        key: `te_${entry.seq}`,
-        info: {
-          tool: entry.content,
-          status: meta?.success === false ? 'error' : 'done',
-          args: meta?.arguments,
-          result: meta?.result as string | undefined,
-          error: meta?.error as string | undefined,
-          durationMs: meta?.durationMs as number | undefined,
-        },
-      };
-    default:
-      return null;
-  }
-}
-
-/**
- * Post-process TaskLogEntry[] to attach subagent_* logs to parent spawn_subagent(s) tool entries.
- * Subagent logs appear between tool_start and tool_end for spawn_subagent(s) in the raw log stream.
- */
-export function attachSubagentLogsToEntries(rawLogs: TaskLogEntry[], entries: ExecEntry[]): ExecEntry[] {
-  const subagentLogsByRange: Map<number, SubagentLogEntry[]> = new Map();
-  let currentSpawnStartSeq: number | null = null;
-
-  for (const log of rawLogs) {
-    if (log.type === 'tool_start' && (log.content === 'spawn_subagent' || log.content === 'spawn_subagents')) {
-      currentSpawnStartSeq = log.seq;
-      subagentLogsByRange.set(log.seq, []);
-    } else if (log.type === 'tool_end' && (log.content === 'spawn_subagent' || log.content === 'spawn_subagents')) {
-      if (currentSpawnStartSeq !== null) {
-        const logs = subagentLogsByRange.get(currentSpawnStartSeq);
-        if (logs) subagentLogsByRange.set(log.seq, logs);
-      }
-      currentSpawnStartSeq = null;
-    } else if (currentSpawnStartSeq !== null && log.type.startsWith('subagent_')) {
-      const eventType = log.type.replace('subagent_', '') as SubagentLogEntry['eventType'];
-      const meta = log.metadata as Record<string, unknown> | undefined;
-      subagentLogsByRange.get(currentSpawnStartSeq)?.push({
-        eventType,
-        content: log.content,
-        metadata: meta,
-      });
-    }
-  }
-
-  return entries.map(entry => {
-    if (entry.type !== 'tool') return entry;
-    const key = entry.key;
-    if (!key) return entry;
-    const seqStr = key.replace(/^t[se]_/, '');
-    const seq = parseInt(seqStr, 10);
-    if (isNaN(seq)) return entry;
-    const logs = subagentLogsByRange.get(seq);
-    if (!logs || logs.length === 0) return entry;
-    return { ...entry, info: { ...entry.info, subagentLogs: logs } };
-  });
-}
-
-// ─── Conversion: AgentActivityLogEntry → ExecEntry ────────────────────────────
-
-export function activityLogToEntry(entry: AgentActivityLogEntry): ExecEntry | null {
-  const time = formatLogTime(entry.createdAt);
-  const meta = entry.metadata as Record<string, unknown> | undefined;
-  switch (entry.type) {
-    case 'text':
-      return { type: 'text', content: entry.content, time };
-    case 'status':
-      return { type: 'status', content: entry.content, time };
-    case 'error':
-      return { type: 'error', content: entry.content, time };
-    case 'tool_start':
-      return {
-        type: 'tool', time,
-        key: `as_${entry.seq}`,
-        info: { tool: entry.content, status: 'running', args: meta?.arguments ?? meta?.args },
-      };
-    case 'tool_end':
-      return {
-        type: 'tool', time,
-        key: `ae_${entry.seq}`,
-        info: {
-          tool: entry.content,
-          status: meta?.success === false ? 'error' : 'done',
-          args: meta?.arguments,
-          result: (meta?.result ?? meta?.preview) as string | undefined,
-          error: meta?.error as string | undefined,
-          durationMs: meta?.durationMs as number | undefined,
-        },
-      };
-    default:
-      return null;
-  }
-}
-
-// ─── Filter: remove tool_start entries that have a matching tool_end ──────────
-
-export function filterCompletedStarts(entries: ExecEntry[]): ExecEntry[] {
-  const matchedIndices = new Set<number>();
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]!;
-    if (e.type === 'tool' && (e.info.status === 'done' || e.info.status === 'error')) {
-      for (let j = i - 1; j >= 0; j--) {
-        const p = entries[j]!;
-        if (p.type === 'tool' && p.info.status === 'running' && p.info.tool === e.info.tool && !matchedIndices.has(j)) {
-          matchedIndices.add(j);
-          break;
-        }
-      }
-    }
-  }
-  return entries.filter((_, i) => !matchedIndices.has(i));
-}
+// All types, tool metadata, format helpers, conversion functions, and filters
+// are now in execution-utils.ts — imported and re-exported above.
 
 // ─── ThinkingDots ─────────────────────────────────────────────────────────────
 
@@ -315,8 +50,8 @@ export function ThinkingDots({ label = 'Thinking' }: { label?: string }) {
 
 export function StreamingText({ content, className }: { content: string; className?: string }) {
   return (
-    <div className="bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
-      <MarkdownMessage content={content} className={className ?? 'text-sm text-fg-secondary'} />
+    <div className="bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 min-w-0 overflow-hidden">
+      <MarkdownMessage content={content} className={className ?? 'text-sm text-fg-secondary break-words'} />
       <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-middle" />
     </div>
   );
@@ -617,33 +352,6 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
 
 // ─── TaskApprovalCard — inline approval UI for pending_approval tasks ────────
 
-interface TaskApprovalInfo {
-  taskId: string;
-  title: string;
-  description?: string;
-  assignedAgentId?: string;
-  priority?: string;
-}
-
-function parseTaskApprovalFromResult(tool: string, result?: string): TaskApprovalInfo | null {
-  if (tool !== 'task_create' && tool !== 'create_task') return null;
-  if (!result) return null;
-  try {
-    const parsed = JSON.parse(result);
-    if (!parsed.task) return null;
-    const t = parsed.task;
-    return {
-      taskId: t.id,
-      title: t.title,
-      description: t.description,
-      assignedAgentId: t.assignedAgentId,
-      priority: t.priority,
-    };
-  } catch {
-    return null;
-  }
-}
-
 const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
   urgent: 'text-red-500',
   high: 'text-amber-500',
@@ -775,32 +483,6 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
 }
 
 // ─── RequirementApprovalCard — inline approval for proposed requirements ──────
-
-interface RequirementApprovalInfo {
-  requirementId: string;
-  title: string;
-  description?: string;
-  priority?: string;
-}
-
-function parseRequirementApprovalFromResult(tool: string, result?: string): RequirementApprovalInfo | null {
-  if (tool !== 'requirement_propose') return null;
-  if (!result) return null;
-  try {
-    const parsed = JSON.parse(result);
-    if (parsed.status !== 'success' || !parsed.requirement) return null;
-    const r = parsed.requirement;
-    if (r.status !== 'draft' && r.status !== 'pending_review') return null;
-    return {
-      requirementId: r.id,
-      title: r.title,
-      description: r.description,
-      priority: r.priority,
-    };
-  } catch {
-    return null;
-  }
-}
 
 export function RequirementApprovalCard({ info }: { info: RequirementApprovalInfo }) {
   const [state, setState] = useState<'idle' | 'approving' | 'rejecting' | 'approved' | 'rejected'>('idle');
@@ -946,7 +628,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
     <>
       <div
         ref={rowRef}
-        className={`relative flex items-start gap-2 py-0.5 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${enableHover ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
+        className={`relative flex items-start gap-2 py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${enableHover ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
         onMouseEnter={() => enableHover && handleHover(true)}
         onMouseLeave={() => handleHover(false)}
         onClick={() => isDone && setExpanded(true)}
@@ -1036,8 +718,8 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
         {showTime && entry.time && (
           <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{entry.time}</span>
         )}
-        <div className="flex-1 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1">
-          <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary" />
+        <div className="flex-1 min-w-0 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 overflow-hidden">
+          <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary break-words" />
         </div>
       </div>
     );
@@ -1064,7 +746,7 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
         {showTime && entry.time && (
           <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2 hidden md:inline">{entry.time}</span>
         )}
-        <div className="flex-1 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed">
+        <div className="flex-1 min-w-0 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed break-words overflow-hidden">
           <span className="font-medium">Error:</span> {entry.content}
         </div>
       </div>
@@ -1079,4 +761,243 @@ export function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
   const execEntry = taskLogToEntry(entry);
   if (!execEntry) return null;
   return <ExecEntryRow entry={execEntry} />;
+}
+
+// ─── CompactExecutionCard ─────────────────────────────────────────────────────
+
+export interface CompactExecutionCardProps {
+  entries: ExecutionStreamEntryUI[];
+  streamingText?: string;
+  isActive: boolean;
+  onExpand: () => void;
+  showRounds?: boolean;
+  /** When true, removes border/background — used inside chat bubbles */
+  embedded?: boolean;
+}
+
+export function CompactExecutionCard({ entries, streamingText, isActive, onExpand, showRounds, embedded }: CompactExecutionCardProps) {
+  const lastEntry = entries.length > 0 ? entries[entries.length - 1]! : null;
+  const toolCount = entries.filter(e => e.type === 'tool_end').length;
+  const errorCount = entries.filter(e => e.type === 'error').length;
+
+  const firstTime = entries.length > 0 ? new Date(entries[0]!.createdAt).getTime() : Date.now();
+  const lastTime = lastEntry ? new Date(lastEntry.createdAt).getTime() : Date.now();
+  const elapsed = isActive ? Date.now() - firstTime : lastTime - firstTime;
+
+  const rounds = new Set(entries.filter(e => e.executionRound != null).map(e => e.executionRound!));
+  const currentRound = rounds.size > 0 ? Math.max(...rounds) : undefined;
+  const hasMultipleRounds = showRounds && rounds.size > 1;
+
+  let statusIcon: string;
+  let statusLabel: string;
+  let statusDetail: string | null = null;
+
+  if (!isActive) {
+    if (errorCount > 0 && lastEntry?.type === 'error') {
+      statusIcon = '❌';
+      statusLabel = 'Failed';
+    } else {
+      statusIcon = '✅';
+      statusLabel = 'Completed';
+    }
+  } else if (streamingText) {
+    statusIcon = '✍';
+    statusLabel = 'Writing response...';
+    statusDetail = truncate(streamingText.split('\n').pop() ?? '', 80);
+  } else if (lastEntry?.type === 'tool_start') {
+    const meta = getToolMeta(lastEntry.content);
+    statusIcon = meta.icon;
+    statusLabel = `${meta.label}...`;
+    const shellCmd = lastEntry.metadata?.arguments && typeof lastEntry.metadata.arguments === 'object'
+      ? (lastEntry.metadata.arguments as Record<string, unknown>).command as string | undefined
+      : undefined;
+    if (shellCmd) statusDetail = `$ ${truncate(shellCmd, 80)}`;
+  } else if (lastEntry?.type === 'tool_end') {
+    const meta = getToolMeta(lastEntry.content);
+    statusIcon = meta.icon;
+    statusLabel = meta.label;
+  } else {
+    statusIcon = '💭';
+    statusLabel = 'Thinking...';
+  }
+
+  const elapsedStr = formatDuration(elapsed);
+
+  return (
+    <div
+      onClick={onExpand}
+      className={`overflow-hidden transition-all cursor-pointer min-w-0 ${
+        embedded
+          ? 'hover:bg-surface-elevated/20'
+          : `rounded-lg border hover:brightness-110 ${isActive ? 'border-2 exec-card-active' : 'border border-border-default bg-surface-elevated/30 hover:border-brand-500/40'}`
+      }`}
+    >
+      <div className={embedded ? 'py-1' : 'px-3 py-2.5 bg-surface-primary/80'}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {isActive ? (
+              <svg className="w-3.5 h-3.5 animate-spin text-brand-500 shrink-0" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <span className="text-sm shrink-0">{statusIcon}</span>
+            )}
+            <span className={`text-xs font-medium truncate ${isActive ? 'text-fg-primary' : 'text-fg-secondary'}`}>
+              {statusLabel}
+            </span>
+          </div>
+          {elapsedStr && (
+            <span className="text-[10px] text-fg-tertiary tabular-nums shrink-0">{elapsedStr}</span>
+          )}
+        </div>
+
+        {statusDetail && (
+          <div className="mt-1 ml-5.5 text-[11px] font-mono text-fg-tertiary truncate">{statusDetail}</div>
+        )}
+
+        <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center gap-2 text-[10px] text-fg-tertiary">
+            {toolCount > 0 && <span>{toolCount} tool{toolCount !== 1 ? 's' : ''}</span>}
+            {hasMultipleRounds && currentRound != null && (
+              <>
+                <span className="opacity-30">·</span>
+                <span>Round #{currentRound}</span>
+                <span className="opacity-30">·</span>
+                <span>{rounds.size} rounds</span>
+              </>
+            )}
+          </div>
+          <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
+            Show Full Log
+            <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── FullExecutionLog ─────────────────────────────────────────────────────────
+
+interface RoundGroup {
+  round: number;
+  entries: ExecEntry[];
+}
+
+function groupByRound(entries: ExecutionStreamEntryUI[]): RoundGroup[] {
+  const groups = new Map<number, ExecEntry[]>();
+  for (const e of entries) {
+    const round = e.executionRound ?? 1;
+    if (!groups.has(round)) groups.set(round, []);
+    const exec = streamEntryToExecEntry(e);
+    if (exec) groups.get(round)!.push(exec);
+  }
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([round, entries]) => ({ round, entries }));
+}
+
+export interface FullExecutionLogProps {
+  entries: ExecutionStreamEntryUI[];
+  streamingText?: string;
+  isActive: boolean;
+  onCollapse: () => void;
+  showRounds?: boolean;
+  /** When true, disables internal max-height/scroll — parent handles scrolling */
+  embedded?: boolean;
+}
+
+export function FullExecutionLog({ entries, streamingText, isActive, onCollapse, showRounds, embedded }: FullExecutionLogProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
+
+  const rounds = groupByRound(entries);
+  const hasMultipleRounds = showRounds && rounds.length > 1;
+
+  useEffect(() => {
+    if (rounds.length > 0) {
+      setExpandedRounds(prev => {
+        const next = new Set(prev);
+        next.add(rounds[rounds.length - 1]!.round);
+        return next;
+      });
+    }
+  }, [rounds.length]);
+
+  useEffect(() => {
+    if (embedded || !scrollRef.current || !isActive) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [entries.length, streamingText, isActive, embedded]);
+
+  const toggleRound = (round: number) => {
+    setExpandedRounds(prev => {
+      const next = new Set(prev);
+      if (next.has(round)) next.delete(round);
+      else next.add(round);
+      return next;
+    });
+  };
+
+  const allExec = hasMultipleRounds
+    ? null
+    : entries.map(streamEntryToExecEntry).filter((e): e is ExecEntry => e !== null);
+  const filtered = allExec ? filterCompletedStarts(allExec) : null;
+
+  return (
+    <div className={`min-w-0 overflow-hidden ${embedded ? '' : 'rounded-lg border border-border-default bg-surface-primary/50'}`}>
+      <div
+        onClick={onCollapse}
+        className={`flex items-center cursor-pointer hover:bg-surface-elevated/40 transition-colors ${
+          embedded ? 'justify-end py-0.5' : 'justify-between px-3 py-1.5 border-b border-border-default'
+        }`}
+      >
+        {!embedded && <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">Execution Log</span>}
+        <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
+          Collapse
+          <svg className="w-3 h-3 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+        </span>
+      </div>
+
+      <div ref={embedded ? undefined : scrollRef} className={`space-y-0.5 min-w-0 overflow-x-hidden ${embedded ? 'py-1' : 'px-3 py-2 max-h-[60vh] overflow-y-auto scrollbar-thin'}`}>
+        {hasMultipleRounds ? (
+          rounds.map(rg => {
+            const isExpanded = expandedRounds.has(rg.round);
+            const filteredEntries = filterCompletedStarts(rg.entries);
+            const toolCount = rg.entries.filter(e => e.type === 'tool' && (e as any).info?.status !== 'running').length;
+            return (
+              <div key={rg.round} className="border border-border-default/50 rounded-lg mb-2 overflow-hidden">
+                <button
+                  onClick={() => toggleRound(rg.round)}
+                  className="w-full flex items-center justify-between px-3 py-1.5 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
+                >
+                  <span className="text-xs text-fg-secondary font-medium">Round #{rg.round}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-fg-tertiary">{toolCount} tool{toolCount !== 1 ? 's' : ''}</span>
+                    <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="px-3 py-1.5 space-y-0.5">
+                    {filteredEntries.map((entry, i) => (
+                      <MemoExecEntryRow key={i} entry={entry} showTime isLast={i === filteredEntries.length - 1} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : (
+          filtered && filtered.map((entry, i) => (
+            <MemoExecEntryRow key={i} entry={entry} showTime isLast={i === filtered.length - 1} />
+          ))
+        )}
+
+        {isActive && streamingText && <StreamingText content={streamingText} />}
+        {isActive && !streamingText && <ThinkingDots />}
+      </div>
+    </div>
+  );
 }

@@ -49,7 +49,10 @@ export {
   SqliteExternalAgentRepo,
   SqliteDeliverableRepo,
   SqliteActivityRepo,
+  SqliteExecutionStreamRepo,
+  migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,
   type ActivityLogRecord,
+  type ExecutionStreamRow,
 } from './sqlite-storage.js';

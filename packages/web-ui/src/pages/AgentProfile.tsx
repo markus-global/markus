@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo } from '../components/ExecutionTimeline.tsx';
+import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean }
@@ -1355,19 +1356,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
   const [logs, setLogs] = useState<TaskLogEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [loading, setLoading] = useState(true);
-  const endRef = useRef<HTMLDivElement>(null);
-  const logScrollRef = useRef<HTMLDivElement>(null);
-  const logAtBottomRef = useRef(true);
-
-  useEffect(() => {
-    const el = logScrollRef.current;
-    if (!el) return;
-    const handleScroll = () => {
-      logAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, []);
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
 
   useEffect(() => {
     setLoading(true); setStreamingText('');
@@ -1391,22 +1380,19 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
     return () => { unsubLog(); unsubDelta(); };
   }, [taskId, isLive]);
 
-  useEffect(() => {
-    if (!logAtBottomRef.current) return;
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs, streamingText]);
-
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0 && !streamingText) return <div className="px-4 py-3 text-xs text-fg-tertiary">No execution logs yet.</div>;
 
-  const rawEntries = filterCompletedStarts(logs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
-  const entries = attachSubagentLogsToEntries(logs, rawEntries);
+  const streamEntries: ExecutionStreamEntryUI[] = logs.map(l => taskLogToStreamEntry(l));
+  const hasMultipleRounds = new Set(streamEntries.filter(e => e.executionRound != null).map(e => e.executionRound!)).size > 1;
 
   return (
-    <div ref={logScrollRef} className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
-      {entries.map((entry, i) => <ExecEntryRow key={`e-${i}`} entry={entry} showTime />)}
-      {streamingText && <StreamingText content={streamingText} />}
-      <div ref={endRef} />
+    <div className="px-3 py-2">
+      {viewMode === 'compact' ? (
+        <CompactExecutionCard entries={streamEntries} streamingText={streamingText} isActive={isLive} onExpand={() => setViewMode('full')} showRounds={hasMultipleRounds} />
+      ) : (
+        <FullExecutionLog entries={streamEntries} streamingText={streamingText} isActive={isLive} onCollapse={() => setViewMode('compact')} showRounds={hasMultipleRounds} />
+      )}
     </div>
   );
 }
@@ -1417,6 +1403,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
 function ActivityLog({ agentId, activityId }: { agentId: string; activityId: string }) {
   const [logs, setLogs] = useState<AgentActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
 
   useEffect(() => {
     setLoading(true);
@@ -1428,11 +1415,15 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
 
-  const entries = filterCompletedStarts(logs.map(activityLogToEntry).filter((e): e is ExecEntry => e != null));
+  const streamEntries: ExecutionStreamEntryUI[] = logs.map(e => activityLogToStreamEntry(e, activityId, agentId));
 
   return (
-    <div className="max-h-56 overflow-y-auto px-3 py-2 space-y-0.5">
-      {entries.map((entry, i) => <ExecEntryRow key={`a-${i}`} entry={entry} showTime />)}
+    <div className="px-3 py-2">
+      {viewMode === 'compact' ? (
+        <CompactExecutionCard entries={streamEntries} isActive={false} onExpand={() => setViewMode('full')} />
+      ) : (
+        <FullExecutionLog entries={streamEntries} isActive={false} onCollapse={() => setViewMode('compact')} />
+      )}
     </div>
   );
 }

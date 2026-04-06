@@ -196,6 +196,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
     taskService.setTaskLogRepo(storage.taskLogRepo);
+    if (storage.executionStreamRepo) {
+      taskService.setExecutionStreamRepo(storage.executionStreamRepo);
+    }
     if (storage.taskCommentRepo) {
       taskService.setTaskCommentRepo(storage.taskCommentRepo);
     }
@@ -590,6 +593,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Wire activity persistence to SQLite
   if (storage?.activityRepo) {
     const actRepo = storage.activityRepo;
+    const execStreamRepo = storage.executionStreamRepo;
     agentManager.setActivityCallbacks({
       onStart: (activity) => {
         try {
@@ -606,6 +610,21 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         }
       },
       onLog: (data) => {
+        if (execStreamRepo) {
+          try {
+            execStreamRepo.append({
+              sourceType: 'activity',
+              sourceId: data.activityId,
+              agentId: data.agentId ?? '',
+              seq: data.seq,
+              type: data.type,
+              content: data.content,
+              metadata: data.metadata,
+            });
+          } catch (err) {
+            log.warn('Failed to persist execution stream activity log', { activityId: data.activityId, error: String(err) });
+          }
+        }
         try {
           actRepo.insertActivityLog(data);
         } catch (err) {
@@ -624,10 +643,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
-    apiServer.getWSBroadcaster().broadcast({
-      type: 'agent:activity_log',
-      payload: event,
-      timestamp: new Date().toISOString(),
+    const ws = apiServer.getWSBroadcaster();
+    const ts = new Date().toISOString();
+    ws.broadcast({ type: 'agent:activity_log', payload: event, timestamp: ts });
+    const e = event as Record<string, unknown>;
+    ws.broadcastExecutionLog({
+      sourceType: 'activity', sourceId: e.activityId ?? '', agentId: e.agentId ?? '',
+      seq: e.seq ?? 0, type: e.type ?? 'status', content: e.content ?? '',
+      metadata: e.metadata, createdAt: e.createdAt ?? ts,
     });
   });
 

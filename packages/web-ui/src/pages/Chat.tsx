@@ -5,13 +5,18 @@ import {
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
   type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
+  taskLogToStreamEntry, activityLogToStreamEntry,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
   taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries,
-  type ExecEntry,
+  CompactExecutionCard, FullExecutionLog,
+  TaskApprovalCard, RequirementApprovalCard,
+  parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
+  type ExecEntry, type ExecutionStreamEntryUI,
+  type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
@@ -46,7 +51,7 @@ interface ChatMsg {
   images?: string[];
 }
 
-type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
+type ChatMode = 'channel' | 'direct' | 'dm';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -303,90 +308,105 @@ function MessageActions({
   );
 }
 
+function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
+  if (!segments) return [];
+  const entries: ExecutionStreamEntryUI[] = [];
+  let seq = 0;
+  const now = new Date().toISOString();
+  const aid = agentId ?? '';
+  for (const seg of segments) {
+    if (seg.type === 'tool') {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: now,
+      });
+      if (seg.status !== 'running') {
+        entries.push({
+          id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+          seq: seq++, type: 'tool_end', content: seg.tool,
+          metadata: { arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, success: seg.status !== 'error' },
+          createdAt: now,
+        });
+      }
+    } else if (seg.content) {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'text', content: seg.content, createdAt: now,
+      });
+    }
+  }
+  return entries;
+}
+
 function AgentMessageBody({
-  msg, isStreaming, liveActivities,
+  msg, isStreaming, liveActivities, onViewModeChange,
 }: {
   msg: ChatMsg;
   isStreaming: boolean;
   liveActivities: import('../components/ActivityIndicator.tsx').ActivityStep[];
+  onViewModeChange?: (mode: 'compact' | 'full') => void;
 }) {
   const segments = msg.segments;
   const isStopped = msg.isStopped;
-  const [expandedThinking, setExpandedThinking] = useState(false);
+  const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
+  const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
 
-  // Messages with segment data: render interleaved
+  // Messages with segment data: render compact card / full log + final text
   if (segments !== undefined) {
-    const lastSeg = segments[segments.length - 1];
+    const hasTools = segments.some(s => s.type === 'tool');
+    const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
+    const streamingText = isStreaming
+      ? segments.filter(s => s.type === 'text').map(s => s.content).join('').slice(-200)
+      : undefined;
+    const textSegments = segments.filter(s => s.type === 'text');
+    const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
+    const lastText = !isStreaming && textSegments.length > 0
+      ? textSegments[textSegments.length - 1]!.content
+      : null;
+    const displayText = viewMode === 'compact' ? lastText : allText;
 
-    // "Between steps" state: streaming is active but last segment is a completed tool
-    // (i.e. tool finished but neither the next tool nor text has arrived yet)
-    const isWaiting = isStreaming &&
-      segments.length > 0 &&
-      lastSeg?.type === 'tool' &&
-      lastSeg.status !== 'running';
-
-    // Initial state: nothing has arrived yet
-    const isEmpty = segments.length === 0;
-
-    // Collect all thinking content from text segments
-    const allThinking = segments
-      .filter((s): s is { type: 'text'; content: string; thinking: string } => s.type === 'text' && !!s.thinking)
-      .map(s => s.thinking)
-      .join('');
-    const hasThinking = allThinking.length > 0;
+    const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
+    if (viewMode === 'compact') {
+      for (const seg of segments) {
+        if (seg.type !== 'tool') continue;
+        const ta = parseTaskApprovalFromResult(seg.tool, seg.result);
+        if (ta) { inlineCards.push({ key: `task-${ta.taskId}`, kind: 'task', info: ta }); continue; }
+        const ra = parseRequirementApprovalFromResult(seg.tool, seg.result);
+        if (ra) { inlineCards.push({ key: `req-${ra.requirementId}`, kind: 'req', info: ra }); }
+      }
+    }
 
     return (
-      <div className="space-y-0.5 min-h-[1em]">
-        {/* Initial thinking — no segments yet */}
-        {isEmpty && isStreaming && <ThinkingDots />}
-
-        {/* Thinking collapse */}
-        {hasThinking && (
-          <div className="mb-2">
-            <button
-              onClick={() => setExpandedThinking(e => !e)}
-              className="flex items-center gap-1 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors"
-            >
-              <span className={`transition-transform ${expandedThinking ? 'rotate-90' : ''}▶`} style={{ fontSize: 8 }} />
-              <span>思考过程 ({allThinking.length} 字符)</span>
-            </button>
-            {expandedThinking && (
-              <div className="mt-1 pl-3 border-l-2 border-brand-500/50 text-xs text-fg-secondary whitespace-pre-wrap max-h-60 overflow-y-auto">
-                {allThinking}
-              </div>
-            )}
-          </div>
+      <div className="space-y-2 min-h-[1em] min-w-0 overflow-hidden">
+        {(hasTools || isStreaming) && (
+          viewMode === 'compact' ? (
+            <CompactExecutionCard
+              entries={streamEntries}
+              streamingText={streamingText}
+              isActive={isStreaming}
+              onExpand={() => setViewMode('full')}
+              embedded
+            />
+          ) : (
+            <FullExecutionLog
+              entries={streamEntries}
+              streamingText={streamingText}
+              isActive={isStreaming}
+              onCollapse={() => setViewMode('compact')}
+              embedded
+            />
+          )
         )}
 
-        {segments.map((seg, i) => {
-          const isLastSeg = i === segments.length - 1;
-          if (seg.type === 'tool') {
-            return <ToolCallRow key={seg.key} info={{ tool: seg.tool, status: seg.status, args: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, liveOutput: seg.liveOutput, subagentLogs: seg.subagentLogs }} isLast={isLastSeg && !isWaiting} />;
-          }
-          // text segment
-          return (
-            <div key={i} className={seg.content ? '' : 'hidden'}>
-              <MarkdownMessage content={seg.content} />
-              {isStreaming && isLastSeg && (
-                <span className="inline-block w-0.5 h-4 bg-brand-400 animate-pulse ml-0.5 align-text-bottom" />
-              )}
-            </div>
-          );
-        })}
-
-        {/* Between-step thinking: a tool just finished, waiting for next action */}
-        {isWaiting && (
-          <div className="flex items-center gap-2 pl-0.5 pt-0.5">
-            {/* Connector line from last tool down to dots */}
-            <div className="flex flex-col items-center" style={{ width: 14 }}>
-              <div className="w-px flex-1 bg-surface-overlay" style={{ minHeight: 6 }} />
-              <div className="w-2 h-2 rounded-full border border-gray-600 bg-surface-elevated shrink-0" />
-            </div>
-            <ThinkingDots label="Processing" />
-          </div>
+        {viewMode === 'compact' && inlineCards.map(c => c.kind === 'task'
+          ? <TaskApprovalCard key={c.key} info={c.info} />
+          : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {/* Stopped indicator */}
+        {viewMode === 'compact' && displayText && (
+          <MarkdownMessage content={displayText} />
+        )}
+
         {isStopped && (
           <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
             <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -497,7 +517,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   const [activeDmUserId, setActiveDmUserId] = useState<string>('');
 
   // ── Per-conversation buffers ──────────────────────────────────────────────────
-  // Each conversation (agentId / channelName / 'smart') stores its own message array
+  // Each conversation (agentId / channelName) stores its own message array
   // so that switching away never destroys in-progress streaming content.
   const msgBuffers    = useRef<Map<string, ChatMsg[]>>(new Map());
   const actBuffers    = useRef<Map<string, ActivityStep[]>>(new Map());
@@ -516,6 +536,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Session management (direct mode)
   const NEW_CHAT_PLACEHOLDER_ID = '__new_chat__';
@@ -587,9 +608,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const makeConvKey = (mode: ChatMode, agent: string, channel: string, dmUserId?: string) =>
     mode === 'channel' ? `ch:${channel}` :
-    mode === 'direct'  ? (agent || '_direct') :
     mode === 'dm'      ? `dm:${dmUserId ?? ''}` :
-    '_smart';
+    (agent || '_direct');
 
   /** Write to a conversation's message buffer and refresh display if currently viewing it */
   const updateConvMsgs = useCallback((key: string, updater: (prev: ChatMsg[]) => ChatMsg[]) => {
@@ -669,16 +689,30 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   }, []);
 
   // Track whether the user is at the bottom of the chat scroll container.
-  // When the user scrolls up manually, we stop auto-scrolling until they scroll back down.
+  // Uses wheel/touch events to detect genuine user interaction (not programmatic scrolls),
+  // and the scroll event to detect when the user scrolls back to the bottom.
+  const userManuallyScrolledRef = useRef(false);
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const handleScroll = () => {
-      const threshold = 80;
-      userAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    const isAtBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const onUserScroll = () => { userManuallyScrolledRef.current = true; };
+    const onScroll = () => {
+      if (userManuallyScrolledRef.current && isAtBottom()) {
+        userManuallyScrolledRef.current = false;
+        userAtBottomRef.current = true;
+      } else if (userManuallyScrolledRef.current) {
+        userAtBottomRef.current = false;
+      }
     };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
+    el.addEventListener('wheel', onUserScroll, { passive: true });
+    el.addEventListener('touchmove', onUserScroll, { passive: true });
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', onUserScroll);
+      el.removeEventListener('touchmove', onUserScroll);
+      el.removeEventListener('scroll', onScroll);
+    };
   }, []);
 
   // Snap to bottom after DOM updates, but only if user hasn't scrolled up.
@@ -693,7 +727,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string) => {
-    const key = channel === 'smart:default' ? '_smart' : `ch:${channel}`;
+    const key = `ch:${channel}`;
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(channelMsgToChat);
@@ -741,9 +775,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     setLoadingMore(true);
     try {
       const convKey = currentConvKeyRef.current;
-      if (chatMode === 'channel' || chatMode === 'smart' || chatMode === 'dm') {
-        const channelName = chatMode === 'smart' ? 'smart:default' :
-          chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
+      if (chatMode === 'channel' || chatMode === 'dm') {
+        const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
         const newMsgs = result.messages.map(channelMsgToChat);
         // Suppress scroll-to-bottom — prepending old messages must not jump the viewport
@@ -825,9 +858,6 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
         loadChannelMessages(channelName);
-        if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-      } else if (chatMode === 'smart') {
-        loadChannelMessages('smart:default');
         if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
@@ -987,6 +1017,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
     userAtBottomRef.current = true;
+    userManuallyScrolledRef.current = false;
 
     // If agent is currently streaming, interrupt it first then proceed
     if (sending) {
@@ -1019,7 +1050,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
 
-    if (!retryText) setInput('');
+    if (!retryText) {
+      setInput('');
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    }
     setPendingImages([]);
     setMentionDropdown(false);
 
@@ -1088,7 +1122,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       sendingConvs.current.delete(sendKey);
       if (currentConvKeyRef.current === sendKey) setSending(false);
     } else {
-      // direct or smart — build an interleaved segment stream
+      // direct — build an interleaved segment stream
       const agentMsgId = `a_${Date.now()}`;
       const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
       if (imagesToSend?.length) userMsg.images = imagesToSend;
@@ -1214,53 +1248,36 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       abortControllerRef.current = abortCtrl;
 
       try {
-        if (chatMode === 'smart') {
-          const result = await api.message.sendStream(
-            text,
-            appendTextChunk,
-            { senderId: authUser?.id || undefined, signal: abortCtrl.signal, images: imagesToSend },
-            handleToolEvent,
-          );
-          const ra = agents.find(a => a.id === result.agentId);
-          if (ra) updateConvMsgs(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx >= 0) u[idx] = { ...u[idx]!, agentName: ra.name };
-            return u;
-          });
-        } else {
-          const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
-          const streamResult = await api.agents.messageStream(
-            selectedAgent, text,
-            appendTextChunk,
-            handleToolEvent,
-            abortCtrl.signal,
-            imagesToSend,
-            effectiveSessionId,
-          );
-          // Only update session state if user is still viewing this conversation
-          if (currentConvKeyRef.current === sendKey) {
-            if (streamResult.sessionId) {
-              setActiveSessionId(streamResult.sessionId);
-              setOpenSessionTabs(prev =>
-                prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t)
-              );
-            }
-            loadSessions(selectedAgent).then(s => {
-              if (currentConvKeyRef.current !== sendKey) return;
-              setSessions(s);
-              if (streamResult.sessionId) {
-                const newSess = s.find(ss => ss.id === streamResult.sessionId);
-                if (newSess) {
-                  setOpenSessionTabs(prev => {
-                    const exists = prev.some(t => t.id === newSess.id);
-                    if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                    return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
-                  });
-                }
-              }
-            });
+        const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
+        const streamResult = await api.agents.messageStream(
+          selectedAgent, text,
+          appendTextChunk,
+          handleToolEvent,
+          abortCtrl.signal,
+          imagesToSend,
+          effectiveSessionId,
+        );
+        if (currentConvKeyRef.current === sendKey) {
+          if (streamResult.sessionId) {
+            setActiveSessionId(streamResult.sessionId);
+            setOpenSessionTabs(prev =>
+              prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t)
+            );
           }
+          loadSessions(selectedAgent).then(s => {
+            if (currentConvKeyRef.current !== sendKey) return;
+            setSessions(s);
+            if (streamResult.sessionId) {
+              const newSess = s.find(ss => ss.id === streamResult.sessionId);
+              if (newSess) {
+                setOpenSessionTabs(prev => {
+                  const exists = prev.some(t => t.id === newSess.id);
+                  if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
+                  return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
+                });
+              }
+            }
+          });
         }
       } catch (e) {
         // Preserve sessionId from error so subsequent messages stay in the same session
@@ -1399,6 +1416,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
 
   const handleCopy = useCallback((msg: ChatMsg) => {
     const text = msg.segments
@@ -1828,7 +1846,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         )}
 
         {/* Chat Tab: Messages */}
-        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto p-5 space-y-3 ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'} ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {hasMore && (
             <div className="flex justify-center py-2">
               <button
@@ -1911,7 +1929,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 const showActions = !isStreamingMsg || msg.isStopped;
                 return (
                   <div key={msg.id} className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className="max-w-[75%]">
+                    <div className={
+                      msg.sender === 'agent' && expandedMsgIds.has(msg.id)
+                        ? 'max-w-full w-full'
+                        : isMobile ? 'max-w-[95%]' : 'max-w-[75%]'
+                    }>
                       <div className="text-xs text-fg-tertiary mb-1">
                         {msg.sender === 'user'
                           ? (currentUserName ?? 'You')
@@ -1923,7 +1945,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                             />
                         } · {msg.time}
                       </div>
-                      <div className={`px-4 py-3 rounded-2xl text-sm ${
+                      <div className={`rounded-2xl text-sm ${isMobile ? 'px-3 py-2' : 'px-4 py-3'} ${
                         msg.sender === 'user'
                           ? 'bg-brand-600 text-white rounded-br-sm'
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
@@ -1945,6 +1967,11 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                               msg={msg}
                               isStreaming={isStreamingMsg}
                               liveActivities={isStreamingMsg ? activities : []}
+                              onViewModeChange={(mode) => setExpandedMsgIds(prev => {
+                                const next = new Set(prev);
+                                if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
+                                return next;
+                              })}
                             />
                         }
                       </div>
@@ -2034,18 +2061,21 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               </svg>
             </button>
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={e => {
                 handleInputChange(e.target.value);
                 e.target.style.height = 'auto';
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                const h = Math.min(e.target.scrollHeight, 120);
+                e.target.style.height = `${h}px`;
+                e.target.style.overflowY = h >= 120 ? 'auto' : 'hidden';
               }}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
               rows={1}
-              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-y-auto leading-5"
+              className="flex-1 px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm focus:border-brand-500 outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-5"
               style={{ maxHeight: '120px' }}
             />
             {sending && chatMode !== 'dm' && (
@@ -2188,6 +2218,16 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   );
 }
 
+function AgentActivityModalLogs({ entries, isActive, showRounds }: { entries: ExecutionStreamEntryUI[]; isActive: boolean; showRounds?: boolean }) {
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
+  if (entries.length === 0) return null;
+  return viewMode === 'compact' ? (
+    <CompactExecutionCard entries={entries} isActive={isActive} onExpand={() => setViewMode('full')} showRounds={showRounds} />
+  ) : (
+    <FullExecutionLog entries={entries} isActive={isActive} onCollapse={() => setViewMode('compact')} showRounds={showRounds} />
+  );
+}
+
 // ─── Agent Activity Modal ────────────────────────────────────────────────────
 
 function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
@@ -2320,25 +2360,20 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
         </div>
 
         {/* Logs — unified rendering for both task logs and activity logs */}
-        <div ref={modalScrollRef} className="flex-1 overflow-y-auto p-4 space-y-1.5">
+        <div ref={modalScrollRef} className="flex-1 overflow-y-auto p-4">
           {loading ? (
             <div className="text-center py-8 text-xs text-fg-tertiary">Loading logs…</div>
           ) : currentTask && taskLogs.length > 0 ? (
-            <>
-              {(() => {
-                const recentLogs = taskLogs.slice(-60);
-                const raw = filterCompletedStarts(recentLogs.map(taskLogToEntry).filter((e): e is ExecEntry => e != null));
-                return attachSubagentLogsToEntries(recentLogs, raw).map((entry, i) => (
-                  <ExecEntryRow key={`t-${i}`} entry={entry} showTime />
-                ));
-              })()}
-            </>
+            <AgentActivityModalLogs
+              entries={taskLogs.map(l => taskLogToStreamEntry(l))}
+              isActive={agent.status === 'working'}
+              showRounds={new Set(taskLogs.filter(l => l.executionRound != null).map(l => l.executionRound!)).size > 1}
+            />
           ) : activityLogs.length > 0 ? (
-            <>
-              {filterCompletedStarts(activityLogs.map(activityLogToEntry).filter((e): e is ExecEntry => e != null)).map((entry, i) => (
-                <ExecEntryRow key={`a-${i}`} entry={entry} showTime />
-              ))}
-            </>
+            <AgentActivityModalLogs
+              entries={activityLogs.map(e => activityLogToStreamEntry(e, activity?.id ?? '', agent.id))}
+              isActive={agent.status === 'working'}
+            />
           ) : agent.status === 'working' ? (
             <div className="text-center py-8 space-y-2">
               <div className="text-xs text-fg-tertiary">Agent just started processing...</div>
@@ -2347,8 +2382,6 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
           ) : (
             <div className="text-center py-8 text-xs text-fg-tertiary">No execution logs available.</div>
           )}
-
-          {agent.status === 'working' && <ThinkingDots label="Working" />}
           <div ref={endRef} />
         </div>
       </div>

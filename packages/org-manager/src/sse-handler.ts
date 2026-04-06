@@ -25,6 +25,8 @@ export interface SSEMessageHandlerOptions {
   onToolEvent?: (event: AgentStreamEvent) => void;
   onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
+  executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
+  messageId?: string;
 }
 
 /**
@@ -43,7 +45,6 @@ export class SSEHandler {
   private sseDisconnected = false;
   private cancelToken = { cancelled: false };
   private sessionId: string | null = null;
-
   constructor(options: SSEMessageHandlerOptions) {
     this.options = options;
   }
@@ -162,6 +163,8 @@ export class SSEHandler {
         await this.options.onComplete(reply, this.msgSegments, this.options.agent.getState().tokensUsedToday);
       }
 
+      this.persistSegmentsToExecutionStream();
+
       this.isComplete = true;
       
       if (!this.sseDisconnected) {
@@ -212,6 +215,31 @@ export class SSEHandler {
       }
     } finally {
       this.isProcessing = false;
+    }
+  }
+
+  private persistSegmentsToExecutionStream(): void {
+    const repo = this.options.executionStreamRepo;
+    if (!repo) return;
+    const messageId = this.options.messageId ?? `chat_${this.options.agentId}_${Date.now()}`;
+
+    let seq = 0;
+    const agentId = this.options.agentId;
+    try {
+      for (const seg of this.msgSegments) {
+        if (seg.type === 'tool') {
+          const toolSeg = seg as { tool: string; arguments?: unknown; result?: string; error?: string; durationMs?: number; status: string };
+          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_start', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments } });
+          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_end', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments, result: toolSeg.result, error: toolSeg.error, durationMs: toolSeg.durationMs, success: toolSeg.status !== 'error' } });
+        } else {
+          const textSeg = seg as { content: string };
+          if (textSeg.content) {
+            repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'text', content: textSeg.content });
+          }
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to persist chat segments to execution stream', { messageId, error: String(err) });
     }
   }
 

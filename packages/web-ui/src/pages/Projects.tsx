@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, formatLogTime, type ExecEntry } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, formatLogTime, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { taskLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -408,6 +409,7 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
   const [roundsPage, setRoundsPage] = useState(1);
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
   const ROUNDS_PAGE_SIZE = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -593,6 +595,16 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     </div>
   );
 
+  const streamEntries = useMemo<ExecutionStreamEntryUI[]>(() =>
+    logs.map(l => taskLogToStreamEntry(l)),
+    [logs],
+  );
+
+  const hasMultipleRounds = useMemo(() => {
+    const rset = new Set(streamEntries.filter(e => e.executionRound != null).map(e => e.executionRound!));
+    return rset.size > 1;
+  }, [streamEntries]);
+
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">Loading logs…</div>;
   if (rounds.length === 0 && !streamingText) {
     return (
@@ -608,45 +620,34 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     );
   }
 
-  const totalRoundPages = Math.ceil(rounds.length / ROUNDS_PAGE_SIZE);
-  const pageEndOffset = roundsPage * ROUNDS_PAGE_SIZE;
-  const pageStartOffset = (roundsPage - 1) * ROUNDS_PAGE_SIZE;
-  // Select rounds for this page (newest first within page), then reverse for descending display
-  const pagedRounds = rounds.slice(
-    Math.max(0, rounds.length - pageEndOffset),
-    rounds.length - pageStartOffset,
-  ).slice().reverse();
+  if (viewMode === 'compact') {
+    return (
+      <div className="flex flex-col flex-1">
+        <div className="px-4 py-3 flex-1">
+          <CompactExecutionCard
+            entries={streamEntries}
+            streamingText={streamingText}
+            isActive={isExecuting}
+            onExpand={() => setViewMode('full')}
+            showRounds={hasMultipleRounds}
+          />
+        </div>
+        {commentInput}
+      </div>
+    );
+  }
 
   return (
-    <div>
-      {totalRoundPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border-default">
-          <span className="text-[10px] text-fg-tertiary">{rounds.length} rounds total</span>
-          <div className="flex items-center gap-1.5 text-[10px] text-fg-tertiary">
-            <button disabled={roundsPage <= 1} onClick={() => setRoundsPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">← Newer</button>
-            <span>{roundsPage}/{totalRoundPages}</span>
-            <button disabled={roundsPage >= totalRoundPages} onClick={() => setRoundsPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">Older →</button>
-          </div>
-        </div>
-      )}
-      <div className="py-1">
-        <div ref={topRef} />
-        {pagedRounds.map(round => {
-          const isLatestRound = round.id === rounds[rounds.length - 1]?.id;
-          return (
-            <RoundSection
-              key={round.id}
-              round={round}
-              expanded={expandedRounds.has(round.id)}
-              onToggle={() => toggleRound(round.id)}
-              isLive={isLatestRound && isExecuting}
-              streamingText={isLatestRound ? streamingText : undefined}
-              isExecuting={isLatestRound ? isExecuting : false}
-              totalRounds={rounds.length}
-            />
-          );
-        })}
-        <div ref={endRef} />
+    <div className="flex flex-col flex-1">
+      <div className="px-4 py-3 flex-1">
+        <FullExecutionLog
+          entries={streamEntries}
+          streamingText={streamingText}
+          isActive={isExecuting}
+          onCollapse={() => setViewMode('compact')}
+          showRounds={hasMultipleRounds}
+          embedded
+        />
       </div>
       {commentInput}
     </div>

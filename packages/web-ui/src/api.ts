@@ -856,77 +856,6 @@ export const api = {
       request<{ user: HumanUserInfo }>('/users', { method: 'POST', body: JSON.stringify({ name, role, orgId, email, password, teamId }) }),
     remove: (id: string) => request(`/users/${id}`, { method: 'DELETE' }),
   },
-  message: {
-    send: (text: string, opts?: { targetAgentId?: string; senderId?: string; stream?: boolean; orgId?: string }) =>
-      request<{ reply: string; agentId: string }>('/message', {
-        method: 'POST',
-        body: JSON.stringify({ text, ...opts }),
-      }),
-    sendStream: (text: string, onChunk: (chunk: string) => void, opts?: { targetAgentId?: string; senderId?: string; orgId?: string; signal?: AbortSignal; images?: string[] }, onActivity?: (event: AgentToolEvent) => void): Promise<{ content: string; agentId: string }> => {
-      return new Promise(async (resolve, reject) => {
-        let fullContent = '';
-        let routedAgentId = '';
-        try {
-          const { signal, ...restOpts } = opts ?? {};
-          const res = await fetch(`${BASE}/message`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ text, stream: true, ...restOpts }),
-            signal,
-          });
-          if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
-          const reader = res.body?.getReader();
-          if (!reader) { reject(new Error('No reader')); return; }
-          const decoder = new TextDecoder();
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith('data: ')) continue;
-              try {
-                const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; agentId?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string } };
-                if (event.type === 'text_delta' && event.text) {
-                  fullContent += event.text;
-                  onChunk(event.text);
-                } else if (event.type === 'thinking_delta' && event.thinking) {
-                  onChunk(`<think>${event.thinking}</think>`);
-                } else if (event.type === 'done') {
-                  fullContent = event.content ?? fullContent;
-                  routedAgentId = event.agentId ?? routedAgentId;
-                } else if (event.type === 'error') {
-                  const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
-                  const err = new Error(errEvent.message ?? errEvent.error ?? 'Unknown stream error');
-                  (err as Error & { sessionId?: string }).sessionId = errEvent.sessionId;
-                  reject(err);
-                  reader.cancel().catch(() => {});
-                  return;
-                } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
-                  onActivity?.({ tool: event.toolCall.name, phase: 'start' });
-                } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'start') onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
-                  else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
-                } else if (event.type === 'tool_output' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
-                } else if (event.type === 'subagent_progress' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
-                }
-              } catch { /* skip */ }
-            }
-          }
-          resolve({ content: fullContent, agentId: routedAgentId });
-        } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, agentId: routedAgentId }); }
-          else { reject(err); }
-        }
-      });
-    },
-  },
   teamTemplates: {
     list: (q?: string) => {
       const params = q ? `?q=${encodeURIComponent(q)}` : '';
@@ -1140,7 +1069,42 @@ export const api = {
     getFeedback: (reportId: string) =>
       request<{ feedback: ReportFeedbackInfo[] }>(`/reports/${reportId}/feedback`),
   },
+  executionLogs: {
+    get: (sourceType: string, sourceId: string) =>
+      request<{ logs: ExecutionStreamEntryAPI[] }>(`/execution-logs?sourceType=${encodeURIComponent(sourceType)}&sourceId=${encodeURIComponent(sourceId)}`),
+  },
 };
+
+export interface ExecutionStreamEntryAPI {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+  executionRound?: number;
+  createdAt: string;
+}
+
+export function taskLogToStreamEntry(e: TaskLogEntry): ExecutionStreamEntryAPI {
+  return {
+    id: e.id, sourceType: 'task', sourceId: e.taskId, agentId: e.agentId,
+    seq: e.seq, type: e.type as ExecutionStreamEntryAPI['type'],
+    content: e.content, metadata: e.metadata, executionRound: e.executionRound,
+    createdAt: e.createdAt,
+  };
+}
+
+export function activityLogToStreamEntry(e: AgentActivityLogEntry, activityId: string, agentId: string): ExecutionStreamEntryAPI {
+  return {
+    id: `alog_${activityId}_${e.seq}`, sourceType: 'activity', sourceId: activityId, agentId,
+    seq: e.seq, type: e.type === 'llm_request' ? 'status' : e.type as ExecutionStreamEntryAPI['type'],
+    content: e.content, metadata: e.metadata,
+    createdAt: e.createdAt,
+  };
+}
 
 export interface WSEvent {
   type: string;

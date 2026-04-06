@@ -53,6 +53,23 @@ export interface AgentActivityLogEntry {
   createdAt: string;
 }
 
+// ─── Unified Execution Stream ────────────────────────────────────────────────
+
+export type ExecutionStreamSourceType = 'task' | 'activity' | 'chat';
+
+export interface ExecutionStreamEntry {
+  id: string;
+  sourceType: ExecutionStreamSourceType;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+  executionRound?: number;
+  createdAt: string;
+}
+
 export interface AgentState {
   agentId: string;
   status: AgentStatus;

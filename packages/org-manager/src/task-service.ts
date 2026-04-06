@@ -92,6 +92,7 @@ export class TaskService {
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
+  private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
   private hitlService?: HITLService;
   /** Cancel tokens for active task executions — keyed by taskId */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
@@ -122,6 +123,10 @@ export class TaskService {
 
   setTaskLogRepo(repo: TaskLogRepo): void {
     this.taskLogRepo = repo;
+  }
+
+  setExecutionStreamRepo(repo: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown }): void {
+    this.executionStreamRepo = repo;
   }
 
   setHITLService(hitl: HITLService): void {
@@ -843,7 +848,13 @@ export class TaskService {
 
     // Continuous seq: load max seq from existing logs to avoid collisions across retries
     let seq = 0;
-    if (taskLogRepo) {
+    if (this.executionStreamRepo) {
+      try {
+        const maxSeq = (this.executionStreamRepo as any).getMaxSeq('task', taskId);
+        if (typeof maxSeq === 'number' && maxSeq >= 0) seq = maxSeq + 1;
+      } catch { /* fall through */ }
+    }
+    if (seq === 0 && taskLogRepo) {
       try {
         const maxSeq = await taskLogRepo.getMaxSeq(taskId);
         seq = maxSeq + 1;
@@ -889,19 +900,27 @@ export class TaskService {
           }
           // Broadcast real-time delta via WS (not persisted)
           if (!entry.persist) {
+            const ts = new Date().toISOString();
+            ws?.broadcast({
+              type: 'execution:log:delta',
+              payload: { sourceType: 'task', sourceId: taskId, agentId, text: entry.content },
+              timestamp: ts,
+            });
             ws?.broadcast({
               type: 'task:log:delta',
               payload: { taskId, agentId, text: entry.content },
-              timestamp: new Date().toISOString(),
+              timestamp: ts,
             });
             return;
           }
 
           // Persist structured log entries to DB
+          const currentSeq = seq++;
+          const createdAt = new Date().toISOString();
           const logEntry = {
             taskId,
             agentId,
-            seq: seq++,
+            seq: currentSeq,
             type: entry.type as TaskLogType,
             content: entry.content,
             metadata: entry.metadata,
@@ -909,7 +928,14 @@ export class TaskService {
           };
 
           let savedId: string | undefined;
-          if (taskLogRepo) {
+          if (this.executionStreamRepo) {
+            try {
+              const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound }) as any;
+              savedId = row?.id;
+            } catch (err) {
+              log.warn('Failed to persist execution stream log', { taskId, error: String(err) });
+            }
+          } else if (taskLogRepo) {
             try {
               const row = await taskLogRepo.append(logEntry);
               savedId = row.id;
@@ -918,21 +944,26 @@ export class TaskService {
             }
           }
 
-          // Broadcast structured log event via WS
+          // Broadcast unified execution:log event
+          ws?.broadcast({
+            type: 'execution:log',
+            payload: {
+              id: savedId, sourceType: 'task', sourceId: taskId,
+              agentId, seq: currentSeq, type: entry.type,
+              content: entry.content, metadata: entry.metadata,
+              executionRound, createdAt,
+            },
+            timestamp: createdAt,
+          });
+          // Legacy event for backward compat
           ws?.broadcast({
             type: 'task:log',
             payload: {
-              taskId,
-              agentId,
-              id: savedId,
-              seq: logEntry.seq,
-              logType: entry.type,
-              content: entry.content,
-              metadata: entry.metadata,
-              executionRound,
-              createdAt: new Date().toISOString(),
+              taskId, agentId, id: savedId, seq: currentSeq,
+              logType: entry.type, content: entry.content,
+              metadata: entry.metadata, executionRound, createdAt,
             },
-            timestamp: new Date().toISOString(),
+            timestamp: createdAt,
           });
 
           // Handle task completion/failure from log events
@@ -998,15 +1029,20 @@ export class TaskService {
               const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000;
               const retryMsg = `Attempt ${nextAttempt} failed. Retrying in ${delayMs / 1000}s… (${retryDecision.reason})`;
               log.warn(retryMsg, { taskId, attempt: nextAttempt, error: entry.content });
+              const noticeSeq = seq++;
               const noticeEntry = {
                 taskId,
                 agentId,
-                seq: seq++,
+                seq: noticeSeq,
                 type: 'error' as TaskLogType,
                 content: retryMsg,
                 executionRound,
               };
-              taskLogRepo?.append(noticeEntry).catch(() => {});
+              if (this.executionStreamRepo) {
+                try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound }); } catch { /* best effort */ }
+              } else {
+                taskLogRepo?.append(noticeEntry).catch(() => {});
+              }
               ws?.broadcast({
                 type: 'task:log',
                 payload: {
@@ -2998,7 +3034,13 @@ export class TaskService {
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
     let seq = 0;
-    if (taskLogRepo) {
+    if (this.executionStreamRepo) {
+      try {
+        const maxSeq = (this.executionStreamRepo as any).getMaxSeq('task', taskId);
+        if (typeof maxSeq === 'number' && maxSeq >= 0) seq = maxSeq + 1;
+      } catch { /* fall through */ }
+    }
+    if (seq === 0 && taskLogRepo) {
       try {
         const maxSeq = await taskLogRepo.getMaxSeq(taskId);
         seq = maxSeq + 1;
@@ -3010,24 +3052,29 @@ export class TaskService {
         taskId,
         taskDescription,
         async entry => {
-          const logEntry = { taskId, agentId: task.assignedAgentId, seq: seq++,
-            type: entry.type as TaskLogType, content: entry.content,
-            metadata: entry.metadata, executionRound };
+          if (!entry.persist) {
+            const ts = new Date().toISOString();
+            ws?.broadcast({ type: 'execution:log:delta', payload: { sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, text: entry.content }, timestamp: ts });
+            ws?.broadcast({ type: 'task:log:delta', payload: { taskId, agentId: task.assignedAgentId, text: entry.content }, timestamp: ts });
+            return;
+          }
+          const currentSeq = seq++;
+          const createdAt = new Date().toISOString();
           let savedId: string | undefined;
-          if (entry.persist && taskLogRepo) {
+          if (this.executionStreamRepo) {
             try {
-              const saved = await taskLogRepo.append(logEntry);
+              const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound }) as any;
+              savedId = row?.id;
+            } catch (err) { log.warn('Failed to persist execution stream log', { taskId, error: String(err) }); }
+          } else if (taskLogRepo) {
+            try {
+              const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound });
               savedId = saved.id;
             } catch (err) { log.warn('Failed to persist task log', { taskId, error: String(err) }); }
           }
-          if (entry.persist && ws) {
-            ws.broadcast({
-              type: 'task:log',
-              payload: { taskId, agentId: task.assignedAgentId, logId: savedId,
-                logType: entry.type, content: entry.content, metadata: entry.metadata,
-                executionRound, createdAt: new Date().toISOString() },
-              timestamp: new Date().toISOString(),
-            });
+          if (ws) {
+            ws.broadcast({ type: 'execution:log', payload: { id: savedId, sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, createdAt }, timestamp: createdAt });
+            ws.broadcast({ type: 'task:log', payload: { taskId, agentId: task.assignedAgentId, logId: savedId, logType: entry.type, content: entry.content, metadata: entry.metadata, executionRound, createdAt }, timestamp: createdAt });
           }
           if (entry.type === 'status' && (entry.content === 'execution_finished' || entry.content === 'completed')) {
             const currentTask = this.tasks.get(taskId);
@@ -3161,43 +3208,29 @@ export class TaskService {
 
       const reply = await agent.respondInSession(taskSessionId, prompt, entry => {
         if (!entry.persist) {
-          ws?.broadcast({
-            type: 'task:log:delta',
-            payload: { taskId, agentId, text: entry.content },
-            timestamp: new Date().toISOString(),
-          });
+          const ts = new Date().toISOString();
+          ws?.broadcast({ type: 'execution:log:delta', payload: { sourceType: 'task', sourceId: taskId, agentId, text: entry.content }, timestamp: ts });
+          ws?.broadcast({ type: 'task:log:delta', payload: { taskId, agentId, text: entry.content }, timestamp: ts });
           return;
         }
 
-        const logEntry = {
-          taskId,
-          agentId,
-          seq: seq++,
-          type: entry.type as TaskLogType,
-          content: entry.content,
-          metadata: entry.metadata,
-          executionRound: round,
-        };
+        const currentSeq = seq++;
+        const createdAt = new Date().toISOString();
+        let savedId: string | undefined;
 
-        if (taskLogRepo) {
-          taskLogRepo.append(logEntry).catch(err =>
+        if (this.executionStreamRepo) {
+          try {
+            const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round }) as any;
+            savedId = row?.id;
+          } catch { /* best effort */ }
+        } else if (taskLogRepo) {
+          taskLogRepo.append({ taskId, agentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound: round }).catch(err =>
             log.warn('Failed to persist post-task log', { taskId, error: String(err) })
           );
         }
 
-        ws?.broadcast({
-          type: 'task:log',
-          payload: {
-            taskId,
-            agentId,
-            log: {
-              ...logEntry,
-              id: `tmp_${taskId}_${logEntry.seq}`,
-              createdAt: new Date().toISOString(),
-            },
-          },
-          timestamp: new Date().toISOString(),
-        });
+        ws?.broadcast({ type: 'execution:log', payload: { id: savedId ?? `tmp_${taskId}_${currentSeq}`, sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round, createdAt }, timestamp: createdAt });
+        ws?.broadcast({ type: 'task:log', payload: { taskId, agentId, log: { taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round, id: savedId ?? `tmp_${taskId}_${currentSeq}`, createdAt } }, timestamp: createdAt });
       });
 
       const cleanReply = reply.trim();

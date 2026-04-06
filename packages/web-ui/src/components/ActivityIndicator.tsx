@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { getToolMeta } from './execution-utils.ts';
 
 export interface ActivityStep {
   tool: string;
@@ -12,47 +13,6 @@ interface Props {
   isActive: boolean;
   /** When true, never fade out — used for frozen historical activity timelines */
   persistent?: boolean;
-}
-
-const TOOL_META: Record<string, { label: string; icon: string }> = {
-  shell_execute:        { label: 'Running command',        icon: '⌨' },
-  file_read:            { label: 'Reading file',           icon: '📄' },
-  file_write:           { label: 'Writing file',           icon: '✏' },
-  file_edit:            { label: 'Editing file',           icon: '✏' },
-  file_list:            { label: 'Listing files',          icon: '📂' },
-  web_fetch:            { label: 'Fetching webpage',       icon: '🌐' },
-  web_search:           { label: 'Searching web',          icon: '🔍' },
-  web_extract:          { label: 'Extracting content',     icon: '📑' },
-  create_subtask:       { label: 'Adding subtask',         icon: '📌' },
-  update_task:          { label: 'Updating task',          icon: '✅' },
-  add_task_note:        { label: 'Adding note',            icon: '📝' },
-  git_status:           { label: 'Git status',             icon: '🔀' },
-  git_diff:             { label: 'Git diff',               icon: '🔀' },
-  git_log:              { label: 'Git log',                icon: '📜' },
-  git_branch:           { label: 'Git branch',             icon: '🌿' },
-  git_add:              { label: 'Git add',                icon: '➕' },
-  git_commit:           { label: 'Git commit',             icon: '💾' },
-  code_search:          { label: 'Searching code',         icon: '🔍' },
-  navigate_page:        { label: 'Opening page',           icon: '🌐' },
-  new_page:             { label: 'Opening new tab',        icon: '🌐' },
-  close_page:           { label: 'Closing tab',            icon: '🌐' },
-  select_page:          { label: 'Switching tab',          icon: '🌐' },
-  click:                { label: 'Clicking element',       icon: '👆' },
-  fill:                 { label: 'Filling field',          icon: '⌨' },
-  type_text:            { label: 'Typing text',            icon: '⌨' },
-  take_screenshot:      { label: 'Screenshot',             icon: '📸' },
-  take_snapshot:        { label: 'Page snapshot',          icon: '📋' },
-  evaluate_script:      { label: 'Running script',         icon: '⚙' },
-  agent_send_message:   { label: 'Messaging colleague',    icon: '💬' },
-  agent_list:           { label: 'Checking team',          icon: '👥' },
-  create_task:          { label: 'Creating task',          icon: '📌' },
-  feishu_send_message:  { label: 'Sending Feishu msg',     icon: '✉' },
-  feishu_search_docs:   { label: 'Searching Feishu',       icon: '🔍' },
-};
-
-function getToolMeta(tool: string) {
-  const baseName = tool.includes('__') ? tool.split('__').pop()! : tool;
-  return TOOL_META[baseName] ?? TOOL_META[tool] ?? { label: baseName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), icon: '⚙' };
 }
 
 interface ToolItem {

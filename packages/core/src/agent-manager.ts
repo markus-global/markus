@@ -299,7 +299,7 @@ export class AgentManager {
   ) => void;
   private activityCallbacks?: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private a2aBus: A2ABus;
@@ -1809,7 +1809,7 @@ export class AgentManager {
 
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   }): void {
     this.activityCallbacks = cbs;

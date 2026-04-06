@@ -130,3 +130,21 @@ body {
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes border-rotate {
+  to { --border-angle: 360deg; }
+}
+.exec-card-active {
+  border-image-source: conic-gradient(from var(--border-angle), oklch(0.58 0.22 270), oklch(0.78 0.12 270), oklch(0.58 0.22 270));
+  border-image-slice: 1;
+  animation: border-rotate 3s linear infinite;
+}
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

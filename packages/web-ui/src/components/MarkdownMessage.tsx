@@ -81,7 +81,7 @@ export function MarkdownMessage({ content, className = '' }: Props) {
               <span className="truncate text-fg-tertiary ml-1 group-open/think:hidden">{preview}</span>
             </summary>
             <div className="px-3 pb-3 border-t border-border-default/50">
-              <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary max-h-60 overflow-y-auto leading-relaxed">
+              <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
                   {full}
                 </ReactMarkdown>

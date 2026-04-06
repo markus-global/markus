@@ -99,6 +99,16 @@ export class WSBroadcaster {
     });
   }
 
+  broadcastExecutionLog(entry: Record<string, unknown>): void {
+    const ts = new Date().toISOString();
+    this.broadcast({ type: 'execution:log', payload: entry, timestamp: ts });
+  }
+
+  broadcastExecutionLogDelta(sourceType: string, sourceId: string, agentId: string, text: string): void {
+    const ts = new Date().toISOString();
+    this.broadcast({ type: 'execution:log:delta', payload: { sourceType, sourceId, agentId, text }, timestamp: ts });
+  }
+
   getClientCount(): number {
     return this.clients.size;
   }

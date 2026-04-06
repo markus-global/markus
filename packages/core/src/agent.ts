@@ -200,7 +200,7 @@ export class Agent {
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
-  private onActivityLogCb?: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+  private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
@@ -1025,10 +1025,9 @@ export class Agent {
     this.auditCallback?.(event);
 
     const actId = this.state.currentActivity?.id;
-    if (actId) {
+    if (actId && event.type !== 'tool_call') {
       const logType: AgentActivityLogEntry['type'] =
         event.type === 'llm_request' ? 'llm_request' :
-        event.type === 'tool_call' ? 'tool_end' :
         event.type === 'error' ? 'error' : 'status';
       const parts: string[] = [event.action];
       if (event.durationMs) parts.push(`${(event.durationMs / 1000).toFixed(1)}s`);
@@ -1075,7 +1074,7 @@ export class Agent {
 
   setActivityCallbacks(cbs: {
     onStart?: (activity: AgentActivity & { agentId: string }) => void;
-    onLog?: (data: { activityId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   }): void {
     this.onActivityStartCb = cbs.onStart;
@@ -1159,7 +1158,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, seq, type, content, metadata }); } catch { /* best effort */ }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content, metadata }); } catch { /* best effort */ }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -1844,10 +1843,12 @@ export class Agent {
               subagentEvent: { eventType: event.type, content: event.content, metadata: event.metadata },
             });
           };
+          const streamActId = streamChatActivityId ?? this.state.currentActivity?.id;
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
               onEvent({ type: 'agent_tool', tool: tc.name, phase: 'start', arguments: tc.arguments });
+              if (streamActId) this.emitActivityLog(streamActId, 'tool_start', tc.name, { arguments: tc.arguments });
               const toolOutputCb: ToolOutputCallback = (chunk) => {
                 onEvent({ type: 'tool_output', tool: tc.name, text: chunk });
               };
@@ -1867,6 +1868,7 @@ export class Agent {
                   success: !isToolError,
                   detail: JSON.stringify(tc.arguments),
                 });
+                if (streamActId) this.emitActivityLog(streamActId, 'tool_end', tc.name, { arguments: tc.arguments, result, durationMs, success: !isToolError });
                 onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: !isToolError, arguments: tc.arguments, result, durationMs });
                 return { toolCallId: tc.id, content: result };
               } catch (toolErr) {
@@ -1878,6 +1880,7 @@ export class Agent {
                   success: false,
                   detail: String(toolErr),
                 });
+                if (streamActId) this.emitActivityLog(streamActId, 'tool_end', tc.name, { arguments: tc.arguments, error: String(toolErr), durationMs, success: false });
                 onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: String(toolErr), durationMs });
                 return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
               }

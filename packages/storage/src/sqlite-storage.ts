@@ -427,6 +427,20 @@ CREATE TABLE IF NOT EXISTS agent_activity_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_activity_logs_activity ON agent_activity_logs(activity_id, seq);
+
+CREATE TABLE IF NOT EXISTS execution_stream_logs (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  metadata TEXT DEFAULT '{}',
+  execution_round INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_exec_stream_source ON execution_stream_logs(source_type, source_id, seq);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -473,6 +487,8 @@ export function openSqlite(dbPath: string): Database.Database {
       log.info(`Migration: added column ${m.column} to ${m.table}`);
     }
   }
+
+  migrateToExecutionStreamLogs(_db);
 
   log.info('SQLite database opened', { path: dbPath });
   return _db;
@@ -2793,5 +2809,117 @@ export class SqliteActivityRepo {
       success: (r['success'] as number) !== 0,
       createdAt: r['created_at'] as string,
     };
+  }
+}
+
+// ─── Unified Execution Stream Repo ──────────────────────────────────────────
+
+export interface ExecutionStreamRow {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  executionRound: number | null;
+  createdAt: string;
+}
+
+export class SqliteExecutionStreamRepo {
+  constructor(private db: Database.Database) {}
+
+  append(data: {
+    sourceType: string;
+    sourceId: string;
+    agentId: string;
+    seq: number;
+    type: string;
+    content: string;
+    metadata?: unknown;
+    executionRound?: number;
+  }): ExecutionStreamRow {
+    const id = generateId('esl');
+    const ts = now();
+    this.db
+      .prepare(
+        'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(id, data.sourceType, data.sourceId, data.agentId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), data.executionRound ?? null, ts);
+    return {
+      id,
+      sourceType: data.sourceType,
+      sourceId: data.sourceId,
+      agentId: data.agentId,
+      seq: data.seq,
+      type: data.type,
+      content: data.content,
+      metadata: (data.metadata as Record<string, unknown>) ?? {},
+      executionRound: data.executionRound ?? null,
+      createdAt: ts,
+    };
+  }
+
+  getBySource(sourceType: string, sourceId: string): ExecutionStreamRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM execution_stream_logs WHERE source_type = ? AND source_id = ? ORDER BY seq ASC')
+      .all(sourceType, sourceId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  getMaxSeq(sourceType: string, sourceId: string): number {
+    const row = this.db
+      .prepare('SELECT MAX(seq) as maxSeq FROM execution_stream_logs WHERE source_type = ? AND source_id = ?')
+      .get(sourceType, sourceId) as { maxSeq: number | null } | undefined;
+    return row?.maxSeq ?? -1;
+  }
+
+  deleteBySource(sourceType: string, sourceId: string): void {
+    this.db.prepare('DELETE FROM execution_stream_logs WHERE source_type = ? AND source_id = ?').run(sourceType, sourceId);
+  }
+
+  private mapRow(r: Record<string, unknown>): ExecutionStreamRow {
+    return {
+      id: r['id'] as string,
+      sourceType: r['source_type'] as string,
+      sourceId: r['source_id'] as string,
+      agentId: r['agent_id'] as string,
+      seq: r['seq'] as number,
+      type: r['type'] as string,
+      content: r['content'] as string,
+      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
+      executionRound: r['execution_round'] as number | null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── Auto-migration: task_logs + agent_activity_logs -> execution_stream_logs ─
+
+export function migrateToExecutionStreamLogs(db: Database.Database): void {
+  const countRow = db.prepare('SELECT COUNT(*) as cnt FROM execution_stream_logs').get() as { cnt: number };
+  if (countRow.cnt > 0) return;
+
+  const taskLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM task_logs').get() as { cnt: number }).cnt;
+  if (taskLogCount > 0) {
+    db.exec(`
+      INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
+      SELECT id, 'task', task_id, agent_id, seq, type, content, metadata, execution_round, created_at
+      FROM task_logs
+    `);
+    log.info(`Migration: copied ${taskLogCount} task_logs to execution_stream_logs`);
+  }
+
+  const actLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM agent_activity_logs').get() as { cnt: number }).cnt;
+  if (actLogCount > 0) {
+    db.exec(`
+      INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at)
+      SELECT 'alog_' || id, 'activity', activity_id,
+             COALESCE((SELECT agent_id FROM agent_activities WHERE id = activity_id), ''),
+             seq, type, content, metadata, NULL, created_at
+      FROM agent_activity_logs
+    `);
+    log.info(`Migration: copied ${actLogCount} agent_activity_logs to execution_stream_logs`);
   }
 }
