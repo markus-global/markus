@@ -81,7 +81,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (anthropicKey) {
     providerConfigs['anthropic'] = {
       provider: 'anthropic',
-      model: config.llm.defaultModel,
+      model: config.llm.providers['anthropic']?.model ?? config.llm.defaultModel,
       apiKey: anthropicKey,
       timeoutMs: llmTimeoutMs,
     };
@@ -91,7 +91,7 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openaiKey) {
     providerConfigs['openai'] = {
       provider: 'openai',
-      model: 'gpt-5.4',
+      model: config.llm.providers['openai']?.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5.4',
       apiKey: openaiKey,
       timeoutMs: llmTimeoutMs,
     };
@@ -102,11 +102,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (siliconflowKey) {
     providerConfigs['siliconflow'] = {
       provider: 'siliconflow',
-      model: process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
+      model: config.llm.providers['siliconflow']?.model ?? process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
       apiKey: siliconflowKey,
       baseUrl:
-        process.env['SILICONFLOW_BASE_URL'] ??
         config.llm.providers['siliconflow']?.baseUrl ??
+        process.env['SILICONFLOW_BASE_URL'] ??
         'https://api.siliconflow.cn/v1',
       timeoutMs: llmTimeoutMs,
     };
@@ -120,11 +120,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (minimaxKey) {
     providerConfigs['minimax'] = {
       provider: 'openai',
-      model: process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.7',
+      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M2.7',
       apiKey: minimaxKey,
       baseUrl:
-        process.env['MINIMAX_BASE_URL'] ??
         config.llm.providers['minimax']?.baseUrl ??
+        process.env['MINIMAX_BASE_URL'] ??
         'https://api.minimax.io/v1',
       timeoutMs: llmTimeoutMs,
     };
@@ -138,11 +138,11 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (openrouterKey) {
     providerConfigs['openrouter'] = {
       provider: 'openrouter',
-      model: process.env['OPENROUTER_MODEL'] ?? 'xiaomi/mimo-v2-pro',
+      model: config.llm.providers['openrouter']?.model ?? process.env['OPENROUTER_MODEL'] ?? 'xiaomi/mimo-v2-pro',
       apiKey: openrouterKey,
       baseUrl:
-        process.env['OPENROUTER_BASE_URL'] ??
         config.llm.providers['openrouter']?.baseUrl ??
+        process.env['OPENROUTER_BASE_URL'] ??
         'https://openrouter.ai/api/v1',
       timeoutMs: llmTimeoutMs,
     };
