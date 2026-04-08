@@ -17,7 +17,7 @@ export function Dashboard() {
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
     api.requirements.list({ source: 'agent' }).then(d => {
-      setPendingReqs(d.requirements.filter(r => r.status === 'draft' || r.status === 'pending_review'));
+      setPendingReqs(d.requirements.filter(r => r.status === 'pending'));
     }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
   };
@@ -37,7 +37,7 @@ export function Dashboard() {
     const count = rootOnly(tasks).length;
     if (count > 0) rootStatusCounts[status] = count;
   }
-  const pending = rootStatusCounts['pending_approval'] ?? 0;
+  const pending = rootStatusCounts['pending'] ?? 0;
   const inProgress = rootStatusCounts['in_progress'] ?? 0;
   const completed = rootStatusCounts['completed'] ?? 0;
   const failed = rootStatusCounts['failed'] ?? 0;
@@ -298,13 +298,13 @@ export function Dashboard() {
 // ─── Task Distribution Bar ───────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, string> = {
-  pending_approval: 'bg-amber-500', in_progress: 'bg-brand-500', blocked: 'bg-red-500',
-  review: 'bg-blue-500', completed: 'bg-green-500', failed: 'bg-red-500', cancelled: 'bg-gray-600',
+  pending: 'bg-amber-500', in_progress: 'bg-brand-500', blocked: 'bg-red-500',
+  review: 'bg-blue-500', completed: 'bg-green-500', failed: 'bg-red-500', rejected: 'bg-red-500', cancelled: 'bg-gray-600',
 };
 
 const STATUS_TEXT: Record<string, string> = {
-  pending_approval: 'text-amber-600', in_progress: 'text-brand-500', blocked: 'text-red-500',
-  review: 'text-blue-600', completed: 'text-green-600', failed: 'text-red-500', cancelled: 'text-fg-tertiary',
+  pending: 'text-amber-600', in_progress: 'text-brand-500', blocked: 'text-red-500',
+  review: 'text-blue-600', completed: 'text-green-600', failed: 'text-red-500', rejected: 'text-red-500', cancelled: 'text-fg-tertiary',
 };
 
 function TaskBar({ statusCounts, total }: { statusCounts: Record<string, number>; total: number }) {

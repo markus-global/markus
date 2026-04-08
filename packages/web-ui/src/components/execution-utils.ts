@@ -380,7 +380,7 @@ export function parseRequirementApprovalFromResult(tool: string, result?: string
     const parsed = JSON.parse(result);
     if (parsed.status !== 'success' || !parsed.requirement) return null;
     const r = parsed.requirement;
-    if (r.status !== 'draft' && r.status !== 'pending_review') return null;
+    if (r.status !== 'pending') return null;
     return {
       requirementId: r.id,
       title: r.title,

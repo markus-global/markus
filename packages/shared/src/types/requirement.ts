@@ -1,13 +1,11 @@
 import type { TaskPriority } from './task.js';
 
-export type RequirementStatus =
-  | 'draft'
-  | 'pending_review'
-  | 'approved'
-  | 'in_progress'
-  | 'completed'
-  | 'rejected'
-  | 'cancelled';
+import type { ItemStatus } from './task.js';
+
+export type RequirementStatus = ItemStatus;
+
+/** @deprecated Use ItemStatus. Kept for backward compat during migration. */
+export type LegacyRequirementStatus = 'pending_review' | 'approved' | RequirementStatus;
 
 export type RequirementSource = 'user' | 'agent';
 

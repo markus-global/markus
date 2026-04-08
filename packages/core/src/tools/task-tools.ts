@@ -73,9 +73,9 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
-  /** Update task fields (description, blockedBy, etc.) — works even for pending_approval tasks */
+  /** Update task fields (description, blockedBy, etc.) — works even for pending tasks */
   updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[] }) => Promise<{ id: string; title: string; status: string }>;
-  /** Cancel a pending_approval task (calls rejectTask under the hood) */
+  /** Cancel a pending task (calls rejectTask under the hood) */
   cancelPendingTask?: (taskId: string) => Promise<{ id: string; title: string; status: string }>;
   /** Add a subtask to a task */
   addSubtask?: (taskId: string, title: string) => Promise<{ id: string; title: string; status: string }>;
@@ -95,6 +95,7 @@ export interface AgentTaskContext {
   listRequirements?: (filter?: {
     status?: string;
     projectId?: string;
+    createdBy?: string;
   }) => Promise<
     Array<{
       id: string;
@@ -103,6 +104,7 @@ export interface AgentTaskContext {
       status: string;
       priority: string;
       source: string;
+      createdBy?: string;
       taskIds: string[];
     }>
   >;
@@ -118,6 +120,10 @@ export interface AgentTaskContext {
     status: string,
     reason?: string
   ) => Promise<{ id: string; title: string; status: string }>;
+  /** Post a structured comment on a task (with @mention support) */
+  postTaskComment?: (taskId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
+  /** Post a structured comment on a requirement (with @mention support) */
+  postRequirementComment?: (requirementId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -242,9 +248,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             scheduleConfig,
           });
           log.info(`Task created by agent ${ctx.agentId}`, { taskId: task.id, title: task.title, assignedAgentId });
-          if (task.status === 'pending_approval') {
+          if (task.status === 'pending') {
             return JSON.stringify({
-              status: 'pending_approval',
+              status: 'pending',
               task,
               message: `Task "${task.title}" (ID: ${task.id}) is awaiting approval. Do NOT start working on it. You will be notified when it is approved or rejected.`,
             });
@@ -282,12 +288,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           status: {
             type: 'string',
             enum: [
-              'pending_approval',
+              'pending',
               'in_progress',
               'blocked',
               'review',
               'completed',
               'failed',
+              'rejected',
               'cancelled',
               'archived',
             ],
@@ -408,7 +415,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           },
           description: {
             type: 'string',
-            description: 'Updated task description (optional). Can be used on any task including pending_approval tasks.',
+            description: 'Updated task description (optional). Can be used on any task including pending tasks.',
           },
           blocked_by: {
             type: 'array',
@@ -438,7 +445,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             }
           }
 
-          // Handle field updates first — works for any status including pending_approval
+          // Handle field updates first — works for any status including pending
           if ((description !== undefined || blockedBy !== undefined) && ctx.updateTaskFields) {
             await ctx.updateTaskFields(taskId, {
               ...(description !== undefined ? { description } : {}),
@@ -469,11 +476,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               }
             }
 
-            // Handle cancel/fail with pending_approval support for creators
+            // Handle cancel/fail with pending support for creators
             if (newStatus === 'cancelled' || newStatus === 'failed') {
               const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
 
-              if (existing?.status === 'pending_approval') {
+              if (existing?.status === 'pending') {
                 const createdBy = (existing as Record<string, unknown>)['createdBy'] as string | undefined;
                 if (newStatus === 'cancelled' && createdBy === ctx.agentId && ctx.cancelPendingTask) {
                   const task = await ctx.cancelPendingTask(taskId);
@@ -489,7 +496,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 }
                 return JSON.stringify({
                   status: 'denied',
-                  error: 'Only the task creator can cancel a pending_approval task.',
+                  error: 'Only the task creator can cancel a pending task.',
                 });
               }
 
@@ -889,6 +896,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               'List requirements (需求) to see what work is authorized.',
               'Only tasks linked to approved requirements should be created.',
               'Use this to understand the current priorities and find requirements to work on.',
+              'Set mine_only=true to see only requirements you proposed (useful during heartbeat to check your proposals).',
             ].join(' '),
             inputSchema: {
               type: 'object',
@@ -896,19 +904,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 status: {
                   type: 'string',
                   enum: [
-                    'draft',
-                    'pending_review',
-                    'approved',
+                    'pending',
                     'in_progress',
                     'completed',
                     'rejected',
                     'cancelled',
                   ],
-                  description: 'Filter by status (default: shows approved and in_progress)',
+                  description: 'Filter by status (default: shows in_progress)',
                 },
                 project_id: {
                   type: 'string',
                   description: 'Optional: filter by project',
+                },
+                mine_only: {
+                  type: 'boolean',
+                  description: 'If true, only show requirements created by you',
                 },
               },
             },
@@ -917,6 +927,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 const reqs = await ctx.listRequirements!({
                   status: args['status'] as string | undefined,
                   projectId: args['project_id'] as string | undefined,
+                  createdBy: args['mine_only'] ? ctx.agentId : undefined,
                 });
                 return JSON.stringify({
                   status: 'success',
@@ -927,6 +938,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     status: r.status,
                     priority: r.priority,
                     source: r.source,
+                    createdBy: r.createdBy,
                     taskCount: r.taskIds.length,
                   })),
                 });
@@ -988,6 +1000,91 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 });
               } catch (error) {
                 log.error('requirement_update_status failed', { error: String(error) });
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    // ── Comment tools (structured comments with @mention support) ──
+
+    ...(ctx.postTaskComment
+      ? [
+          {
+            name: 'task_comment',
+            description: [
+              'Post a structured comment on a task. Use this for discussion, questions, feedback, or coordination with other agents and humans.',
+              'Supports @mentions — include agent IDs in the mentions array to notify them.',
+              'Mentioned agents will receive your comment and can reply.',
+              'Use this instead of task_note when you want interactive dialogue rather than a one-way progress log.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID to comment on' },
+                content: { type: 'string', description: 'The comment text. You can reference agents with @name in the text for readability.' },
+                mentions: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Array of agent IDs to notify about this comment. Use agent_list_colleagues to find IDs.',
+                },
+              },
+              required: ['task_id', 'content'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const taskId = args['task_id'] as string;
+                const content = args['content'] as string;
+                const mentions = (args['mentions'] as string[] | undefined) ?? [];
+                const result = await ctx.postTaskComment!(taskId, content, mentions);
+                return JSON.stringify({
+                  status: 'success',
+                  commentId: result.id,
+                  message: `Comment posted on task ${taskId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}`,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.postRequirementComment
+      ? [
+          {
+            name: 'requirement_comment',
+            description: [
+              'Post a comment on a requirement for discussion, clarification, or status updates.',
+              'Supports @mentions to notify other agents. Use this to coordinate on requirement planning,',
+              'ask questions about scope, or provide updates on progress.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                requirement_id: { type: 'string', description: 'The requirement ID to comment on' },
+                content: { type: 'string', description: 'The comment text' },
+                mentions: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Array of agent IDs to notify about this comment',
+                },
+              },
+              required: ['requirement_id', 'content'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const requirementId = args['requirement_id'] as string;
+                const content = args['content'] as string;
+                const mentions = (args['mentions'] as string[] | undefined) ?? [];
+                const result = await ctx.postRequirementComment!(requirementId, content, mentions);
+                return JSON.stringify({
+                  status: 'success',
+                  commentId: result.id,
+                  message: `Comment posted on requirement ${requirementId}${mentions.length > 0 ? ` (notified ${mentions.length} agent(s))` : ''}`,
+                });
+              } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
             },

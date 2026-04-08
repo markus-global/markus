@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
+import { CommentInput } from '../components/CommentInput.tsx';
 import { navBus } from '../navBus.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
 function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string | null {
   if (!id) return null;
@@ -161,73 +163,265 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   );
 }
 
+// ─── Note Parser & Comment ──────────────────────────────────────────────────────
+
+interface ParsedNote {
+  timestamp: string;
+  author: string;
+  content: string;
+}
+
+const NOTE_RE = /^\[([^\]]+?)(?:\s+by\s+([^\]]+))?\]\s*([\s\S]*)$/;
+
+function parseNote(raw: string): ParsedNote {
+  const m = raw.match(NOTE_RE);
+  if (m) {
+    return { timestamp: m[1]!.trim(), author: m[2]?.trim() ?? 'System', content: m[3]!.trim() };
+  }
+  return { timestamp: '', author: '', content: raw };
+}
+
+function formatNoteTime(ts: string): string {
+  if (!ts) return '';
+  const dateMatch = ts.match(/^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!dateMatch) return ts;
+  const now = new Date();
+  const year = +dateMatch[1]!;
+  const month = +dateMatch[2]! - 1;
+  const day = +dateMatch[3]!;
+  const hour = +dateMatch[4]!;
+  const min = +dateMatch[5]!;
+  const noteDate = new Date(year, month, day, hour, min);
+  const diff = now.getTime() - noteDate.getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+const AUTHOR_COLORS = [
+  { bg: 'bg-brand-600/30', text: 'text-brand-500', border: 'border-brand-500/30' },
+  { bg: 'bg-blue-600/30', text: 'text-blue-400', border: 'border-blue-500/30' },
+  { bg: 'bg-green-600/30', text: 'text-green-400', border: 'border-green-500/30' },
+  { bg: 'bg-amber-600/30', text: 'text-amber-400', border: 'border-amber-500/30' },
+  { bg: 'bg-purple-600/30', text: 'text-purple-400', border: 'border-purple-500/30' },
+  { bg: 'bg-pink-600/30', text: 'text-pink-400', border: 'border-pink-500/30' },
+];
+
+function authorColor(name: string) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  return AUTHOR_COLORS[Math.abs(hash) % AUTHOR_COLORS.length]!;
+}
+
+function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
+  const parsed = parseNote(note);
+  const c = authorColor(parsed.author || 'System');
+  const initials = parsed.author
+    ? parsed.author.split(/[\s_-]+/).map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    : 'SY';
+  const timeLabel = formatNoteTime(parsed.timestamp);
+  const isSystem = !parsed.author || parsed.author === 'System';
+
+  if (compact) {
+    return (
+      <div className="flex gap-2.5 group">
+        <div className={`w-6 h-6 rounded-full ${c.bg} flex items-center justify-center text-[9px] font-bold ${c.text} shrink-0 mt-0.5`}>{initials}</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-1.5 mb-0.5">
+            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-tertiary' : c.text}`}>{parsed.author || 'System'}</span>
+            {timeLabel && <span className="text-[10px] text-fg-tertiary">{timeLabel}</span>}
+          </div>
+          <div className="text-xs text-fg-secondary"><MarkdownMessage content={parsed.content} className="text-xs text-fg-secondary" /></div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 group">
+      <div className="flex flex-col items-center shrink-0">
+        <div className={`w-7 h-7 rounded-full ${c.bg} flex items-center justify-center text-[10px] font-bold ${c.text}`}>{initials}</div>
+        <div className="w-px flex-1 bg-border-default/60 mt-1.5" />
+      </div>
+      <div className="flex-1 min-w-0 pb-4">
+        <div className={`border ${c.border} rounded-lg overflow-hidden`}>
+          <div className={`flex items-center gap-2 px-3 py-1.5 ${c.bg} border-b ${c.border}`}>
+            <span className={`text-[11px] font-medium ${isSystem ? 'text-fg-secondary' : c.text}`}>{parsed.author || 'System'}</span>
+            {timeLabel && <span className="text-[10px] text-fg-tertiary">{timeLabel}</span>}
+          </div>
+          <div className="px-3 py-2.5">
+            <MarkdownMessage content={parsed.content} className="text-xs text-fg-secondary" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
-const ALL_STATUSES = ['pending_approval', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'cancelled', 'archived'] as const;
+const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
   { id: 'failed',      label: 'Failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
-  { id: 'todo',        label: 'To Do',       statuses: ['pending_approval'],        accent: 'border-t-amber-500', dropStatus: 'pending_approval' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
   { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
   { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
   { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['cancelled'],               accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
+  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled'],   accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
 const COLUMN_LABELS: Record<string, string> = {
-  pending_approval: 'Awaiting Approval',
+  pending: 'Pending',
   in_progress: 'In Progress', blocked: 'Blocked',
   review: 'In Review', completed: 'Completed',
-  failed: 'Failed', cancelled: 'Cancelled', archived: 'Archived',
+  failed: 'Failed', rejected: 'Rejected', cancelled: 'Cancelled', archived: 'Archived',
 };
 const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending_approval: { label: 'Awaiting',  cls: 'bg-amber-500/15 text-amber-600' },
-  blocked:          { label: 'Blocked',   cls: 'bg-amber-500/15 text-amber-600' },
-  failed:           { label: 'Failed',    cls: 'bg-red-500/15 text-red-500' },
+  pending:  { label: 'Pending',  cls: 'bg-amber-500/15 text-amber-600' },
+  blocked:  { label: 'Blocked',  cls: 'bg-amber-500/15 text-amber-600' },
+  failed:   { label: 'Failed',   cls: 'bg-red-500/15 text-red-500' },
+  rejected: { label: 'Rejected', cls: 'bg-red-500/15 text-red-500' },
 };
 const TASK_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending_approval: { label: 'Pending Approval', cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress:      { label: 'In Progress',      cls: 'bg-blue-500/15 text-blue-500' },
-  blocked:          { label: 'Blocked',           cls: 'bg-orange-500/15 text-orange-500' },
-  review:           { label: 'In Review',         cls: 'bg-purple-500/15 text-purple-500' },
-  completed:        { label: 'Completed',         cls: 'bg-green-500/15 text-green-600' },
-  failed:           { label: 'Failed',            cls: 'bg-red-500/15 text-red-500' },
-  cancelled:        { label: 'Cancelled',         cls: 'bg-gray-500/15 text-fg-tertiary' },
-  archived:         { label: 'Archived',          cls: 'bg-gray-500/15 text-fg-tertiary' },
+  pending:     { label: 'Pending',     cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { label: 'In Progress', cls: 'bg-blue-500/15 text-blue-500' },
+  blocked:     { label: 'Blocked',     cls: 'bg-orange-500/15 text-orange-500' },
+  review:      { label: 'In Review',   cls: 'bg-purple-500/15 text-purple-500' },
+  completed:   { label: 'Completed',   cls: 'bg-green-500/15 text-green-600' },
+  failed:      { label: 'Failed',      cls: 'bg-red-500/15 text-red-500' },
+  rejected:    { label: 'Rejected',    cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { label: 'Cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
+  archived:    { label: 'Archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
+const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
+  low:    { label: 'Low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+  medium: { label: 'Medium', cls: 'bg-blue-500/15 text-blue-500' },
+  high:   { label: 'High',   cls: 'bg-amber-500/15 text-amber-600' },
+  urgent: { label: 'Urgent', cls: 'bg-red-500/15 text-red-500' },
+};
+const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
+const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
+const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
 const STATUS_DOT: Record<string, string> = {
-  pending_approval: 'bg-amber-400',
+  pending: 'bg-amber-400',
   in_progress: 'bg-brand-400', blocked: 'bg-amber-400',
   review: 'bg-brand-400', completed: 'bg-green-400',
-  failed: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-surface-overlay',
+  failed: 'bg-red-400', rejected: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-surface-overlay',
 };
 
 type ViewMode = 'all' | 'project';
 
 // ─── Comment Bubble ──────────────────────────────────────────────────────────────
 
-function CommentBubble({ comment }: { comment: TaskComment }) {
+function CommentBubble({ comment }: { comment: TaskComment | RequirementComment }) {
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+  const renderContent = (text: string) => {
+    const parts = text.split(/(@\w[\w\s]*?)(?=\s|$)/g);
+    return parts.map((part, i) =>
+      part.startsWith('@') ? (
+        <span key={i} className="text-brand-500 font-medium">{part}</span>
+      ) : (
+        <span key={i}>{part}</span>
+      )
+    );
+  };
+
   return (
-    <div className={`flex gap-2 my-1.5 ${isAgent ? '' : 'flex-row-reverse'}`}>
-      <div className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${isAgent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-blue-500/20 text-blue-400'}`}>
-        {isAgent ? '🤖' : '👤'}
+    <div className="flex gap-2.5 group py-1">
+      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] mt-0.5 ${isAgent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-blue-500/20 text-blue-400'}`}>
+        {comment.authorName.slice(0, 2).toUpperCase()}
       </div>
-      <div className={`max-w-[85%] px-2.5 py-1.5 rounded-lg text-xs ${isAgent ? 'bg-indigo-500/10 border border-indigo-500/20' : 'bg-blue-500/10 border border-blue-500/20'}`}>
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <span className={`font-medium ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}>{comment.authorName}</span>
-          <span className="text-fg-tertiary text-[10px]">{timeStr}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-1.5 mb-0.5">
+          <span className={`text-[11px] font-medium ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}>{comment.authorName}</span>
+          <span className="text-fg-tertiary text-[10px]">{dateStr} {timeStr}</span>
         </div>
-        <div className="text-fg-primary whitespace-pre-wrap break-words">{comment.content}</div>
+        <div className="text-xs text-fg-primary whitespace-pre-wrap break-words">{renderContent(comment.content)}</div>
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─── Unified Activity & Comments Section (Details tab) ─────────────────────────
+
+type ActivityItem = { type: 'note'; note: string; ts: Date } | { type: 'comment'; comment: TaskComment; ts: Date };
+
+function TaskActivitySection({ task, agents, users, authUser }: {
+  task: TaskInfo;
+  agents: AgentInfo[];
+  users: HumanUserInfo[];
+  authUser?: { id: string; name: string };
+}) {
+  const [comments, setComments] = useState<TaskComment[]>([]);
+
+  useEffect(() => {
+    api.tasks.getComments(task.id).then(r => setComments(r.comments)).catch(() => {});
+  }, [task.id]);
+
+  useEffect(() => {
+    const unsub = wsClient.on('task:comment', (msg: { payload?: { taskId?: string; comment?: TaskComment } }) => {
+      if (msg.payload?.taskId === task.id && msg.payload.comment) {
+        setComments(prev => {
+          if (prev.some(c => c.id === msg.payload!.comment!.id)) return prev;
+          return [...prev, msg.payload!.comment!];
+        });
+      }
+    });
+    return unsub;
+  }, [task.id]);
+
+  const items = useMemo<ActivityItem[]>(() => {
+    const result: ActivityItem[] = [];
+    for (const note of (task.notes ?? [])) {
+      const parsed = parseNote(note);
+      let ts: Date;
+      if (parsed.timestamp) {
+        const m = parsed.timestamp.match(/^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+        ts = m ? new Date(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +(m[6] ?? 0)) : new Date(0);
+      } else {
+        ts = new Date(0);
+      }
+      result.push({ type: 'note', note, ts });
+    }
+    for (const c of comments) {
+      result.push({ type: 'comment', comment: c, ts: new Date(c.createdAt) });
+    }
+    result.sort((a, b) => a.ts.getTime() - b.ts.getTime());
+    return result;
+  }, [task.notes, comments]);
+
+  const handleSubmit = async (content: string, mentions: string[]) => {
+    await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined);
+  };
+
+  return (
+    <div className="mt-5">
+      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Activity & Comments</p>
+      <div className="space-y-0.5 mb-3">
+        {items.length === 0 && (
+          <div className="text-xs text-fg-tertiary text-center py-6">No activity yet. Post the first comment below.</div>
+        )}
+        {items.map((item, i) => {
+          if (item.type === 'note') {
+            return <NoteComment key={`n-${i}`} note={item.note} compact />;
+          }
+          return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />;
+        })}
+      </div>
+      <CommentInput agents={agents} onSubmit={handleSubmit} />
     </div>
   );
 }
@@ -619,7 +813,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
-function TaskDetailModal({
+function TaskDetailPanel({
   task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser,
 }: {
   task: TaskInfo;
@@ -635,10 +829,24 @@ function TaskDetailModal({
   const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
+  const [showAllSubtasks, setShowAllSubtasks] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string; status: string } | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState<{ dependentCount: number } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'notes' | 'deliverables'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables') => {
+    setActiveTab(tab);
+    requestAnimationFrame(() => {
+      if (scrollContainerRef.current && tabBarRef.current) {
+        const containerTop = scrollContainerRef.current.getBoundingClientRect().top;
+        const tabTop = tabBarRef.current.getBoundingClientRect().top;
+        const offset = tabTop - containerTop + scrollContainerRef.current.scrollTop;
+        scrollContainerRef.current.scrollTo({ top: offset, behavior: 'instant' });
+      }
+    });
+  }, []);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
@@ -647,7 +855,6 @@ function TaskDetailModal({
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
-  const [notesPage, setNotesPage] = useState(1);
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
@@ -690,7 +897,7 @@ function TaskDetailModal({
   };
 
   const resumeTask = async () => {
-    if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
+    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
     } finally { setRunning(false); }
@@ -719,11 +926,11 @@ function TaskDetailModal({
 
   const reopenTask = async () => {
     if (busy) return; setBusy(true);
-    try { await api.tasks.updateStatus(task.id, 'pending_approval'); onRefresh(); } finally { setBusy(false); }
+    try { await api.tasks.updateStatus(task.id, 'pending'); onRefresh(); } finally { setBusy(false); }
   };
 
   const runWithAgent = async () => {
-    if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
+    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
     try { await api.tasks.run(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
       onRefresh();
@@ -731,14 +938,14 @@ function TaskDetailModal({
   };
 
   const retryFresh = async () => {
-    if (busy) return; setBusy(true); setRunError(null); setActiveTab('logs');
+    if (busy) return; setBusy(true); setRunError(null); switchTab('logs');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
     } finally { setBusy(false); }
   };
 
   const runScheduledNow = async () => {
-    if (running) return; setRunning(true); setRunError(null); setActiveTab('logs');
+    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
       onRefresh();
@@ -774,30 +981,32 @@ function TaskDetailModal({
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
-    <div className={`fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-3 ${isMobile ? 'pb-[4.5rem]' : ''}`} onClick={onClose}>
-      <div className={`bg-surface-secondary border border-border-default rounded-xl flex flex-col shadow-2xl ${
-        isMobile ? 'w-full max-h-full' : 'w-[780px] max-w-[95vw] max-h-[88vh]'
-      }`} onClick={e => e.stopPropagation()}>
-        {/* Header – title, status & close */}
-        <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
-          <div className="flex-1 min-w-0 pr-4">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
-              {(() => {
-                const badge = TASK_STATUS_BADGE[task.status];
-                return badge ? (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
-                ) : (
-                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
-                );
-              })()}
-            </div>
+    <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
+      {/* Header – title, status & close */}
+      <div className="flex items-start justify-between px-6 pt-5 pb-3 border-b border-border-default shrink-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1 pr-4">
+          {isMobile && (
+            <button onClick={onClose} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+          )}
+          <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
+            <h3 className="text-base font-semibold leading-snug truncate">{task.title}</h3>
+            {(() => {
+              const badge = TASK_STATUS_BADGE[task.status];
+              return badge ? (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
+              ) : (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
+              );
+            })()}
           </div>
-          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>
         </div>
+        {!isMobile && <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>}
+      </div>
 
         {/* Scrollable content area */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0">
           {/* Description */}
           <div className="px-6 pt-4 pb-3 border-b border-border-default">
             {editingDesc ? (
@@ -914,17 +1123,13 @@ function TaskDetailModal({
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 px-6 pt-3 border-b border-border-default sticky top-0 z-10 bg-surface-secondary">
-            <button onClick={() => setActiveTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
-            <button onClick={() => setActiveTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+          <div ref={tabBarRef} className="flex gap-1 px-6 pt-3 border-b border-border-default sticky top-0 z-10 bg-surface-secondary">
+            <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
+            <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
               Execution Log
               {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
             </button>
-            <button onClick={() => setActiveTab('notes')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'notes' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              Notes
-              {task.notes && task.notes.length > 0 && <span className="text-[10px] text-fg-tertiary font-normal">{task.notes.length}</span>}
-            </button>
-            <button onClick={() => setActiveTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
               Deliverables
               {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-fg-tertiary font-normal">{c}</span> : null; })()}
             </button>
@@ -1013,21 +1218,34 @@ function TaskDetailModal({
                   <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">
                     Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
                   </span>
-                  <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">+ Add subtask</button>
-                </div>
-                {subtasks.length > 0 && (
-                  <div className="space-y-1.5 mb-3">
-                    {subtasks.map(sub => (
-                      <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/50 transition-colors">
-                        <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-brand-500'}`}>
-                          {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-                        </button>
-                        <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-fg-tertiary' : 'text-fg-secondary'}`}>{sub.title}</span>
-                        <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs">✕</button>
-                      </div>
-                    ))}
+                  <div className="flex items-center gap-2">
+                    {completedCount > 0 && (
+                      <button
+                        onClick={() => setShowAllSubtasks(v => !v)}
+                        className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${showAllSubtasks ? 'bg-brand-500/15 text-brand-500 border-brand-500/30' : 'text-fg-tertiary border-border-default hover:text-fg-secondary'}`}
+                      >
+                        {showAllSubtasks ? 'Hide completed' : `Show completed (${completedCount})`}
+                      </button>
+                    )}
+                    <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">+ Add subtask</button>
                   </div>
-                )}
+                </div>
+                {(() => {
+                  const visible = showAllSubtasks ? subtasks : subtasks.filter(s => s.status !== 'completed');
+                  return visible.length > 0 ? (
+                    <div className="space-y-1.5 mb-3">
+                      {visible.map(sub => (
+                        <div key={sub.id} className="group flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/50 transition-colors">
+                          <button onClick={() => void toggleSubtask(sub)} className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${sub.status === 'completed' ? 'bg-green-600 border-green-600 text-white' : 'border-gray-600 hover:border-brand-500'}`}>
+                            {sub.status === 'completed' && <svg className="w-2.5 h-2.5" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                          </button>
+                          <span className={`flex-1 text-sm ${sub.status === 'completed' ? 'line-through text-fg-tertiary' : 'text-fg-secondary'}`}>{sub.title}</span>
+                          <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
                 {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">No subtasks yet.</div>}
                 {addingSubtask && (
                   <div className="flex gap-2 mt-2">
@@ -1058,7 +1276,7 @@ function TaskDetailModal({
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Deliverables <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
                         {validDeliverables.length > 3 && (
-                          <button onClick={() => setActiveTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">View all →</button>
+                          <button onClick={() => switchTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">View all →</button>
                         )}
                       </div>
                       <div className="space-y-1.5">
@@ -1085,55 +1303,10 @@ function TaskDetailModal({
                     </div>
                   );
                 })()}
-                {/* Notes preview — latest 3 */}
-                {task.notes && task.notes.length > 0 && (() => {
-                  const latest3 = [...task.notes].reverse().slice(0, 3);
-                  return (
-                    <div className="mt-5">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Progress Notes <span className="text-fg-tertiary font-normal">({task.notes.length})</span></p>
-                        {task.notes.length > 3 && (
-                          <button onClick={() => setActiveTab('notes')} className="text-[10px] text-brand-500 hover:text-brand-500">View all →</button>
-                        )}
-                      </div>
-                      <div className="space-y-1.5">
-                        {latest3.map((note, i) => <div key={i} className="text-xs text-fg-secondary bg-surface-elevated/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-fg-secondary" /></div>)}
-                      </div>
-                    </div>
-                  );
-                })()}
+                {/* Unified Activity & Comments — notes + comments chronologically */}
+                <TaskActivitySection task={task} agents={agents} users={users} authUser={authUser} />
               </div>
             </>
-          )}
-
-          {/* Notes tab — full paginated list */}
-          {activeTab === 'notes' && (
-            <div className="px-6 py-4">
-              {task.notes && task.notes.length > 0 ? (() => {
-                const reversed = [...task.notes].reverse();
-                const totalPages = Math.ceil(reversed.length / PAGE_SIZE);
-                const paged = reversed.slice((notesPage - 1) * PAGE_SIZE, notesPage * PAGE_SIZE);
-                return (
-                  <>
-                    <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Progress Notes <span className="text-fg-tertiary font-normal">({task.notes.length})</span></p>
-                      {totalPages > 1 && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-fg-tertiary">
-                          <button disabled={notesPage <= 1} onClick={() => setNotesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">‹</button>
-                          <span>{notesPage}/{totalPages}</span>
-                          <button disabled={notesPage >= totalPages} onClick={() => setNotesPage(p => p + 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">›</button>
-                        </div>
-                      )}
-                    </div>
-                    <div className="space-y-1.5">
-                      {paged.map((note, i) => <div key={i} className="text-xs text-fg-secondary bg-surface-elevated/60 rounded px-2.5 py-1.5 leading-relaxed"><MarkdownMessage content={note} className="text-xs text-fg-secondary" /></div>)}
-                    </div>
-                  </>
-                );
-              })() : (
-                <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">No progress notes yet.</div>
-              )}
-            </div>
           )}
 
           {/* Deliverables tab — full paginated list (newest first) */}
@@ -1241,8 +1414,8 @@ function TaskDetailModal({
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
-            {/* ── Approve / Reject (pending_approval) ── */}
-            {task.status === 'pending_approval' && (
+            {/* ── Approve / Reject (pending) ── */}
+            {task.status === 'pending' && (
               <>
                 <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Approve</button>
                 <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
@@ -1308,8 +1481,8 @@ function TaskDetailModal({
             {isTerminal && (
               <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
             )}
-            {/* ── Cancel (non-terminal, non-pending_approval) ── */}
-            {!isTerminal && task.status !== 'pending_approval' && (
+            {/* ── Cancel (non-terminal, non-pending) ── */}
+            {!isTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
                 if (count > 0) { setCancelConfirm({ dependentCount: count }); } else { void doUpdate(() => api.tasks.cancel(task.id)); }
@@ -1317,7 +1490,6 @@ function TaskDetailModal({
             )}
           </div>
         </div>
-      </div>
 
       {pendingDelete && <ConfirmModal title={`Delete subtask "${pendingDelete.title}"?`} message="This subtask will be permanently deleted." confirmLabel="Delete" onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
       {cancelConfirm && (
@@ -1481,18 +1653,15 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 // ─── Requirement → Board Column Mapping ──────────────────────────────────────
 
 const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  draft:          { label: 'Draft',     cls: 'bg-gray-500/15 text-fg-secondary' },
-  pending_review: { label: 'Pending',   cls: 'bg-amber-500/15 text-amber-600' },
-  approved:       { label: 'Approved',  cls: 'bg-green-500/15 text-green-600' },
-  in_progress:    { label: 'Active',    cls: 'bg-brand-500/15 text-brand-500' },
-  completed:      { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
-  rejected:       { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
-  cancelled:      { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
+  pending:     { label: 'Pending',   cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { label: 'Active',    cls: 'bg-brand-500/15 text-brand-500' },
+  completed:   { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
+  rejected:    { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
 };
 
 const REQ_COLUMN_MAP: Record<string, string> = {
-  draft: 'todo', pending_review: 'todo',
-  approved: 'todo',
+  pending: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
   rejected: 'closed', cancelled: 'closed',
@@ -1500,9 +1669,9 @@ const REQ_COLUMN_MAP: Record<string, string> = {
 
 const REQ_DROP_STATUS: Record<string, string> = {
   failed: 'rejected',
-  todo: 'approved',
+  todo: 'pending',
   in_progress: 'in_progress',
-  review: 'approved',
+  review: 'in_progress',
   done: 'completed',
   closed: 'cancelled',
 };
@@ -1528,7 +1697,7 @@ const GROUP_HEADER_CLS: Record<string, string> = {
   closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
-const ALL_REQ_STATUSES = ['draft', 'pending_review', 'approved', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
 
 function taskToGroup(status: string): string {
   for (const col of BOARD_COLUMNS) {
@@ -1550,6 +1719,56 @@ function relativeTime(iso: string): string {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
+}
+
+function TagPicker({ value, options, onSelect }: {
+  value: string;
+  options: Array<{ value: string; label: string; cls: string }>;
+  onSelect: (val: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const current = options.find(o => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node) &&
+          btnRef.current && !btnRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        onClick={() => setOpen(v => !v)}
+        className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer hover:ring-1 hover:ring-current/30 ${current?.cls ?? 'bg-gray-500/15 text-fg-tertiary'}`}
+      >
+        {current?.label ?? value}
+      </button>
+      {open && (
+        <div ref={panelRef} className="absolute top-full left-0 mt-1 w-40 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
+          {options.map(o => (
+            <button
+              key={o.value}
+              onClick={() => { if (o.value !== value) onSelect(o.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 transition-colors ${o.value === value ? 'bg-surface-elevated' : 'hover:bg-surface-elevated/60'}`}
+            >
+              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${o.cls.split(' ')[0]}`} />
+              <span className={`font-medium ${o.value === value ? 'text-fg-primary' : 'text-fg-secondary'}`}>{o.label}</span>
+              {o.value === value && <svg className="w-3 h-3 ml-auto text-brand-500" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange }: {
@@ -1583,28 +1802,22 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       </div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate">{row.data.title}</div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
-        <select
+        <TagPicker
           value={status}
-          onChange={e => void handleStatusChange(row, e.target.value)}
-          className="w-full px-1.5 py-1 bg-surface-elevated/80 border border-border-default/50 rounded text-[11px] text-fg-secondary outline-none focus:border-brand-500 cursor-pointer"
-        >
-          {row.kind === 'task'
-            ? ALL_STATUSES.map(s => <option key={s} value={s}>{COLUMN_LABELS[s] ?? s}</option>)
-            : ALL_REQ_STATUSES.map(s => <option key={s} value={s}>{REQ_STATUS_BADGE[s]?.label ?? s}</option>)
+          options={
+            row.kind === 'task'
+              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
           }
-        </select>
+          onSelect={val => void handleStatusChange(row, val)}
+        />
       </div>
       <div className="w-[100px] shrink-0" onClick={e => e.stopPropagation()}>
-        <select
+        <TagPicker
           value={priority}
-          onChange={e => void handlePriorityChange(row, e.target.value)}
-          className="w-full px-1.5 py-1 bg-surface-elevated/80 border border-border-default/50 rounded text-[11px] text-fg-secondary outline-none focus:border-brand-500 cursor-pointer"
-        >
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="urgent">Urgent</option>
-        </select>
+          options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+          onSelect={val => void handlePriorityChange(row, val)}
+        />
       </div>
       <div className="w-[120px] shrink-0 text-[11px] text-fg-secondary truncate">
         {assignee ? (
@@ -1716,7 +1929,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     if (!col) return;
     try {
       if (row.kind === 'task') {
-        if (row.data.status === 'pending_approval') return;
+        if (row.data.status === 'pending') return;
         await api.tasks.updateStatus(row.data.id, col.dropStatus);
       } else {
         const reqStatus = REQ_DROP_STATUS[groupId];
@@ -1760,10 +1973,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows, sortMode]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto">
-      <div className="min-w-[850px] h-full flex flex-col">
+    <div className="flex-1 min-h-0 overflow-auto bg-surface-secondary">
+      <div className="w-fit min-w-full">
       {/* Table header with integrated sort */}
-      <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider shrink-0 bg-surface-secondary/80">
+      <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider sticky top-0 z-20 bg-surface-secondary">
         <div className="w-12 shrink-0 text-fg-muted normal-case font-normal">{rows.length}</div>
         <div className="flex-1 min-w-[200px]">Title</div>
         <button onClick={() => setSortMode('status')} className={`w-[130px] shrink-0 text-left flex items-center gap-1 transition-colors ${sortMode === 'status' ? 'text-brand-500' : 'hover:text-fg-secondary'}`}>
@@ -1778,7 +1991,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
       </div>
 
       {/* Table body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div>
         {sortMode === 'status' && visibleGroups ? (
           visibleGroups.map(groupId => {
             const col = BOARD_COLUMNS.find(c => c.id === groupId);
@@ -1818,6 +2031,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 export function ProjectsPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
   const isMobile = useIsMobile();
+  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth / 2), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.7), storageKey: 'markus_projects_detail_v2' });
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  const mobileShowDetailRef = useRef(mobileShowDetail);
+  mobileShowDetailRef.current = mobileShowDetail;
   // ── State ──
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
@@ -1913,6 +2130,45 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const handleSelectTask = useCallback((task: TaskInfo) => {
+    setSelectedTask(task);
+    setSelectedReq(null);
+    if (isMobile) {
+      setMobileShowDetail(true);
+      history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+    }
+  }, [isMobile]);
+
+  const handleSelectReq = useCallback((req: RequirementInfo) => {
+    setSelectedReq(req);
+    setSelectedTask(null);
+    if (isMobile) {
+      setMobileShowDetail(true);
+      history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+    }
+  }, [isMobile]);
+
+  const handleCloseDetail = useCallback(() => {
+    setSelectedTask(null);
+    setSelectedReq(null);
+    if (isMobile && mobileShowDetailRef.current) {
+      setMobileShowDetail(false);
+    }
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const handler = () => {
+      if (mobileShowDetailRef.current) {
+        setMobileShowDetail(false);
+        setSelectedTask(null);
+        setSelectedReq(null);
+      }
+    };
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [isMobile]);
+
   const selectedTaskRef = useRef(selectedTask);
   selectedTaskRef.current = selectedTask;
 
@@ -1948,8 +2204,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     if (!navTaskId) return;
     const allTasks = Object.values(board).flat();
     const task = allTasks.find(t => t.id === navTaskId);
-    if (task) { setSelectedTask(task); localStorage.removeItem('markus_nav_openTask'); }
-  }, [board]);
+    if (task) { handleSelectTask(task); localStorage.removeItem('markus_nav_openTask'); }
+  }, [board, handleSelectTask]);
 
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
@@ -1983,7 +2239,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         if (detail.params?.openTask) {
           const allTasks = Object.values(boardRef.current).flat();
           const task = allTasks.find(t => t.id === detail.params!.openTask);
-          if (task) setSelectedTask(task);
+          if (task) handleSelectTask(task);
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
         if (!detail.params?.projectId && !detail.params?.openTask) {
@@ -2138,7 +2394,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       if (!targetCol) return;
       const targetStatus = targetCol.dropStatus;
       if (task.status === targetStatus) return;
-      if (task.status === 'pending_approval') return;
+      if (task.status === 'pending') return;
       try { await api.tasks.updateStatus(task.id, targetStatus); refreshBoard(); } catch { /* */ }
     } else if (req) {
       const targetReqStatus = REQ_DROP_STATUS[colId];
@@ -2259,10 +2515,15 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">Loading…</div>;
 
+  const hasDetail = !!(selectedTask || selectedReq);
+
   return (
-    <div className="flex-1 overflow-hidden flex">
-      {/* ── Task Board + Project Context ── */}
-      <div className="flex-1 overflow-hidden flex flex-col">
+    <div className="flex-1 overflow-hidden flex bg-surface-secondary">
+      {/* ── Task Board + Project Context (left panel) ── */}
+      <div
+        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-secondary`}
+        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : (hasDetail ? { width: `calc(100% - ${detailPanel.width}px - 4px)` } : undefined)}
+      >
         {/* Flash */}
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
 
@@ -2445,8 +2706,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             requirements={filteredReqs}
             agents={agents}
             projects={projects}
-            onTaskClick={task => setSelectedTask(task)}
-            onReqClick={req => setSelectedReq(req)}
+            onTaskClick={task => handleSelectTask(task)}
+            onReqClick={req => handleSelectReq(req)}
             onRefresh={() => { refreshBoard(); refreshRequirements(); }}
           />
         ) : boardType === 'dag' ? (
@@ -2456,8 +2717,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             agents={agents}
             showArchived={showArchived}
             onShowArchivedChange={setShowArchived}
-            onTaskClick={(task) => setSelectedTask(task)}
-            onReqClick={(req) => setSelectedReq(req)}
+            onTaskClick={(task) => handleSelectTask(task)}
+            onReqClick={(req) => handleSelectReq(req)}
             onDependencyChange={refreshBoard}
           />
         ) : (
@@ -2490,13 +2751,13 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                             const req = item.data;
                         const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
                         const isAgent = req.source === 'agent';
-                        const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
+                        const needsReview = isAgent && req.status === 'pending';
                         const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
                         const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 10);
                         return (
                           <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
                             onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
-                            onClick={() => setSelectedReq(req)} onKeyDown={e => e.key === 'Enter' && setSelectedReq(req)}
+                            onClick={() => handleSelectReq(req)} onKeyDown={e => e.key === 'Enter' && handleSelectReq(req)}
                             className={`bg-brand-500/[0.06] border rounded-lg p-3 border-l-[3px] border-l-purple-500 transition-colors cursor-grab active:cursor-grabbing ${needsReview ? 'border-amber-500/40 ring-1 ring-amber-500/20' : 'border-brand-500/20'} hover:border-brand-400/50`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
@@ -2534,7 +2795,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                             const task = item.data;
                         const subCount = task.subtasks?.length ?? 0;
                         const badge = SUB_STATUS_BADGE[task.status];
-                        const isApprovalTask = task.status === 'pending_approval';
+                        const isApprovalTask = task.status === 'pending';
                         const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
                         const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
                         const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
@@ -2543,7 +2804,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         return (
                           <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                             onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
-                            onClick={() => setSelectedTask(task)} onKeyDown={e => e.key === 'Enter' && setSelectedTask(task)}
+                            onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
                             className={`border rounded-lg p-3 border-l-[3px] transition-colors ${
                               isApprovalTask
                                 ? 'bg-amber-500/[0.04] border-amber-500/30 border-l-amber-500 cursor-pointer'
@@ -2608,6 +2869,46 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         )}
       </div>
 
+      {/* Resize handle — desktop only, when detail is open */}
+      {!isMobile && hasDetail && (
+        <div className="w-1 shrink-0 cursor-col-resize bg-border-default/40 hover:bg-brand-500/30 active:bg-brand-500/50 transition-colors" onMouseDown={detailPanel.onResizeStart} />
+      )}
+
+      {/* Right detail panel */}
+      {(!isMobile || mobileShowDetail) && hasDetail && (
+        <div className={`${isMobile ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 border-l border-border-default`}
+          style={isMobile ? undefined : { width: detailPanel.width }}>
+          {selectedTask ? (
+            <TaskDetailPanel
+              task={selectedTask}
+              agents={agents}
+              projects={projects}
+              requirements={allRequirements}
+              allTasks={Object.values(board).flat()}
+              users={users}
+              onClose={handleCloseDetail}
+              onRefresh={handleTaskRefresh}
+              authUser={authUser}
+            />
+          ) : selectedReq ? (
+            <RequirementDetailPanel
+              req={selectedReq}
+              agents={agents}
+              projects={projects}
+              allTasks={Object.values(board).flat()}
+              users={users}
+              onClose={handleCloseDetail}
+              onApprove={id => { handleApproveReq(id); handleCloseDetail(); }}
+              onReject={id => { setRejectReqId(id); handleCloseDetail(); }}
+              onCancel={id => { handleDeleteReq(id); handleCloseDetail(); }}
+              onStatusChange={async (id, status) => {
+                try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+              }}
+            />
+          ) : null}
+        </div>
+      )}
+
       {showCreateProject && (
         <NewProjectModal
           orgId={authUser?.orgId}
@@ -2635,7 +2936,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none">
                 <option value="">Select a requirement…</option>
                 {allRequirements
-                  .filter(r => r.status === 'approved' && (!taskProjectId || r.projectId === taskProjectId))
+                  .filter(r => r.status === 'in_progress' && (!taskProjectId || r.projectId === taskProjectId))
                   .map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
               </select>
             </div>
@@ -2738,21 +3039,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         </div>
       )}
 
-      {/* ── Task Detail Modal ── */}
-      {selectedTask && (
-        <TaskDetailModal
-          task={selectedTask}
-          agents={agents}
-          projects={projects}
-          requirements={allRequirements}
-          allTasks={Object.values(board).flat()}
-          users={users}
-          onClose={() => setSelectedTask(null)}
-          onRefresh={handleTaskRefresh}
-          authUser={authUser}
-        />
-      )}
-
       {/* ── Create Requirement Modal ── */}
       {showCreateReq && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }}>
@@ -2809,24 +3095,6 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             </div>
           </div>
         </div>
-      )}
-
-      {/* ── Requirement Detail Modal ── */}
-      {selectedReq && (
-        <RequirementDetailModal
-          req={selectedReq}
-          agents={agents}
-          projects={projects}
-          allTasks={Object.values(board).flat()}
-          users={users}
-          onClose={() => setSelectedReq(null)}
-          onApprove={id => { handleApproveReq(id); setSelectedReq(null); }}
-          onReject={id => { setRejectReqId(id); setSelectedReq(null); }}
-          onCancel={id => { handleDeleteReq(id); setSelectedReq(null); }}
-          onStatusChange={async (id, status) => {
-            try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
-          }}
-        />
       )}
 
       {/* ── Mobile Filter Bottom Sheet ── */}
@@ -2895,9 +3163,62 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   );
 }
 
+// ─── Requirement Comment Thread ─────────────────────────────────────────────────
+
+function RequirementCommentThread({ requirementId, agents, authUser }: {
+  requirementId: string;
+  agents: AgentInfo[];
+  authUser?: { id: string; name: string };
+}) {
+  const [comments, setComments] = useState<RequirementComment[]>([]);
+
+  useEffect(() => {
+    api.requirements.getComments(requirementId).then(r => setComments(r.comments)).catch(() => {});
+  }, [requirementId]);
+
+  useEffect(() => {
+    const unsub = wsClient.on('requirement:comment', (msg: { payload?: { requirementId?: string; comment?: RequirementComment } }) => {
+      if (msg.payload?.requirementId === requirementId && msg.payload.comment) {
+        setComments(prev => {
+          if (prev.some(c => c.id === msg.payload!.comment!.id)) return prev;
+          return [...prev, msg.payload!.comment!];
+        });
+      }
+    });
+    return unsub;
+  }, [requirementId]);
+
+  const handleSubmit = async (content: string, mentions: string[]) => {
+    await api.requirements.addComment(
+      requirementId,
+      content,
+      authUser?.name,
+      authUser?.id,
+      mentions.length > 0 ? mentions : undefined,
+    );
+  };
+
+  return (
+    <div>
+      <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">
+        Comments {comments.length > 0 && <span className="font-normal">({comments.length})</span>}
+      </label>
+      <div className="space-y-0.5 mb-3">
+        {comments.length === 0 && (
+          <p className="text-xs text-fg-tertiary text-center py-4">No comments yet.</p>
+        )}
+        {comments.map(c => (
+          <CommentBubble key={c.id} comment={c} />
+        ))}
+      </div>
+      <CommentInput agents={agents} onSubmit={handleSubmit} />
+    </div>
+  );
+}
+
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
-function RequirementDetailModal({
+function RequirementDetailPanel({
   req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange,
 }: {
   req: RequirementInfo;
@@ -2914,19 +3235,24 @@ function RequirementDetailModal({
   const isMobile = useIsMobile();
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
-  const needsReview = isAgent && (req.status === 'draft' || req.status === 'pending_review');
-  const canCancel = req.status === 'draft' || req.status === 'approved';
+  const needsReview = isAgent && req.status === 'pending';
+  const canCancel = req.status === 'pending' || req.status === 'in_progress';
   const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3" onClick={onClose}>
-      <div className={`bg-surface-secondary border border-border-default rounded-xl max-h-[85dvh] flex flex-col ${isMobile ? 'w-full' : 'w-[36rem]'}`} onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 p-5 pb-0">
-          <div className="flex-1 min-w-0">
+    <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 p-5 pb-0 border-b border-border-default">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {isMobile && (
+            <button onClick={onClose} className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+          )}
+          <div className="flex-1 min-w-0 pb-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">REQ</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
@@ -2938,11 +3264,12 @@ function RequirementDetailModal({
             </div>
             <h2 className="text-lg font-semibold text-fg-primary leading-snug">{req.title}</h2>
           </div>
-          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">&times;</button>
         </div>
+        {!isMobile && <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">&times;</button>}
+      </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {req.description && (
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
@@ -3005,6 +3332,9 @@ function RequirementDetailModal({
               </div>
             </div>
           )}
+
+          {/* Requirement Comments Thread */}
+          <RequirementCommentThread requirementId={req.id} agents={agents} authUser={undefined} />
         </div>
 
         {/* Actions */}
@@ -3028,14 +3358,13 @@ function RequirementDetailModal({
             </select>
           )}
           {isTerminal && onStatusChange && (
-            <button onClick={() => onStatusChange(req.id, 'approved')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">Reopen</button>
+            <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">Reopen</button>
           )}
           <div className="flex-1" />
           {canCancel && !needsReview && (
             <button onClick={() => onCancel(req.id)} className="px-3 py-1.5 text-xs text-red-500/70 hover:text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-colors">Cancel Requirement</button>
           )}
         </div>
-      </div>
     </div>
   );
 }

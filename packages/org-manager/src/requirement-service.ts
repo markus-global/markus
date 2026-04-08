@@ -50,7 +50,7 @@ export class RequirementService {
       projectId: request.projectId,
       title: request.title,
       description: request.description,
-      status: isUser ? 'approved' : 'draft',
+      status: isUser ? 'in_progress' : 'pending',
       priority: request.priority ?? 'medium',
       source: request.source,
       createdBy: request.createdBy,
@@ -99,15 +99,15 @@ export class RequirementService {
   private static readonly MAX_PENDING_PROPOSALS_PER_AGENT = 3;
 
   /**
-   * Agent proposes a requirement draft — needs user approval.
-   * Each agent can have at most 3 pending (draft/pending_review) proposals at a time.
+   * Agent proposes a requirement — needs user approval.
+   * Each agent can have at most 3 pending proposals at a time.
    */
   proposeRequirement(request: CreateRequirementRequest): Requirement {
     const pendingCount = [...this.requirements.values()].filter(
       r =>
         r.source === 'agent' &&
         r.createdBy === request.createdBy &&
-        (r.status === 'draft' || r.status === 'pending_review')
+        r.status === 'pending'
     ).length;
 
     if (pendingCount >= RequirementService.MAX_PENDING_PROPOSALS_PER_AGENT) {
@@ -125,12 +125,12 @@ export class RequirementService {
   approveRequirement(id: string, userId: string): Requirement {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
-    if (req.status !== 'draft' && req.status !== 'pending_review') {
+    if (req.status !== 'pending') {
       throw new Error(`Requirement ${id} is in status '${req.status}' and cannot be approved`);
     }
 
     const now = new Date().toISOString();
-    req.status = 'approved';
+    req.status = 'in_progress';
     req.approvedBy = userId;
     req.approvedAt = now;
     req.updatedAt = now;
@@ -155,7 +155,7 @@ export class RequirementService {
   rejectRequirement(id: string, userId: string, reason: string): Requirement {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
-    if (req.status !== 'draft' && req.status !== 'pending_review') {
+    if (req.status !== 'pending') {
       throw new Error(`Requirement ${id} is in status '${req.status}' and cannot be rejected`);
     }
 
@@ -196,16 +196,13 @@ export class RequirementService {
     req.status = newStatus;
     req.updatedAt = now;
 
-    if (newStatus === 'approved' && oldStatus !== 'approved') {
+    if (newStatus === 'in_progress' && oldStatus === 'pending') {
       req.approvedBy = userId ?? req.approvedBy ?? 'unknown';
       req.approvedAt = now;
       req.rejectedReason = undefined;
     } else if (newStatus === 'rejected') {
       if (!req.rejectedReason) req.rejectedReason = 'Moved to closed';
-    } else if (
-      newStatus === 'draft' ||
-      newStatus === 'pending_review'
-    ) {
+    } else if (newStatus === 'pending') {
       req.rejectedReason = undefined;
     }
 
@@ -213,7 +210,7 @@ export class RequirementService {
       const persistErr = (e: unknown) =>
         log.error('Failed to persist requirement status update', { id, error: String(e) });
 
-      if (newStatus === 'approved' && oldStatus !== 'approved') {
+      if (newStatus === 'in_progress' && oldStatus === 'pending') {
         this.requirementRepo.approve(id, req.approvedBy ?? 'unknown').catch(persistErr);
       } else if (newStatus === 'rejected') {
         this.requirementRepo.reject(id, req.rejectedReason ?? '').catch(persistErr);
@@ -265,14 +262,6 @@ export class RequirementService {
     if (!req.taskIds.includes(taskId)) {
       req.taskIds.push(taskId);
       req.updatedAt = new Date().toISOString();
-      if (req.status === 'approved') {
-        req.status = 'in_progress';
-        if (this.requirementRepo) {
-          this.requirementRepo.updateStatus(requirementId, 'in_progress').catch((e: unknown) =>
-            log.error('Failed to persist requirement status', { id: requirementId, error: String(e) })
-          );
-        }
-      }
     }
   }
 
@@ -345,7 +334,7 @@ export class RequirementService {
    */
   isApproved(id: string): boolean {
     const req = this.requirements.get(id);
-    return req !== undefined && (req.status === 'approved' || req.status === 'in_progress');
+    return req !== undefined && req.status === 'in_progress';
   }
 
   listRequirements(filters?: {
@@ -353,6 +342,7 @@ export class RequirementService {
     projectId?: string;
     status?: RequirementStatus;
     source?: RequirementSource;
+    createdBy?: string;
   }): Requirement[] {
     let result = [...this.requirements.values()];
 
@@ -360,6 +350,7 @@ export class RequirementService {
     if (filters?.projectId) result = result.filter(r => r.projectId === filters.projectId);
     if (filters?.status) result = result.filter(r => r.status === filters.status);
     if (filters?.source) result = result.filter(r => r.source === filters.source);
+    if (filters?.createdBy) result = result.filter(r => r.createdBy === filters.createdBy);
 
     return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

@@ -1,14 +1,20 @@
 import type { TaskDeliverable } from './governance.js';
 
-export type TaskStatus =
-  | 'pending_approval'
+export type ItemStatus =
+  | 'pending'
   | 'in_progress'
   | 'blocked'
   | 'review'
   | 'completed'
   | 'failed'
+  | 'rejected'
   | 'cancelled'
   | 'archived';
+
+export type TaskStatus = ItemStatus;
+
+/** @deprecated Use ItemStatus. Kept for backward compat during migration. */
+export type LegacyTaskStatus = 'pending_approval' | TaskStatus;
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskExecutionMode = 'cli' | 'api' | 'mcp' | 'gui' | 'hybrid';
 export type TaskType = 'standard' | 'scheduled';

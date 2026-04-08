@@ -88,11 +88,11 @@ All work in Markus originates from approved requirements. This is a core rule:
 ### Task Lifecycle
 
 \`\`\`
-pending_approval ──► approve ──► in_progress ──► (auto) review ──► completed
-                        │              │                    │
-                        │              └──► fail ──► failed │
-                        │                                   │
-                      reject ──► cancelled     revision ──► in_progress (round N+1)
+pending ──► approve ──► in_progress ──► (auto) review ──► completed
+                │              │                    │
+                │              └──► fail ──► failed │
+                │                                   │
+              reject ──► rejected       revision ──► in_progress (round N+1)
 \`\`\`
 
 - Tasks are created with an assigned worker and a designated reviewer.

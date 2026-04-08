@@ -18,12 +18,13 @@ export const agentStatusEnum = pgEnum('agent_status', [
   'error',
 ]);
 export const taskStatusEnum = pgEnum('task_status', [
-  'pending_approval',
+  'pending',
   'in_progress',
   'blocked',
   'review',
   'completed',
   'failed',
+  'rejected',
   'cancelled',
   'archived',
 ]);
@@ -94,7 +95,7 @@ export const tasks = pgTable('tasks', {
     .references(() => organizations.id),
   title: varchar('title', { length: 500 }).notNull(),
   description: text('description').notNull().default(''),
-  status: taskStatusEnum('status').notNull().default('pending_approval'),
+  status: taskStatusEnum('status').notNull().default('pending'),
   priority: taskPriorityEnum('priority').notNull().default('medium'),
   executionMode: varchar('execution_mode', { length: 32 }),
   assignedAgentId: varchar('assigned_agent_id', { length: 64 }).notNull().references(() => agents.id),
@@ -242,9 +243,27 @@ export const taskComments = pgTable(
     authorType: varchar('author_type', { length: 16 }).notNull(), // 'human' | 'agent'
     content: text('content').notNull(),
     attachments: jsonb('attachments').default([]), // [{type:'image', url:'...', name:'...'}]
+    mentions: jsonb('mentions').default([]), // agent/user IDs mentioned via @
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   t => [index('idx_task_comments_task').on(t.taskId, t.createdAt)]
+);
+
+/** Comments on requirements — same structure as task comments */
+export const requirementComments = pgTable(
+  'requirement_comments',
+  {
+    id: varchar('id', { length: 64 }).primaryKey(),
+    requirementId: varchar('requirement_id', { length: 64 }).notNull(),
+    authorId: varchar('author_id', { length: 128 }).notNull(),
+    authorName: varchar('author_name', { length: 255 }).notNull(),
+    authorType: varchar('author_type', { length: 16 }).notNull(), // 'human' | 'agent'
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').default([]),
+    mentions: jsonb('mentions').default([]),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  t => [index('idx_requirement_comments_req').on(t.requirementId, t.createdAt)]
 );
 
 /** Agent knowledge base entries for enhanced memory */
@@ -422,13 +441,15 @@ export const users = pgTable('users', {
 // ─── Requirements ────────────────────────────────────────────────────────────
 
 export const requirementStatusEnum = pgEnum('requirement_status', [
-  'draft',
-  'pending_review',
-  'approved',
+  'pending',
   'in_progress',
+  'blocked',
+  'review',
   'completed',
+  'failed',
   'rejected',
   'cancelled',
+  'archived',
 ]);
 
 export const requirementSourceEnum = pgEnum('requirement_source', ['user', 'agent']);
@@ -443,7 +464,7 @@ export const requirements = pgTable(
     projectId: varchar('project_id', { length: 64 }),
     title: varchar('title', { length: 500 }).notNull(),
     description: text('description').notNull().default(''),
-    status: requirementStatusEnum('status').notNull().default('draft'),
+    status: requirementStatusEnum('status').notNull().default('pending'),
     priority: taskPriorityEnum('priority').notNull().default('medium'),
     source: requirementSourceEnum('source').notNull().default('user'),
     createdBy: varchar('created_by', { length: 128 }).notNull(),

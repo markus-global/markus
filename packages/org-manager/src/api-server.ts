@@ -396,7 +396,7 @@ export class APIServer {
       getActiveRequirements(orgId: string) {
         if (!self.requirementService) return [];
         return self.requirementService.listRequirements({ orgId })
-          .filter(r => r.status === 'approved' || r.status === 'in_progress')
+          .filter(r => r.status === 'in_progress')
           .map(r => ({
             id: r.id,
             title: r.title,
@@ -1894,7 +1894,7 @@ export class APIServer {
       return;
     }
 
-    // Task approve/reject — the only way to transition out of pending_approval.
+    // Task approve/reject — the only way to transition out of pending.
     // If the UI changed the assignee before approving, that's already on the task object.
     if (path.match(/^\/api\/tasks\/[^/]+\/approve$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
@@ -2069,7 +2069,7 @@ export class APIServer {
       return;
     }
 
-    // Task comments — add a comment (text + optional image attachments)
+    // Task comments — add a comment (text + optional image attachments + @mentions)
     if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       if (!this.storage?.taskCommentRepo) {
@@ -2079,6 +2079,7 @@ export class APIServer {
       try {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
+        const mentions = (body['mentions'] as string[] | undefined) ?? [];
         const comment = await this.storage.taskCommentRepo.add({
           taskId,
           authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
@@ -2086,6 +2087,7 @@ export class APIServer {
           authorType: (body['authorType'] as string) ?? 'human',
           content: body['content'] as string,
           attachments: body['attachments'] as unknown[] | undefined,
+          mentions,
         });
         // Broadcast real-time comment event via WS
         this.ws?.broadcast({
@@ -2100,6 +2102,7 @@ export class APIServer {
               authorType: comment.authorType,
               content: comment.content,
               attachments: comment.attachments,
+              mentions: comment.mentions,
               createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
             },
           },
@@ -2111,6 +2114,23 @@ export class APIServer {
           (body['authorName'] as string) ?? 'User',
           body['content'] as string
         );
+        // Notify mentioned agents via A2A
+        if (mentions.length > 0) {
+          const authorName = (body['authorName'] as string) ?? 'User';
+          const task = this.taskService.getTask(taskId);
+          const taskTitle = task?.title ?? taskId;
+          const agentMgr = this.orgService.getAgentManager();
+          for (const mentionedId of mentions) {
+            try {
+              const agent = agentMgr.getAgent(mentionedId);
+              if (agent) {
+                const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${body['content'] as string}\n\n(Task ID: ${taskId})`;
+                agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
+                  .catch(() => {});
+              }
+            } catch { /* agent not found, skip */ }
+          }
+        }
         this.json(res, 201, { comment });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
@@ -6337,6 +6357,84 @@ export class APIServer {
       return;
     }
 
+    // ── Requirement Comments ──────────────────────────────────────────────
+
+    if (path.match(/^\/api\/requirements\/[^/]+\/comments$/) && req.method === 'POST') {
+      const reqId = path.split('/')[3]!;
+      if (!this.storage?.requirementCommentRepo) {
+        this.json(res, 500, { error: 'Storage not available' });
+        return;
+      }
+      try {
+        const authUser = await this.getAuthUser(req);
+        const body = await this.readBody(req);
+        const mentions = (body['mentions'] as string[] | undefined) ?? [];
+        const comment = await this.storage.requirementCommentRepo.add({
+          requirementId: reqId,
+          authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
+          authorName: (body['authorName'] as string) ?? 'User',
+          authorType: (body['authorType'] as string) ?? 'human',
+          content: body['content'] as string,
+          attachments: body['attachments'] as unknown[] | undefined,
+          mentions,
+        });
+        this.ws?.broadcast({
+          type: 'requirement:comment',
+          payload: {
+            requirementId: reqId,
+            comment: {
+              id: comment.id,
+              requirementId: comment.requirementId,
+              authorId: comment.authorId,
+              authorName: comment.authorName,
+              authorType: comment.authorType,
+              content: comment.content,
+              attachments: comment.attachments,
+              mentions: comment.mentions,
+              createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+            },
+          },
+          timestamp: new Date().toISOString(),
+        });
+        // Notify mentioned agents
+        if (mentions.length > 0) {
+          const authorName = (body['authorName'] as string) ?? 'User';
+          const req_ = this.requirementService?.getRequirement(reqId);
+          const reqTitle = req_?.title ?? reqId;
+          const agentMgr = this.orgService.getAgentManager();
+          for (const mentionedId of mentions) {
+            try {
+              const agent = agentMgr.getAgent(mentionedId);
+              if (agent) {
+                const notif = `You were mentioned by ${authorName} in a comment on requirement "${reqTitle}":\n\n${body['content'] as string}\n\n(Requirement ID: ${reqId})`;
+                agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
+                  .catch(() => {});
+              }
+            } catch { /* agent not found, skip */ }
+          }
+        }
+        this.json(res, 201, { comment });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    if (path.match(/^\/api\/requirements\/[^/]+\/comments$/) && req.method === 'GET') {
+      const reqId = path.split('/')[3]!;
+      if (!this.storage?.requirementCommentRepo) {
+        this.json(res, 200, { comments: [] });
+        return;
+      }
+      try {
+        const comments = await this.storage.requirementCommentRepo.getByRequirement(reqId);
+        this.json(res, 200, { comments });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
     // ── Governance: Projects ──────────────────────────────────────────────
 
     if (path === '/api/projects' && req.method === 'GET') {
@@ -6497,7 +6595,7 @@ export class APIServer {
         if (task.status === 'blocked') {
           this.json(res, 400, { error: 'Task is blocked by dependencies' }); return;
         }
-        if (task.status === 'pending_approval') {
+        if (task.status === 'pending') {
           this.json(res, 400, { error: 'Task is awaiting approval' }); return;
         }
         await this.taskService.advanceScheduleConfig(taskId);

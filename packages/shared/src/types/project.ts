@@ -89,7 +89,7 @@ export interface ReportCostSummary {
   trend: 'increasing' | 'stable' | 'decreasing';
 }
 
-export type PlanStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected';
+export type PlanStatus = 'draft' | 'pending' | 'approved' | 'rejected';
 
 export interface ReportPlan {
   status: PlanStatus;

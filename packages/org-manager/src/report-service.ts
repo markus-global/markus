@@ -50,7 +50,7 @@ export class ReportService {
 
     let upcomingPlan: ReportPlan | undefined;
     if (opts.includePlan) {
-      const pendingTasks = allTasks.filter(t => t.status === 'pending_approval');
+      const pendingTasks = allTasks.filter(t => t.status === 'pending');
       upcomingPlan = {
         status: 'draft',
         goals: [],
@@ -101,7 +101,7 @@ export class ReportService {
   submitPlanForApproval(reportId: string): void {
     const report = this.reports.get(reportId);
     if (!report?.upcomingPlan) throw new Error('Report has no plan');
-    report.upcomingPlan.status = 'pending_approval';
+    report.upcomingPlan.status = 'pending';
     log.info('Plan submitted for approval', { reportId });
   }
 

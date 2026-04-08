@@ -95,6 +95,7 @@ export interface RequirementServiceBridge {
     orgId?: string;
     status?: string;
     projectId?: string;
+    createdBy?: string;
   }): Array<{
     id: string;
     title: string;
@@ -102,6 +103,7 @@ export interface RequirementServiceBridge {
     status: string;
     priority: string;
     source: string;
+    createdBy?: string;
     taskIds: string[];
   }>;
   updateRequirementStatus(
@@ -203,6 +205,8 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
 }
 
 export interface MCPServerConfig {
@@ -949,6 +953,7 @@ export class AgentManager {
                 orgId,
                 status: filter?.status,
                 projectId: filter?.projectId,
+                createdBy: filter?.createdBy,
               });
             }
           : undefined,
@@ -962,6 +967,12 @@ export class AgentManager {
               }
               return this.requirementService!.updateRequirementStatus(reqId, status, id);
             }
+          : undefined,
+        postTaskComment: ts.postTaskComment
+          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          : undefined,
+        postRequirementComment: ts.postRequirementComment
+          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
           : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
@@ -1491,6 +1502,7 @@ export class AgentManager {
                 orgId,
                 status: filter?.status,
                 projectId: filter?.projectId,
+                createdBy: filter?.createdBy,
               });
             }
           : undefined,
@@ -1504,6 +1516,12 @@ export class AgentManager {
               }
               return this.requirementService!.updateRequirementStatus(reqId, status, id);
             }
+          : undefined,
+        postTaskComment: ts.postTaskComment
+          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          : undefined,
+        postRequirementComment: ts.postRequirementComment
+          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
           : undefined,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);

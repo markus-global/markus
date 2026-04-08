@@ -157,50 +157,59 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 
 See [Task & Requirement State Machines](./STATE-MACHINES.md) for the complete FSM specification.
 
+Tasks and requirements share a **unified status vocabulary**: `draft`, `pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `rejected`, `cancelled`, `archived`. Not every status applies to both types, but the same name always means the same thing.
+
 #### Standard Task State Flow
 
 ```
-pending -> pending_approval -> assigned -> in_progress -> review -> accepted -> completed -> archived
-                                      \-> blocked              /-> revision (rework)
-                                      \-> failed / cancelled
+pending ──► in_progress ──► review ──► completed ──► archived
+   │             │    ▲         │
+   │             │    │         └── revision ──► in_progress
+   │             ▼    │
+   │          blocked ┘
+   ▼             │
+rejected       failed ──► (retry) ──► in_progress
 ```
 
-- `accepted → completed` is automatic (branch merged, then auto-completed).
-- Workers submit via `task_submit_review` with a `reviewer_id`.
-- The system notifies the reviewer; workers do NOT broadcast to all agents.
+- Workers submit via `task_submit_review`. The system notifies the reviewer.
+- `rejected` = proposal denied before work. `cancelled` = stopped after work began.
 
 #### Scheduled (Recurring) Task State Flow
 
 ```
-pending -> assigned -> in_progress -> review -> accepted -> pending (awaits next run)
-                                            /-> revision -> in_progress (rework)
+pending → in_progress → review → completed → (scheduled rerun) → in_progress → ...
 ```
 
-- After acceptance, scheduled tasks return to `pending` (not `completed`).
-- The `ScheduledTaskRunner` fires the next run when `nextRunAt` arrives.
+- After completion, scheduled tasks wait for `nextRunAt` then restart.
 - Scheduled tasks go through the same review pipeline as standard tasks.
 
 #### Requirement State Flow
 
 ```
-draft -> pending_review -> approved -> in_progress -> completed
-                       \-> rejected
-                       \-> cancelled
+draft ──► pending ──► in_progress ──► completed
+             │
+             ▼
+          rejected
 ```
 
-| State | Description |
-|-------|-------------|
-| `pending` | Created, awaiting assignment |
-| `pending_approval` | Awaiting human/manager approval |
-| `assigned` | Assigned to Agent |
-| `in_progress` | Agent is working |
-| `review` | Agent submitted delivery, awaiting review |
-| `revision` | Review requested rework |
-| `accepted` | Review passed |
-| `completed` | Task done (standard) / N/A for scheduled |
-| `archived` | Archived |
-| `blocked` | Blocked by dependencies |
-| `failed` / `cancelled` | Failed / Cancelled |
+- User-created requirements auto-approve to `in_progress`.
+- Agent proposals start as `draft`, need human approval.
+- Completion is automatic when all linked tasks terminate.
+
+#### Unified Status Reference
+
+| Status | Label | Description |
+|--------|-------|-------------|
+| `draft` | Draft | Created, not yet submitted for approval |
+| `pending` | Pending | Submitted, awaiting human approval |
+| `in_progress` | In Progress | Approved, work is active |
+| `blocked` | Blocked | On hold (dependencies, manual pause) |
+| `review` | In Review | Execution done, awaiting reviewer |
+| `completed` | Completed | Successfully finished |
+| `failed` | Failed | Unrecoverable error |
+| `rejected` | Rejected | Proposal not approved |
+| `cancelled` | Cancelled | Deliberately stopped |
+| `archived` | Archived | Historical record |
 
 **Task governance policy:**
 

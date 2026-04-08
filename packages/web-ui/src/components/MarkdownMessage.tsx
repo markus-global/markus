@@ -30,7 +30,7 @@ const mdComponents = {
     if (cls?.includes('language-')) {
       return <code className="text-fg-secondary font-mono">{children}</code>;
     }
-    return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-brand-500">{children}</code>;
+    return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 break-all">{children}</code>;
   },
   pre: ({ children }: { children?: React.ReactNode }) => (
     <pre className="bg-surface-secondary rounded-lg p-3 overflow-x-auto my-2 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:rounded-none [&>code]:text-fg-secondary">
@@ -43,7 +43,7 @@ const mdComponents = {
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline">{children}</a>
+    <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
   ),
   hr: () => <hr className="border-border-default my-3" />,
   table: ({ children }: { children?: React.ReactNode }) => (
@@ -66,7 +66,7 @@ export function MarkdownMessage({ content, className = '' }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
 
   return (
-    <div className={`prose prose-sm max-w-none ${className}`}>
+    <div className={`prose prose-sm max-w-none break-words ${className}`}>
       {thinking.length > 0 && (() => {
         const full = thinking.join('\n\n');
         const firstLine = full.split('\n')[0] ?? '';

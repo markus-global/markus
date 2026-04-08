@@ -3330,6 +3330,19 @@ export class Agent {
       'Only retry tasks where you are the `assignedAgentId`. Do NOT retry tasks assigned to others.',
     ].join('\n');
 
+    // --- Requirement monitoring section (all agents) ---
+    const requirementMonitoringSection = [
+      '',
+      '## Requirement Monitoring',
+      'Check requirements you proposed with `requirement_list` (set `mine_only: true`):',
+      '- If **pending_review** for a long time → send a message to the user reminding them to review',
+      '- If **approved** but no tasks created yet → create tasks to break it down and get started',
+      '- If **in_progress** → check linked task status and update the requirement if all tasks are done',
+      '- If **rejected** → read the rejection reason and decide if a revised proposal makes sense',
+      'Use `requirement_comment` to post updates or ask questions on requirements.',
+      'Use `task_comment` with @mentions to coordinate with other agents on shared tasks.',
+    ].join('\n');
+
     // --- Manager daily report logic ---
     const isManager = this.config.agentRole === 'manager';
     let dailyReportSection = '';
@@ -3407,6 +3420,7 @@ export class Agent {
       lastHeartbeatSummary,
       bgCompletionSection,
       failedTaskRecoverySection,
+      requirementMonitoringSection,
       dailyReportSection,
       selfEvolutionSection,
       '',
@@ -3445,8 +3459,9 @@ export class Agent {
 
     const baseTools = [
       'task_create', 'task_list', 'task_update', 'task_get', 'task_note',
+      'task_comment', 'requirement_comment',
       'file_read', 'file_edit', 'agent_send_message',
-      'requirement_propose', 'requirement_list',
+      'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
       'discover_tools', 'send_user_message',
     ];

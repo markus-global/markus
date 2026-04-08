@@ -78,7 +78,7 @@ export class StaleDetector {
         });
       }
 
-      if (task.status === 'pending_approval' && age > this.config.maxAssignedUnstartedMs) {
+      if (task.status === 'pending' && age > this.config.maxAssignedUnstartedMs) {
         staleItems.push({
           type: 'unstarted_task',
           taskId: task.id,

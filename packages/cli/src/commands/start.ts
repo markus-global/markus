@@ -202,6 +202,9 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     if (storage.taskCommentRepo) {
       taskService.setTaskCommentRepo(storage.taskCommentRepo);
     }
+    if (storage.requirementCommentRepo) {
+      taskService.setRequirementCommentRepo(storage.requirementCommentRepo);
+    }
     await taskService.loadFromDB('default');
     taskService.startTimeoutChecker();
   }

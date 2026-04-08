@@ -1,11 +1,11 @@
 import { eq, asc } from 'drizzle-orm';
 import type { Database } from '../db.js';
-import { taskComments } from '../schema.js';
+import { requirementComments } from '../schema.js';
 import { generateId } from '@markus/shared';
 
-export interface TaskCommentRow {
+export interface RequirementCommentRow {
   id: string;
-  taskId: string;
+  requirementId: string;
   authorId: string;
   authorName: string;
   authorType: string;
@@ -15,21 +15,21 @@ export interface TaskCommentRow {
   createdAt: Date;
 }
 
-export class TaskCommentRepo {
+export class RequirementCommentRepo {
   constructor(private db: Database) {}
 
   async add(data: {
-    taskId: string;
+    requirementId: string;
     authorId: string;
     authorName: string;
     authorType: string;
     content: string;
     attachments?: unknown[];
     mentions?: string[];
-  }): Promise<TaskCommentRow> {
-    const [row] = await this.db.insert(taskComments).values({
-      id: generateId('tc'),
-      taskId: data.taskId,
+  }): Promise<RequirementCommentRow> {
+    const [row] = await this.db.insert(requirementComments).values({
+      id: generateId('rc'),
+      requirementId: data.requirementId,
       authorId: data.authorId,
       authorName: data.authorName,
       authorType: data.authorType,
@@ -40,14 +40,14 @@ export class TaskCommentRepo {
     return { ...row!, mentions: (row!.mentions ?? []) as string[] };
   }
 
-  async getByTask(taskId: string): Promise<TaskCommentRow[]> {
-    const rows = await this.db.select().from(taskComments)
-      .where(eq(taskComments.taskId, taskId))
-      .orderBy(asc(taskComments.createdAt));
+  async getByRequirement(requirementId: string): Promise<RequirementCommentRow[]> {
+    const rows = await this.db.select().from(requirementComments)
+      .where(eq(requirementComments.requirementId, requirementId))
+      .orderBy(asc(requirementComments.createdAt));
     return rows.map(r => ({ ...r, mentions: (r.mentions ?? []) as string[] }));
   }
 
-  async deleteByTask(taskId: string): Promise<void> {
-    await this.db.delete(taskComments).where(eq(taskComments.taskId, taskId));
+  async deleteByRequirement(requirementId: string): Promise<void> {
+    await this.db.delete(requirementComments).where(eq(requirementComments.requirementId, requirementId));
   }
 }

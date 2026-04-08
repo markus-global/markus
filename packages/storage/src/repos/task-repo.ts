@@ -3,12 +3,13 @@ import type { Database } from '../db.js';
 import { tasks } from '../schema.js';
 
 type TaskStatus =
-  | 'pending_approval'
+  | 'pending'
   | 'in_progress'
   | 'blocked'
   | 'review'
   | 'completed'
   | 'failed'
+  | 'rejected'
   | 'cancelled'
   | 'archived';
 type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
@@ -43,7 +44,7 @@ export class TaskRepo {
         title: data.title,
         description: data.description ?? '',
         priority: data.priority ?? 'medium',
-        status: data.status ?? 'pending_approval',
+        status: data.status ?? 'pending',
         assignedAgentId: data.assignedAgentId,
         reviewerAgentId: data.reviewerAgentId,
         executionRound: data.executionRound ?? 1,
@@ -178,7 +179,7 @@ export class TaskRepo {
         title: data.title,
         description: data.description ?? '',
         priority: data.priority ?? 'medium',
-        status: data.status ?? 'pending_approval',
+        status: data.status ?? 'pending',
         assignedAgentId: data.assignedAgentId,
         reviewerAgentId: data.reviewerAgentId,
         executionRound: data.executionRound ?? 1,

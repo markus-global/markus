@@ -350,7 +350,7 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
   );
 }
 
-// ─── TaskApprovalCard — inline approval UI for pending_approval tasks ────────
+// ─── TaskApprovalCard — inline approval UI for pending tasks ────────
 
 const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
   urgent: 'text-red-500',
@@ -362,7 +362,7 @@ const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
 type TaskCardState = 'loading' | 'pending' | 'approving' | 'rejecting' | 'in_progress' | 'completed' | 'review' | 'blocked' | 'failed' | 'cancelled' | 'archived';
 
 const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
-  pending_approval: 'pending',
+  pending: 'pending',
   in_progress: 'in_progress',
   completed: 'completed',
   review: 'review',

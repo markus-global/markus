@@ -56,7 +56,7 @@ export class ScheduledTaskRunner {
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
-      if (['in_progress', 'review', 'blocked', 'pending_approval'].includes(task.status)) {
+      if (['in_progress', 'review', 'blocked', 'pending'].includes(task.status)) {
         continue;
       }
 
@@ -80,7 +80,7 @@ export class ScheduledTaskRunner {
     const resettableStatuses = ['completed', 'cancelled', 'failed'];
     if (resettableStatuses.includes(task.status)) {
       await this.taskService.resetTaskForRerun(task.id);
-    } else if (!['in_progress', 'review', 'blocked', 'pending_approval'].includes(task.status)) {
+    } else if (!['in_progress', 'review', 'blocked', 'pending'].includes(task.status)) {
       log.warn('Scheduled task has unexpected status, resetting for rerun', { taskId: task.id, status: task.status });
       await this.taskService.resetTaskForRerun(task.id);
     }

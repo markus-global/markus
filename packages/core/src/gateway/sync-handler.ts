@@ -196,7 +196,7 @@ export class GatewaySyncHandler {
 
     const assignedTasks = this.tasks.getTasksByAgent(markusAgentId)
       .filter(t =>
-        ['pending_approval', 'in_progress', 'blocked', 'review'].includes(t.status)
+        ['pending', 'in_progress', 'blocked', 'review'].includes(t.status)
       )
       .map(t => ({
         id: t.id,

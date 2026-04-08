@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   org_id TEXT NOT NULL REFERENCES organizations(id),
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'pending_approval',
+  status TEXT NOT NULL DEFAULT 'pending',
   priority TEXT NOT NULL DEFAULT 'medium',
   execution_mode TEXT,
   assigned_agent_id TEXT NOT NULL REFERENCES agents(id),
@@ -191,9 +191,23 @@ CREATE TABLE IF NOT EXISTS task_comments (
   author_type TEXT NOT NULL,
   content TEXT NOT NULL,
   attachments TEXT DEFAULT '[]',
+  mentions TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS requirement_comments (
+  id TEXT PRIMARY KEY,
+  requirement_id TEXT NOT NULL,
+  author_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  author_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  attachments TEXT DEFAULT '[]',
+  mentions TEXT DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_requirement_comments_req ON requirement_comments(requirement_id, created_at);
 
 CREATE TABLE IF NOT EXISTS requirements (
   id TEXT PRIMARY KEY,
@@ -201,7 +215,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   project_id TEXT,
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'draft',
+  status TEXT NOT NULL DEFAULT 'pending',
   priority TEXT NOT NULL DEFAULT 'medium',
   source TEXT NOT NULL DEFAULT 'user',
   created_by TEXT NOT NULL,
@@ -479,6 +493,7 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'deliverables', column: 'artifact_type', sql: "ALTER TABLE deliverables ADD COLUMN artifact_type TEXT" },
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
     { table: 'organizations', column: 'manager_agent_id', sql: "ALTER TABLE organizations ADD COLUMN manager_agent_id TEXT" },
+    { table: 'task_comments', column: 'mentions', sql: "ALTER TABLE task_comments ADD COLUMN mentions TEXT DEFAULT '[]'" },
   ];
   for (const m of migrations) {
     const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
@@ -489,6 +504,20 @@ export function openSqlite(dbPath: string): Database.Database {
   }
 
   migrateToExecutionStreamLogs(_db);
+
+  // Status unification migration: rename legacy status values
+  const statusMigrations = [
+    { sql: "UPDATE tasks SET status = 'pending' WHERE status = 'pending_approval'", desc: 'tasks: pending_approval → pending' },
+    { sql: "UPDATE requirements SET status = 'pending' WHERE status = 'draft'", desc: 'requirements: draft → pending' },
+    { sql: "UPDATE requirements SET status = 'pending' WHERE status = 'pending_review'", desc: 'requirements: pending_review → pending' },
+    { sql: "UPDATE requirements SET status = 'in_progress' WHERE status = 'approved'", desc: 'requirements: approved → in_progress' },
+  ];
+  for (const m of statusMigrations) {
+    const result = _db.prepare(m.sql).run();
+    if (result.changes > 0) {
+      log.info(`Status migration: ${m.desc} (${result.changes} rows)`);
+    }
+  }
 
   log.info('SQLite database opened', { path: dbPath });
   return _db;
@@ -740,7 +769,7 @@ export class SqliteTaskRepo {
         data.orgId,
         data.title,
         data.description ?? '',
-        data.status ?? 'pending_approval',
+        data.status ?? 'pending',
         data.priority ?? 'medium',
         data.executionMode ?? null,
         data.assignedAgentId,
@@ -948,7 +977,7 @@ export class SqliteTaskRepo {
         data.orgId,
         data.title,
         data.description ?? '',
-        data.status ?? 'pending_approval',
+        data.status ?? 'pending',
         data.priority ?? 'medium',
         data.assignedAgentId,
         data.reviewerAgentId,
@@ -1030,7 +1059,7 @@ export class SqliteRequirementRepo {
         data.orgId,
         data.title,
         data.description ?? '',
-        data.status ?? 'draft',
+        data.status ?? 'pending',
         data.priority ?? 'medium',
         data.source,
         data.createdBy,
@@ -1059,7 +1088,7 @@ export class SqliteRequirementRepo {
     const ts = now();
     this.db
       .prepare('UPDATE requirements SET status = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?')
-      .run('approved', approvedBy, ts, ts, id);
+      .run('in_progress', approvedBy, ts, ts, id);
   }
 
   async reject(id: string, reason: string) {
@@ -1340,14 +1369,15 @@ export class SqliteTaskCommentRepo {
     authorType: string;
     content: string;
     attachments?: unknown[];
+    mentions?: string[];
   }) {
     const id = generateId('tc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), ts);
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
     return {
       id,
       taskId: data.taskId,
@@ -1356,6 +1386,7 @@ export class SqliteTaskCommentRepo {
       authorType: data.authorType,
       content: data.content,
       attachments: data.attachments ?? [],
+      mentions: data.mentions ?? [],
       createdAt: new Date(ts),
     };
   }
@@ -1373,12 +1404,68 @@ export class SqliteTaskCommentRepo {
       authorType: r['author_type'] as string,
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
+      mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
 
   deleteByTask(taskId: string) {
     this.db.prepare('DELETE FROM task_comments WHERE task_id = ?').run(taskId);
+  }
+}
+
+export class SqliteRequirementCommentRepo {
+  constructor(private db: Database.Database) {}
+
+  async add(data: {
+    requirementId: string;
+    authorId: string;
+    authorName: string;
+    authorType: string;
+    content: string;
+    attachments?: unknown[];
+    mentions?: string[];
+  }) {
+    const id = generateId('rc');
+    const ts = now();
+    this.db
+      .prepare(
+        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
+    return {
+      id,
+      requirementId: data.requirementId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      authorType: data.authorType,
+      content: data.content,
+      attachments: data.attachments ?? [],
+      mentions: data.mentions ?? [],
+      createdAt: new Date(ts),
+    };
+  }
+
+  getByRequirement(requirementId: string) {
+    return (
+      this.db
+        .prepare('SELECT * FROM requirement_comments WHERE requirement_id = ? ORDER BY created_at ASC')
+        .all(requirementId) as Record<string, unknown>[]
+    ).map(r => ({
+      id: r['id'] as string,
+      requirementId: r['requirement_id'] as string,
+      authorId: r['author_id'] as string,
+      authorName: r['author_name'] as string,
+      authorType: r['author_type'] as string,
+      content: r['content'] as string,
+      attachments: fromJson(r['attachments'] as string),
+      mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      createdAt: toDate(r['created_at'] as string)!,
+    }));
+  }
+
+  deleteByRequirement(requirementId: string) {
+    this.db.prepare('DELETE FROM requirement_comments WHERE requirement_id = ?').run(requirementId);
   }
 }
 

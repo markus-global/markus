@@ -22,17 +22,15 @@ import type { TaskInfo, AgentInfo, RequirementInfo } from '../api.ts';
 import { api } from '../api.ts';
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  pending:          { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
-  pending_approval: { bg: 'bg-blue-500/8',     border: 'border-blue-400/25',   text: 'text-blue-500' },
-  assigned:         { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
-  in_progress:      { bg: 'bg-amber-500/10',   border: 'border-amber-500/30',  text: 'text-amber-600' },
-  blocked:          { bg: 'bg-red-500/8',      border: 'border-red-500/25',    text: 'text-red-500' },
-  review:           { bg: 'bg-brand-500/10',   border: 'border-brand-500/30',  text: 'text-brand-500' },
-  revision:         { bg: 'bg-amber-500/10',   border: 'border-amber-500/30',  text: 'text-amber-600' },
-  accepted:         { bg: 'bg-green-500/8',    border: 'border-green-500/25',  text: 'text-green-600' },
-  completed:        { bg: 'bg-green-500/10',   border: 'border-green-500/30',  text: 'text-green-600' },
-  failed:           { bg: 'bg-red-500/10',     border: 'border-red-500/30',    text: 'text-red-500' },
-  cancelled:        { bg: 'bg-gray-500/8',     border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
+  pending:     { bg: 'bg-blue-500/10',    border: 'border-blue-500/30',   text: 'text-blue-500' },
+  in_progress: { bg: 'bg-amber-500/10',   border: 'border-amber-500/30',  text: 'text-amber-600' },
+  blocked:     { bg: 'bg-red-500/8',      border: 'border-red-500/25',    text: 'text-red-500' },
+  review:      { bg: 'bg-brand-500/10',   border: 'border-brand-500/30',  text: 'text-brand-500' },
+  completed:   { bg: 'bg-green-500/10',   border: 'border-green-500/30',  text: 'text-green-600' },
+  failed:      { bg: 'bg-red-500/10',     border: 'border-red-500/30',    text: 'text-red-500' },
+  rejected:    { bg: 'bg-red-500/8',      border: 'border-red-500/25',    text: 'text-red-500' },
+  cancelled:   { bg: 'bg-gray-500/8',     border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
+  archived:    { bg: 'bg-gray-500/5',     border: 'border-gray-500/15',   text: 'text-fg-tertiary' },
 };
 
 const PRIORITY_INDICATOR: Record<string, string> = {
@@ -79,17 +77,15 @@ function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
 }
 
 const REQ_STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  draft:          { bg: 'bg-gray-500/8',      border: 'border-gray-500/20',   text: 'text-fg-secondary' },
-  pending_review: { bg: 'bg-amber-500/10',    border: 'border-amber-500/30',  text: 'text-amber-600' },
-  approved:       { bg: 'bg-blue-500/10',     border: 'border-blue-500/30',   text: 'text-blue-500' },
-  in_progress:    { bg: 'bg-brand-500/10',    border: 'border-brand-500/30',  text: 'text-brand-500' },
-  completed:      { bg: 'bg-green-500/10',    border: 'border-green-500/30',  text: 'text-green-600' },
-  rejected:       { bg: 'bg-red-500/10',      border: 'border-red-500/30',    text: 'text-red-500' },
-  cancelled:      { bg: 'bg-gray-500/8',      border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
+  pending:     { bg: 'bg-amber-500/10',    border: 'border-amber-500/30',  text: 'text-amber-600' },
+  in_progress: { bg: 'bg-brand-500/10',    border: 'border-brand-500/30',  text: 'text-brand-500' },
+  completed:   { bg: 'bg-green-500/10',    border: 'border-green-500/30',  text: 'text-green-600' },
+  rejected:    { bg: 'bg-red-500/10',      border: 'border-red-500/30',    text: 'text-red-500' },
+  cancelled:   { bg: 'bg-gray-500/8',      border: 'border-gray-500/20',   text: 'text-fg-tertiary' },
 };
 
 const REQ_GROUP_MAP: Record<string, string> = {
-  draft: 'todo', pending_review: 'todo', approved: 'todo',
+  pending: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
   rejected: 'done', cancelled: 'done',
@@ -97,7 +93,7 @@ const REQ_GROUP_MAP: Record<string, string> = {
 
 function RequirementNode({ data }: { data: { req: RequirementInfo } }) {
   const { req } = data;
-  const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['draft']!;
+  const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
   return (
     <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border}`}>
       <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
@@ -252,13 +248,13 @@ interface TaskDAGProps {
   onDependencyChange?: () => void;
 }
 
-const ALL_STATUSES = ['pending', 'pending_approval', 'assigned', 'in_progress', 'blocked', 'review', 'revision', 'accepted', 'completed', 'failed', 'cancelled'] as const;
+const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
 const DAG_FILTER_GROUPS = [
-  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending_approval', 'pending', 'assigned']),          color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
+  { id: 'todo',        label: 'To Do',       statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
   { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
-  { id: 'review',      label: 'In Review',   statuses: new Set(['review', 'revision', 'accepted']),                   color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
-  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'cancelled']),                 color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
+  { id: 'review',      label: 'In Review',   statuses: new Set(['review']),                                           color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
+  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
 const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));

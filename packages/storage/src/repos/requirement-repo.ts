@@ -3,13 +3,15 @@ import type { Database } from '../db.js';
 import { requirements } from '../schema.js';
 
 type RequirementStatus =
-  | 'draft'
-  | 'pending_review'
-  | 'approved'
+  | 'pending'
   | 'in_progress'
+  | 'blocked'
+  | 'review'
   | 'completed'
+  | 'failed'
   | 'rejected'
-  | 'cancelled';
+  | 'cancelled'
+  | 'archived';
 type RequirementSource = 'user' | 'agent';
 type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 
@@ -37,7 +39,7 @@ export class RequirementRepo {
         orgId: data.orgId,
         title: data.title,
         description: data.description ?? '',
-        status: data.status ?? 'draft',
+        status: data.status ?? 'pending',
         priority: data.priority ?? 'medium',
         source: data.source,
         createdBy: data.createdBy,
@@ -66,7 +68,7 @@ export class RequirementRepo {
     const now = new Date();
     await this.db
       .update(requirements)
-      .set({ status: 'approved', approvedBy, approvedAt: now, updatedAt: now })
+      .set({ status: 'in_progress', approvedBy, approvedAt: now, updatedAt: now })
       .where(eq(requirements.id, id));
   }
 

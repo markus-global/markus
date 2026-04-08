@@ -20,7 +20,7 @@ import {
 } from '@markus/shared';
 import type { AgentManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
-import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow } from '@markus/storage';
+import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
@@ -104,6 +104,7 @@ export class TaskService {
   private requirementService?: RequirementService;
   private reviewService?: ReviewService;
   private taskCommentRepo?: TaskCommentRepo;
+  private requirementCommentRepo?: RequirementCommentRepo;
   private auditService?: AuditService;
   private deliverableService?: DeliverableService;
   private sharedDataDir?: string;
@@ -147,6 +148,102 @@ export class TaskService {
 
   setTaskCommentRepo(repo: TaskCommentRepo): void {
     this.taskCommentRepo = repo;
+  }
+
+  setRequirementCommentRepo(repo: RequirementCommentRepo): void {
+    this.requirementCommentRepo = repo;
+  }
+
+  /** Post a structured comment on a task (used by agent tools) */
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }> {
+    if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
+    const comment = await this.taskCommentRepo.add({
+      taskId,
+      authorId,
+      authorName,
+      authorType: 'agent',
+      content,
+      mentions: mentions ?? [],
+    });
+    this.ws?.broadcast({
+      type: 'task:comment',
+      payload: {
+        taskId,
+        comment: {
+          id: comment.id,
+          taskId: comment.taskId,
+          authorId: comment.authorId,
+          authorName: comment.authorName,
+          authorType: comment.authorType,
+          content: comment.content,
+          attachments: comment.attachments,
+          mentions: comment.mentions,
+          createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+    // Notify mentioned agents
+    if (mentions && mentions.length > 0 && this.agentManager) {
+      const task = this.tasks.get(taskId);
+      const taskTitle = task?.title ?? taskId;
+      for (const mentionedId of mentions) {
+        try {
+          const agent = this.agentManager.getAgent(mentionedId);
+          if (agent) {
+            const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${content}\n\n(Task ID: ${taskId})`;
+            agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
+              .catch(() => {});
+          }
+        } catch { /* agent not found */ }
+      }
+    }
+    return { id: comment.id };
+  }
+
+  /** Post a structured comment on a requirement (used by agent tools) */
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }> {
+    if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
+    const comment = await this.requirementCommentRepo.add({
+      requirementId,
+      authorId,
+      authorName,
+      authorType: 'agent',
+      content,
+      mentions: mentions ?? [],
+    });
+    this.ws?.broadcast({
+      type: 'requirement:comment',
+      payload: {
+        requirementId,
+        comment: {
+          id: comment.id,
+          requirementId: comment.requirementId,
+          authorId: comment.authorId,
+          authorName: comment.authorName,
+          authorType: comment.authorType,
+          content: comment.content,
+          attachments: comment.attachments,
+          mentions: comment.mentions,
+          createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    });
+    // Notify mentioned agents
+    if (mentions && mentions.length > 0 && this.agentManager) {
+      for (const mentionedId of mentions) {
+        try {
+          const agent = this.agentManager.getAgent(mentionedId);
+          if (agent) {
+            const notif = `You were mentioned by ${authorName} in a comment on requirement "${requirementId}":\n\n${content}`;
+            agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
+              .catch(() => {});
+          }
+        } catch { /* agent not found */ }
+      }
+    }
+    return { id: comment.id };
   }
 
   setAuditService(audit: AuditService): void {
@@ -1131,7 +1228,7 @@ export class TaskService {
         const subtasks: SubTask[] = Array.isArray(rawSubtasks) ? rawSubtasks as SubTask[] : [];
         const migrateStatus = (s: string): TaskStatus => {
           const map: Record<string, TaskStatus> = {
-            pending: 'pending_approval',
+            pending_approval: 'pending',
             assigned: 'in_progress',
             revision: 'in_progress',
             accepted: 'completed',
@@ -1260,7 +1357,7 @@ export class TaskService {
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: 'pending_approval',
+      status: 'pending',
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
       reviewerAgentId: request.reviewerAgentId,
@@ -1339,7 +1436,7 @@ export class TaskService {
         details: { taskId: task.id, priority: task.priority },
       }).then(approved => {
         const current = this.tasks.get(task.id);
-        if (!current || current.status !== 'pending_approval') return;
+        if (!current || current.status !== 'pending') return;
         if (approved) {
           this.approveTask(task.id);
         } else {
@@ -1348,7 +1445,7 @@ export class TaskService {
       }).catch(err => {
         log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
         const current = this.tasks.get(task.id);
-        if (current?.status === 'pending_approval') {
+        if (current?.status === 'pending') {
           this.rejectTask(task.id);
         }
       });
@@ -1357,13 +1454,13 @@ export class TaskService {
     return task;
   }
 
-  /** Approve a pending_approval task and transition it to normal flow.
+  /** Approve a pending task and transition it to normal flow.
    * Uses the task's current assignedAgentId (the human reviewer may have changed it).
    * Optionally resolves the associated HITL promise to prevent double-fire. */
   approveTask(taskIdStr: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
-    if (task.status !== 'pending_approval') {
+    if (task.status !== 'pending') {
       throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot approve`);
     }
 
@@ -1382,7 +1479,7 @@ export class TaskService {
   rejectTask(taskIdStr: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
-    if (task.status !== 'pending_approval') {
+    if (task.status !== 'pending') {
       throw new Error(`Task ${taskIdStr} is in ${task.status} status, cannot reject`);
     }
 
@@ -1392,7 +1489,7 @@ export class TaskService {
       if (hitl) this.hitlService.respondToApproval(hitl.id, false, 'direct');
     }
 
-    return this.updateTaskStatus(taskIdStr, 'cancelled', undefined, true);
+    return this.updateTaskStatus(taskIdStr, 'rejected', undefined, true);
   }
 
   getTask(id: string): Task | undefined {
@@ -1404,12 +1501,12 @@ export class TaskService {
    * All side effects (auto-start, cancel execution, notify reviewer,
    * check dependents, broadcast) are centralized here.
    *
-   * @param _internal - bypass the pending_approval guard (used by approve/reject)
+   * @param _internal - bypass the pending guard (used by approve/reject)
    * @param _skipAutoStart - suppress auto-start when entering in_progress
    *                         (used by retryTaskFresh which starts runTaskFresh instead)
    */
   private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
-    'pending_approval', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'cancelled', 'archived',
+    'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
   ]);
 
   updateTaskStatus(id: string, status: TaskStatus, updatedBy?: string, _internal = false, _skipAutoStart = false): Task {
@@ -1421,8 +1518,8 @@ export class TaskService {
       throw new Error(`Invalid task status "${status}". Valid values: ${[...TaskService.VALID_STATUSES].join(', ')}`);
     }
 
-    // Guard: pending_approval can only be changed via approveTask/rejectTask
-    if (!_internal && task.status === 'pending_approval' && status !== 'pending_approval') {
+    // Guard: pending can only be changed via approveTask/rejectTask
+    if (!_internal && task.status === 'pending' && status !== 'pending') {
       throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint.`);
     }
 
@@ -1452,7 +1549,7 @@ export class TaskService {
     }
 
     // ── Entering terminal state ──
-    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+    if (status === 'completed' || status === 'failed' || status === 'rejected' || status === 'cancelled') {
       task.completedAt = now;
     }
 
@@ -1640,8 +1737,8 @@ export class TaskService {
     const sortOrder = opts?.sortOrder ?? 'desc';
     const priorityRank: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
     const statusRank: Record<string, number> = {
-      in_progress: 0, blocked: 1, review: 2, pending_approval: 3,
-      completed: 4, failed: 5, cancelled: 6, archived: 7,
+      in_progress: 0, blocked: 1, review: 2, pending: 3,
+      completed: 4, failed: 5, rejected: 6, cancelled: 7, archived: 8,
     };
 
     result.sort((a, b) => {
@@ -1683,12 +1780,13 @@ export class TaskService {
 
   getTaskBoard(orgId: string, filters?: { projectId?: string }): Record<TaskStatus, Task[]> {
     const board: Record<TaskStatus, Task[]> = {
-      pending_approval: [],
+      pending: [],
       in_progress: [],
       blocked: [],
       review: [],
       completed: [],
       failed: [],
+      rejected: [],
       cancelled: [],
       archived: [],
     };
@@ -1700,7 +1798,7 @@ export class TaskService {
       if (bucket) {
         bucket.push(task);
       } else {
-        (board.pending_approval as Task[]).push(task);
+        (board.pending as Task[]).push(task);
       }
     }
 
@@ -1724,12 +1822,13 @@ export class TaskService {
       : [...this.tasks.values()];
 
     const statusCounts: Record<TaskStatus, number> = {
-      pending_approval: 0,
+      pending: 0,
       in_progress: 0,
       blocked: 0,
       review: 0,
       completed: 0,
       failed: 0,
+      rejected: 0,
       cancelled: 0,
       archived: 0,
     };
@@ -2677,7 +2776,7 @@ export class TaskService {
     tasks: Array<{ id: string; title: string; status: string; createdAt: string }>;
   }> {
     const candidates = [...this.tasks.values()].filter(
-      t => t.orgId === orgId && ['pending_approval', 'blocked', 'in_progress'].includes(t.status)
+      t => t.orgId === orgId && ['pending', 'blocked', 'in_progress'].includes(t.status)
     );
 
     // Group by (requirementId || 'none', assignedAgentId || 'unassigned')
@@ -2783,10 +2882,10 @@ export class TaskService {
       })
       .map(t => ({ id: t.id, title: t.title, blockedSinceHours: Math.round((now - new Date(t.updatedAt).getTime()) / 3600000) }));
 
-    // Stale pending_approval tasks (waiting > 48h)
+    // Stale pending tasks (waiting > 48h)
     const staleAssigned = allTasks
       .filter(t => {
-        if (t.status !== 'pending_approval') return false;
+        if (t.status !== 'pending') return false;
         const age = now - new Date(t.updatedAt).getTime();
         return age > 48 * 60 * 60 * 1000;
       })
