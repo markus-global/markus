@@ -1939,7 +1939,7 @@ export class APIServer {
       return;
     }
 
-    if (path.startsWith('/api/tasks/') && req.method === 'DELETE') {
+    if (path.startsWith('/api/tasks/') && req.method === 'DELETE' && !path.includes('/subtasks/')) {
       this.json(res, 400, { error: 'Tasks cannot be deleted — use cancel instead to preserve audit trail' });
       return;
     }
@@ -2080,10 +2080,15 @@ export class APIServer {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
+        let resolvedTaskAuthorName = (body['authorName'] as string | undefined);
+        if (!resolvedTaskAuthorName && authUser?.userId && this.storage.userRepo) {
+          const userRow = await this.storage.userRepo.findById(authUser.userId);
+          resolvedTaskAuthorName = userRow?.name;
+        }
         const comment = await this.storage.taskCommentRepo.add({
           taskId,
           authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
-          authorName: (body['authorName'] as string) ?? 'User',
+          authorName: resolvedTaskAuthorName ?? 'User',
           authorType: (body['authorType'] as string) ?? 'human',
           content: body['content'] as string,
           attachments: body['attachments'] as unknown[] | undefined,
@@ -2111,12 +2116,12 @@ export class APIServer {
         // Inject live comment into running agent's context
         this.taskService.injectCommentIntoRunningTask(
           taskId,
-          (body['authorName'] as string) ?? 'User',
+          resolvedTaskAuthorName ?? 'User',
           body['content'] as string
         );
-        // Notify mentioned agents via A2A
+        // Notify mentioned agents — they can use task_comment tool to reply
         if (mentions.length > 0) {
-          const authorName = (body['authorName'] as string) ?? 'User';
+          const authorName = resolvedTaskAuthorName ?? 'User';
           const task = this.taskService.getTask(taskId);
           const taskTitle = task?.title ?? taskId;
           const agentMgr = this.orgService.getAgentManager();
@@ -2124,7 +2129,7 @@ export class APIServer {
             try {
               const agent = agentMgr.getAgent(mentionedId);
               if (agent) {
-                const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${body['content'] as string}\n\n(Task ID: ${taskId})`;
+                const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${body['content'] as string}\n\nIf you want to reply, use the task_comment tool with task_id "${taskId}". (Task ID: ${taskId})`;
                 agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
                   .catch(() => {});
               }
@@ -6369,10 +6374,15 @@ export class APIServer {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
+        let resolvedAuthorName = (body['authorName'] as string | undefined);
+        if (!resolvedAuthorName && authUser?.userId && this.storage.userRepo) {
+          const userRow = await this.storage.userRepo.findById(authUser.userId);
+          resolvedAuthorName = userRow?.name;
+        }
         const comment = await this.storage.requirementCommentRepo.add({
           requirementId: reqId,
           authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
-          authorName: (body['authorName'] as string) ?? 'User',
+          authorName: resolvedAuthorName ?? 'User',
           authorType: (body['authorType'] as string) ?? 'human',
           content: body['content'] as string,
           attachments: body['attachments'] as unknown[] | undefined,
@@ -6396,9 +6406,9 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
-        // Notify mentioned agents
+        // Notify mentioned agents — they can use requirement_comment tool to reply
         if (mentions.length > 0) {
-          const authorName = (body['authorName'] as string) ?? 'User';
+          const authorName = resolvedAuthorName ?? 'User';
           const req_ = this.requirementService?.getRequirement(reqId);
           const reqTitle = req_?.title ?? reqId;
           const agentMgr = this.orgService.getAgentManager();
@@ -6406,7 +6416,7 @@ export class APIServer {
             try {
               const agent = agentMgr.getAgent(mentionedId);
               if (agent) {
-                const notif = `You were mentioned by ${authorName} in a comment on requirement "${reqTitle}":\n\n${body['content'] as string}\n\n(Requirement ID: ${reqId})`;
+                const notif = `You were mentioned by ${authorName} in a comment on requirement "${reqTitle}":\n\n${body['content'] as string}\n\nIf you want to reply, use the requirement_comment tool with requirement_id "${reqId}". (Requirement ID: ${reqId})`;
                 agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
                   .catch(() => {});
               }

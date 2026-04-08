@@ -1636,6 +1636,9 @@ export class Agent {
           );
         }
       }
+      if (chatActivityId && reply.trim()) {
+        this.emitActivityLog(chatActivityId, 'text', reply);
+      }
       if (chatActivityId) this.endActivity(chatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
 
@@ -1767,12 +1770,19 @@ export class Agent {
     }
 
     let lastResponseContent = '';
+    let thinkingBuffer = '';
+    const wrappedOnEvent = (event: LLMStreamEvent & { agentEvent?: string }) => {
+      if (event.type === 'thinking_delta' && event.thinking) {
+        thinkingBuffer += event.thinking;
+      }
+      onEvent(event);
+    };
     try {
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
           { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
-          onEvent,
+          wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
         ),
@@ -1939,7 +1949,7 @@ export class Agent {
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
             { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction },
-            onEvent,
+            wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
           ),
@@ -1966,6 +1976,12 @@ export class Agent {
         return filtered;
       }
       this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
+      if (streamChatActivityId && thinkingBuffer.trim()) {
+        this.emitActivityLog(streamChatActivityId, 'text', thinkingBuffer, { isThinking: true });
+      }
+      if (streamChatActivityId && reply.trim()) {
+        this.emitActivityLog(streamChatActivityId, 'text', reply);
+      }
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
 

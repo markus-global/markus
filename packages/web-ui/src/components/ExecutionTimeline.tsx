@@ -700,6 +700,35 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   );
 }
 
+// ─── ThinkingRow — collapsible thinking content ───────────────────────────────
+
+function ThinkingRow({ content, time, showTime }: { content: string; time?: string; showTime?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="flex items-start gap-2">
+      {showTime && time && (
+        <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-2.5 hidden md:inline">{time}</span>
+      )}
+      <div className="flex-1 min-w-0 my-1 overflow-hidden">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-purple-400/60 shrink-0" />
+          <span>Thinking</span>
+          <span className="text-fg-tertiary text-[10px]">({content.length} chars)</span>
+          <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+        </button>
+        {expanded && (
+          <div className="mt-1.5 bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2.5 overflow-hidden">
+            <MarkdownMessage content={content} className="text-xs text-fg-tertiary break-words" />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── ExecEntryRow — renders a single execution entry ──────────────────────────
 
 export const MemoExecEntryRow = memo(ExecEntryRow);
@@ -711,6 +740,9 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
 }) {
   if (entry.type === 'tool') {
     return <ToolCallRow info={entry.info} showTime={showTime} time={entry.time} isLast={isLast} key={entry.key} />;
+  }
+  if (entry.type === 'thinking') {
+    return <ThinkingRow content={entry.content} time={entry.time} showTime={showTime} />;
   }
   if (entry.type === 'text') {
     return (
@@ -862,7 +894,9 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
 
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2 text-[10px] text-fg-tertiary">
-            {toolCount > 0 && <span>{toolCount} tool{toolCount !== 1 ? 's' : ''}</span>}
+            {toolCount > 0 && <span>🔧 {toolCount} tool{toolCount !== 1 ? 's' : ''}</span>}
+            {entries.some(e => e.type === 'text' && !e.metadata?.isThinking) && <span>💬 text</span>}
+            {entries.some(e => e.type === 'text' && e.metadata?.isThinking) && <span className="text-purple-400">💭 thinking</span>}
             {hasMultipleRounds && currentRound != null && (
               <>
                 <span className="opacity-30">·</span>

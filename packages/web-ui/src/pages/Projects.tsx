@@ -2131,21 +2131,33 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   useEffect(() => { refresh(); }, [refresh]);
 
   const handleSelectTask = useCallback((task: TaskInfo) => {
-    setSelectedTask(task);
+    setSelectedTask(prev => {
+      if (prev?.id === task.id) {
+        if (isMobile && mobileShowDetailRef.current) setMobileShowDetail(false);
+        return null;
+      }
+      if (isMobile) {
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+      }
+      return task;
+    });
     setSelectedReq(null);
-    if (isMobile) {
-      setMobileShowDetail(true);
-      history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
-    }
   }, [isMobile]);
 
   const handleSelectReq = useCallback((req: RequirementInfo) => {
-    setSelectedReq(req);
+    setSelectedReq(prev => {
+      if (prev?.id === req.id) {
+        if (isMobile && mobileShowDetailRef.current) setMobileShowDetail(false);
+        return null;
+      }
+      if (isMobile) {
+        setMobileShowDetail(true);
+        history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+      }
+      return req;
+    });
     setSelectedTask(null);
-    if (isMobile) {
-      setMobileShowDetail(true);
-      history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
-    }
   }, [isMobile]);
 
   const handleCloseDetail = useCallback(() => {
@@ -2722,8 +2734,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             onDependencyChange={refreshBoard}
           />
         ) : (
-          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden p-6">
-            <div className="flex gap-4 h-full">
+          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-4 py-5">
+            <div className="flex gap-3 h-full">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);
                 const colReqs = getColumnReqs(col);
@@ -2731,14 +2743,16 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                 const isOver = dragOverCol === col.id;
                 return (
                   <div key={col.id}
-                    className={`w-72 shrink-0 rounded-xl p-3.5 border-t-2 transition-colors flex flex-col h-full ${col.accent} ${isOver ? 'bg-surface-elevated/80 ring-1 ring-brand-500/40' : 'bg-surface-secondary'}`}
+                    className={`w-[280px] shrink-0 rounded-xl flex flex-col h-full transition-colors ${isOver ? 'bg-surface-elevated/60 ring-1 ring-brand-500/30' : 'bg-surface-secondary/50'}`}
                     onDragOver={e => onDragOver(e, col.id)} onDragLeave={e => onDragLeave(e, col.id)} onDrop={e => void onDrop(e, col.id)}>
-                    <div className="flex justify-between items-center mb-3 shrink-0">
-                      <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{col.label}</span>
-                      <span className="text-xs bg-surface-elevated px-2 py-0.5 rounded-full">{itemCount}</span>
+                    <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${col.accent.replace('border-t-', 'bg-')}`} />
+                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{col.label}</span>
+                      </div>
+                      <span className="text-[11px] text-fg-tertiary font-medium tabular-nums">{itemCount}</span>
                     </div>
-                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin">
-                      {/* ── All cards merged & sorted by updatedAt ── */}
+                    <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-thin px-2 py-2">
                       {(() => {
                         type CardItem = { kind: 'req'; data: RequirementInfo; time: number } | { kind: 'task'; data: TaskInfo; time: number };
                         const items: CardItem[] = [
@@ -2749,116 +2763,108 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
                         return items.map(item => {
                           if (item.kind === 'req') {
                             const req = item.data;
-                        const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
-                        const isAgent = req.source === 'agent';
-                        const needsReview = isAgent && req.status === 'pending';
-                        const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
-                        const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 10);
-                        return (
-                          <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
-                            onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
-                            onClick={() => handleSelectReq(req)} onKeyDown={e => e.key === 'Enter' && handleSelectReq(req)}
-                            className={`bg-brand-500/[0.06] border rounded-lg p-3 border-l-[3px] border-l-purple-500 transition-colors cursor-grab active:cursor-grabbing ${needsReview ? 'border-amber-500/40 ring-1 ring-amber-500/20' : 'border-brand-500/20'} hover:border-brand-400/50`}>
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="text-[9px] font-bold text-brand-500 bg-brand-500/15 px-1.5 py-0.5 rounded shrink-0">REQ</span>
-                                <span className="text-sm font-medium leading-snug truncate">{req.title}</span>
-                              </div>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${badge.cls}`}>{badge.label}</span>
-                            </div>
-                            {req.description && <div className="text-xs text-fg-tertiary mt-1 line-clamp-2">{req.description}</div>}
-                            {reqProject && (
-                              <div className="mt-1.5">
-                                <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[120px]" title={reqProject.name}>{reqProject.name}</span>
-                              </div>
-                            )}
-                            <div className="flex items-center justify-between mt-2">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs text-fg-tertiary">{req.priority}</span>
-                                <span className="text-[10px] text-fg-tertiary">by {creatorName}</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                {req.taskIds.length > 0 && <span className="text-[10px] text-brand-500/60 bg-brand-500/10 px-1.5 py-0.5 rounded">{req.taskIds.length} tasks</span>}
-                              </div>
-                            </div>
-                            {needsReview && (
-                              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-brand-500/10">
-                                <button onClick={e => { e.stopPropagation(); handleApproveReq(req.id); }}
-                                  className="px-2.5 py-1 bg-green-600 hover:bg-green-500 text-white text-[10px] rounded-md font-medium transition-colors">Approve</button>
-                                <button onClick={e => { e.stopPropagation(); setRejectReqId(req.id); }}
-                                  className="px-2.5 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-[10px] rounded-md font-medium transition-colors">Reject</button>
-                              </div>
-                            )}
-                          </div>
-                        );
-                          } else {
-                            const task = item.data;
-                        const subCount = task.subtasks?.length ?? 0;
-                        const badge = SUB_STATUS_BADGE[task.status];
-                        const isApprovalTask = task.status === 'pending';
-                        const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
-                        const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
-                        const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
-                        const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
-                        const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
-                        return (
-                          <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
-                            onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
-                            onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
-                            className={`border rounded-lg p-3 border-l-[3px] transition-colors ${
-                              isApprovalTask
-                                ? 'bg-amber-500/[0.04] border-amber-500/30 border-l-amber-500 cursor-pointer'
-                                : isSchedTask
-                                  ? `bg-blue-500/[0.03] border-blue-500/20 ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-blue-500/40 cursor-pointer`
-                                  : `bg-surface-elevated border-border-default ${PRIORITY_COLORS[task.priority] ?? ''} hover:border-brand-500/50 cursor-grab active:cursor-grabbing`
-                            }`}>
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                {isSchedTask && <span className="text-blue-600 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
-                                <div className="text-sm font-medium leading-snug truncate">{task.title}</div>
-                              </div>
-                              <div className="flex items-center gap-1 shrink-0">
-                                {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 whitespace-nowrap">{schedLabel}</span>}
-                                {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded ${badge.cls}`}>{badge.label}</span>}
-                              </div>
-                            </div>
-                            {task.description && <div className="text-xs text-fg-tertiary mt-1 line-clamp-2">{task.description}</div>}
-                            {(taskProjName || taskReqTitle) && (
-                              <div className="mt-1.5 flex flex-wrap gap-1">
-                                {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
-                                {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/10 text-brand-500 rounded truncate max-w-[120px]" title={taskReqTitle}># {taskReqTitle}</span>}
-                              </div>
-                            )}
-                            {task.blockedBy && task.blockedBy.length > 0 && (
-                              <div className="mt-1.5 flex items-center gap-1">
-                                <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded">⏳ {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}</span>
-                              </div>
-                            )}
-                            <div className="flex items-center justify-between mt-2">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs text-fg-tertiary">{task.priority}</span>
-                                {taskCreatorName && <span className="text-[10px] text-fg-tertiary" title={`Created by ${taskCreatorName}`}>by {taskCreatorName}</span>}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {subCount > 0 && <span className="text-[10px] text-fg-tertiary bg-surface-overlay/50 px-1.5 py-0.5 rounded">⋮ {subCount}</span>}
-                                {task.notes && task.notes.length > 0 && <span className="text-[10px] text-fg-tertiary">📝 {task.notes.length}</span>}
-                                {task.assignedAgentId && (
-                                  <span className="text-[10px] text-brand-500 bg-brand-500/10 px-1.5 py-0.5 rounded flex items-center gap-1">
-                                    <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
-                                    {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
-                                  </span>
+                            const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
+                            const isAgent = req.source === 'agent';
+                            const needsReview = isAgent && req.status === 'pending';
+                            const reqProject = viewMode === 'all' && req.projectId ? projects.find(p => p.id === req.projectId) : null;
+                            const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 10);
+                            const isSelected = selectedReq?.id === req.id;
+                            return (
+                              <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
+                                onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
+                                onClick={() => handleSelectReq(req)} onKeyDown={e => e.key === 'Enter' && handleSelectReq(req)}
+                                className={`group rounded-lg p-2.5 border border-transparent transition-all cursor-grab active:cursor-grabbing
+                                  ${needsReview ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15' : 'bg-surface-elevated/80 hover:bg-surface-elevated border-border-default/50 hover:border-brand-400/40'}
+                                  ${isSelected ? 'ring-2 ring-brand-500/50 border-brand-500/40' : ''}`}>
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className="w-1 h-1 rounded-full bg-purple-500 shrink-0" />
+                                  <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">REQ</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{badge.label}</span>
+                                </div>
+                                <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{req.title}</div>
+                                {req.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{req.description}</div>}
+                                <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
+                                  <div className="flex items-center gap-1.5">
+                                    {reqProject && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[90px]" title={reqProject.name}>{reqProject.name}</span>}
+                                    <span className="text-[10px] text-fg-tertiary">{req.priority}</span>
+                                    <span className="text-[10px] text-fg-quaternary">by {creatorName}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    {req.taskIds.length > 0 && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md">📋 {req.taskIds.length}</span>}
+                                  </div>
+                                </div>
+                                {needsReview && (
+                                  <div className="flex items-center gap-2 mt-2 pt-2 border-t border-amber-500/15">
+                                    <button onClick={e => { e.stopPropagation(); handleApproveReq(req.id); }}
+                                      className="flex-1 py-1 bg-green-600 hover:bg-green-500 text-white text-[10px] rounded-md font-medium transition-colors">Approve</button>
+                                    <button onClick={e => { e.stopPropagation(); setRejectReqId(req.id); }}
+                                      className="flex-1 py-1 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-[10px] rounded-md font-medium transition-colors">Reject</button>
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          </div>
-                        );
+                            );
+                          } else {
+                            const task = item.data;
+                            const subCount = task.subtasks?.length ?? 0;
+                            const badge = SUB_STATUS_BADGE[task.status];
+                            const isApprovalTask = task.status === 'pending';
+                            const isSchedTask = task.taskType === 'scheduled' && !!task.scheduleConfig;
+                            const schedLabel = isSchedTask ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? `Cron` : 'Scheduled') : null;
+                            const taskProjName = viewMode === 'all' && task.projectId ? projects.find(p => p.id === task.projectId)?.name : null;
+                            const taskReqTitle = task.requirementId ? allRequirements.find(r => r.id === task.requirementId)?.title : null;
+                            const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
+                            const isSelected = selectedTask?.id === task.id;
+                            const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
+                            return (
+                              <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
+                                onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
+                                onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
+                                className={`group rounded-lg p-2.5 border border-transparent transition-all ${
+                                  isApprovalTask
+                                    ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15 cursor-pointer'
+                                    : isSchedTask
+                                      ? 'bg-blue-500/[0.04] border-blue-500/20 hover:border-blue-400/40 cursor-pointer'
+                                      : 'bg-surface-elevated/80 hover:bg-surface-elevated border-border-default/50 hover:border-brand-400/40 cursor-grab active:cursor-grabbing'
+                                } ${isSelected ? 'ring-2 ring-brand-500/50 border-brand-500/40' : ''}`}>
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
+                                  {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
+                                  {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
+                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                </div>
+                                <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
+                                {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
+                                {(taskProjName || taskReqTitle || (task.blockedBy && task.blockedBy.length > 0)) && (
+                                  <div className="flex flex-wrap gap-1 mb-1.5">
+                                    {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded-md truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
+                                    {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/8 text-brand-500 rounded-md truncate max-w-[110px]" title={taskReqTitle}># {taskReqTitle}</span>}
+                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}</span>}
+                                  </div>
+                                )}
+                                <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
+                                  <div className="flex items-center gap-1.5">
+                                    {taskCreatorName && <span className="text-[10px] text-fg-quaternary" title={`by ${taskCreatorName}`}>by {taskCreatorName}</span>}
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    {subCount > 0 && <span className="text-[10px] text-fg-tertiary">⋮ {subCount}</span>}
+                                    {task.notes && task.notes.length > 0 && <span className="text-[10px] text-fg-tertiary">📝 {task.notes.length}</span>}
+                                    {task.assignedAgentId && (
+                                      <span className="text-[10px] text-brand-500 bg-brand-500/8 px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                        <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[agents.find(a => a.id === task.assignedAgentId)?.status ?? ''] ?? 'bg-gray-500'}`} />
+                                        {agents.find(a => a.id === task.assignedAgentId)?.name ?? task.assignedAgentId.slice(0, 8)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
                           }
                         });
                       })()}
                     </div>
                     {isOver && (
-                      <div className="mt-2 border-2 border-dashed border-brand-500/30 rounded-lg h-12 flex items-center justify-center shrink-0">
-                        <span className="text-xs text-brand-500/60">Drop here</span>
+                      <div className="mx-2 mb-2 border-2 border-dashed border-brand-500/25 rounded-lg h-10 flex items-center justify-center shrink-0">
+                        <span className="text-[11px] text-brand-500/50">Drop here</span>
                       </div>
                     )}
                   </div>
@@ -2904,6 +2910,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               onStatusChange={async (id, status) => {
                 try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
+              authUser={authUser}
             />
           ) : null}
         </div>
@@ -3219,7 +3226,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, authUser,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -3231,6 +3238,7 @@ function RequirementDetailPanel({
   onReject: (id: string) => void;
   onCancel: (id: string) => void;
   onStatusChange?: (id: string, status: string) => void;
+  authUser?: { id: string; name: string };
 }) {
   const isMobile = useIsMobile();
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
@@ -3334,7 +3342,7 @@ function RequirementDetailPanel({
           )}
 
           {/* Requirement Comments Thread */}
-          <RequirementCommentThread requirementId={req.id} agents={agents} authUser={undefined} />
+          <RequirementCommentThread requirementId={req.id} agents={agents} authUser={authUser} />
         </div>
 
         {/* Actions */}

@@ -76,6 +76,8 @@ const BASE_TOOL_NAMES = new Set([
   'task_create',
   'task_list',
   'task_update',
+  'task_comment',
+  'requirement_comment',
   'memory_save',
   'memory_search',
   'deliverable_search',

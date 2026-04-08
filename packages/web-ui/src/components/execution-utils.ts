@@ -26,6 +26,7 @@ export interface ToolCallInfo {
 
 export type ExecEntry =
   | { type: 'text'; content: string; time?: string; timestamp?: string }
+  | { type: 'thinking'; content: string; time?: string; timestamp?: string }
   | { type: 'tool'; info: ToolCallInfo; time?: string; key?: string; timestamp?: string }
   | { type: 'status'; content: string; time?: string; timestamp?: string }
   | { type: 'error'; content: string; time?: string; timestamp?: string };
@@ -267,6 +268,7 @@ export function activityLogToEntry(entry: AgentActivityLogEntry): ExecEntry | nu
   const meta = entry.metadata as Record<string, unknown> | undefined;
   switch (entry.type) {
     case 'text':
+      if (meta?.isThinking) return { type: 'thinking', content: entry.content, time };
       return { type: 'text', content: entry.content, time };
     case 'status':
       return { type: 'status', content: entry.content, time };
@@ -323,6 +325,7 @@ export function streamEntryToExecEntry(entry: ExecutionStreamEntryUI): ExecEntry
   const meta = entry.metadata;
   switch (entry.type) {
     case 'text':
+      if (meta?.isThinking) return { type: 'thinking', content: entry.content, time, timestamp: ts };
       return { type: 'text', content: entry.content, time, timestamp: ts };
     case 'status':
       return { type: 'status', content: entry.content, time, timestamp: ts };

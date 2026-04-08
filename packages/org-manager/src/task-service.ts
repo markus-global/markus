@@ -183,7 +183,7 @@ export class TaskService {
       },
       timestamp: new Date().toISOString(),
     });
-    // Notify mentioned agents
+    // Notify mentioned agents — they can use task_comment tool to reply
     if (mentions && mentions.length > 0 && this.agentManager) {
       const task = this.tasks.get(taskId);
       const taskTitle = task?.title ?? taskId;
@@ -191,7 +191,7 @@ export class TaskService {
         try {
           const agent = this.agentManager.getAgent(mentionedId);
           if (agent) {
-            const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${content}\n\n(Task ID: ${taskId})`;
+            const notif = `You were mentioned by ${authorName} in a comment on task "${taskTitle}":\n\n${content}\n\nIf you want to reply, use the task_comment tool with task_id "${taskId}". (Task ID: ${taskId})`;
             agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
               .catch(() => {});
           }
@@ -230,13 +230,13 @@ export class TaskService {
       },
       timestamp: new Date().toISOString(),
     });
-    // Notify mentioned agents
+    // Notify mentioned agents — they can use requirement_comment tool to reply
     if (mentions && mentions.length > 0 && this.agentManager) {
       for (const mentionedId of mentions) {
         try {
           const agent = this.agentManager.getAgent(mentionedId);
           if (agent) {
-            const notif = `You were mentioned by ${authorName} in a comment on requirement "${requirementId}":\n\n${content}`;
+            const notif = `You were mentioned by ${authorName} in a comment on requirement "${requirementId}":\n\n${content}\n\nIf you want to reply, use the requirement_comment tool with requirement_id "${requirementId}". (Requirement ID: ${requirementId})`;
             agent.handleMessage(notif, undefined, { name: authorName, role: 'user' }, { ephemeral: true, maxHistory: 5, scenario: 'a2a' })
               .catch(() => {});
           }
