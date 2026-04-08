@@ -19,12 +19,17 @@ const SESSION_KEY = '_browserSessionId';
  *
  * Ownership granularity is **per-session**: a single agent may run multiple
  * concurrent sessions (chat, tasks, heartbeats) each with their own set of
- * owned browser tabs. The session ID is injected into tool args by the
- * agent as `_browserSessionId` and stripped before reaching the MCP server.
+ * owned browser tabs.
+ *
+ * Tab contention prevention: since sessions within one agent share the same
+ * MCP process, the "currently selected tab" is shared state. To prevent
+ * session A's tool from accidentally operating on session B's tab, all
+ * browser operations acquire a per-agent mutex and auto-select the session's
+ * current page before executing. This makes "select → operate" atomic.
  *
  * Defense-in-depth:
  *  1. new_page  → registers the tab's numeric ID as owned by this session
- *  2. list_pages → annotates every page with ownership info
+ *  2. list_pages → annotates every page with ownership info (no lock needed)
  *  3. select_page / close_page → blocked unless targeting an owned page ID
  *  4. navigate_page → if session has no owned pages, transparently calls
  *     new_page with the target URL
@@ -32,6 +37,7 @@ const SESSION_KEY = '_browserSessionId';
  *     if args contain a `pageId`, it must be owned
  *  6. ALL tool responses → "## Pages" section is annotated with ownership
  *     tags so agents always know which tabs they can operate on
+ *  7. Per-agent mutex ensures "select_page → tool" is atomic across sessions
  */
 export class BrowserSessionManager {
   /**
@@ -40,10 +46,56 @@ export class BrowserSessionManager {
    */
   private ownedPages = new Map<string, Set<number>>();
 
+  /** ownerKey → the page ID this session is currently working on. */
+  private currentPage = new Map<string, number>();
+
   /**
-   * Extract the owner key from agentId + session info in args.
-   * Also strips the session key from args so MCP servers never see it.
+   * Per-agent mutex: only one browser operation runs at a time per MCP process.
+   * This prevents session A's "select → operate" from being interleaved with
+   * session B's operations.
    */
+  private agentLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Per-agent reference to the original (unwrapped) select_page handler.
+   * Stored during wrapToolHandlers so auto-select can call it without
+   * going through the ownership check wrapper.
+   */
+  private selectPageHandlers = new Map<string, AgentToolHandler>();
+
+  /**
+   * Acquire a per-agent mutex.  Operations are serialized per-agent so that
+   * the "select_page → tool" sequence is atomic.
+   */
+  private async withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.agentLocks.get(agentId) ?? Promise.resolve();
+    let release: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    this.agentLocks.set(agentId, gate);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release!();
+    }
+  }
+
+  /**
+   * Ensure the MCP server's selected tab matches this session's current page.
+   * Called inside the agent lock before any tool that operates on the active tab.
+   */
+  private async ensureCorrectPage(agentId: string, ownerKey: string): Promise<void> {
+    const pageId = this.currentPage.get(ownerKey);
+    if (pageId === undefined) return;
+    const selectHandler = this.selectPageHandlers.get(agentId);
+    if (!selectHandler) return;
+    try {
+      await selectHandler.execute({ pageId });
+    } catch (err) {
+      log.warn(`Auto-select page ${pageId} failed for ${ownerKey}: ${err}`);
+    }
+  }
+
   private extractOwnerKey(agentId: string, args: Record<string, unknown>): string {
     const sessionId = args[SESSION_KEY] as string | undefined;
     delete args[SESSION_KEY];
@@ -61,7 +113,6 @@ export class BrowserSessionManager {
 
   /**
    * Parse page entries from the "## Pages" section of an MCP text response.
-   *
    * Format: <id>: <url> [selected]? [isolatedContext=<name>]?
    */
   private parsePageEntries(text: string): Array<{ id: number; url: string; selected: boolean }> {
@@ -109,6 +160,11 @@ export class BrowserSessionManager {
     const findHandler = (name: string) =>
       handlers.find((h) => (h.name.split('__').pop() ?? h.name) === name);
     const newPageHandler = findHandler('new_page');
+    const selectPageHandler = findHandler('select_page');
+
+    if (selectPageHandler) {
+      this.selectPageHandlers.set(agentId, selectPageHandler);
+    }
 
     return handlers.map((h) => {
       const baseName = h.name.split('__').pop() ?? h.name;
@@ -130,28 +186,32 @@ export class BrowserSessionManager {
   }
 
   /**
-   * Track the newly created page as owned by this session.
+   * Track the newly created page as owned by this session and set it as current.
    */
   private wrapNewPage(handler: AgentToolHandler, agentId: string): AgentToolHandler {
     return {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
-        const result = await handler.execute(args);
-        const pages = this.parsePageEntries(result);
-        const owned = this.getOwned(ownerKey);
-        const newPage = pages.find((p) => p.selected);
-        if (newPage) {
-          owned.add(newPage.id);
-          log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
-        } else {
-          log.warn(`new_page response did not contain a [selected] page for ${ownerKey}`);
-        }
-        return this.annotateResponse(result, ownerKey);
+        return this.withAgentLock(agentId, async () => {
+          const result = await handler.execute(args);
+          const pages = this.parsePageEntries(result);
+          const owned = this.getOwned(ownerKey);
+          const newPage = pages.find((p) => p.selected);
+          if (newPage) {
+            owned.add(newPage.id);
+            this.currentPage.set(ownerKey, newPage.id);
+            log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
+          } else {
+            log.warn(`new_page response did not contain a [selected] page for ${ownerKey}`);
+          }
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
 
+  /** list_pages is read-only: no lock needed, just annotate. */
   private wrapListPages(handler: AgentToolHandler, agentId: string): AgentToolHandler {
     return {
       ...handler,
@@ -174,8 +234,13 @@ export class BrowserSessionManager {
           log.warn(msg, { ownerKey, pageId });
           return JSON.stringify({ error: msg });
         }
-        const result = await handler.execute(args);
-        return this.annotateResponse(result, ownerKey);
+        return this.withAgentLock(agentId, async () => {
+          const result = await handler.execute(args);
+          if (pageId !== undefined) {
+            this.currentPage.set(ownerKey, pageId);
+          }
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
@@ -191,20 +256,32 @@ export class BrowserSessionManager {
           log.warn(msg, { ownerKey, pageId });
           return JSON.stringify({ error: msg });
         }
-        const result = await handler.execute(args);
-        if (pageId !== undefined) {
-          this.getOwned(ownerKey).delete(pageId);
-        }
-        return this.annotateResponse(result, ownerKey);
+        return this.withAgentLock(agentId, async () => {
+          const result = await handler.execute(args);
+          if (pageId !== undefined) {
+            this.getOwned(ownerKey).delete(pageId);
+            if (this.currentPage.get(ownerKey) === pageId) {
+              const remaining = this.getOwned(ownerKey);
+              const next = remaining.size > 0 ? [...remaining][remaining.size - 1] : undefined;
+              if (next !== undefined) {
+                this.currentPage.set(ownerKey, next);
+              } else {
+                this.currentPage.delete(ownerKey);
+              }
+            }
+          }
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
 
   /**
-   * Wrap navigate_page with auto-creation of a new tab.
+   * Wrap navigate_page with auto-creation + auto-select.
    *
-   * When the session has no owned pages, transparently calls new_page
-   * with the target URL instead.
+   * When the session has no owned pages, transparently calls new_page.
+   * When it does, acquires the lock and selects the session's current page
+   * before navigating, preventing another session's tab from being overwritten.
    */
   private wrapNavigatePage(
     handler: AgentToolHandler,
@@ -232,37 +309,44 @@ export class BrowserSessionManager {
 
           log.info(`Session ${ownerKey} called navigate_page with no owned pages -- auto-creating via new_page`, { url });
 
-          const newPageArgs: Record<string, unknown> = { url };
-          if (args.timeout) newPageArgs.timeout = args.timeout;
+          return this.withAgentLock(agentId, async () => {
+            const newPageArgs: Record<string, unknown> = { url };
+            if (args.timeout) newPageArgs.timeout = args.timeout;
 
-          try {
-            const result = await newPageHandler.execute(newPageArgs);
-            const pages = this.parsePageEntries(result);
-            const newPage = pages.find((p) => p.selected);
+            try {
+              const result = await newPageHandler.execute(newPageArgs);
+              const pages = this.parsePageEntries(result);
+              const newPage = pages.find((p) => p.selected);
 
-            if (newPage) {
-              owned.add(newPage.id);
-              log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
-            } else {
-              log.warn(`Auto-created page but could not determine its ID for ${ownerKey}`);
+              if (newPage) {
+                owned.add(newPage.id);
+                this.currentPage.set(ownerKey, newPage.id);
+                log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
+              } else {
+                log.warn(`Auto-created page but could not determine its ID for ${ownerKey}`);
+              }
+
+              return this.annotateResponse(result, ownerKey);
+            } catch (err) {
+              const msg = `Failed to auto-create new tab: ${err}`;
+              log.error(msg, { ownerKey });
+              return JSON.stringify({ error: msg });
             }
-
-            return this.annotateResponse(result, ownerKey);
-          } catch (err) {
-            const msg = `Failed to auto-create new tab: ${err}`;
-            log.error(msg, { ownerKey });
-            return JSON.stringify({ error: msg });
-          }
+          });
         }
 
-        const result = await handler.execute(args);
-        return this.annotateResponse(result, ownerKey);
+        return this.withAgentLock(agentId, async () => {
+          await this.ensureCorrectPage(agentId, ownerKey);
+          const result = await handler.execute(args);
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
 
   /**
    * Generic guard for ALL interaction tools (click, fill, snapshot, etc.).
+   * Acquires the agent lock and auto-selects the session's current page.
    */
   private wrapGenericTool(handler: AgentToolHandler, agentId: string, toolName: string): AgentToolHandler {
     return {
@@ -281,8 +365,11 @@ export class BrowserSessionManager {
           log.warn(msg, { ownerKey, pageId, toolName });
           return JSON.stringify({ error: msg });
         }
-        const result = await handler.execute(args);
-        return this.annotateResponse(result, ownerKey);
+        return this.withAgentLock(agentId, async () => {
+          await this.ensureCorrectPage(agentId, ownerKey);
+          const result = await handler.execute(args);
+          return this.annotateResponse(result, ownerKey);
+        });
       },
     };
   }
@@ -298,8 +385,11 @@ export class BrowserSessionManager {
       if (key === agentId || key.startsWith(prefix)) {
         total += owned.size;
         this.ownedPages.delete(key);
+        this.currentPage.delete(key);
       }
     }
+    this.agentLocks.delete(agentId);
+    this.selectPageHandlers.delete(agentId);
     if (total > 0) {
       log.info(`Cleaning up ${total} browser page(s) for agent ${agentId}`);
     }

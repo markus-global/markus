@@ -427,6 +427,15 @@ export interface TaskLogEntry {
   createdAt: string;
 }
 
+export interface RoundSummary {
+  round: number;
+  logCount: number;
+  toolCount: number;
+  firstAt: string;
+  lastAt: string;
+  status: string;
+}
+
 export interface TaskComment {
   id: string;
   taskId: string;
@@ -803,7 +812,8 @@ export const api = {
     deleteSubtask: (taskId: string, subtaskId: string) =>
       request(`/tasks/${taskId}/subtasks/${subtaskId}`, { method: 'DELETE' }),
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
-    getLogs: (id: string) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs`),
+    getLogs: (id: string, round?: number) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs${round != null ? `?round=${round}` : ''}`),
+    getLogsSummary: (id: string) => request<{ rounds: RoundSummary[] }>(`/tasks/${id}/logs/summary`),
     accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: reviewerId ?? 'human' }) }),
     revision: (id: string, reason: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: reviewerId ?? 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),

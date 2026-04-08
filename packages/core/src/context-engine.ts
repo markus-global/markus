@@ -1422,10 +1422,14 @@ export class ContextEngine {
     }
 
     if (query) {
-      const searchResults = memory.search(query);
-      const searchIds = new Set(searchResults.map(m => m.id));
-      const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
-      return combined.slice(0, this.config.memorySearchTopK * 2);
+      try {
+        const searchResults = memory.search(query);
+        const searchIds = new Set(searchResults.map(m => m.id));
+        const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
+        return combined.slice(0, this.config.memorySearchTopK * 2);
+      } catch {
+        // fall through to facts-only
+      }
     }
 
     return facts;

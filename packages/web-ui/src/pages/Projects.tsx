@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo, type DragEvent } from 'react';
-import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo } from '../api.ts';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, taskLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, formatLogTime, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
@@ -207,245 +207,101 @@ const STATUS_DOT: Record<string, string> = {
 
 type ViewMode = 'all' | 'project';
 
+// ─── Comment Bubble ──────────────────────────────────────────────────────────────
+
+function CommentBubble({ comment }: { comment: TaskComment }) {
+  const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
+  const ts = new Date(comment.createdAt);
+  const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return (
+    <div className={`flex gap-2 my-1.5 ${isAgent ? '' : 'flex-row-reverse'}`}>
+      <div className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${isAgent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-blue-500/20 text-blue-400'}`}>
+        {isAgent ? '🤖' : '👤'}
+      </div>
+      <div className={`max-w-[85%] px-2.5 py-1.5 rounded-lg text-xs ${isAgent ? 'bg-indigo-500/10 border border-indigo-500/20' : 'bg-blue-500/10 border border-blue-500/20'}`}>
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <span className={`font-medium ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}>{comment.authorName}</span>
+          <span className="text-fg-tertiary text-[10px]">{timeStr}</span>
+        </div>
+        <div className="text-fg-primary whitespace-pre-wrap break-words">{comment.content}</div>
+        {comment.attachments?.map((att, i) => (
+          att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
-const MemoCommentBubble = memo(function CommentBubble({ comment }: { comment: TaskComment }) {
-  return (
-    <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-3 py-2.5 my-1.5">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="w-5 h-5 rounded-full bg-blue-600/30 flex items-center justify-center text-[10px] text-blue-600 font-bold shrink-0">
-          {comment.authorType === 'human' ? '👤' : '🤖'}
-        </span>
-        <span className="text-[11px] font-medium text-blue-600">{comment.authorName}</span>
-        <span className="text-[10px] text-fg-tertiary ml-auto">{new Date(comment.createdAt).toLocaleString()}</span>
-      </div>
-      <MarkdownMessage content={comment.content} className="text-sm text-fg-secondary" />
-      {comment.attachments?.map((att, i) => (
-        att.type === 'image' ? (
-          <img key={i} src={att.url} alt={att.name} className="mt-2 max-w-full max-h-48 rounded-lg border border-border-default" />
-        ) : null
-      ))}
-    </div>
-  );
-});
-
-// ─── Execution-round-based types ─────────────────────────────────────────────
-
-type TimelineItem =
-  | { kind: 'log'; entry: ExecEntry; time: number; executionRound?: number }
-  | { kind: 'comment'; entry: TaskComment; time: number };
-
-interface RoundGroup {
-  id: number;
-  roundNumber: number;
-  startTime: string;
-  endTime?: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-  items: TimelineItem[];
-  preComments: TimelineItem[];
-}
-
-function getExecutionRound(item: TimelineItem): number {
-  if (item.kind === 'log') return (item as any).executionRound ?? 1;
-  return 0; // comments have no round — assigned to nearest
-}
-
-function groupTimelineIntoRounds(timeline: TimelineItem[]): RoundGroup[] {
-  const rounds: RoundGroup[] = [];
-  let currentRound: RoundGroup | null = null;
-  let pendingComments: TimelineItem[] = [];
-  let nextId = 1;
-
-  for (const item of timeline) {
-    if (item.kind === 'comment') {
-      if (currentRound) currentRound.items.push(item);
-      else pendingComments.push(item);
-      continue;
-    }
-
-    const round = getExecutionRound(item);
-
-    // New round boundary: round number changed
-    if (item.entry.type === 'status' && (item.entry.content === 'started' || item.entry.content === 'resumed')) {
-      if (!currentRound || round !== currentRound.roundNumber) {
-        currentRound = {
-          id: nextId++,
-          roundNumber: round,
-          startTime: item.entry.timestamp ?? item.entry.time ?? '',
-          status: 'running',
-          items: [],
-          preComments: [...pendingComments],
-        };
-        pendingComments = [];
-        rounds.push(currentRound);
-      }
-      // 'resumed' after retry: add as informational item within the round
-      if (item.entry.content === 'resumed') {
-        currentRound.items.push(item);
-      }
-      continue;
-    }
-
-    // Terminal status for the round
-    if (item.entry.type === 'status' && ['completed', 'failed', 'cancelled', 'execution_finished'].includes(item.entry.content)) {
-      if (currentRound) {
-        const terminal = item.entry.content === 'execution_finished' ? 'completed' : item.entry.content;
-        currentRound.status = terminal as RoundGroup['status'];
-        currentRound.endTime = item.entry.timestamp ?? item.entry.time;
-      }
-      continue;
-    }
-
-    if (currentRound) {
-      currentRound.items.push(item);
-    }
-  }
-
-  if (currentRound && currentRound.status === 'running') {
-    const hasRecentActivity = currentRound.items.length > 0;
-    if (!hasRecentActivity) currentRound.status = 'interrupted';
-  }
-  if (pendingComments.length > 0 && rounds.length > 0) {
-    rounds[rounds.length - 1]!.items.push(...pendingComments);
-  }
-  // If no rounds were created but there are timeline items, create a default round
-  if (rounds.length === 0 && timeline.length > 0) {
-    rounds.push({
-      id: nextId++,
-      roundNumber: 1,
-      startTime: timeline[0]!.kind === 'log' ? (timeline[0]!.entry.timestamp ?? '') : new Date(timeline[0]!.time).toISOString(),
-      status: 'running',
-      items: [...pendingComments, ...timeline],
-      preComments: [],
-    });
-  }
-  return rounds;
-}
-
-function formatDurationShort(startTime: string, endTime?: string): string {
-  if (!endTime) return '';
-  const ms = new Date(endTime).getTime() - new Date(startTime).getTime();
-  if (ms < 1000) return '<1s';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-
-const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  running: { label: 'Running', color: 'text-blue-600', bg: 'bg-blue-500/15' },
-  completed: { label: 'Completed', color: 'text-green-600', bg: 'bg-green-500/15' },
-  failed: { label: 'Failed', color: 'text-red-500', bg: 'bg-red-500/15' },
-  cancelled: { label: 'Cancelled', color: 'text-fg-secondary', bg: 'bg-gray-500/15' },
-  interrupted: { label: 'Interrupted', color: 'text-amber-600', bg: 'bg-amber-500/15' },
-};
-
-const RoundSection = memo(function RoundSection({ round, expanded, onToggle, isLive, streamingText, isExecuting, totalRounds }: {
-  round: RoundGroup;
-  expanded: boolean;
-  onToggle: () => void;
-  isLive: boolean;
-  streamingText?: string;
-  isExecuting?: boolean;
-  totalRounds: number;
-}) {
-  const sc = statusConfig[round.status] ?? statusConfig.running!;
-  const duration = formatDurationShort(round.startTime, round.endTime);
-  const startDate = formatLogTime(round.startTime);
-  const toolCount = round.items.filter(i => i.kind === 'log' && i.entry.type === 'tool').length;
-  const errorCount = round.items.filter(i => i.kind === 'log' && i.entry.type === 'error').length;
-
-  return (
-    <div className="border-b border-border-default/60 last:border-b-0">
-      {round.preComments.length > 0 && (
-        <div className="px-4 py-2">
-          {round.preComments.map((item, i) =>
-            item.kind === 'comment' ? <MemoCommentBubble key={`pc-${item.entry.id}`} comment={item.entry} /> : null
-          )}
-        </div>
-      )}
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-surface-elevated/40 transition-colors text-left min-w-0 overflow-hidden"
-      >
-        <svg className={`w-3 h-3 text-fg-tertiary shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} viewBox="0 0 12 12" fill="currentColor">
-          <path d="M4 2l5 4-5 4V2z" />
-        </svg>
-        <span className="text-xs font-medium text-fg-secondary shrink-0">{totalRounds > 1 ? `Round #${round.id}` : 'Execution'}</span>
-        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sc.bg} ${sc.color}`}>{sc.label}</span>
-        {round.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />}
-        <span className="text-[10px] text-fg-tertiary ml-auto flex items-center gap-2 shrink-0 truncate">
-          {toolCount > 0 && <span>{toolCount} tools</span>}
-          {errorCount > 0 && <span className="text-red-500">{errorCount} err</span>}
-          {duration && <span>{duration}</span>}
-          <span>{startDate}</span>
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-4 pb-3 space-y-0.5 overflow-x-hidden min-w-0">
-          {round.items.map((item, i) =>
-            item.kind === 'comment'
-              ? <MemoCommentBubble key={`c-${item.entry.id}`} comment={item.entry} />
-              : <MemoExecEntryRow key={`l-${(item.entry.type === 'tool' ? item.entry.key : undefined) ?? `${item.entry.timestamp}-${i}`}`} entry={item.entry} showTime />
-          )}
-          {isLive && streamingText && <StreamingText content={streamingText} />}
-          {isLive && isExecuting && !streamingText && <ThinkingDots label="Thinking" />}
-        </div>
-      )}
-    </div>
-  );
-});
-
-function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId: string; isVisible: boolean; isRunning: boolean; authUser?: { id: string; name: string } }) {
-  const [logs, setLogs] = useState<TaskLogEntry[]>([]);
+function TaskExecutionLogs({ taskId, isRunning, authUser }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string } }) {
+  const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
+  const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
+  const [loadingRounds, setLoadingRounds] = useState<Set<number>>(new Set());
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [isExecuting, setIsExecuting] = useState(isRunning);
   const [loading, setLoading] = useState(true);
+  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
-  const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
-  const [roundsPage, setRoundsPage] = useState(1);
-  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
-  const ROUNDS_PAGE_SIZE = 20;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
-  const projAtBottomRef = useRef(true);
-
-  useEffect(() => {
-    const sentinel = endRef.current;
-    if (!sentinel) return;
-    let scrollParent: HTMLElement | null = sentinel.parentElement;
-    while (scrollParent && scrollParent.scrollHeight <= scrollParent.clientHeight) {
-      scrollParent = scrollParent.parentElement;
-    }
-    if (!scrollParent) return;
-    const el = scrollParent;
-    const handleScroll = () => {
-      projAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, []);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 
+  // On mount: fetch rounds summary + latest round logs + comments (lightweight)
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      api.tasks.getLogs(taskId).catch(() => ({ logs: [] as TaskLogEntry[] })),
+      api.tasks.getLogsSummary(taskId).catch(() => ({ rounds: [] as RoundSummary[] })),
       api.tasks.getComments(taskId).catch(() => ({ comments: [] as TaskComment[] })),
-    ]).then(([logData, commentData]) => {
-      setLogs(logData.logs);
+    ]).then(([summaryData, commentData]) => {
+      const summaries = summaryData.rounds;
+      setRoundsSummary(summaries);
       setComments(commentData.comments);
-      setLoading(false);
+      if (summaries.length === 0) {
+        setLoading(false);
+        return;
+      }
+      const latestRound = summaries[summaries.length - 1]!.round;
+      setExpandedRounds(new Set([latestRound]));
+      api.tasks.getLogs(taskId, latestRound)
+        .catch(() => ({ logs: [] as TaskLogEntry[] }))
+        .then(logData => {
+          setRoundLogs(new Map([[latestRound, logData.logs]]));
+          setLoading(false);
+        });
     });
   }, [taskId]);
 
+  // Load a specific round's logs on demand
+  const loadRound = useCallback((round: number) => {
+    if (roundLogs.has(round) || loadingRounds.has(round)) return;
+    setLoadingRounds(prev => new Set(prev).add(round));
+    api.tasks.getLogs(taskId, round)
+      .catch(() => ({ logs: [] as TaskLogEntry[] }))
+      .then(data => {
+        setRoundLogs(prev => new Map(prev).set(round, data.logs));
+        setLoadingRounds(prev => { const n = new Set(prev); n.delete(round); return n; });
+      });
+  }, [taskId, roundLogs, loadingRounds]);
+
+  const toggleRound = useCallback((round: number) => {
+    setExpandedRounds(prev => {
+      const next = new Set(prev);
+      if (next.has(round)) {
+        next.delete(round);
+      } else {
+        next.add(round);
+        if (!roundLogs.has(round)) loadRound(round);
+      }
+      return next;
+    });
+  }, [roundLogs, loadRound]);
+
+  // WS: append live logs to the current (latest) round
   useEffect(() => {
     const unsubLog = wsClient.on('task:log', (event) => {
       const p = event.payload;
@@ -457,15 +313,30 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
         executionRound: p.executionRound as number | undefined,
         createdAt: p.createdAt as string,
       };
-      setLogs(prev => {
-        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
-        if (!entry.id && prev.some(e => e.seq === entry.seq && e.type === entry.type)) return prev;
-        return [...prev, entry];
+      const round = entry.executionRound ?? 1;
+
+      // Update summary if this round is new
+      setRoundsSummary(prev => {
+        const existing = prev.find(r => r.round === round);
+        if (existing) return prev;
+        return [...prev, { round, logCount: 0, toolCount: 0, firstAt: entry.createdAt, lastAt: entry.createdAt, status: 'running' }];
       });
+
+      // Auto-expand and append to the round
+      setExpandedRounds(prev => { if (prev.has(round)) return prev; return new Set(prev).add(round); });
+      setRoundLogs(prev => {
+        const existing = prev.get(round) ?? [];
+        if (entry.id && existing.some(e => e.id === entry.id)) return prev;
+        return new Map(prev).set(round, [...existing, entry]);
+      });
+
       if (entry.type === 'text') setStreamingText('');
       if (entry.type === 'status') {
         if (entry.content === 'started' || entry.content === 'resumed') setIsExecuting(true);
-        else if (['completed', 'failed', 'cancelled', 'execution_finished'].includes(entry.content)) setIsExecuting(false);
+        else if (['completed', 'failed', 'cancelled', 'execution_finished'].includes(entry.content)) {
+          setIsExecuting(false);
+          setRoundsSummary(prev => prev.map(r => r.round === round ? { ...r, status: entry.content } : r));
+        }
       }
       if (entry.type === 'error') setIsExecuting(false);
     });
@@ -483,63 +354,20 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     return () => { unsubLog(); unsubDelta(); unsubComment(); };
   }, [taskId]);
 
-  // Build a map from seq -> executionRound for log entries
-  const seqToRound = useMemo(() => {
-    const m = new Map<number, number>();
-    for (const log of logs) {
-      if (log.executionRound) m.set(log.seq, log.executionRound);
-    }
-    return m;
-  }, [logs]);
+  // All logs from loaded rounds merged (for compact card / single-round view)
+  const allLoadedLogs = useMemo(() => {
+    const all: TaskLogEntry[] = [];
+    for (const [, logs] of roundLogs) all.push(...logs);
+    all.sort((a, b) => a.seq - b.seq);
+    return all;
+  }, [roundLogs]);
 
-  const timeline = useMemo(() => {
-    const rawPairs = logs
-      .map(log => ({ log, entry: taskLogToEntry(log) }))
-      .filter((p): p is { log: TaskLogEntry; entry: ExecEntry } => p.entry != null);
-    const filteredEntries = filterCompletedStarts(rawPairs.map(p => p.entry));
-    const enrichedEntries = attachSubagentLogsToEntries(logs, filteredEntries);
-    const enrichedSet = new Map(enrichedEntries.map((e, i) => [filteredEntries[i], e]));
-    const kept = new Set(filteredEntries);
-    const items: TimelineItem[] = [
-      ...rawPairs.filter(p => kept.has(p.entry)).map(({ log, entry }) => ({
-        kind: 'log' as const,
-        entry: enrichedSet.get(entry) ?? entry,
-        time: new Date(entry.timestamp ?? entry.time ?? 0).getTime(),
-        executionRound: log.executionRound ?? seqToRound.get(log.seq) ?? 1,
-      })),
-      ...comments.map(entry => ({ kind: 'comment' as const, entry, time: new Date(entry.createdAt).getTime() })),
-    ];
-    items.sort((a, b) => a.time - b.time);
-    return items;
-  }, [logs, comments, seqToRound]);
+  const streamEntries = useMemo<ExecutionStreamEntryUI[]>(() =>
+    allLoadedLogs.map(l => taskLogToStreamEntry(l)),
+    [allLoadedLogs],
+  );
 
-  const rounds = useMemo(() => groupTimelineIntoRounds(timeline), [timeline]);
-
-  // Auto-expand the latest round
-  useEffect(() => {
-    if (rounds.length > 0) {
-      setExpandedRounds(prev => {
-        const lastId = rounds[rounds.length - 1]!.id;
-        if (prev.has(lastId)) return prev;
-        return new Set([lastId]);
-      });
-    }
-  }, [rounds.length]);
-
-  useEffect(() => {
-    if (isVisible && isExecuting) {
-      topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }, [rounds.length, isVisible, isExecuting]);
-
-  const toggleRound = useCallback((roundId: number) => {
-    setExpandedRounds(prev => {
-      const next = new Set(prev);
-      if (next.has(roundId)) next.delete(roundId);
-      else next.add(roundId);
-      return next;
-    });
-  }, []);
+  const hasMultipleRounds = roundsSummary.length > 1;
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -595,18 +423,8 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     </div>
   );
 
-  const streamEntries = useMemo<ExecutionStreamEntryUI[]>(() =>
-    logs.map(l => taskLogToStreamEntry(l)),
-    [logs],
-  );
-
-  const hasMultipleRounds = useMemo(() => {
-    const rset = new Set(streamEntries.filter(e => e.executionRound != null).map(e => e.executionRound!));
-    return rset.size > 1;
-  }, [streamEntries]);
-
   if (loading) return <div className="flex-1 flex items-center justify-center text-xs text-fg-tertiary">Loading logs…</div>;
-  if (rounds.length === 0 && !streamingText) {
+  if (roundsSummary.length === 0 && !streamingText) {
     return (
       <div className="flex flex-col flex-1">
         <div className="flex-1 flex items-center justify-center">
@@ -620,34 +438,128 @@ function TaskExecutionLogs({ taskId, isVisible, isRunning, authUser }: { taskId:
     );
   }
 
-  if (viewMode === 'compact') {
+  // Single round — render log entries with comments interleaved chronologically
+  if (!hasMultipleRounds) {
+    const exec = streamEntries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
+    const filtered = filterCompletedStarts(exec);
+
+    type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
+    const timeline: TimelineItem[] = [
+      ...filtered.map(e => ({ kind: 'entry' as const, entry: e, ts: e.timestamp ? new Date(e.timestamp).getTime() : 0 })),
+      ...comments.map(c => ({ kind: 'comment' as const, comment: c, ts: new Date(c.createdAt).getTime() })),
+    ];
+    timeline.sort((a, b) => a.ts - b.ts);
+
     return (
       <div className="flex flex-col flex-1">
-        <div className="px-4 py-3 flex-1">
-          <CompactExecutionCard
-            entries={streamEntries}
-            streamingText={streamingText}
-            isActive={isExecuting}
-            onExpand={() => setViewMode('full')}
-            showRounds={hasMultipleRounds}
-          />
+        <div className="px-4 py-3 flex-1 space-y-0.5">
+          {timeline.map((item, i) =>
+            item.kind === 'comment'
+              ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />
+              : <MemoExecEntryRow key={`e-${i}`} entry={item.entry} showTime isLast={i === timeline.length - 1} />
+          )}
+          {isExecuting && streamingText && <StreamingText content={streamingText} />}
+          {isExecuting && !streamingText && filtered.length > 0 && <ThinkingDots />}
         </div>
         {commentInput}
       </div>
     );
   }
 
+  // Assign comments to rounds based on timestamps
+  const getCommentsForRound = (rs: RoundSummary, nextRs?: RoundSummary) => {
+    const roundStart = rs.firstAt ? new Date(rs.firstAt).getTime() : 0;
+    const roundEnd = nextRs?.firstAt ? new Date(nextRs.firstAt).getTime() : Infinity;
+    return comments.filter(c => {
+      const ct = new Date(c.createdAt).getTime();
+      return ct >= roundStart && ct < roundEnd;
+    });
+  };
+  const commentsBeforeFirstRound = roundsSummary.length > 0
+    ? comments.filter(c => new Date(c.createdAt).getTime() < new Date(roundsSummary[0]!.firstAt).getTime())
+    : [];
+
+  // Multiple rounds — show round headers with lazy loading + comments
   return (
     <div className="flex flex-col flex-1">
-      <div className="px-4 py-3 flex-1">
-        <FullExecutionLog
-          entries={streamEntries}
-          streamingText={streamingText}
-          isActive={isExecuting}
-          onCollapse={() => setViewMode('compact')}
-          showRounds={hasMultipleRounds}
-          embedded
-        />
+      <div ref={topRef} />
+      <div className="px-4 py-3 flex-1 space-y-2">
+        {commentsBeforeFirstRound.length > 0 && (
+          <div className="space-y-0.5">
+            {commentsBeforeFirstRound.map(c => <CommentBubble key={c.id} comment={c} />)}
+          </div>
+        )}
+        {roundsSummary.map((rs, rsIdx) => {
+          const isExpanded = expandedRounds.has(rs.round);
+          const isLatest = rs.round === roundsSummary[roundsSummary.length - 1]!.round;
+          const logs = roundLogs.get(rs.round);
+          const isLoading = loadingRounds.has(rs.round);
+          const roundComments = getCommentsForRound(rs, roundsSummary[rsIdx + 1]);
+          const statusIcon = rs.status === 'completed' || rs.status === 'execution_finished' ? '✅'
+            : rs.status === 'failed' ? '❌'
+            : rs.status === 'cancelled' ? '⏹'
+            : '🔄';
+          const elapsed = rs.lastAt && rs.firstAt
+            ? Math.max(0, new Date(rs.lastAt).getTime() - new Date(rs.firstAt).getTime())
+            : 0;
+          const elapsedStr = elapsed >= 60000
+            ? `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`
+            : elapsed >= 1000 ? `${Math.floor(elapsed / 1000)}s` : '';
+
+          return (
+            <div key={rs.round} className="border border-border-default/50 rounded-lg overflow-hidden">
+              <button
+                onClick={() => toggleRound(rs.round)}
+                className="w-full flex items-center justify-between px-3 py-2 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">{statusIcon}</span>
+                  <span className="text-xs text-fg-secondary font-medium">Round #{rs.round}</span>
+                  {roundComments.length > 0 && (
+                    <span className="text-[10px] text-blue-400">💬 {roundComments.length}</span>
+                  )}
+                  {isLatest && isExecuting && (
+                    <svg className="w-3 h-3 animate-spin text-brand-500" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] text-fg-tertiary">{rs.toolCount} tool{rs.toolCount !== 1 ? 's' : ''}</span>
+                  {elapsedStr && <span className="text-[10px] text-fg-tertiary tabular-nums">{elapsedStr}</span>}
+                  <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                  </svg>
+                </div>
+              </button>
+              {isExpanded && (
+                <div className="px-3 py-1.5 space-y-0.5">
+                  {isLoading && <div className="text-xs text-fg-tertiary py-2 text-center">Loading round #{rs.round}…</div>}
+                  {logs && (() => {
+                    const entries = logs.map(l => taskLogToStreamEntry(l));
+                    const exec = entries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
+                    const filtered = filterCompletedStarts(exec);
+
+                    type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
+                    const tl: TimelineItem[] = [
+                      ...filtered.map(e => ({ kind: 'entry' as const, entry: e, ts: e.timestamp ? new Date(e.timestamp).getTime() : 0 })),
+                      ...roundComments.map(c => ({ kind: 'comment' as const, comment: c, ts: new Date(c.createdAt).getTime() })),
+                    ];
+                    tl.sort((a, b) => a.ts - b.ts);
+                    return tl.map((item, i) =>
+                      item.kind === 'comment'
+                        ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />
+                        : <MemoExecEntryRow key={`e-${i}`} entry={item.entry} showTime isLast={i === tl.length - 1} />
+                    );
+                  })()}
+                  {isLatest && isExecuting && streamingText && <StreamingText content={streamingText} />}
+                  {isLatest && isExecuting && !streamingText && !isLoading && <ThinkingDots />}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       {commentInput}
     </div>
@@ -832,13 +744,6 @@ function TaskDetailModal({
       onRefresh();
     } finally { setRunning(false); }
   };
-
-  useEffect(() => {
-    const unsub = wsClient.on('task:log:delta', (event) => {
-      if (event.payload.taskId === task.id) setActiveTab('logs');
-    });
-    return unsub;
-  }, [task.id]);
 
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -1025,7 +930,6 @@ function TaskDetailModal({
             </button>
           </div>
 
-          {/* Logs tab — conditionally mounted to avoid unnecessary DOM / fetches */}
           {activeTab === 'logs' && (
             <div className="overflow-x-hidden min-w-0">
               {runError && (
@@ -1033,7 +937,7 @@ function TaskDetailModal({
                   <span className="font-medium">Failed to start:</span> {runError}
                 </div>
               )}
-              <TaskExecutionLogs taskId={task.id} isVisible isRunning={task.status === 'in_progress'} authUser={authUser} />
+              <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} />
             </div>
           )}
 
@@ -2264,8 +2168,9 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const now = Date.now();
-  const isArchived = (t: TaskInfo) =>
-    t.status === 'completed' && t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
+  const isLargerThanOneDay = (t: { updatedAt?: string }) => t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
+  const isArchived = (t: { status: string; updatedAt?: string }) =>
+    (t.status === 'completed' || t.status === 'cancelled') && isLargerThanOneDay(t);
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
     let result = tasks.filter(t => showArchived || includeArchived || !isArchived(t));
@@ -2282,11 +2187,12 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
 
   const filteredReqs = useMemo(() => {
     let list = allRequirements;
+    if (!showArchived) list = list.filter(r => !isArchived(r));
     if (viewMode === 'project' && selectedProjectId) list = list.filter(r => r.projectId === selectedProjectId);
     if (projectFilter.size > 0) list = list.filter(r => r.projectId && projectFilter.has(r.projectId));
     if (agentFilter.size > 0) list = list.filter(r => agentFilter.has(r.createdBy));
     return list;
-  }, [allRequirements, viewMode, selectedProjectId, projectFilter, agentFilter]);
+  }, [allRequirements, showArchived, viewMode, selectedProjectId, projectFilter, agentFilter]);
 
   const getColumnReqs = useCallback((col: typeof BOARD_COLUMNS[number]) =>
     filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id), [filteredReqs]);
@@ -2300,7 +2206,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     return true;
   });
 
-  const archivedCount = Object.values(board).flat().filter(t => isArchived(t)).length;
+  const archivedCount = Object.values(board).flat().filter(t => isArchived(t)).length
+    + allRequirements.filter(r => isArchived(r)).length;
 
   const sortedAgents = useMemo(() => {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);

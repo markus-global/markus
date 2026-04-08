@@ -861,11 +861,11 @@ export class TaskService {
       } catch { /* start from 0 on error */ }
     }
 
-    // When resuming with previous work, user comments embedded in prevContext
-    // are lost because _executeTaskInternal skips the full taskPrompt on retry
-    // (it only appends a short "continue" message to the existing session).
-    // Inject the latest human comments directly into the session so the agent sees them.
-    if (prevContext && prevComments.length > 0) {
+    // On retry, the agent session already has the full taskPrompt (which includes
+    // prevContext with comments). Only a short "continue" message is appended, so
+    // NEW comments posted between attempts would be missed. Inject them here.
+    // On fresh execution, comments are already in prevContext — skip to avoid duplication.
+    if (isRetry && prevComments.length > 0) {
       const humanComments = prevComments.filter(c =>
         c.authorType === 'human' || c.authorType === 'owner'
       );
@@ -928,19 +928,19 @@ export class TaskService {
           };
 
           let savedId: string | undefined;
-          if (this.executionStreamRepo) {
-            try {
-              const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound }) as any;
-              savedId = row?.id;
-            } catch (err) {
-              log.warn('Failed to persist execution stream log', { taskId, error: String(err) });
-            }
-          } else if (taskLogRepo) {
+          if (taskLogRepo) {
             try {
               const row = await taskLogRepo.append(logEntry);
               savedId = row.id;
             } catch (err) {
               log.warn('Failed to persist task log', { taskId, error: String(err) });
+            }
+          }
+          if (this.executionStreamRepo) {
+            try {
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+            } catch (err) {
+              log.warn('Failed to persist execution stream log', { taskId, error: String(err) });
             }
           }
 
@@ -1038,10 +1038,9 @@ export class TaskService {
                 content: retryMsg,
                 executionRound,
               };
+              taskLogRepo?.append(noticeEntry).catch(() => {});
               if (this.executionStreamRepo) {
                 try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound }); } catch { /* best effort */ }
-              } else {
-                taskLogRepo?.append(noticeEntry).catch(() => {});
               }
               ws?.broadcast({
                 type: 'task:log',
@@ -1630,7 +1629,7 @@ export class TaskService {
     if (opts?.search) {
       const q = opts.search.toLowerCase();
       result = result.filter(
-        t => t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q),
+        t => t.title?.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q),
       );
     }
 
@@ -3061,16 +3060,16 @@ export class TaskService {
           const currentSeq = seq++;
           const createdAt = new Date().toISOString();
           let savedId: string | undefined;
-          if (this.executionStreamRepo) {
-            try {
-              const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound }) as any;
-              savedId = row?.id;
-            } catch (err) { log.warn('Failed to persist execution stream log', { taskId, error: String(err) }); }
-          } else if (taskLogRepo) {
+          if (taskLogRepo) {
             try {
               const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound });
               savedId = saved.id;
             } catch (err) { log.warn('Failed to persist task log', { taskId, error: String(err) }); }
+          }
+          if (this.executionStreamRepo) {
+            try {
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+            } catch (err) { log.warn('Failed to persist execution stream log', { taskId, error: String(err) }); }
           }
           if (ws) {
             ws.broadcast({ type: 'execution:log', payload: { id: savedId, sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, createdAt }, timestamp: createdAt });
@@ -3218,15 +3217,13 @@ export class TaskService {
         const createdAt = new Date().toISOString();
         let savedId: string | undefined;
 
+        taskLogRepo?.append({ taskId, agentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound: round }).catch(err =>
+          log.warn('Failed to persist post-task log', { taskId, error: String(err) })
+        );
         if (this.executionStreamRepo) {
           try {
-            const row = this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round }) as any;
-            savedId = row?.id;
+            this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round });
           } catch { /* best effort */ }
-        } else if (taskLogRepo) {
-          taskLogRepo.append({ taskId, agentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound: round }).catch(err =>
-            log.warn('Failed to persist post-task log', { taskId, error: String(err) })
-          );
         }
 
         ws?.broadcast({ type: 'execution:log', payload: { id: savedId ?? `tmp_${taskId}_${currentSeq}`, sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round, createdAt }, timestamp: createdAt });

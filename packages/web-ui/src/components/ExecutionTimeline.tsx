@@ -832,7 +832,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
           : `rounded-lg border hover:brightness-110 ${isActive ? 'border-2 exec-card-active' : 'border border-border-default bg-surface-elevated/30 hover:border-brand-500/40'}`
       }`}
     >
-      <div className={embedded ? 'py-1' : 'px-3 py-2.5 bg-surface-primary/80'}>
+      <div className={embedded ? 'py-2' : 'px-3 py-2.5 bg-surface-primary/80'}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             {isActive ? (
@@ -852,9 +852,13 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
           )}
         </div>
 
-        {statusDetail && (
+        {streamingText ? (
+          <div className="mt-1.5 ml-5.5 text-xs text-fg-secondary max-h-32 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">
+            <MarkdownMessage content={streamingText} className="text-xs" />
+          </div>
+        ) : statusDetail ? (
           <div className="mt-1 ml-5.5 text-[11px] font-mono text-fg-tertiary truncate">{statusDetail}</div>
-        )}
+        ) : null}
 
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-2 text-[10px] text-fg-tertiary">

@@ -1280,6 +1280,51 @@ export class SqliteTaskLogRepo {
     }));
   }
 
+  getByTaskRound(taskId: string, round: number) {
+    return (
+      this.db
+        .prepare('SELECT * FROM task_logs WHERE task_id = ? AND execution_round = ? ORDER BY seq ASC')
+        .all(taskId, round) as Record<string, unknown>[]
+    ).map(r => ({
+      id: r['id'] as string,
+      taskId: r['task_id'] as string,
+      agentId: r['agent_id'] as string,
+      seq: r['seq'] as number,
+      type: r['type'] as string,
+      content: r['content'] as string,
+      metadata: fromJson(r['metadata'] as string),
+      executionRound: (r['execution_round'] as number) ?? 1,
+      createdAt: toDate(r['created_at'] as string)!,
+    }));
+  }
+
+  getRoundsSummary(taskId: string) {
+    return (
+      this.db
+        .prepare(`
+          SELECT
+            execution_round as round,
+            COUNT(*) as log_count,
+            SUM(CASE WHEN type = 'tool_end' THEN 1 ELSE 0 END) as tool_count,
+            MIN(created_at) as first_at,
+            MAX(created_at) as last_at,
+            MAX(CASE WHEN type = 'status' AND content IN ('completed','failed','cancelled','execution_finished') THEN content ELSE NULL END) as terminal_status
+          FROM task_logs
+          WHERE task_id = ?
+          GROUP BY execution_round
+          ORDER BY execution_round ASC
+        `)
+        .all(taskId) as Record<string, unknown>[]
+    ).map(r => ({
+      round: (r['round'] as number) ?? 1,
+      logCount: (r['log_count'] as number) ?? 0,
+      toolCount: (r['tool_count'] as number) ?? 0,
+      firstAt: r['first_at'] as string,
+      lastAt: r['last_at'] as string,
+      status: (r['terminal_status'] as string) ?? 'running',
+    }));
+  }
+
   deleteByTask(taskId: string) {
     this.db.prepare('DELETE FROM task_logs WHERE task_id = ?').run(taskId);
   }

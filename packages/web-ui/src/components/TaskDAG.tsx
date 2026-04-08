@@ -426,14 +426,32 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const rfRef = useRef<ReactFlowInstance | null>(null);
+  const userHasInteracted = useRef(false);
+  const prevFilterRef = useRef({ groupFilter, showArchived });
+
+  useEffect(() => {
+    const prev = prevFilterRef.current;
+    if (prev.groupFilter !== groupFilter || prev.showArchived !== showArchived) {
+      userHasInteracted.current = false;
+      prevFilterRef.current = { groupFilter, showArchived };
+    }
+  }, [groupFilter, showArchived]);
 
   useEffect(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
-    requestAnimationFrame(() => {
-      rfRef.current?.fitView({ padding: 0.2, duration: 300 });
-    });
+    if (!userHasInteracted.current) {
+      requestAnimationFrame(() => {
+        rfRef.current?.fitView({ padding: 0.2, duration: 300 });
+      });
+    }
   }, [initialNodes, initialEdges, setNodes, setEdges]);
+
+  const handleMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null) => {
+    if (_event) {
+      userHasInteracted.current = true;
+    }
+  }, []);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     if (node.id.startsWith('req-')) {
@@ -514,6 +532,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         onNodeClick={handleNodeClick}
         onConnect={handleConnect}
         onEdgeClick={handleEdgeClick}
+        onMoveEnd={handleMoveEnd}
         onInit={(instance) => { rfRef.current = instance; }}
         nodeTypes={nodeTypes}
         fitView

@@ -99,6 +99,7 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
         instructions: instructions ?? undefined,
         requiredPermissions: pkg.skill?.requiredPermissions,
         mcpServers: resolveMcpServerPaths(pkg.skill?.mcpServers, skillDir),
+        isolation: pkg.skill?.isolation,
         alwaysOn: pkg.skill?.alwaysOn ?? undefined,
         sourcePath: skillDir,
       };

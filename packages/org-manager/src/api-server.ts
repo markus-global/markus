@@ -2034,7 +2034,23 @@ export class APIServer {
       return;
     }
 
-    // Task execution logs
+    // Task execution logs — rounds summary (lightweight metadata only)
+    if (path.match(/^\/api\/tasks\/[^/]+\/logs\/summary$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 200, { rounds: [] });
+        return;
+      }
+      try {
+        const rounds = this.storage.taskLogRepo.getRoundsSummary(taskId);
+        this.json(res, 200, { rounds });
+      } catch (err) {
+        this.json(res, 500, { error: String(err) });
+      }
+      return;
+    }
+
+    // Task execution logs — optionally filtered by round
     if (path.match(/^\/api\/tasks\/[^/]+\/logs$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;
       if (!this.storage) {
@@ -2042,7 +2058,10 @@ export class APIServer {
         return;
       }
       try {
-        const logs = await this.storage.taskLogRepo.getByTask(taskId);
+        const roundParam = url.searchParams.get('round');
+        const logs = roundParam
+          ? this.storage.taskLogRepo.getByTaskRound(taskId, parseInt(roundParam, 10))
+          : await this.storage.taskLogRepo.getByTask(taskId);
         this.json(res, 200, { logs });
       } catch (err) {
         this.json(res, 500, { error: String(err) });

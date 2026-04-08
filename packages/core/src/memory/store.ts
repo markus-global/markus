@@ -7,6 +7,31 @@ export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js'
 
 const log = createLogger('memory-store');
 
+const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note']);
+
+/** Reject objects that are clearly not MemoryEntry-shaped. */
+function isValidEntry(raw: unknown): raw is Record<string, unknown> {
+  if (typeof raw !== 'object' || raw === null) return false;
+  const obj = raw as Record<string, unknown>;
+  return typeof obj.id === 'string' && obj.id.length > 0;
+}
+
+/** Coerce fields to their expected types so downstream code never sees undefined. */
+function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry {
+  const r = raw as Record<string, unknown>;
+  return {
+    id: String(r.id),
+    timestamp: typeof r.timestamp === 'string' ? r.timestamp : new Date().toISOString(),
+    type: (typeof r.type === 'string' && VALID_TYPES.has(r.type)
+      ? r.type
+      : 'note') as MemoryEntry['type'],
+    content: typeof r.content === 'string' ? r.content : '',
+    metadata: (typeof r.metadata === 'object' && r.metadata !== null)
+      ? r.metadata as Record<string, unknown>
+      : undefined,
+  };
+}
+
 export class MemoryStore implements IMemoryStore {
   private dataDir: string;
   private entries: MemoryEntry[] = [];
@@ -31,7 +56,7 @@ export class MemoryStore implements IMemoryStore {
   // --- Short-term: session messages ---
 
   addEntry(entry: MemoryEntry): void {
-    this.entries.push(entry);
+    this.entries.push(sanitizeEntry(entry));
     this.saveToDisk();
     log.debug('Memory entry added', { type: entry.type, id: entry.id });
   }
@@ -65,7 +90,7 @@ export class MemoryStore implements IMemoryStore {
 
   replaceEntries(removedIds: string[], newEntry: MemoryEntry): void {
     this.removeEntries(removedIds);
-    this.entries.push(newEntry);
+    this.entries.push(sanitizeEntry(newEntry));
     this.saveToDisk();
   }
 
@@ -297,7 +322,12 @@ export class MemoryStore implements IMemoryStore {
     const memFile = join(this.dataDir, 'memories.json');
     if (existsSync(memFile)) {
       try {
-        this.entries = JSON.parse(readFileSync(memFile, 'utf-8')) as MemoryEntry[];
+        const raw = JSON.parse(readFileSync(memFile, 'utf-8')) as unknown[];
+        const before = raw.length;
+        this.entries = raw.filter(isValidEntry).map(sanitizeEntry);
+        if (this.entries.length < before) {
+          log.warn(`Dropped ${before - this.entries.length} malformed memory entries on load`);
+        }
         log.info(`Loaded ${this.entries.length} memory entries`);
       } catch {
         log.warn('Failed to load memories from disk, starting fresh');
