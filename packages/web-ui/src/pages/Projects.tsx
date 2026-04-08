@@ -836,6 +836,7 @@ function TaskDetailPanel({
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables') => {
     setActiveTab(tab);
     requestAnimationFrame(() => {
@@ -847,6 +848,24 @@ function TaskDetailPanel({
       }
     });
   }, []);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      const scrollable = scrollHeight > clientHeight + 50;
+      if (!scrollable) { setScrollState('none'); return; }
+      const atTop = scrollTop < 30;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 30;
+      setScrollState(atTop ? 'top' : atBottom ? 'bottom' : 'middle');
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
+  }, [activeTab]);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
@@ -1006,7 +1025,8 @@ function TaskDetailPanel({
       </div>
 
         {/* Scrollable content area */}
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 min-h-0 relative">
+        <div ref={scrollContainerRef} className="h-full overflow-y-auto">
           {/* Description */}
           <div className="px-6 pt-4 pb-3 border-b border-border-default">
             {editingDesc ? (
@@ -1365,6 +1385,30 @@ function TaskDetailPanel({
               })()}
             </div>
           )}
+        </div>
+        {/* Floating scroll buttons */}
+        {scrollState !== 'none' && (
+          <div className="absolute bottom-3 right-3 flex flex-col gap-1.5 z-10">
+            {scrollState !== 'top' && (
+              <button
+                onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="w-8 h-8 rounded-full bg-surface-overlay/90 border border-border-default shadow-lg flex items-center justify-center text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated transition-colors backdrop-blur-sm"
+                title="Scroll to top"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
+              </button>
+            )}
+            {scrollState !== 'bottom' && (
+              <button
+                onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
+                className="w-8 h-8 rounded-full bg-surface-overlay/90 border border-border-default shadow-lg flex items-center justify-center text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated transition-colors backdrop-blur-sm"
+                title="Scroll to bottom"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+              </button>
+            )}
+          </div>
+        )}
         </div>
 
         {/* Schedule info banner */}

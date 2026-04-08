@@ -5,13 +5,12 @@
  * Non-component utilities (types, converters, helpers) live in execution-utils.ts
  * to keep this file components-only for Vite HMR Fast Refresh compatibility.
  */
-import { useState, useRef, useEffect, useCallback, memo, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import {
-  getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgs, formatArgsDetail,
+  getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail,
   filterCompletedStarts, streamEntryToExecEntry, taskLogToEntry,
   parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
   type SubagentLogEntry, type ToolCallInfo, type ExecEntry, type ExecutionStreamEntryUI,
@@ -57,232 +56,6 @@ export function StreamingText({ content, className }: { content: string; classNa
   );
 }
 
-// ─── Tool Tooltip ─────────────────────────────────────────────────────────────
-
-function ToolTooltip({ info, anchorRef, onHover }: { info: ToolCallInfo; anchorRef: RefObject<HTMLElement | null>; onHover: (v: boolean) => void }) {
-  const [pos, setPos] = useState<{ top: number; left: number; direction: 'above' | 'below' } | null>(null);
-
-  useEffect(() => {
-    if (anchorRef.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      const above = rect.top > 240;
-      setPos({
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
-        top: above ? rect.top - 6 : rect.bottom + 6,
-        direction: above ? 'above' : 'below',
-      });
-    }
-  }, [anchorRef]);
-
-  if (!pos) return null;
-
-  const argSummary = formatArgs(info.args);
-  const success = info.status !== 'error';
-  const meta = getToolMeta(info.tool);
-
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    left: pos.left,
-    ...(pos.direction === 'above' ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
-    zIndex: 9999,
-  };
-
-  return createPortal(
-    <div
-      style={style}
-      className="w-96 max-w-[90vw] max-h-[60vh] bg-surface-secondary border border-border-default rounded-lg shadow-xl text-xs flex flex-col"
-      onMouseEnter={() => onHover(true)}
-      onMouseLeave={() => onHover(false)}
-    >
-      <div className="px-3 py-2 border-b border-border-default flex items-center justify-between shrink-0">
-        <span className="font-medium text-fg-primary">{meta.label}</span>
-        <div className="flex items-center gap-2">
-          {info.durationMs != null && <span className="text-fg-tertiary">{formatDuration(info.durationMs)}</span>}
-          <span className={success ? 'text-green-600' : 'text-red-500'}>{success ? '✓ ok' : '✗ failed'}</span>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {argSummary && (
-          <div className="px-3 py-1.5 border-b border-border-default">
-            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-0.5">Arguments</div>
-            <div className="text-fg-secondary font-mono text-[11px] break-all">{argSummary}</div>
-          </div>
-        )}
-        {info.result && (
-          <div className="px-3 py-1.5">
-            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-0.5">Result</div>
-            <div className="text-fg-secondary font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(info.result)}</div>
-          </div>
-        )}
-        {info.error && (
-          <div className="px-3 py-1.5">
-            <div className="text-[10px] text-red-500 uppercase tracking-wider mb-0.5">Error</div>
-            <div className="text-red-500 font-mono text-[11px] break-all whitespace-pre-wrap">{prettyJson(String(info.error))}</div>
-          </div>
-        )}
-        {!argSummary && !info.result && !info.error && (
-          <div className="px-3 py-1.5 text-fg-tertiary italic">No details recorded</div>
-        )}
-      </div>
-      <div className="px-3 py-1 border-t border-border-default text-[10px] text-fg-tertiary shrink-0">Click to expand full details</div>
-    </div>,
-    document.body,
-  );
-}
-
-// ─── Subagent Log Popover ─────────────────────────────────────────────────────
-
-const SUBAGENT_EVENT_ICON: Record<string, string> = {
-  started: '▶',
-  tool_start: '⚙',
-  tool_end: '✓',
-  thinking: '💭',
-  iteration: '🔄',
-  completed: '✅',
-  error: '❌',
-};
-
-const SUBAGENT_EVENT_COLOR: Record<string, string> = {
-  started: 'text-blue-500',
-  tool_start: 'text-brand-500',
-  tool_end: 'text-green-600',
-  thinking: 'text-fg-secondary',
-  iteration: 'text-fg-tertiary',
-  completed: 'text-green-500',
-  error: 'text-red-500',
-};
-
-function SubagentLogPopover({ logs, isRunning, anchorRef, onHover }: {
-  logs: SubagentLogEntry[];
-  isRunning: boolean;
-  anchorRef: RefObject<HTMLElement | null>;
-  onHover: (v: boolean) => void;
-}) {
-  const [pos, setPos] = useState<{ top: number; left: number; direction: 'above' | 'below' } | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (anchorRef.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      const above = rect.top > 320;
-      setPos({
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - 420)),
-        top: above ? rect.top - 6 : rect.bottom + 6,
-        direction: above ? 'above' : 'below',
-      });
-    }
-  }, [anchorRef]);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [logs.length]);
-
-  if (!pos) return null;
-
-  const toolLogs = logs.filter(l => l.eventType === 'tool_start' || l.eventType === 'tool_end');
-  const completedTools = new Set<string>();
-  const runningTools = new Set<string>();
-  for (const l of toolLogs) {
-    const toolName = l.content?.replace(/^\[.*?\]\s*/, '') ?? '';
-    if (l.eventType === 'tool_end') completedTools.add(l.metadata?.toolCallId as string ?? toolName);
-    else runningTools.add(l.metadata?.toolCallId as string ?? toolName);
-  }
-  const totalToolCalls = completedTools.size + runningTools.size;
-
-  const completedSubs = logs.filter(l => l.eventType === 'completed').length;
-  const startedSubs = logs.filter(l => l.eventType === 'started').length;
-  const errorSubs = logs.filter(l => l.eventType === 'error').length;
-
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    left: pos.left,
-    ...(pos.direction === 'above' ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
-    zIndex: 9999,
-  };
-
-  return createPortal(
-    <div
-      style={style}
-      className="w-[420px] max-w-[92vw] max-h-[50vh] bg-surface-secondary border border-border-default rounded-lg shadow-xl text-xs flex flex-col"
-      onMouseEnter={() => onHover(true)}
-      onMouseLeave={() => onHover(false)}
-    >
-      {/* Header */}
-      <div className="px-3 py-2 border-b border-border-default flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-fg-primary">Subagent Execution</span>
-          {isRunning && (
-            <svg className="w-3 h-3 animate-spin text-brand-500" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-[10px] text-fg-tertiary">
-          {startedSubs > 0 && <span>{completedSubs}/{startedSubs} agents</span>}
-          {totalToolCalls > 0 && <span>{completedTools.size} tools</span>}
-          {errorSubs > 0 && <span className="text-red-500">{errorSubs} errors</span>}
-        </div>
-      </div>
-
-      {/* Log entries */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 px-1 py-1">
-        {logs.length === 0 && (
-          <div className="px-3 py-3 text-fg-tertiary italic text-center">Waiting for subagent activity...</div>
-        )}
-        {logs.map((log, i) => {
-          const icon = SUBAGENT_EVENT_ICON[log.eventType] ?? '•';
-          const color = SUBAGENT_EVENT_COLOR[log.eventType] ?? 'text-fg-tertiary';
-          const toolMeta = (log.eventType === 'tool_start' || log.eventType === 'tool_end')
-            ? getToolMeta(log.content?.replace(/^\[.*?\]\s*/, '') ?? '')
-            : null;
-
-          return (
-            <div key={i} className="flex items-start gap-1.5 px-2 py-0.5 rounded hover:bg-surface-elevated/30">
-              <span className={`shrink-0 mt-px text-[10px] ${color}`}>{icon}</span>
-              <div className="flex-1 min-w-0">
-                <span className={`text-[11px] leading-snug ${color}`}>
-                  {toolMeta ? (
-                    <>
-                      <span className="opacity-60">{toolMeta.icon}</span>{' '}
-                      {toolMeta.label}
-                      {log.eventType === 'tool_end' && log.metadata?.durationMs != null && (
-                        <span className="text-fg-tertiary ml-1">{formatDuration(log.metadata.durationMs as number)}</span>
-                      )}
-                      {log.eventType === 'tool_end' && log.metadata?.success === false && (
-                        <span className="text-red-500 ml-1">failed</span>
-                      )}
-                    </>
-                  ) : log.eventType === 'thinking' ? (
-                    <span className="italic">{truncate(log.content, 100)}</span>
-                  ) : (
-                    log.content
-                  )}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Footer */}
-      {isRunning && (
-        <div className="px-3 py-1 border-t border-border-default text-[10px] text-fg-tertiary shrink-0 flex items-center gap-1.5">
-          <span className="flex gap-0.5">
-            {[0, 150, 300].map(d => (
-              <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
-                style={{ animationDelay: `${d}ms`, animationDuration: '1s' }} />
-            ))}
-          </span>
-          <span>Executing...</span>
-        </div>
-      )}
-    </div>,
-    document.body,
-  );
-}
 
 // ─── Tool Detail Modal ────────────────────────────────────────────────────────
 
@@ -594,26 +367,12 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   isLast?: boolean;
 }) {
   const meta = getToolMeta(info.tool);
-  const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const rowRef = useRef<HTMLDivElement>(null);
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isDone = info.status !== 'running';
   const isStopped = info.status === 'stopped';
   const isSubagentTool = info.tool === 'spawn_subagent' || info.tool === 'spawn_subagents';
   const hasSubagentLogs = isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0;
-  const enableHover = isDone || hasSubagentLogs;
-
-  const handleHover = useCallback((v: boolean) => {
-    clearTimeout(hoverTimeout.current);
-    if (v) {
-      hoverTimeout.current = setTimeout(() => setHovered(true), 200);
-    } else {
-      hoverTimeout.current = setTimeout(() => setHovered(false), 150);
-    }
-  }, []);
-
-  useEffect(() => () => clearTimeout(hoverTimeout.current), []);
+  const clickable = isDone || hasSubagentLogs;
 
   const shellCmd = getShellCommand(info);
   const outputRef = useRef<HTMLPreElement>(null);
@@ -627,10 +386,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   return (
     <>
       <div
-        ref={rowRef}
-        className={`relative flex items-start gap-2 py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${enableHover ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
-        onMouseEnter={() => enableHover && handleHover(true)}
-        onMouseLeave={() => handleHover(false)}
+        className={`relative flex items-start gap-2 py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${clickable ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
         onClick={() => isDone && setExpanded(true)}
       >
         {showTime && time && (
@@ -681,12 +437,6 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
             </pre>
           )}
         </div>
-        {hovered && hasSubagentLogs && (
-          <SubagentLogPopover logs={info.subagentLogs!} isRunning={info.status === 'running'} anchorRef={rowRef} onHover={handleHover} />
-        )}
-        {hovered && !hasSubagentLogs && isDone && (
-          <ToolTooltip info={info} anchorRef={rowRef} onHover={handleHover} />
-        )}
       </div>
       {expanded && <ToolDetailModal info={info} onClose={() => setExpanded(false)} />}
       {isDone && (() => {
