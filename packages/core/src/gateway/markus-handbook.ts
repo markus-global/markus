@@ -1,8 +1,9 @@
 /**
  * Generates the MARKUS_HANDBOOK.md content dynamically.
  *
- * This markdown document is served to OpenClaw agents at registration time
+ * This markdown document is served to external agents at registration time
  * so they understand how to interact with the Markus platform autonomously.
+ * Works with any agent platform (OpenClaw, Hermes, custom, etc.).
  */
 
 export interface HandbookColleague {
@@ -22,6 +23,8 @@ export interface HandbookContext {
   orgName?: string;
   agentName?: string;
   markusAgentId?: string;
+  /** Platform name of the external agent (e.g. "openclaw", "hermes") */
+  platform?: string;
   teamName?: string;
   syncIntervalSeconds?: number;
   colleagues?: HandbookColleague[];
@@ -41,9 +44,11 @@ export function generateHandbook(ctx: HandbookContext): string {
     ? `\n### Active Projects\n\n${ctx.projects.map(p => `- **${p.name}** (\`${p.id}\`)`).join('\n')}\n\nQuery project details via \`GET ${base}/api/gateway/projects\`.\n`
     : '';
 
+  const platformLabel = ctx.platform ? ` (platform: ${ctx.platform})` : '';
+
   return `# Markus Platform Integration Handbook
 
-You are an external agent connected to the **Markus** AI Digital Employee Platform${ctx.orgName ? ` (organization: ${ctx.orgName})` : ''}.
+You are an external agent${platformLabel} connected to the **Markus** AI Digital Employee Platform${ctx.orgName ? ` (organization: ${ctx.orgName})` : ''}.
 ${ctx.agentName ? `Your Markus identity: **${ctx.agentName}**` + (ctx.markusAgentId ? ` (ID: \`${ctx.markusAgentId}\`)` : '') : ''}
 ${ctx.teamName ? `Team: **${ctx.teamName}**` : ''}
 

@@ -9,7 +9,8 @@
   },
   "files": [
     "dist/",
-    "templates/"
+    "templates/",
+    "connectors/"
   ],
   "engines": {
     "node": ">=20.0.0"

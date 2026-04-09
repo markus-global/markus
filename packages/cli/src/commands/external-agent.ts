@@ -16,10 +16,11 @@ export function registerExternalAgentCommands(program: Command) {
         const data = await client.get<Record<string, unknown>>('/external-agents', opts.orgId ? { orgId: opts.orgId } : undefined);
         const rows = extractRows(data);
         table(rows, [
-          { key: 'id', header: 'ID', width: 28 },
-          { key: 'name', header: 'Name', width: 20 },
-          { key: 'agentId', header: 'Agent ID', width: 28 },
-          { key: 'connected', header: 'Connected', width: 10 },
+          { key: 'id', header: 'ID', width: 24 },
+          { key: 'name', header: 'Name', width: 18 },
+          { key: 'agentId', header: 'Agent ID', width: 24 },
+          { key: 'platform', header: 'Platform', width: 12 },
+          { key: 'connected', header: 'Online', width: 8 },
         ], { ...out, title: 'External agents' });
       } catch (e) {
         if (e instanceof ApiError) fail(e.message);
@@ -33,6 +34,8 @@ export function registerExternalAgentCommands(program: Command) {
     .requiredOption('--agent-id <id>')
     .requiredOption('--name <n>')
     .option('--capabilities <csv>')
+    .option('--platform <name>', 'Platform identifier (e.g. openclaw, hermes)')
+    .option('--agent-card-url <url>', 'Agent Card URL for discovery')
     .action(async (opts, cmd) => {
       const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
       const client = createClient(g);
@@ -46,6 +49,8 @@ export function registerExternalAgentCommands(program: Command) {
           name: opts.name,
           ...(opts.orgId && { orgId: opts.orgId }),
           ...(caps && { capabilities: caps }),
+          ...(opts.platform && { platform: opts.platform }),
+          ...(opts.agentCardUrl && { agentCardUrl: opts.agentCardUrl }),
         });
         success('External agent registered', data, out);
       } catch (e) {

@@ -397,6 +397,9 @@ CREATE TABLE IF NOT EXISTS external_agent_registrations (
   agent_name TEXT NOT NULL,
   markus_agent_id TEXT,
   capabilities TEXT DEFAULT '[]',
+  platform TEXT,
+  platform_config TEXT,
+  agent_card_url TEXT,
   openclaw_config TEXT,
   connected INTEGER NOT NULL DEFAULT 0,
   last_heartbeat TEXT,
@@ -2632,6 +2635,10 @@ export interface SqliteExternalAgentRegistration {
   agentName: string;
   orgId: string;
   capabilities: string[];
+  platform?: string;
+  platformConfig?: string;
+  agentCardUrl?: string;
+  /** @deprecated Use platformConfig */
   openClawConfig?: string;
   registeredAt: string;
   markusAgentId?: string;
@@ -2645,14 +2652,19 @@ export class SqliteExternalAgentRepo {
   async save(reg: SqliteExternalAgentRegistration): Promise<void> {
     this.db.prepare(`
       INSERT OR REPLACE INTO external_agent_registrations
-        (external_agent_id, org_id, agent_name, markus_agent_id, capabilities, openclaw_config, connected, last_heartbeat, registered_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (external_agent_id, org_id, agent_name, markus_agent_id, capabilities,
+         platform, platform_config, agent_card_url, openclaw_config,
+         connected, last_heartbeat, registered_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       reg.externalAgentId,
       reg.orgId,
       reg.agentName,
       reg.markusAgentId ?? null,
       toJson(reg.capabilities),
+      reg.platform ?? null,
+      reg.platformConfig ?? null,
+      reg.agentCardUrl ?? null,
       reg.openClawConfig ?? null,
       reg.connected ? 1 : 0,
       reg.lastHeartbeat ?? null,
@@ -2684,6 +2696,9 @@ export class SqliteExternalAgentRepo {
       agentName: r['agent_name'] as string,
       orgId: r['org_id'] as string,
       capabilities: fromJson<string[]>(r['capabilities'] as string) ?? [],
+      platform: r['platform'] as string | undefined,
+      platformConfig: r['platform_config'] as string | undefined,
+      agentCardUrl: r['agent_card_url'] as string | undefined,
       openClawConfig: r['openclaw_config'] as string | undefined,
       registeredAt: r['registered_at'] as string,
       markusAgentId: r['markus_agent_id'] as string | undefined,

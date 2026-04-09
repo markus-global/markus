@@ -68,6 +68,13 @@ async function registerCommands() {
   const { registerTeamCommands } = await import('./commands/team.js');
   registerTeamCommands(program);
 
+  // ── 4b. connect + install ─────────────────────────────────────────
+  const { registerConnectCommands } = await import('./commands/connect.js');
+  registerConnectCommands(program);
+
+  const { registerInstallAgentCommands } = await import('./commands/install-agent.js');
+  registerInstallAgentCommands(program);
+
   // ── 5. skill ───────────────────────────────────────────────────────
   const { registerSkillCommands } = await import('./commands/skill.js');
   registerSkillCommands(program);

@@ -17,6 +17,13 @@ export interface ExternalAgentRegistration {
   agentName: string;
   orgId: string;
   capabilities: string[];
+  /** Brand-agnostic platform identifier (e.g. "openclaw", "hermes", "custom") */
+  platform?: string;
+  /** Arbitrary platform-specific config JSON */
+  platformConfig?: string;
+  /** Agent Card URL for discovery (e.g. http://localhost:9000/.well-known/agent.json) */
+  agentCardUrl?: string;
+  /** @deprecated Use `platformConfig` instead */
   openClawConfig?: string;
   registeredAt: string;
   markusAgentId?: string;
@@ -150,9 +157,12 @@ export class ExternalAgentGateway {
     agentName: string;
     orgId: string;
     capabilities?: string[];
+    platform?: string;
+    platformConfig?: string;
+    agentCardUrl?: string;
     openClawConfig?: string;
   }): Promise<ExternalAgentRegistration> {
-    const { externalAgentId, agentName, orgId, capabilities = [], openClawConfig } = request;
+    const { externalAgentId, agentName, orgId, capabilities = [], platform, platformConfig, agentCardUrl, openClawConfig } = request;
 
     if (!externalAgentId || !agentName || !orgId) {
       throw new GatewayError('Missing required fields: externalAgentId, agentName, orgId', 400);
@@ -184,6 +194,9 @@ export class ExternalAgentGateway {
       agentName,
       orgId,
       capabilities,
+      platform: platform ?? (openClawConfig ? 'openclaw' : undefined),
+      platformConfig: platformConfig ?? openClawConfig,
+      agentCardUrl,
       openClawConfig,
       registeredAt: new Date().toISOString(),
       markusAgentId,

@@ -9,6 +9,9 @@ export interface ExternalAgentRow {
   agentName: string;
   markusAgentId: string | null;
   capabilities: unknown;
+  platform: string | null;
+  platformConfig: string | null;
+  agentCardUrl: string | null;
   openClawConfig: string | null;
   connected: boolean;
   lastSyncStatus: string | null;
@@ -37,6 +40,9 @@ export class ExternalAgentRepo {
     agentName: string;
     markusAgentId?: string;
     capabilities?: string[];
+    platform?: string;
+    platformConfig?: string;
+    agentCardUrl?: string;
     openClawConfig?: string;
   }): Promise<ExternalAgentRow> {
     const [row] = await this.db.insert(externalAgentRegistrations).values({
@@ -46,6 +52,9 @@ export class ExternalAgentRepo {
       agentName: data.agentName,
       markusAgentId: data.markusAgentId ?? null,
       capabilities: data.capabilities ?? [],
+      platform: data.platform ?? null,
+      platformConfig: data.platformConfig ?? null,
+      agentCardUrl: data.agentCardUrl ?? null,
       openClawConfig: data.openClawConfig ?? null,
     }).returning();
     return row as ExternalAgentRow;

@@ -1,0 +1,30 @@
+{
+  "platform": "hermes",
+  "displayName": "Hermes Agent",
+  "description": "High-performance AI agent framework with tool-use and multi-step reasoning",
+  "homepage": "https://github.com/hermes-agent/hermes",
+  "detection": {
+    "configPaths": [
+      "~/.hermes/config.json",
+      "~/.hermes/hermes.yaml"
+    ],
+    "binaryName": "hermes",
+    "processName": "hermes-agent"
+  },
+  "installation": {
+    "npmPackage": "hermes-agent",
+    "initCommand": "hermes init",
+    "startCommand": "hermes serve --daemon",
+    "stopCommand": "hermes stop"
+  },
+  "integration": {
+    "type": "gateway",
+    "configFormat": "json",
+    "configPath": "~/.hermes/config.json",
+    "tokenField": "extensions.markus.token",
+    "urlField": "extensions.markus.url",
+    "llmProvidersField": "llm.providers"
+  },
+  "defaultCapabilities": ["code", "research", "analysis", "reasoning"],
+  "defaultAgentName": "Hermes Agent"
+}

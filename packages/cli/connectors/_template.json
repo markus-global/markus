@@ -1,0 +1,22 @@
+{
+  "platform": "my-agent",
+  "displayName": "My Custom Agent",
+  "description": "Describe your agent platform here",
+  "detection": {
+    "configPaths": ["~/.my-agent/config.json"],
+    "binaryName": "my-agent"
+  },
+  "installation": {
+    "npmPackage": "my-agent-cli",
+    "startCommand": "my-agent start"
+  },
+  "integration": {
+    "type": "gateway",
+    "configFormat": "json",
+    "configPath": "~/.my-agent/config.json",
+    "tokenField": "markus.token",
+    "urlField": "markus.url"
+  },
+  "defaultCapabilities": ["code"],
+  "defaultAgentName": "My Agent"
+}

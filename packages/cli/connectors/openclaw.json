@@ -1,0 +1,32 @@
+{
+  "platform": "openclaw",
+  "displayName": "OpenClaw",
+  "description": "Open-source AI coding agent with multi-model support",
+  "homepage": "https://github.com/nicepkg/openclaw",
+  "detection": {
+    "configPaths": [
+      "~/.openclaw/openclaw.json",
+      "~/.openclaw/openclaw.json5"
+    ],
+    "binaryName": "openclaw",
+    "processName": "openclaw"
+  },
+  "installation": {
+    "npmPackage": "openclaw",
+    "initCommand": "openclaw init",
+    "startCommand": "openclaw start --daemon",
+    "stopCommand": "openclaw stop"
+  },
+  "integration": {
+    "type": "gateway",
+    "configFormat": "json5",
+    "configPath": "~/.openclaw/openclaw.json",
+    "tokenField": "integrations.markus.token",
+    "urlField": "integrations.markus.url",
+    "llmProvidersField": "models.providers",
+    "skillDir": "~/.openclaw/skills",
+    "skillTemplateName": "openclaw-markus-skill"
+  },
+  "defaultCapabilities": ["code", "review", "test", "debug", "documentation"],
+  "defaultAgentName": "OpenClaw Agent"
+}

@@ -2904,6 +2904,9 @@ export class APIServer {
           agentName: body['agentName'] as string,
           orgId: body['orgId'] as string,
           capabilities: (body['capabilities'] as string[]) ?? [],
+          platform: body['platform'] as string | undefined,
+          platformConfig: body['platformConfig'] as string | undefined,
+          agentCardUrl: body['agentCardUrl'] as string | undefined,
           openClawConfig: body['openClawConfig'] as string | undefined,
         });
         this.json(res, 201, reg);
@@ -3028,6 +3031,7 @@ export class APIServer {
           orgName: token.orgId,
           agentName: reg?.agentName,
           markusAgentId: token.markusAgentId,
+          platform: reg?.platform,
           colleagues,
           manager: mgr ? { id: mgr.id, name: mgr.name } : undefined,
           projects,
@@ -4502,6 +4506,9 @@ export class APIServer {
           agentName: body['agentName'] as string,
           orgId,
           capabilities: body['capabilities'] as string[] | undefined,
+          platform: body['platform'] as string | undefined,
+          platformConfig: body['platformConfig'] as string | undefined,
+          agentCardUrl: body['agentCardUrl'] as string | undefined,
           openClawConfig: body['openClawConfig'] as string | undefined,
         });
         // Generate a token for the UI without marking the agent as connected.
