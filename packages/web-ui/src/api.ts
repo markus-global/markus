@@ -247,6 +247,8 @@ export interface ReportInfo {
     byAgent: Array<{ agentId: string; tokens: number; cost: number }>;
     trend: string;
   };
+  highlights?: string[];
+  blockers?: string[];
   plan?: { status: string; items?: Array<{ title: string; priority: string; assignee?: string }> } | null;
   generatedAt: string;
   generatedBy: string;

@@ -146,12 +146,12 @@ Markus is the organizational layer. Roles, teams, task boards, reviews, governan
 └──────────────────────┬──────────────────────────────────┘
                        │ REST + WebSocket
 ┌──────────────────────┴──────────────────────────────────┐
-│                  Org Manager (API Server)                │
+│                  Org Manager (API Server)               │
 │     Auth · Tasks · Governance · Projects · Reports      │
 └──────────────────────┬──────────────────────────────────┘
                        │
 ┌──────────────────────┴──────────────────────────────────┐
-│                  Agent Runtime (Core)                    │
+│                  Agent Runtime (Core)                   │
 │  Agent · LLM Router · Tools · Memory · Heartbeat · A2A  │
 └──────────┬────────────────────────────┬─────────────────┘
            │                            │

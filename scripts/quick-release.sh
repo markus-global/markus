@@ -45,6 +45,27 @@ printf "${BLUE}→${NC} ${BOLD}v${CURRENT}${NC} → ${BOLD}v${VER}${NC}  ${MSG}\
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$BRANCH" != "main" ]] && die "Not on main (on $BRANCH)"
 
+# ── Run CI checks locally ────────────────────────────────────────────────
+printf "\n${BLUE}→${NC} Running local CI checks before release…\n"
+
+printf "  ${YELLOW}▸${NC} Lint…"
+if ! LINT_OUT="$(pnpm lint 2>&1)"; then
+  printf " ${RED}✗${NC}\n"
+  printf "%s\n" "$LINT_OUT"
+  die "Lint failed — please fix the errors above before releasing."
+fi
+printf " ${GREEN}✓${NC}\n"
+
+printf "  ${YELLOW}▸${NC} Type check…"
+if ! TSC_OUT="$(pnpm typecheck 2>&1)"; then
+  printf " ${RED}✗${NC}\n"
+  printf "%s\n" "$TSC_OUT"
+  die "Type check failed — please fix the errors above before releasing."
+fi
+printf " ${GREEN}✓${NC}\n"
+
+printf "${GREEN}✓${NC} All CI checks passed.\n\n"
+
 # ── Update all package.json ───────────────────────────────────────────────
 for f in package.json packages/*/package.json; do
   sed -i '' "s/\"version\": \"$CURRENT\"/\"version\": \"$VER\"/" "$f"

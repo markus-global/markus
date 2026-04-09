@@ -69,7 +69,7 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
           </span>
           <div className="flex-1 min-w-0">
             <span className="text-fg-primary font-medium">{a.name}</span>
-            <span className="text-fg-tertiary text-[10px] ml-1.5">{a.roleName}</span>
+            <span className="text-fg-tertiary text-[10px] ml-1.5">{a.role}</span>
           </div>
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'idle' || a.status === 'working' ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
@@ -125,7 +125,7 @@ export function renderMentionText(
         key={key++}
         className={`text-brand-500 font-medium ${onMentionClick && agent ? 'cursor-pointer hover:underline' : ''}`}
         onClick={onMentionClick && agent ? () => onMentionClick(agent) : undefined}
-        title={agent ? `${agent.name} (${agent.roleName ?? agent.role})` : undefined}
+        title={agent ? `${agent.name} (${agent.role})` : undefined}
       >
         @{name}
       </span>,
