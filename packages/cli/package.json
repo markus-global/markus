@@ -23,9 +23,11 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
-    "sharp": "^0.34.5",
-    "rfb2": "^0.2.2",
     "ws": "^8.19.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.5",
+    "rfb2": "^0.2.2"
   },
   "devDependencies": {
     "@markus/comms": "workspace:*",

@@ -71,6 +71,14 @@ for f in package.json packages/*/package.json; do
   sed -i '' "s/\"version\": \"$CURRENT\"/\"version\": \"$VER\"/" "$f"
 done
 
+# ── Sync install script to markus-hub ───────────────────────────────────
+MARKUS_HUB_DIR="$ROOT_DIR/../markus-hub"
+if [[ -d "$MARKUS_HUB_DIR" ]]; then
+  mkdir -p "$MARKUS_HUB_DIR/scripts"
+  cp "$ROOT_DIR/scripts/install.sh" "$MARKUS_HUB_DIR/scripts/install.sh"
+  printf "  ${GREEN}✓${NC} install.sh synced to markus-hub\n"
+fi
+
 # ── Commit, tag, push ────────────────────────────────────────────────────
 git add -u  # stage all modified tracked files (version bumps + any pending changes)
 git add packages/*/README.md 2>/dev/null || true  # include new package READMEs if present

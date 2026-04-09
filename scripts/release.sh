@@ -102,6 +102,18 @@ pnpm --filter @markus-global/cli build:bundle
 
 ok "Build complete"
 
+# ── Step 2b: Sync install script to markus-hub ───────────────────────────────
+
+MARKUS_HUB_DIR="$ROOT_DIR/../markus-hub"
+if [[ -d "$MARKUS_HUB_DIR" ]]; then
+  info "Syncing install.sh → markus-hub..."
+  mkdir -p "$MARKUS_HUB_DIR/scripts"
+  cp "$ROOT_DIR/scripts/install.sh" "$MARKUS_HUB_DIR/scripts/install.sh"
+  ok "install.sh synced to markus-hub/scripts/"
+else
+  warn "markus-hub repo not found at $MARKUS_HUB_DIR — skipping install.sh sync"
+fi
+
 # ── Step 3: Verify bundle ───────────────────────────────────────────────────
 
 BUNDLE="packages/cli/dist/markus.mjs"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Markus — AI Digital Workforce Platform
-# One-line installer: curl -fsSL https://get.markus.global/install.sh | bash
+# One-line installer: curl -fsSL https://markus.global/install.sh | bash
 #
 set -euo pipefail
 
@@ -15,6 +15,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
@@ -22,6 +23,40 @@ info()  { printf "${BLUE}  [info]${NC}  %s\n" "$*"; }
 ok()    { printf "${GREEN}  [ok]${NC}    %s\n" "$*"; }
 warn()  { printf "${YELLOW}  [warn]${NC}  %s\n" "$*"; }
 error() { printf "${RED}  [error]${NC} %s\n" "$*"; }
+
+# ─── Spinner ─────────────────────────────────────────────────────────────────
+
+SPINNER_PID=""
+spinner_start() {
+  local msg="$1"
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local i=0 elapsed=0
+  (
+    while true; do
+      local f="${frames[$((i % ${#frames[@]}))]}"
+      if [ "$elapsed" -ge 5 ]; then
+        printf "\r  ${CYAN}%s${NC}  %s ${DIM}(%ds)${NC}  " "$f" "$msg" "$elapsed"
+      else
+        printf "\r  ${CYAN}%s${NC}  %s  " "$f" "$msg"
+      fi
+      sleep 0.5
+      i=$((i + 1))
+      elapsed=$((i / 2))
+    done
+  ) &
+  SPINNER_PID=$!
+}
+
+spinner_stop() {
+  if [ -n "$SPINNER_PID" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+    kill "$SPINNER_PID" 2>/dev/null
+    wait "$SPINNER_PID" 2>/dev/null || true
+    printf "\r\033[K"
+  fi
+  SPINNER_PID=""
+}
+
+trap 'spinner_stop' EXIT
 
 # ─── Banner ──────────────────────────────────────────────────────────────────
 
@@ -108,6 +143,51 @@ check_npm() {
   return 0
 }
 
+# ─── npm install with spinner ───────────────────────────────────────────────
+
+npm_install_global() {
+  local pkg="$1"
+  local logfile
+  logfile="$(mktemp /tmp/markus-install-XXXXXX.log)"
+
+  spinner_start "Installing ${pkg} (this may take a minute for native modules)..."
+
+  local success=false
+  if npm install -g --loglevel=error "$pkg" >"$logfile" 2>&1; then
+    success=true
+  fi
+
+  spinner_stop
+
+  if $success; then
+    ok "Installed @markus-global/cli"
+    rm -f "$logfile"
+    return 0
+  fi
+
+  # First attempt failed, try with sudo
+  warn "Global install failed (may need elevated permissions)."
+  info "Trying with sudo..."
+
+  spinner_start "Installing ${pkg} with sudo..."
+
+  if sudo npm install -g --loglevel=error "$pkg" >"$logfile" 2>&1; then
+    spinner_stop
+    ok "Installed @markus-global/cli (with sudo)"
+    rm -f "$logfile"
+    return 0
+  fi
+
+  spinner_stop
+  error "Installation failed. npm output:"
+  printf "\n"
+  cat "$logfile"
+  printf "\n"
+  error "Try manually: npm install -g ${NPM_PACKAGE}"
+  rm -f "$logfile"
+  return 1
+}
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 main() {
@@ -147,22 +227,9 @@ main() {
   ok "npm $(npm -v)"
 
   # Step 3: Install @markus-global/cli
-  info "Installing ${NPM_PACKAGE}..."
   printf "\n"
-
-  if npm install -g "${NPM_PACKAGE}@${VERSION}"; then
-    ok "Installed @markus-global/cli"
-  else
-    printf "\n"
-    warn "Global install failed (may need elevated permissions)."
-    info "Trying with sudo..."
-    if sudo npm install -g "${NPM_PACKAGE}@${VERSION}"; then
-      ok "Installed @markus-global/cli (with sudo)"
-    else
-      error "Installation failed. Try manually:"
-      printf "    npm install -g ${NPM_PACKAGE}\n"
-      exit 1
-    fi
+  if ! npm_install_global "${NPM_PACKAGE}@${VERSION}"; then
+    exit 1
   fi
 
   printf "\n"
