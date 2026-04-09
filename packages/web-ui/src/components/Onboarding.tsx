@@ -135,16 +135,16 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     // Step 0: Welcome
     {
       title: 'Welcome to Markus',
-      subtitle: 'Your AI Digital Employee Platform',
+      subtitle: 'Your AI workforce, ready in minutes',
       content: (
         <div className="space-y-4 text-fg-secondary text-sm leading-relaxed">
-          <p>Markus helps you build <strong className="text-fg-primary">AI teams</strong> — digital employees that work autonomously, collaborate with each other, and communicate with you naturally.</p>
+          <p>Markus runs <strong className="text-fg-primary">complete AI teams</strong> — developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock.</p>
           <div className="grid grid-cols-2 gap-3 mt-6">
             {[
-              ['Always Online', 'Agents work 24/7 autonomously'],
-              ['Team Collaboration', 'Agents communicate via A2A messaging'],
-              ['Smart Routing', 'Messages auto-route to the right agent'],
-              ['Tool Capable', 'Shell, files, web, git, browser tools'],
+              ['24/7 Operation', 'Agents work while you sleep via heartbeat'],
+              ['Team Collaboration', 'Agents delegate, review, and coordinate'],
+              ['Persistent Memory', 'Five memory layers survive restarts'],
+              ['Any LLM Provider', 'Anthropic, OpenAI, Google, Ollama & more'],
             ].map(([title, desc]) => (
               <div key={title} className="bg-surface-elevated/50 rounded-lg p-3">
                 <div className="font-medium text-fg-primary text-xs">{title}</div>
@@ -263,14 +263,14 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     // Step 3: Done
     {
       title: 'You\'re All Set',
-      subtitle: 'Here\'s what you can do',
+      subtitle: 'Start building your AI workforce',
       content: (
         <div className="space-y-2 text-fg-secondary text-sm">
           {[
-            ['Chat', 'Talk to agents or use Smart Route to auto-pick the best one'],
-            ['Projects', 'Create tasks and track progress on kanban boards'],
-            ['Builder', 'Create and customize agents, teams, and prompts'],
-            ['Settings', 'Manage LLM providers, themes, and import configs'],
+            ['Chat', 'Talk to agents or use Smart Route to auto-delegate tasks'],
+            ['Projects', 'Create projects with requirements, tasks, and deliverables'],
+            ['Builder', 'Hire new agents from templates or build custom roles'],
+            ['Settings', 'Manage LLM providers, integrations, and governance'],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
               <div className="text-brand-500 mt-0.5 shrink-0">&#x2192;</div>

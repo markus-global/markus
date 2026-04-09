@@ -90,13 +90,13 @@ export function Dashboard() {
         {/* Getting Started — shown when no tasks exist yet */}
         {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
           <div className="bg-surface-secondary border border-brand-500/20 rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-fg-primary mb-1">Getting Started</h3>
-            <p className="text-xs text-fg-secondary mb-4">Your AI team is ready. Here are a few things to try first:</p>
+            <h3 className="text-sm font-semibold text-fg-primary mb-1">Your AI workforce is ready</h3>
+            <p className="text-xs text-fg-secondary mb-4">Get started in under a minute — describe what you need and let your team take it from here.</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { label: 'Chat with Secretary', desc: 'Your default team manager can help coordinate work', page: 'team' as const },
-                { label: 'Browse Agent Templates', desc: 'Hire specialized agents from the template library', page: 'agents' as const },
-                { label: 'Create a Project', desc: 'Set up a project with tasks and requirements', page: 'projects' as const },
+                { label: 'Describe Your Goal', desc: 'Chat with the Secretary — it will assemble a team and break down tasks', page: 'chat' as const },
+                { label: 'Hire Agents', desc: 'Browse templates: developers, researchers, writers, analysts, and more', page: 'agents' as const },
+                { label: 'Create a Project', desc: 'Set up requirements and let agents plan, execute, and deliver', page: 'projects' as const },
               ].map(item => (
                 <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-lg p-4 transition-colors">
                   <div className="text-xs font-medium text-fg-primary">{item.label}</div>

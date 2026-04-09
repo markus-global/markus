@@ -21,4 +21,4 @@ Agent templates and skills shared through the Markus marketplace may use their o
 
 ## Contact
 
-For commercial licensing inquiries, please open a GitHub issue or contact: [TBD]
+For commercial licensing inquiries, please open a GitHub issue or contact: jsyqrt@gmail.com
