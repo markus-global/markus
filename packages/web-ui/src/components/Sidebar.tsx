@@ -109,10 +109,10 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-2.5 min-w-0">
-              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0" />
+            <button onClick={onToggleCollapse} className="flex items-center gap-2.5 min-w-0 group" title="Collapse sidebar">
+              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0 group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
               <span className="text-[15px] font-bold tracking-tight text-fg-primary whitespace-nowrap">Markus</span>
-            </div>
+            </button>
             <div className="flex items-center gap-1 shrink-0">
               <NotificationBell userId={authUser?.id} />
               <button

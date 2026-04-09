@@ -40,14 +40,14 @@ const PRIORITY_INDICATOR: Record<string, string> = {
   low: 'bg-blue-500',
 };
 
-function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string } }) {
-  const { task, agentName } = data;
+function TaskNode({ data }: { data: { task: TaskInfo; agentName?: string; selected?: boolean } }) {
+  const { task, agentName, selected } = data;
   const colors = STATUS_COLORS[task.status] ?? STATUS_COLORS['pending']!;
   const isSched = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedLabel = isSched ? (task.scheduleConfig!.every ? `Every ${task.scheduleConfig!.every}` : task.scheduleConfig!.cron ? 'Cron' : '') : '';
 
   return (
-    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`}`}>
+    <div className={`rounded-lg border px-3 py-2 min-w-[180px] max-w-[220px] shadow-md backdrop-blur-sm ${isSched ? `${colors.bg} border-blue-500/40 ring-1 ring-blue-500/20` : `${colors.bg} ${colors.border}`} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25 shadow-lg' : ''}`}>
       <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className={`w-2 h-2 rounded-full shrink-0 ${PRIORITY_INDICATOR[task.priority] ?? 'bg-gray-500'}`} />
@@ -91,11 +91,11 @@ const REQ_GROUP_MAP: Record<string, string> = {
   rejected: 'done', cancelled: 'done',
 };
 
-function RequirementNode({ data }: { data: { req: RequirementInfo } }) {
-  const { req } = data;
+function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean } }) {
+  const { req, selected } = data;
   const colors = REQ_STATUS_COLORS[req.status] ?? REQ_STATUS_COLORS['pending']!;
   return (
-    <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border}`}>
+    <div className={`rounded-lg border-2 border-dashed px-3 py-2 min-w-[180px] max-w-[220px] shadow-lg ${colors.bg} ${colors.border} ${selected ? 'ring-2 ring-brand-500 shadow-brand-500/25' : ''}`}>
       <Handle type="target" position={Position.Top} className="!bg-border-default !w-2 !h-2" />
       <div className="flex items-center gap-1.5 mb-1">
         <span className="text-[9px] px-1 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
@@ -246,6 +246,8 @@ interface TaskDAGProps {
   onTaskClick?: (task: TaskInfo) => void;
   onReqClick?: (req: RequirementInfo) => void;
   onDependencyChange?: () => void;
+  selectedTaskId?: string | null;
+  selectedReqId?: string | null;
 }
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
@@ -263,7 +265,7 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const isArchivedTask = (t: TaskInfo) =>
   t.status === 'completed' && t.updatedAt && (Date.now() - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
 
-export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange }: TaskDAGProps) {
+export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId }: TaskDAGProps) {
   const isLight = useIsLight();
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Edge | null>(null);
@@ -353,7 +355,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const rawNodes: Node[] = rootTasks.map(task => ({
       id: task.id,
       type: 'task',
-      data: { task, agentName: task.assignedAgentId ? agentMap.get(task.assignedAgentId) : undefined },
+      data: { task, agentName: task.assignedAgentId ? agentMap.get(task.assignedAgentId) : undefined, selected: task.id === selectedTaskId },
       position: { x: 0, y: 0 },
     }));
 
@@ -372,7 +374,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       rawNodes.push({
         id: reqNodeId,
         type: 'requirement',
-        data: { req },
+        data: { req, selected: req.id === selectedReqId },
         position: { x: 0, y: 0 },
       });
       nodeIdSet.add(reqNodeId);
@@ -417,7 +419,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
     const layouted = layoutNodes(rawNodes, rawEdges);
     return { initialNodes: layouted, initialEdges: rawEdges };
-  }, [tasks, requirements, agentMap, taskMap, makeEdge, allowedStatuses, groupFilter, showArchived]);
+  }, [tasks, requirements, agentMap, taskMap, makeEdge, allowedStatuses, groupFilter, showArchived, selectedTaskId, selectedReqId]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);

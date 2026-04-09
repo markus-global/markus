@@ -1961,13 +1961,14 @@ function TagPicker({ value, options, onSelect }: {
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
   onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: (e: React.DragEvent) => void;
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
+  selected?: boolean;
 }) {
   const status = row.data.status;
   const priority = row.data.priority;
@@ -1979,7 +1980,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       onDragStart={e => onRowDragStart(e, idx)}
       onDragEnd={onRowDragEnd}
       onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
-      className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer hover:bg-surface-elevated/50 transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''}`}
+      className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''} ${selected ? 'bg-brand-500/10 border-l-brand-500 hover:bg-brand-500/15' : 'hover:bg-surface-elevated/50'}`}
     >
       <div className="w-12 shrink-0">
         {row.kind === 'req' ? (
@@ -2029,7 +2030,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   );
 }
 
-function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh }: {
+function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId }: {
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
   agents: AgentInfo[];
@@ -2037,6 +2038,8 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   onTaskClick: (t: TaskInfo) => void;
   onReqClick: (r: RequirementInfo) => void;
   onRefresh: () => void;
+  selectedTaskId?: string | null;
+  selectedReqId?: string | null;
 }) {
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -2198,14 +2201,14 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} />
                 ))}
               </div>
             );
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} />
           ))
         )}
         {rows.length === 0 && (
@@ -2400,14 +2403,27 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   const boardRef = useRef(board);
   boardRef.current = board;
 
+  // Ensure a navigated-to item's project is visible in the current filters
+  const ensureProjectVisible = useCallback((projectId: string | undefined) => {
+    if (!projectId) return;
+    const pf = projectFilterRef.current;
+    if (pf.size > 0 && !pf.has(projectId)) {
+      setProjectFilter(prev => new Set([...prev, projectId]));
+    }
+  }, []);
+
   // Try to open a task from localStorage (set by other pages)
   useEffect(() => {
     const navTaskId = localStorage.getItem('markus_nav_openTask');
     if (!navTaskId) return;
     const allTasks = Object.values(board).flat();
     const task = allTasks.find(t => t.id === navTaskId);
-    if (task) { handleSelectTask(task); localStorage.removeItem('markus_nav_openTask'); }
-  }, [board, handleSelectTask]);
+    if (task) {
+      ensureProjectVisible(task.projectId);
+      handleSelectTask(task);
+      localStorage.removeItem('markus_nav_openTask');
+    }
+  }, [board, handleSelectTask, ensureProjectVisible]);
 
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
@@ -2441,7 +2457,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
         if (detail.params?.openTask) {
           const allTasks = Object.values(boardRef.current).flat();
           const task = allTasks.find(t => t.id === detail.params!.openTask);
-          if (task) handleSelectTask(task);
+          if (task) {
+            ensureProjectVisible(task.projectId);
+            handleSelectTask(task);
+            localStorage.removeItem('markus_nav_openTask');
+          }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
         if (!detail.params?.projectId && !detail.params?.openTask) {
@@ -2912,6 +2932,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             onTaskClick={task => handleSelectTask(task)}
             onReqClick={req => handleSelectReq(req)}
             onRefresh={() => { refreshBoard(); refreshRequirements(); }}
+            selectedTaskId={selectedTask?.id}
+            selectedReqId={selectedReq?.id}
           />
         ) : boardType === 'dag' ? (
           <TaskDAG
@@ -2923,6 +2945,8 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
             onDependencyChange={refreshBoard}
+            selectedTaskId={selectedTask?.id}
+            selectedReqId={selectedReq?.id}
           />
         ) : (
           <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-4 py-5">
