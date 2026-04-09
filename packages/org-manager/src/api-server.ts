@@ -6354,6 +6354,21 @@ export class APIServer {
       return;
     }
 
+    if (path.match(/^\/api\/requirements\/[^/]+\/cancel$/) && req.method === 'POST') {
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      try {
+        const requirement = this.requirementService.cancelRequirement(reqId);
+        this.json(res, 200, { requirement });
+      } catch (e) {
+        this.json(res, 404, { error: String(e) });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/requirements\/[^/]+$/) && req.method === 'DELETE') {
       const reqId = path.split('/')[3]!;
       if (!this.requirementService) {
@@ -6361,8 +6376,8 @@ export class APIServer {
         return;
       }
       try {
-        this.requirementService.cancelRequirement(reqId);
-        this.json(res, 200, { ok: true });
+        const requirement = this.requirementService.cancelRequirement(reqId);
+        this.json(res, 200, { requirement });
       } catch (e) {
         this.json(res, 404, { error: String(e) });
       }

@@ -1595,23 +1595,81 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   const assignedAgentIds = useMemo(() => new Set(projTasks.map(t => t.assignedAgentId).filter(Boolean)), [projTasks]);
   const projAgents = useMemo(() => agents.filter(a => assignedAgentIds.has(a.id)), [agents, assignedAgentIds]);
 
+  const [addRepoOpen, setAddRepoOpen] = useState(false);
+  const [newRepoPath, setNewRepoPath] = useState('');
+  const [newRepoBranch, setNewRepoBranch] = useState('main');
+  const [statusUpdating, setStatusUpdating] = useState(false);
+
+  const PROJECT_STATUSES: Array<{ value: string; label: string; desc: string }> = [
+    { value: 'active', label: 'Active', desc: 'Work is ongoing' },
+    { value: 'paused', label: 'Paused', desc: 'Temporarily on hold' },
+    { value: 'archived', label: 'Archived', desc: 'No longer active' },
+  ];
+
+  const handleStatusChange = async (newStatus: string) => {
+    if (newStatus === project.status) return;
+    setStatusUpdating(true);
+    try {
+      await onUpdateProject({ status: newStatus } as Partial<ProjectInfo>);
+      onRefresh();
+    } finally { setStatusUpdating(false); }
+  };
+
+  const handleAddRepo = async () => {
+    const path = newRepoPath.trim();
+    if (!path) return;
+    const repos = [...(project.repositories ?? []), { url: '', localPath: path, defaultBranch: newRepoBranch || 'main' }];
+    await onUpdateProject({ repositories: repos } as Partial<ProjectInfo>);
+    setNewRepoPath('');
+    setNewRepoBranch('main');
+    setAddRepoOpen(false);
+    onRefresh();
+  };
+
+  const handleRemoveRepo = async (idx: number) => {
+    const repos = (project.repositories ?? []).filter((_, i) => i !== idx);
+    await onUpdateProject({ repositories: repos } as Partial<ProjectInfo>);
+    onRefresh();
+  };
+
   return (
     <div className="p-5 space-y-5 max-w-3xl">
-      {/* Description + metadata (no duplicate name) */}
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0 space-y-2">
-          <InlineEditableTextarea
-            value={project.description ?? ''}
-            onSave={async (desc) => { await onUpdateProject({ description: desc }); onRefresh(); }}
-            className="text-sm text-fg-secondary"
-            placeholder="Add a project description…"
-          />
-          <div className="flex items-center gap-3 text-xs text-fg-tertiary">
-            <StatusPill status={project.status} />
-            {project.createdAt && <span className="text-fg-tertiary">Created {new Date(project.createdAt).toLocaleDateString()}</span>}
-          </div>
+      {/* Description + metadata */}
+      <div className="space-y-3">
+        <InlineEditableTextarea
+          value={project.description ?? ''}
+          onSave={async (desc) => { await onUpdateProject({ description: desc }); onRefresh(); }}
+          className="text-sm text-fg-secondary"
+          placeholder="Add a project description…"
+        />
+        <div className="flex items-center gap-3 text-xs text-fg-tertiary">
+          {project.createdAt && <span>Created {new Date(project.createdAt).toLocaleDateString()}</span>}
+          {project.updatedAt && <span>Updated {new Date(project.updatedAt).toLocaleDateString()}</span>}
         </div>
-        <button onClick={onDeleteProject} className="text-xs text-red-500 hover:text-red-500 shrink-0 ml-4">Delete Project</button>
+      </div>
+
+      {/* Status toggle */}
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+        <h4 className="text-xs font-semibold text-fg-secondary mb-3">Project Status</h4>
+        <div className="flex gap-2">
+          {PROJECT_STATUSES.map(s => (
+            <button
+              key={s.value}
+              disabled={statusUpdating}
+              onClick={() => handleStatusChange(s.value)}
+              className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                project.status === s.value
+                  ? s.value === 'active' ? 'bg-green-500/15 text-green-600 ring-1 ring-green-500/30'
+                    : s.value === 'paused' ? 'bg-amber-500/15 text-amber-600 ring-1 ring-amber-500/30'
+                    : 'bg-gray-500/15 text-fg-tertiary ring-1 ring-gray-500/30'
+                  : 'bg-surface-elevated text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'
+              } ${statusUpdating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+            >
+              <div>{s.label}</div>
+              <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Task Statistics */}
@@ -1668,19 +1726,61 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       )}
 
       {/* Repositories */}
-      {project.repositories && project.repositories.length > 0 && (
-        <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
-          <h4 className="text-xs font-semibold text-fg-secondary mb-2">Repositories</h4>
-          {project.repositories.map((r, i) => (
-            <div key={i} className="text-sm text-fg-secondary flex items-center gap-2">
-              <span className="text-fg-tertiary">⎇</span>
-              <span>{r.url || r.localPath}</span>
-              <span className="text-xs text-fg-tertiary">({r.defaultBranch})</span>
-            </div>
-          ))}
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-xs font-semibold text-fg-secondary">Repositories</h4>
+          <button onClick={() => setAddRepoOpen(!addRepoOpen)} className="text-[10px] text-brand-500 hover:text-brand-500">
+            {addRepoOpen ? 'Cancel' : '+ Add'}
+          </button>
         </div>
-      )}
+        {(project.repositories ?? []).length === 0 && !addRepoOpen && (
+          <p className="text-xs text-fg-tertiary">No repositories linked.</p>
+        )}
+        {(project.repositories ?? []).map((r, i) => (
+          <div key={i} className="flex items-center gap-2 py-1.5 group">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary shrink-0"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" /><path d="M9 18c-4.51 2-5-2-7-2" /></svg>
+            <span className="text-xs text-fg-secondary flex-1 min-w-0 truncate">{r.url || r.localPath}</span>
+            <span className="text-[10px] text-fg-tertiary shrink-0">{r.defaultBranch}</span>
+            <button
+              onClick={() => handleRemoveRepo(i)}
+              className="text-fg-tertiary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              title="Remove repository"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+        ))}
+        {addRepoOpen && (
+          <div className="mt-2 space-y-2 p-3 bg-surface-elevated rounded-lg border border-border-default">
+            <input
+              value={newRepoPath}
+              onChange={e => setNewRepoPath(e.target.value)}
+              placeholder="Local path (e.g. /Users/me/project)"
+              className="w-full px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary"
+            />
+            <div className="flex gap-2">
+              <input
+                value={newRepoBranch}
+                onChange={e => setNewRepoBranch(e.target.value)}
+                placeholder="Branch (default: main)"
+                className="flex-1 px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary"
+              />
+              <button
+                onClick={handleAddRepo}
+                disabled={!newRepoPath.trim()}
+                className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >Add</button>
+            </div>
+          </div>
+        )}
+      </div>
 
+      {/* Danger zone */}
+      <div className="border border-red-500/20 rounded-xl p-4">
+        <h4 className="text-xs font-semibold text-red-500/80 mb-2">Danger Zone</h4>
+        <p className="text-[11px] text-fg-tertiary mb-3">Deleting a project is permanent and cannot be undone. Tasks and requirements will be unlinked.</p>
+        <button onClick={onDeleteProject} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors">Delete Project</button>
+      </div>
     </div>
   );
 }
@@ -2407,7 +2507,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   };
 
   const handleDeleteReq = async (id: string) => {
-    try { await api.requirements.delete(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.cancel(id); msg('Requirement cancelled'); refreshRequirements(); } catch (e) { msg(`Error: ${e}`); }
   };
 
   // ── Drag handlers (tasks + requirements) ──

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { PageId } from '../types.ts';
 import { api, type AuthUser, type ProjectInfo } from '../api.ts';
 import { NewProjectModal } from './NewProjectModal.tsx';
+import { NotificationBell } from './NotificationBell.tsx';
 
 
 interface Props {
@@ -100,22 +101,28 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
     <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden border-r border-border-subtle">
       <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
         {collapsed ? (
-          <button onClick={onToggleCollapse} title="Expand sidebar" className="group">
-            <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
-          </button>
+          <div className="flex flex-col items-center gap-2">
+            <button onClick={onToggleCollapse} title="Expand sidebar" className="group">
+              <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg group-hover:ring-2 group-hover:ring-brand-500/40 transition-all" />
+            </button>
+            <NotificationBell collapsed userId={authUser?.id} />
+          </div>
         ) : (
           <>
             <div className="flex items-center gap-2.5 min-w-0">
               <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shadow-md shadow-black/30 shrink-0" />
               <span className="text-[15px] font-bold tracking-tight text-fg-primary whitespace-nowrap">Markus</span>
             </div>
-            <button
-              onClick={onToggleCollapse}
-              className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1 rounded-md hover:bg-surface-overlay shrink-0"
-              title="Collapse sidebar"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></svg>
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <NotificationBell userId={authUser?.id} />
+              <button
+                onClick={onToggleCollapse}
+                className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1 rounded-md hover:bg-surface-overlay"
+                title="Collapse sidebar"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></svg>
+              </button>
+            </div>
           </>
         )}
       </div>

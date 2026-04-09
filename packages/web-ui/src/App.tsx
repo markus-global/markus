@@ -153,7 +153,7 @@ export function App() {
       governance: <GovernancePage />,
       projects: <ProjectsPage authUser={currentUser} />,
       deliverables: <DeliverablesPage />,
-      reports: <ReportsPage />,
+      reports: <ReportsPage authUser={currentUser} />,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, theme.mode, isMobile]);

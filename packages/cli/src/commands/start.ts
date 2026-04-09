@@ -321,6 +321,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     requirementService.setRequirementRepo(storage.requirementRepo);
   }
   await requirementService.loadFromStorage('default');
+  requirementService.rebuildTaskLinks(taskService.listTasks());
 
   agentManager.setRequirementService(requirementService);
   agentManager.setProjectService(projectService);

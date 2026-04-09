@@ -118,6 +118,51 @@ export interface GovernancePolicyInfo {
   rules?: Array<{ condition: string; approvalTier: string }>;
 }
 
+export interface ApprovalInfo {
+  id: string;
+  agentId: string;
+  agentName: string;
+  type: string;
+  title: string;
+  description: string;
+  details: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  requestedAt: string;
+  respondedAt?: string;
+  respondedBy?: string;
+}
+
+export interface CodeReviewCheckInfo {
+  name: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  message: string;
+  details?: string;
+  durationMs?: number;
+}
+
+export interface CodeReviewInfo {
+  id: string;
+  taskId?: string;
+  agentId?: string;
+  createdAt: string;
+  checks: CodeReviewCheckInfo[];
+  overallStatus: 'pass' | 'fail' | 'warn';
+  summary: string;
+}
+
+export interface NotificationInfo {
+  id: string;
+  targetUserId: string;
+  type: string;
+  title: string;
+  body: string;
+  priority: string;
+  read: boolean;
+  actionUrl?: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ProjectInfo {
   id: string;
   orgId: string;
@@ -871,6 +916,7 @@ export const api = {
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
     reject: (id: string, reason: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    cancel: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}/cancel`, { method: 'POST' }),
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
     addComment: (id: string, content: string, authorName?: string, authorId?: string, mentions?: string[]) =>
@@ -1020,6 +1066,25 @@ export const api = {
       request<{ policy: GovernancePolicyInfo }>('/governance/policy', { method: 'PUT', body: JSON.stringify(policy) }),
   },
 
+  // ─── Approvals & Notifications ─────────────────────────────────────
+  approvals: {
+    list: (status?: string) => {
+      const qs = status ? `?status=${status}` : '';
+      return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
+    },
+    respond: (id: string, approved: boolean, respondedBy?: string) =>
+      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy }) }),
+  },
+  notifications: {
+    list: (userId?: string, unread?: boolean) => {
+      const params = new URLSearchParams();
+      if (userId) params.set('userId', userId);
+      if (unread) params.set('unread', 'true');
+      return request<{ notifications: NotificationInfo[] }>(`/notifications?${params}`);
+    },
+    markRead: (id: string) => request<{ success: boolean }>(`/notifications/${id}`, { method: 'POST' }),
+  },
+
   // ─── Projects ──────────────────────────────────────────────────────
   projects: {
     list: (orgId?: string) => {
@@ -1078,6 +1143,19 @@ export const api = {
       request<{ status: string }>(`/deliverables/${id}`, { method: 'DELETE' }),
     verify: (id: string) =>
       request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`, { method: 'PUT', body: JSON.stringify({ status: 'verified' }) }),
+  },
+
+  // ─── Code Reviews ──────────────────────────────────────────────────
+  codeReviews: {
+    list: (taskId?: string, limit = 20) => {
+      const params = new URLSearchParams();
+      if (taskId) params.set('taskId', taskId);
+      params.set('limit', String(limit));
+      return request<{ reports: CodeReviewInfo[] }>(`/reviews?${params}`);
+    },
+    get: (id: string) => request<{ report: CodeReviewInfo }>(`/reviews/${id}`),
+    run: (data: { taskId?: string; agentId?: string; description?: string }) =>
+      request<CodeReviewInfo>('/reviews', { method: 'POST', body: JSON.stringify(data) }),
   },
 
   // ─── Reports ───────────────────────────────────────────────────────

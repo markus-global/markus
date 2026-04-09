@@ -1549,8 +1549,8 @@ export class TaskService {
     }
 
     // ── Entering terminal state ──
-    if (status === 'completed' || status === 'failed' || status === 'rejected' || status === 'cancelled') {
-      task.completedAt = now;
+    if (status === 'completed' || status === 'failed' || status === 'rejected' || status === 'cancelled' || status === 'archived') {
+      if (!task.completedAt) task.completedAt = now;
     }
 
     // ── Leaving in_progress: cancel running execution ──
@@ -1601,7 +1601,7 @@ export class TaskService {
     }
 
     // ── Side effect: check dependent tasks on terminal ──
-    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+    if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'archived') {
       this.checkDependentTasks(task);
 
       // Check if the linked requirement is now fully completed

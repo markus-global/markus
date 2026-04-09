@@ -79,7 +79,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 |---------|-------------|
 | → `in_progress` (from non-`in_progress`) | Auto-start: `runTask()` via `setImmediate` |
 | `in_progress` → anything else | Cancel running execution (cancel token) |
-| → `completed` / `failed` / `cancelled` / `rejected` | Set `completedAt`; check dependent tasks for unblocking |
+| → `completed` / `failed` / `cancelled` / `rejected` / `archived` | Set `completedAt`; check dependent tasks for unblocking |
 | → `review` | Notify reviewer agent automatically |
 
 ### Key Rules

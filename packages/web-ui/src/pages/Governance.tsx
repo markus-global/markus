@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api, type AnnouncementInfo, type GovernancePolicyInfo } from '../api.ts';
+import { api, type AnnouncementInfo, type GovernancePolicyInfo, type ApprovalInfo } from '../api.ts';
 
 export function GovernancePage() {
   const [status, setStatus] = useState<{ globalPaused: boolean; emergencyMode: boolean } | null>(null);
   const [announcements, setAnnouncements] = useState<AnnouncementInfo[]>([]);
   const [policy, setPolicy] = useState<GovernancePolicyInfo | null>(null);
+  const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMsg, setActionMsg] = useState('');
+  const [respondingId, setRespondingId] = useState<string | null>(null);
+  const [approvalFilter, setApprovalFilter] = useState<'pending' | 'all'>('pending');
 
   // New announcement form
   const [showNewAnn, setShowNewAnn] = useState(false);
@@ -26,14 +29,16 @@ export function GovernancePage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [s, a, p] = await Promise.all([
+      const [s, a, p, apr] = await Promise.all([
         api.governance.getSystemStatus(),
         api.governance.getAnnouncements(),
         api.governance.getPolicy(),
+        api.approvals.list(),
       ]);
       setStatus(s);
       setAnnouncements(a.announcements);
       setPolicy(p.policy);
+      setApprovals(apr.approvals);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
@@ -200,6 +205,99 @@ export function GovernancePage() {
           ) : (
             <p className="text-sm text-fg-tertiary">No governance policy configured. Click Edit to set one.</p>
           )}
+        </section>
+
+        {/* Approval Queue */}
+        <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-fg-secondary">
+              Approval Queue
+              {approvals.filter(a => a.status === 'pending').length > 0 && (
+                <span className="ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-600">
+                  {approvals.filter(a => a.status === 'pending').length} pending
+                </span>
+              )}
+            </h3>
+            <div className="flex gap-1 text-xs">
+              <button
+                onClick={() => setApprovalFilter('pending')}
+                className={`px-2.5 py-1 rounded-md transition-colors ${approvalFilter === 'pending' ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+              >Pending</button>
+              <button
+                onClick={() => setApprovalFilter('all')}
+                className={`px-2.5 py-1 rounded-md transition-colors ${approvalFilter === 'all' ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'}`}
+              >All</button>
+            </div>
+          </div>
+
+          {(() => {
+            const filtered = approvalFilter === 'pending'
+              ? approvals.filter(a => a.status === 'pending')
+              : approvals;
+            if (filtered.length === 0) return (
+              <p className="text-sm text-fg-tertiary">{approvalFilter === 'pending' ? 'No pending approvals.' : 'No approval requests.'}</p>
+            );
+
+            const handleRespond = async (id: string, approved: boolean) => {
+              setRespondingId(id);
+              try {
+                const { approval } = await api.approvals.respond(id, approved);
+                setApprovals(prev => prev.map(a => a.id === id ? approval : a));
+                flash(approved ? 'Approved' : 'Rejected');
+                window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+              } catch (e) { flash(`Error: ${e}`); }
+              setRespondingId(null);
+            };
+
+            return (
+              <div className="space-y-2">
+                {filtered.map(a => (
+                  <div key={a.id} className={`p-3 rounded-lg border transition-colors ${
+                    a.status === 'pending' ? 'bg-surface-elevated/50 border-amber-500/20' : 'bg-surface-elevated/30 border-border-default/50 opacity-60'
+                  }`}>
+                    <div className="flex items-start gap-3">
+                      <div className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${
+                        a.status === 'pending' ? 'bg-amber-500' : a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-fg-primary">{a.title}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            a.type === 'action' ? 'bg-blue-500/10 text-blue-500' : 'bg-surface-overlay text-fg-tertiary'
+                          }`}>{a.type}</span>
+                        </div>
+                        <p className="text-xs text-fg-secondary mt-0.5">{a.description}</p>
+                        <div className="flex items-center gap-3 mt-1 text-[10px] text-fg-tertiary">
+                          <span>From: {a.agentName}</span>
+                          <span>{new Date(a.requestedAt).toLocaleString()}</span>
+                          {a.respondedBy && <span>Responded by: {a.respondedBy}</span>}
+                        </div>
+                      </div>
+                      {a.status === 'pending' && (
+                        <div className="flex gap-2 shrink-0">
+                          <button
+                            disabled={respondingId === a.id}
+                            onClick={() => handleRespond(a.id, true)}
+                            className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-500 disabled:opacity-50 transition-colors"
+                          >Approve</button>
+                          <button
+                            disabled={respondingId === a.id}
+                            onClick={() => handleRespond(a.id, false)}
+                            className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-lg hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                          >Reject</button>
+                        </div>
+                      )}
+                      {a.status !== 'pending' && (
+                        <span className={`px-2 py-1 text-[10px] rounded-full font-medium shrink-0 ${
+                          a.status === 'approved' ? 'bg-green-500/10 text-green-600' : 'bg-red-500/10 text-red-500'
+                        }`}>{a.status}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </section>
 
         {/* Announcements */}

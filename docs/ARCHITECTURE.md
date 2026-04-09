@@ -157,7 +157,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 
 See [Task & Requirement State Machines](./STATE-MACHINES.md) for the complete FSM specification.
 
-Tasks and requirements share a **unified status vocabulary**: `draft`, `pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `rejected`, `cancelled`, `archived`. Not every status applies to both types, but the same name always means the same thing.
+Tasks and requirements share a **unified status vocabulary**: `pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `rejected`, `cancelled`, `archived`. Not every status applies to both types, but the same name always means the same thing.
 
 #### Standard Task State Flow
 
@@ -186,22 +186,21 @@ pending → in_progress → review → completed → (scheduled rerun) → in_pr
 #### Requirement State Flow
 
 ```
-draft ──► pending ──► in_progress ──► completed
-             │
-             ▼
-          rejected
+pending ──► in_progress ──► completed
+   │
+   ▼
+rejected           any ──► cancelled
 ```
 
 - User-created requirements auto-approve to `in_progress`.
-- Agent proposals start as `draft`, need human approval.
+- Agent proposals start as `pending`, need human approval.
 - Completion is automatic when all linked tasks terminate.
 
 #### Unified Status Reference
 
 | Status | Label | Description |
 |--------|-------|-------------|
-| `draft` | Draft | Created, not yet submitted for approval |
-| `pending` | Pending | Submitted, awaiting human approval |
+| `pending` | Pending | Created, awaiting human approval |
 | `in_progress` | In Progress | Approved, work is active |
 | `blocked` | Blocked | On hold (dependencies, manual pause) |
 | `review` | In Review | Execution done, awaiting reviewer |

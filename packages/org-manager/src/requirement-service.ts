@@ -389,6 +389,29 @@ export class RequirementService {
     }
   }
 
+  /**
+   * Rebuild in-memory taskIds linkage from loaded tasks.
+   * Must be called after both requirements and tasks are loaded from DB,
+   * since taskIds are not persisted in the requirements table.
+   */
+  rebuildTaskLinks(tasks: Iterable<{ id: string; requirementId?: string }>): void {
+    for (const req of this.requirements.values()) {
+      req.taskIds = [];
+    }
+    for (const task of tasks) {
+      if (task.requirementId) {
+        const req = this.requirements.get(task.requirementId);
+        if (req && !req.taskIds.includes(task.id)) {
+          req.taskIds.push(task.id);
+        }
+      }
+    }
+    const linked = [...this.requirements.values()].filter(r => r.taskIds.length > 0).length;
+    if (linked > 0) {
+      log.info('Rebuilt requirement-task links', { linkedRequirements: linked });
+    }
+  }
+
   deleteRequirement(id: string): void {
     this.requirements.delete(id);
     if (this.requirementRepo) {
