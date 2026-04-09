@@ -181,6 +181,13 @@ export class Agent {
   private activeTasks = new Set<string>();
   /** Generation counter per task — prevents stale finally blocks from clearing a newer execution */
   private activeTaskGen = new Map<string, number>();
+  /**
+   * Buffered user messages injected while tool calls are in-flight.
+   * Draining happens after all tool results for the current LLM turn are
+   * appended, right before the next LLM call — this avoids interleaving
+   * user messages between tool results (which is invalid message ordering).
+   */
+  private pendingInjections = new Map<string, string[]>();
   private activeStreamToken?: { cancelled: boolean };
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
@@ -519,17 +526,44 @@ export class Agent {
 
   /**
    * Inject a user message into a specific session (e.g. live comments during task execution).
-   * The message will be seen by the LLM on its next turn.
+   * Messages are buffered and flushed into the session between LLM turns
+   * (after all tool results are appended) to avoid breaking message ordering.
+   * If no task loop is running for this session, the message is appended directly.
    */
   injectUserMessage(sessionId: string, content: string): void {
     let session = this.memory.getSession?.(sessionId);
     if (!session) {
-      // Session may not exist yet (e.g. feedback injection before task execution creates it).
-      // Create it now so the message is available when the task loop starts.
       session = this.memory.getOrCreateSession(this.id, sessionId);
     }
-    this.memory.appendMessage(sessionId, { role: 'user', content });
-    log.debug('Injected user message into session', { sessionId, contentLength: content.length });
+
+    const taskId = sessionId.startsWith('task_') ? sessionId.replace(/^task_/, '').replace(/_r\d+$/, '') : undefined;
+    if (taskId && this.activeTasks.has(taskId)) {
+      let queue = this.pendingInjections.get(sessionId);
+      if (!queue) {
+        queue = [];
+        this.pendingInjections.set(sessionId, queue);
+      }
+      queue.push(content);
+      log.debug('Buffered injected message for next LLM turn', { sessionId, contentLength: content.length, queueSize: queue.length });
+    } else {
+      this.memory.appendMessage(sessionId, { role: 'user', content });
+      log.debug('Injected user message into session (direct)', { sessionId, contentLength: content.length });
+    }
+  }
+
+  /**
+   * Flush any buffered injections for a session into memory.
+   * Called by the task execution loop after all tool results are appended.
+   */
+  private flushPendingInjections(sessionId: string): void {
+    const queue = this.pendingInjections.get(sessionId);
+    if (!queue || queue.length === 0) return;
+
+    for (const content of queue) {
+      this.memory.appendMessage(sessionId, { role: 'user', content });
+    }
+    log.info('Flushed pending injections into session', { sessionId, count: queue.length });
+    this.pendingInjections.delete(sessionId);
   }
 
   /**
@@ -637,6 +671,9 @@ export class Agent {
   removeActiveTask(taskId: string): void {
     this.activeTasks.delete(taskId);
     this.activeTaskGen.delete(taskId);
+    for (const key of this.pendingInjections.keys()) {
+      if (key.startsWith(`task_${taskId}_`)) this.pendingInjections.delete(key);
+    }
   }
 
   /**
@@ -2470,6 +2507,9 @@ export class Agent {
           return;
         }
 
+        // Flush buffered live comments now that all tool results are safely appended.
+        this.flushPendingInjections(sessionId);
+
         // Re-inject critical task completion reminder every 10 tool iterations
         // to prevent "lost in the middle" — the original task_submit_review
         // instruction drifts away from recent context as tool calls accumulate.
@@ -2579,6 +2619,7 @@ export class Agent {
       if (this.activeTaskGen.get(taskId) === execGen) {
         this.activeTasks.delete(taskId);
         this.activeTaskGen.delete(taskId);
+        this.pendingInjections.delete(sessionId);
       }
       this.endActivity(taskActId);
       this.notifyStateChange();
