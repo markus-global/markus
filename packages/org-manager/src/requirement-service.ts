@@ -6,7 +6,9 @@ import {
   type RequirementSource,
   type TaskPriority,
 } from '@markus/shared';
+import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
+import type { HITLService } from './hitl-service.js';
 
 const log = createLogger('requirement-service');
 
@@ -25,6 +27,8 @@ export class RequirementService {
   private requirements = new Map<string, Requirement>();
   private requirementRepo?: any;
   private ws?: WSBroadcaster;
+  private agentManager?: AgentManager;
+  private hitlService?: HITLService;
 
   private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
     'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
@@ -38,12 +42,33 @@ export class RequirementService {
     this.ws = ws;
   }
 
+  setAgentManager(am: AgentManager): void {
+    this.agentManager = am;
+  }
+
+  setHITLService(svc: HITLService): void {
+    this.hitlService = svc;
+  }
+
   /**
    * Create a requirement from a user — auto-approved.
    */
   createRequirement(request: CreateRequirementRequest): Requirement {
+    if (!request.title?.trim()) {
+      throw new Error('Requirement title is required and cannot be empty.');
+    }
+    if (!request.description?.trim()) {
+      throw new Error('Requirement description is required and cannot be empty.');
+    }
+    if (!request.createdBy?.trim()) {
+      throw new Error('Requirement creator (createdBy) is required.');
+    }
     if (!request.projectId) {
       throw new Error('Requirement must be linked to a project (projectId is required).');
+    }
+    const validPriorities = ['low', 'medium', 'high', 'urgent'];
+    if (request.priority && !validPriorities.includes(request.priority)) {
+      throw new Error(`Invalid priority "${request.priority}". Must be one of: ${validPriorities.join(', ')}.`);
     }
     const isUser = request.source === 'user';
     const now = new Date().toISOString();
@@ -150,6 +175,8 @@ export class RequirementService {
     this.broadcast('requirement:approved', req);
     log.info('Requirement approved', { id, approvedBy: userId });
 
+    this.notifyCreatorOnDecision(req, 'approved', userId);
+
     return req;
   }
 
@@ -178,6 +205,49 @@ export class RequirementService {
 
     this.broadcast('requirement:rejected', req);
     log.info('Requirement rejected', { id, reason });
+
+    this.notifyCreatorOnDecision(req, 'rejected', userId, reason);
+
+    return req;
+  }
+
+  /**
+   * Resubmit a rejected requirement for review, optionally updating its fields.
+   * Transitions rejected → pending so the human can re-evaluate.
+   */
+  resubmitRequirement(
+    id: string,
+    updates?: { title?: string; description?: string; priority?: TaskPriority; tags?: string[] },
+  ): Requirement {
+    const req = this.requirements.get(id);
+    if (!req) throw new Error(`Requirement ${id} not found`);
+    if (req.status !== 'rejected') {
+      throw new Error(`Requirement ${id} is in status '${req.status}' — only rejected requirements can be resubmitted`);
+    }
+
+    const now = new Date().toISOString();
+    if (updates?.title !== undefined) req.title = updates.title;
+    if (updates?.description !== undefined) req.description = updates.description;
+    if (updates?.priority !== undefined) req.priority = updates.priority;
+    if (updates?.tags !== undefined) req.tags = updates.tags;
+
+    req.status = 'pending';
+    req.rejectedReason = undefined;
+    req.approvedBy = undefined;
+    req.approvedAt = undefined;
+    req.updatedAt = now;
+
+    if (this.requirementRepo) {
+      const persistErr = (e: unknown) =>
+        log.error('Failed to persist requirement resubmission', { id, error: String(e) });
+      this.requirementRepo.updateStatus(id, 'pending').catch(persistErr);
+      if (updates) {
+        this.requirementRepo.update(id, updates).catch(persistErr);
+      }
+    }
+
+    this.broadcast('requirement:resubmitted', req);
+    log.info('Requirement resubmitted for review', { id, hasUpdates: !!updates });
 
     return req;
   }
@@ -425,6 +495,85 @@ export class RequirementService {
       this.requirementRepo.delete(id).catch((e: unknown) =>
         log.error('Failed to delete requirement from storage', { id, error: String(e) })
       );
+    }
+  }
+
+  /**
+   * Notify the proposing agent when a requirement decision is made.
+   * For approved: agent should create tasks to fulfill the requirement.
+   * For rejected: agent should review feedback and either propose a refined
+   * requirement or abandon the idea.
+   */
+  private notifyCreatorOnDecision(
+    req: Requirement,
+    decision: 'approved' | 'rejected',
+    decidedBy: string,
+    reason?: string,
+  ): void {
+    if (req.source !== 'agent') return;
+
+    const creatorId = req.createdBy;
+
+    // Notify the proposing agent via handleMessage
+    if (this.agentManager && this.agentManager.hasAgent(creatorId)) {
+      const parts: string[] = [];
+
+      if (decision === 'approved') {
+        parts.push(`[REQUIREMENT APPROVED] Your proposed requirement "${req.title}" (ID: ${req.id}) has been approved.`);
+        parts.push('');
+        parts.push(`The requirement is now **in progress**. You should create tasks to fulfill it.`);
+        parts.push('');
+        parts.push(`**Title:** ${req.title}`);
+        parts.push(`**Description:** ${req.description}`);
+        if (req.projectId) parts.push(`**Project:** ${req.projectId}`);
+        parts.push('');
+        parts.push(`Please use \`task_create\` to create tasks for this requirement, setting requirement_id to "${req.id}".`);
+      } else {
+        parts.push(`[REQUIREMENT REJECTED] Your proposed requirement "${req.title}" (ID: ${req.id}) has been rejected.`);
+        parts.push('');
+        if (reason) parts.push(`**Reason:** ${reason}`);
+        parts.push('');
+        parts.push(`**Title:** ${req.title}`);
+        parts.push(`**Description:** ${req.description}`);
+        parts.push('');
+        parts.push('You may:');
+        parts.push(`1. Update and resubmit this requirement using \`requirement_resubmit\` with requirement_id "${req.id}" — you can include updated title, description, or other fields that address the feedback`);
+        parts.push('2. Abandon this requirement if the feedback indicates it is not needed');
+      }
+
+      const agent = this.agentManager.getAgent(creatorId);
+      agent.handleMessage(
+        parts.join('\n'),
+        'system',
+        { name: 'System', role: 'manager' },
+        { ephemeral: true, maxHistory: 10 },
+      ).catch(err => {
+        log.warn('Failed to notify creator agent about requirement decision', {
+          requirementId: req.id, creatorId, decision, error: String(err),
+        });
+      });
+
+      log.info('Notified creator agent about requirement decision', {
+        requirementId: req.id, creatorId, decision,
+      });
+    }
+
+    // Create HITL notification for UI bell
+    if (this.hitlService) {
+      const title = decision === 'approved'
+        ? `Requirement approved: ${req.title}`
+        : `Requirement rejected: ${req.title}`;
+      const body = decision === 'approved'
+        ? `Requirement "${req.title}" has been approved and is now in progress.`
+        : `Requirement "${req.title}" has been rejected.${reason ? ` Reason: ${reason}` : ''}`;
+
+      this.hitlService.notify({
+        targetUserId: 'default',
+        type: 'system',
+        title,
+        body,
+        metadata: { requirementId: req.id, decision, createdBy: creatorId },
+      });
     }
   }
 

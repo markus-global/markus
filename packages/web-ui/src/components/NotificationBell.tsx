@@ -35,7 +35,7 @@ function timeAgo(iso: string): string {
 
 export function NotificationBell({ collapsed, userId }: Props) {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<'notifications' | 'approvals'>('notifications');
+  const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
@@ -81,7 +81,15 @@ export function NotificationBell({ collapsed, userId }: Props) {
     return () => document.removeEventListener('mousedown', close);
   }, [open]);
 
-  const unreadCount = notifications.filter(n => !n.read).length;
+  const approvalIds = new Set(approvals.map(a => a.id));
+  const displayNotifications = notifications.filter(n => {
+    if (n.type === 'approval_request' && n.metadata?.approvalId && approvalIds.has(n.metadata.approvalId as string)) {
+      return false;
+    }
+    return true;
+  });
+
+  const unreadCount = displayNotifications.filter(n => !n.read).length;
   const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
   const badgeCount = unreadCount + pendingApprovals;
 
@@ -93,9 +101,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const navigateForNotification = (n: NotificationInfo) => {
     const meta = n.metadata ?? {};
     switch (n.type) {
-      case 'approval_request':
-        navBus.navigate('governance');
+      case 'approval_request': {
+        const approvalId = meta.approvalId as string | undefined;
+        const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
+        const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
+        if (taskId) navBus.navigate('projects', { openTask: taskId });
+        else navBus.navigate('projects');
         break;
+      }
       case 'task_completed':
         if (meta.taskId) navBus.navigate('projects', { openTask: meta.taskId as string });
         else navBus.navigate('projects');
@@ -126,14 +139,30 @@ export function NotificationBell({ collapsed, userId }: Props) {
     try {
       const { approval } = await api.approvals.respond(id, approved, userId);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
+
+      const relatedNotif = notifications.find(
+        n => n.type === 'approval_request' && n.metadata?.approvalId === id
+      );
+      if (relatedNotif && !relatedNotif.read) {
+        api.notifications.markRead(relatedNotif.id);
+        setNotifications(prev => prev.map(n => n.id === relatedNotif.id ? { ...n, read: true } : n));
+      }
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch { /* */ }
     setResponding(null);
   };
 
   const handleMarkAllRead = async () => {
-    const unread = notifications.filter(n => !n.read);
+    const unread = displayNotifications.filter(n => !n.read);
     await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  };
+
+  const navigateForApproval = (a: ApprovalInfo) => {
+    const taskId = a.details?.taskId as string | undefined;
+    if (taskId) navBus.navigate('projects', { openTask: taskId });
+    else navBus.navigate('projects');
+    setOpen(false);
   };
 
   return (
@@ -162,20 +191,20 @@ export function NotificationBell({ collapsed, userId }: Props) {
           {/* Tabs */}
           <div className="flex border-b border-border-default shrink-0">
             <button
-              onClick={() => setTab('notifications')}
-              className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
-                tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
-              }`}
-            >
-              Notifications{unreadCount > 0 ? ` (${unreadCount})` : ''}
-            </button>
-            <button
               onClick={() => setTab('approvals')}
               className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
                 tab === 'approvals' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
               }`}
             >
               Approvals{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}
+            </button>
+            <button
+              onClick={() => setTab('notifications')}
+              className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${
+                tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
+              }`}
+            >
+              Notifications{unreadCount > 0 ? ` (${unreadCount})` : ''}
             </button>
           </div>
 
@@ -188,12 +217,56 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto">
+            {tab === 'approvals' && (
+              approvals.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">No approval requests</div>
+              ) : (
+                <div className="divide-y divide-border-default/50">
+                  {approvals.filter(a => a.status === 'pending').map(a => (
+                    <div key={a.id} className="px-3 py-3 space-y-2">
+                      <button onClick={() => navigateForApproval(a)} className="w-full text-left flex items-start gap-2 hover:bg-surface-overlay rounded transition-colors">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0">
+                          <path d={TYPE_ICON.approval_request} />
+                        </svg>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-fg-primary font-medium">{a.title}</div>
+                          <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName} &middot; {timeAgo(a.requestedAt)}</div>
+                          <p className="text-[11px] text-fg-secondary mt-1 line-clamp-3">{a.description}</p>
+                        </div>
+                      </button>
+                      <div className="flex gap-2 pl-5">
+                        <button
+                          disabled={responding === a.id}
+                          onClick={() => handleApprovalResponse(a.id, true)}
+                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                        >Approve</button>
+                        <button
+                          disabled={responding === a.id}
+                          onClick={() => handleApprovalResponse(a.id, false)}
+                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                        >Reject</button>
+                      </div>
+                    </div>
+                  ))}
+                  {approvals.filter(a => a.status !== 'pending').slice(0, 20).map(a => (
+                    <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 opacity-50 hover:opacity-70 transition-colors">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'}`} />
+                        <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
+                        <span className="text-[10px] text-fg-tertiary shrink-0">{a.status}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
+
             {tab === 'notifications' && (
-              notifications.length === 0 ? (
+              displayNotifications.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">No notifications</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {notifications.slice(0, 50).map(n => (
+                  {displayNotifications.slice(0, 50).map(n => (
                     <button
                       key={n.id}
                       onClick={() => handleNotificationClick(n)}
@@ -218,50 +291,6 @@ export function NotificationBell({ collapsed, userId }: Props) {
                         <polyline points="9 18 15 12 9 6" />
                       </svg>
                     </button>
-                  ))}
-                </div>
-              )
-            )}
-
-            {tab === 'approvals' && (
-              approvals.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">No approval requests</div>
-              ) : (
-                <div className="divide-y divide-border-default/50">
-                  {approvals.filter(a => a.status === 'pending').map(a => (
-                    <div key={a.id} className="px-3 py-3 space-y-2">
-                      <div className="flex items-start gap-2">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0">
-                          <path d={TYPE_ICON.approval_request} />
-                        </svg>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-xs text-fg-primary font-medium">{a.title}</div>
-                          <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName} &middot; {timeAgo(a.requestedAt)}</div>
-                          <p className="text-[11px] text-fg-secondary mt-1 line-clamp-3">{a.description}</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 pl-5">
-                        <button
-                          disabled={responding === a.id}
-                          onClick={() => handleApprovalResponse(a.id, true)}
-                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                        >Approve</button>
-                        <button
-                          disabled={responding === a.id}
-                          onClick={() => handleApprovalResponse(a.id, false)}
-                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                        >Reject</button>
-                      </div>
-                    </div>
-                  ))}
-                  {approvals.filter(a => a.status !== 'pending').slice(0, 20).map(a => (
-                    <div key={a.id} className="px-3 py-2.5 opacity-50">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : 'bg-red-500'}`} />
-                        <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
-                        <span className="text-[10px] text-fg-tertiary shrink-0">{a.status}</span>
-                      </div>
-                    </div>
                   ))}
                 </div>
               )

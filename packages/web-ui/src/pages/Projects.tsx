@@ -2533,10 +2533,11 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   // ── Requirement actions ──
 
   const handleCreateReq = async () => {
-    if (!reqTitle.trim()) return;
+    if (!reqTitle.trim()) { msg('Please enter a title for this requirement'); return; }
+    if (!reqDesc.trim()) { msg('Please enter a description for this requirement'); return; }
     if (!reqProjectId) { msg('Please select a project for this requirement'); return; }
     try {
-      await api.requirements.create({ title: reqTitle, description: reqDesc, priority: reqPriority, projectId: reqProjectId });
+      await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
       msg('Requirement created');
       setReqTitle(''); setReqDesc(''); setShowCreateReq(false);
       refreshRequirements();
@@ -3100,6 +3101,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
               onStatusChange={async (id, status) => {
                 try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
+              onRefresh={refreshRequirements}
               authUser={authUser}
             />
           ) : null}
@@ -3270,7 +3272,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
             </div>
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">Cancel</button>
-              <button onClick={() => void handleCreateReq()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Create</button>
+              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">Create</button>
             </div>
           </div>
         </div>
@@ -3416,7 +3418,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, authUser,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -3428,9 +3430,13 @@ function RequirementDetailPanel({
   onReject: (id: string) => void;
   onCancel: (id: string) => void;
   onStatusChange?: (id: string, status: string) => void;
+  onRefresh?: () => void;
   authUser?: { id: string; name: string };
 }) {
   const isMobile = useIsMobile();
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState(req.description);
+  const [savingDesc, setSavingDesc] = useState(false);
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
@@ -3439,6 +3445,8 @@ function RequirementDetailPanel({
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
+
+  useEffect(() => { setDescDraft(req.description); setEditingDesc(false); }, [req.id, req.description]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-surface-secondary">
@@ -3468,12 +3476,50 @@ function RequirementDetailPanel({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {req.description && (
-            <div>
-              <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
-              <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />
-            </div>
-          )}
+          <div>
+            <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
+            {editingDesc ? (
+              <div className="space-y-2">
+                <textarea
+                  value={descDraft}
+                  onChange={e => setDescDraft(e.target.value)}
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
+                  rows={4}
+                  autoFocus
+                />
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => { setEditingDesc(false); setDescDraft(req.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+                  <button
+                    onClick={async () => {
+                      setSavingDesc(true);
+                      try {
+                        await api.requirements.update(req.id, { description: descDraft });
+                        setEditingDesc(false);
+                        onRefresh?.();
+                      } catch (e) { /* keep editing */ }
+                      finally { setSavingDesc(false); }
+                    }}
+                    disabled={savingDesc}
+                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
+                  >Save</button>
+                </div>
+              </div>
+            ) : (
+              <div className="group relative">
+                {req.description ? (
+                  <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />
+                ) : (
+                  <p className="text-sm text-fg-tertiary italic">No description</p>
+                )}
+                {!isTerminal && (
+                  <button
+                    onClick={() => { setDescDraft(req.description); setEditingDesc(true); }}
+                    className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >Edit</button>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div className="bg-surface-elevated/60 rounded-lg p-2.5">
@@ -3507,7 +3553,7 @@ function RequirementDetailPanel({
             </div>
           )}
 
-          {req.tags && req.tags.length > 0 && (
+          {Array.isArray(req.tags) && req.tags.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {req.tags.map(tag => <span key={tag} className="text-[10px] bg-surface-elevated text-fg-secondary px-2 py-0.5 rounded-full">#{tag}</span>)}
             </div>

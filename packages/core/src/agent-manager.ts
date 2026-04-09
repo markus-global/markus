@@ -117,6 +117,14 @@ export interface RequirementServiceBridge {
     reason: string
   ): { id: string; title: string; status: string };
   cancelRequirement(id: string): { id: string; title: string; status: string };
+  updateRequirement(
+    id: string,
+    data: { title?: string; description?: string; priority?: string; tags?: string[] }
+  ): { id: string; title: string; status: string };
+  resubmitRequirement(
+    id: string,
+    updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
+  ): { id: string; title: string; status: string };
 }
 
 export interface TaskServiceBridge {
@@ -972,6 +980,16 @@ export class AgentManager {
               return this.requirementService!.updateRequirementStatus(reqId, status, id);
             }
           : undefined,
+        updateRequirement: this.requirementService
+          ? async (reqId, data) => {
+              return this.requirementService!.updateRequirement(reqId, data);
+            }
+          : undefined,
+        resubmitRequirement: this.requirementService
+          ? async (reqId, updates) => {
+              return this.requirementService!.resubmitRequirement(reqId, updates);
+            }
+          : undefined,
         postTaskComment: ts.postTaskComment
           ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
           : undefined,
@@ -1520,6 +1538,16 @@ export class AgentManager {
                 return this.requirementService!.cancelRequirement(reqId);
               }
               return this.requirementService!.updateRequirementStatus(reqId, status, id);
+            }
+          : undefined,
+        updateRequirement: this.requirementService
+          ? async (reqId, data) => {
+              return this.requirementService!.updateRequirement(reqId, data);
+            }
+          : undefined,
+        resubmitRequirement: this.requirementService
+          ? async (reqId, updates) => {
+              return this.requirementService!.resubmitRequirement(reqId, updates);
             }
           : undefined,
         postTaskComment: ts.postTaskComment

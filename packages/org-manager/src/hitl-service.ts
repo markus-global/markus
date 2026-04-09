@@ -156,6 +156,12 @@ export class HITLService {
     approval.respondedBy = respondedBy;
     log.info(`Approval ${id} ${approval.status} by ${respondedBy}`);
 
+    for (const notif of this.notifications.values()) {
+      if (notif.type === 'approval_request' && notif.metadata?.approvalId === id && !notif.read) {
+        notif.read = true;
+      }
+    }
+
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);

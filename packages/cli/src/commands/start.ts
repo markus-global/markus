@@ -327,6 +327,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setProjectService(projectService);
   agentManager.setKnowledgeService(knowledgeService);
   agentManager.setDeliverableService(deliverableService);
+  requirementService.setAgentManager(agentManager);
+  requirementService.setHITLService(hitlService);
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);

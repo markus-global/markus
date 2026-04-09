@@ -6269,17 +6269,28 @@ export class APIServer {
         this.json(res, 503, { error: 'Requirement service not available' });
         return;
       }
-      const requirement = this.requirementService.createRequirement({
-        orgId: (body['orgId'] as string) ?? 'default',
-        title: body['title'] as string,
-        description: (body['description'] as string) ?? '',
-        priority: body['priority'] as TaskPriority | undefined,
-        projectId: body['projectId'] as string | undefined,
-        source: 'user',
-        createdBy: authUser?.userId ?? 'unknown',
-        tags: body['tags'] as string[] | undefined,
-      });
-      this.json(res, 201, { requirement });
+      const title = (body['title'] as string | undefined)?.trim();
+      const description = (body['description'] as string | undefined)?.trim();
+      const projectId = body['projectId'] as string | undefined;
+      if (!title) { this.json(res, 400, { error: 'Title is required' }); return; }
+      if (!description) { this.json(res, 400, { error: 'Description is required' }); return; }
+      if (!projectId) { this.json(res, 400, { error: 'Project is required' }); return; }
+      if (!authUser?.userId) { this.json(res, 400, { error: 'Creator identity is required' }); return; }
+      try {
+        const requirement = this.requirementService.createRequirement({
+          orgId: (body['orgId'] as string) ?? 'default',
+          title,
+          description,
+          priority: body['priority'] as TaskPriority | undefined,
+          projectId,
+          source: 'user',
+          createdBy: authUser.userId,
+          tags: body['tags'] as string[] | undefined,
+        });
+        this.json(res, 201, { requirement });
+      } catch (e) {
+        this.json(res, 400, { error: String(e).replace('Error: ', '') });
+      }
       return;
     }
 

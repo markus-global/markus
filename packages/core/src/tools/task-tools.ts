@@ -125,6 +125,16 @@ export interface AgentTaskContext {
     status: string,
     reason?: string
   ) => Promise<{ id: string; title: string; status: string }>;
+  /** Update a requirement's fields (title, description, priority, tags) */
+  updateRequirement?: (
+    id: string,
+    data: { title?: string; description?: string; priority?: string; tags?: string[] }
+  ) => Promise<{ id: string; title: string; status: string }>;
+  /** Resubmit a rejected requirement for review, optionally updating fields */
+  resubmitRequirement?: (
+    id: string,
+    updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
+  ) => Promise<{ id: string; title: string; status: string }>;
   /** Post a structured comment on a task (with @mention support) */
   postTaskComment?: (taskId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
   /** Post a structured comment on a requirement (with @mention support) */
@@ -875,7 +885,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 },
                 project_id: {
                   type: 'string',
-                  description: 'Optional: project this requirement belongs to',
+                  description: 'Project ID this requirement belongs to (required)',
                 },
                 tags: {
                   type: 'array',
@@ -883,7 +893,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   description: 'Optional: tags to categorize this requirement',
                 },
               },
-              required: ['title', 'description'],
+              required: ['title', 'description', 'project_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
@@ -1024,6 +1034,132 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 });
               } catch (error) {
                 log.error('requirement_update_status failed', { error: String(error) });
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.updateRequirement
+      ? [
+          {
+            name: 'requirement_update',
+            description: [
+              'Update a requirement\'s fields (title, description, priority, or tags).',
+              'Use this to refine requirement details, add missing information, or correct errors.',
+              'Only provide the fields you want to change.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                requirement_id: {
+                  type: 'string',
+                  description: 'The requirement ID to update',
+                },
+                title: {
+                  type: 'string',
+                  description: 'Updated title (if changing)',
+                },
+                description: {
+                  type: 'string',
+                  description: 'Updated description (if changing)',
+                },
+                priority: {
+                  type: 'string',
+                  enum: ['low', 'medium', 'high', 'urgent'],
+                  description: 'Updated priority (if changing)',
+                },
+                tags: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Updated tags (if changing)',
+                },
+              },
+              required: ['requirement_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const data: { title?: string; description?: string; priority?: string; tags?: string[] } = {};
+                if (args['title']) data.title = args['title'] as string;
+                if (args['description']) data.description = args['description'] as string;
+                if (args['priority']) data.priority = args['priority'] as string;
+                if (args['tags']) data.tags = args['tags'] as string[];
+                const req = await ctx.updateRequirement!(
+                  args['requirement_id'] as string,
+                  data
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  requirement: req,
+                  message: `Requirement "${req.title}" (ID: ${req.id}) updated successfully.`,
+                });
+              } catch (error) {
+                log.error('requirement_update failed', { error: String(error) });
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.resubmitRequirement
+      ? [
+          {
+            name: 'requirement_resubmit',
+            description: [
+              'Resubmit a rejected requirement for review.',
+              'Use this after a requirement has been rejected — update the content to address the feedback and resubmit in one step.',
+              'The requirement will return to pending status for human re-review.',
+              'You can include updated title, description, priority, or tags to refine the proposal.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                requirement_id: {
+                  type: 'string',
+                  description: 'The rejected requirement ID to resubmit',
+                },
+                title: {
+                  type: 'string',
+                  description: 'Updated title (optional, provide if addressing feedback)',
+                },
+                description: {
+                  type: 'string',
+                  description: 'Updated description (optional, provide if addressing feedback)',
+                },
+                priority: {
+                  type: 'string',
+                  enum: ['low', 'medium', 'high', 'urgent'],
+                  description: 'Updated priority (optional)',
+                },
+                tags: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Updated tags (optional)',
+                },
+              },
+              required: ['requirement_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const updates: { title?: string; description?: string; priority?: string; tags?: string[] } = {};
+                if (args['title']) updates.title = args['title'] as string;
+                if (args['description']) updates.description = args['description'] as string;
+                if (args['priority']) updates.priority = args['priority'] as string;
+                if (args['tags']) updates.tags = args['tags'] as string[];
+                const hasUpdates = Object.keys(updates).length > 0;
+                const req = await ctx.resubmitRequirement!(
+                  args['requirement_id'] as string,
+                  hasUpdates ? updates : undefined,
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  requirement: req,
+                  message: `Requirement "${req.title}" (ID: ${req.id}) has been resubmitted for review${hasUpdates ? ' with updates' : ''}.`,
+                });
+              } catch (error) {
+                log.error('requirement_resubmit failed', { error: String(error) });
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
             },
