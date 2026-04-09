@@ -319,15 +319,65 @@ type ViewMode = 'all' | 'project';
 
 // ─── Comment Bubble ──────────────────────────────────────────────────────────────
 
+function MentionPopover({ agent, anchorRect, onClose }: {
+  agent: AgentInfo;
+  anchorRect: { top: number; left: number };
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
+  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-56 bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-3 space-y-2"
+      style={{ top: anchorRect.top + 4, left: anchorRect.left }}
+    >
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 rounded-full bg-brand-500/15 flex items-center justify-center text-[10px] font-bold text-brand-600 shrink-0">
+          {agent.name.slice(0, 2).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-fg-primary font-medium truncate">{agent.name}</div>
+          <div className="text-[10px] text-fg-tertiary">{agent.role}</div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${statusColor}`} />
+            <span className="text-[10px] text-fg-secondary">{statusLabel}</span>
+          </div>
+        </div>
+      </div>
+      <button
+        onClick={() => { onClose(); navBus.navigate('chat', { selectAgent: agent.id }); }}
+        className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
+      >
+        View Profile →
+      </button>
+    </div>
+  );
+}
+
 function CommentBubble({ comment, agents }: { comment: TaskComment | RequirementComment; agents: AgentInfo[] }) {
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const [mentionPopover, setMentionPopover] = useState<{ agent: AgentInfo; top: number; left: number } | null>(null);
 
-  const handleMentionClick = useCallback((name: string) => {
+  const handleMentionClick = useCallback((name: string, event: React.MouseEvent) => {
     const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
-    if (agent) navBus.navigate('chat', { agentId: agent.id });
+    if (agent) {
+      const rect = (event.target as HTMLElement).getBoundingClientRect();
+      setMentionPopover({ agent, top: rect.bottom, left: rect.left });
+    }
   }, [agents]);
 
   return (
@@ -345,6 +395,13 @@ function CommentBubble({ comment, agents }: { comment: TaskComment | Requirement
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
       </div>
+      {mentionPopover && (
+        <MentionPopover
+          agent={mentionPopover.agent}
+          anchorRect={{ top: mentionPopover.top, left: mentionPopover.left }}
+          onClose={() => setMentionPopover(null)}
+        />
+      )}
     </div>
   );
 }

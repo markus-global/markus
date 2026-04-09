@@ -5,8 +5,8 @@ import remarkGfm from 'remark-gfm';
 interface Props {
   content: string;
   className?: string;
-  /** When provided, @mentions in the text become clickable and invoke this callback with the mentioned name */
-  onMentionClick?: (name: string) => void;
+  /** When provided, @mentions in the text become clickable and invoke this callback with the mentioned name and click event */
+  onMentionClick?: (name: string, event: React.MouseEvent) => void;
 }
 
 const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
@@ -21,11 +21,12 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
   return { thinking, rest: rest.trim() };
 }
 
-const MENTION_PREFIX = 'mention:';
+const MENTION_PREFIX = '#mention:';
 
-/** Convert @mentions in raw text to markdown links before ReactMarkdown processes it */
+/** Convert @mentions in raw text to markdown links before ReactMarkdown processes it.
+ *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them. */
 function preprocessMentions(text: string): string {
-  return text.replace(/@\[([^\]]+)\]|@(\w+)/g, (full, bracketName: string | undefined, wordName: string | undefined) => {
+  return text.replace(/@\[([^\]]+)\]|@(\w+)/g, (_full, bracketName: string | undefined, wordName: string | undefined) => {
     const name = bracketName ?? wordName!;
     return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
   });
@@ -93,7 +94,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick }: Pro
           return (
             <span
               className="text-brand-500 font-medium cursor-pointer hover:underline"
-              onClick={(e) => { e.preventDefault(); onMentionClick(name); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMentionClick(name, e); }}
               title={name}
             >
               {children}
