@@ -168,24 +168,6 @@ else
   warn "Remember to push: git push origin main --tags"
 fi
 
-# ── Step 7: Docker image (optional) ────────────────────────────────────────
-
-printf "\nBuild & push Docker image? (y/n) "
-read -r DOCKER_CONFIRM
-if [[ "$DOCKER_CONFIRM" == "y" ]]; then
-  info "Building Docker image..."
-  docker build -t "markus/markus:$NEW_VERSION" -t "markus/markus:latest" .
-  info "Pushing Docker image..."
-  docker push "markus/markus:$NEW_VERSION"
-  docker push "markus/markus:latest"
-  ok "Docker image pushed: markus/markus:$NEW_VERSION"
-else
-  info "Skip Docker. Build manually:"
-  printf "  docker build -t markus/markus:$NEW_VERSION -t markus/markus:latest .\n"
-  printf "  docker push markus/markus:$NEW_VERSION && docker push markus/markus:latest\n"
-fi
-
 printf "\n${GREEN}${BOLD}Release v$NEW_VERSION complete!${NC}\n\n"
 printf "  npm:     https://www.npmjs.com/package/@markus-global/cli\n"
-printf "  install: curl -fsSL https://markus.global/install.sh | bash\n"
-printf "  docker:  docker pull markus/markus:$NEW_VERSION\n\n"
+printf "  install: curl -fsSL https://markus.global/install.sh | bash\n\n"

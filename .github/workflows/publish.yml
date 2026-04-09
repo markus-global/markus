@@ -95,7 +95,4 @@ jobs:
 
             # Or via npm
             npm install -g @markus-global/cli@${{ steps.version.outputs.VERSION }}
-
-            # Or via Docker
-            docker pull markus/markus:${{ steps.version.outputs.VERSION }}
             ```
