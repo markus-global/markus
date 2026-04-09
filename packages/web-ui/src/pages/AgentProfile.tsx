@@ -1415,7 +1415,7 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
 
-  const streamEntries: ExecutionStreamEntryUI[] = logs.map(e => activityLogToStreamEntry(e, activityId, agentId));
+  const streamEntries: ExecutionStreamEntryUI[] = logs.map(e => activityLogToStreamEntry(e, activityId, agentId)).filter((e): e is ExecutionStreamEntryUI => e !== null);
 
   return (
     <div className="px-3 py-2">

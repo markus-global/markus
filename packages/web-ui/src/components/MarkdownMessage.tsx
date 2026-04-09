@@ -1,9 +1,12 @@
+import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 interface Props {
   content: string;
   className?: string;
+  /** When provided, @mentions in the text become clickable and invoke this callback with the mentioned name */
+  onMentionClick?: (name: string) => void;
 }
 
 const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
@@ -16,6 +19,16 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
     return '';
   });
   return { thinking, rest: rest.trim() };
+}
+
+const MENTION_PREFIX = 'mention:';
+
+/** Convert @mentions in raw text to markdown links before ReactMarkdown processes it */
+function preprocessMentions(text: string): string {
+  return text.replace(/@\[([^\]]+)\]|@(\w+)/g, (full, bracketName: string | undefined, wordName: string | undefined) => {
+    const name = bracketName ?? wordName!;
+    return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
+  });
 }
 
 const mdComponents = {
@@ -62,8 +75,37 @@ const mdComponents = {
   ),
 };
 
-export function MarkdownMessage({ content, className = '' }: Props) {
+export function MarkdownMessage({ content, className = '', onMentionClick }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
+
+  const processedRest = useMemo(
+    () => onMentionClick ? preprocessMentions(rest) : rest,
+    [rest, onMentionClick],
+  );
+
+  const components = useMemo(() => {
+    if (!onMentionClick) return mdComponents;
+    return {
+      ...mdComponents,
+      a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+        if (href?.startsWith(MENTION_PREFIX)) {
+          const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
+          return (
+            <span
+              className="text-brand-500 font-medium cursor-pointer hover:underline"
+              onClick={(e) => { e.preventDefault(); onMentionClick(name); }}
+              title={name}
+            >
+              {children}
+            </span>
+          );
+        }
+        return (
+          <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
+        );
+      },
+    };
+  }, [onMentionClick]);
 
   return (
     <div className={`prose prose-sm max-w-none break-words ${className}`}>
@@ -90,8 +132,8 @@ export function MarkdownMessage({ content, className = '' }: Props) {
           </details>
         );
       })()}
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-        {rest}
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {processedRest}
       </ReactMarkdown>
     </div>
   );

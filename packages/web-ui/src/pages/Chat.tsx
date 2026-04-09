@@ -19,6 +19,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
+import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
 import { TeamProfile } from './TeamProfile.tsx';
@@ -569,6 +570,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Channel @mention
   const [mentionDropdown, setMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
 
   const activeTeamId = chatMode === 'channel'
     ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
@@ -999,7 +1001,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   useEffect(() => { setLinkedTaskId(null); }, [selectedAgent]);
 
   // ── Sending ──────────────────────────────────────────────────────────────────
-  const parseMentions = (text: string) => (text.match(/@(\w+)/g) ?? []).map(m => m.slice(1));
+  const parseMentions = (text: string) => parseMentionNames(text);
 
   const stopSending = () => {
     abortControllerRef.current?.abort();
@@ -1499,9 +1501,12 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const lastAt = val.lastIndexOf('@');
     if (lastAt >= 0 && (lastAt === 0 || val[lastAt - 1] === ' ')) {
       const after = val.slice(lastAt + 1);
-      if (!after.includes(' ')) {
+      const lowerAfter = after.toLowerCase();
+      const hasMatch = agents.some(a => a.name.toLowerCase().includes(lowerAfter));
+      if (hasMatch) {
         setMentionDropdown(true);
-        setMentionFilter(after.toLowerCase());
+        setMentionFilter(lowerAfter);
+        setMentionSelectedIndex(0);
         return;
       }
     }
@@ -1510,8 +1515,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
   const insertMention = (name: string) => {
     const lastAt = input.lastIndexOf('@');
-    setInput(input.slice(0, lastAt) + '@' + name + ' ');
+    const mention = name.includes(' ') ? `@[${name}]` : `@${name}`;
+    setInput(input.slice(0, lastAt) + mention + ' ');
     setMentionDropdown(false);
+    setMentionSelectedIndex(0);
   };
 
   // ── Image handling ──────────────────────────────────────────────────────────
@@ -1912,7 +1919,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                                 ))}
                               </div>
                             )}
-                            {msg.text}
+                            {renderMentionText(msg.text, agents)}
                           </div>
                       }
                     </div>
@@ -1961,7 +1968,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                                   ))}
                                 </div>
                               )}
-                              {msg.text && <span className="whitespace-pre-wrap leading-relaxed">{msg.text}</span>}
+                              {msg.text && <span className="whitespace-pre-wrap leading-relaxed">{renderMentionText(msg.text, agents)}</span>}
                             </>
                           : <AgentMessageBody
                               msg={msg}
@@ -2008,15 +2015,23 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
         {/* Input (only in chat tab) */}
         <div className={`p-4 border-t border-border-default bg-surface-secondary relative shrink-0 ${mainTab !== 'chat' ? 'hidden' : ''}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           {mentionDropdown && filteredAgents.length > 0 && (
-            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10">
-              {filteredAgents.map(a => (
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-48 overflow-y-auto">
+              <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
+                Mention an agent
+              </div>
+              {filteredAgents.map((a, i) => (
                 <button
                   key={a.id}
                   onClick={() => insertMention(a.name)}
-                  className="w-full text-left px-4 py-2 text-sm text-fg-secondary hover:bg-surface-overlay flex items-center gap-2"
+                  onMouseEnter={() => setMentionSelectedIndex(i)}
+                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+                    i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+                  }`}
                 >
-                  <span className="text-brand-500">@</span>
-                  {a.name}
+                  <span className="w-6 h-6 rounded-full bg-brand-500/20 flex items-center justify-center text-[10px] font-bold text-brand-500 shrink-0">
+                    {a.name.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="flex-1 min-w-0">{a.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto">{a.role}</span>
                 </button>
               ))}
@@ -2070,7 +2085,19 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 e.target.style.height = `${h}px`;
                 e.target.style.overflowY = h >= 120 ? 'auto' : 'hidden';
               }}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
+              onKeyDown={e => {
+                if (mentionDropdown && filteredAgents.length > 0) {
+                  const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                  const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                  const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                  const isClose = e.key === 'Escape';
+                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + filteredAgents.length) % filteredAgents.length); return; }
+                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % filteredAgents.length); return; }
+                  if (isSelect) { e.preventDefault(); const agent = filteredAgents[mentionSelectedIndex]; if (agent) insertMention(agent.name); return; }
+                  if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+              }}
               onPaste={handlePaste}
               placeholder={placeholder}
               disabled={chatMode === 'direct' && !selectedAgent}
@@ -2255,24 +2282,26 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
     return () => el.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Fetch logs on mount
+  // Fetch logs on mount (use stable IDs as deps to avoid re-fetching on object reference changes)
+  const currentTaskId = currentTask?.id;
+  const activityId = activity?.id;
   useEffect(() => {
     setLoading(true);
-    if (currentTask) {
-      api.tasks.getLogs(currentTask.id).then(d => { setTaskLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
-    } else if (activity) {
-      api.agents.getActivityLogs(agent.id, activity.id).then(d => { setActivityLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    if (currentTaskId) {
+      api.tasks.getLogs(currentTaskId).then(d => { setTaskLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
+    } else if (activityId) {
+      api.agents.getActivityLogs(agent.id, activityId).then(d => { setActivityLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
     } else {
       setLoading(false);
     }
-  }, [agent.id, activity, currentTask]);
+  }, [agent.id, activityId, currentTaskId]);
 
   // Real-time task:log events
   useEffect(() => {
-    if (!currentTask) return;
+    if (!currentTaskId) return;
     const unsub = wsClient.on('task:log', (event) => {
       const p = event.payload;
-      if (p.taskId !== currentTask.id) return;
+      if (p.taskId !== currentTaskId) return;
       const entry: TaskLogEntry = {
         id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
         seq: p.seq as number, type: p.logType as string, content: p.content as string,
@@ -2284,14 +2313,14 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
       });
     });
     return unsub;
-  }, [currentTask]);
+  }, [currentTaskId]);
 
   // Real-time agent:activity_log events
   useEffect(() => {
-    if (!activity || currentTask) return;
+    if (!activityId || currentTaskId) return;
     const unsub = wsClient.on('agent:activity_log', (event) => {
       const p = event.payload;
-      if (p.agentId !== agent.id || p.activityId !== activity.id) return;
+      if (p.agentId !== agent.id || p.activityId !== activityId) return;
       const entry: AgentActivityLogEntry = {
         seq: p.seq as number,
         type: p.type as AgentActivityLogEntry['type'],
@@ -2305,7 +2334,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
       });
     });
     return unsub;
-  }, [agent.id, activity, currentTask]);
+  }, [agent.id, activityId, currentTaskId]);
 
   useEffect(() => {
     if (!modalAtBottomRef.current) return;
@@ -2371,7 +2400,7 @@ function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
             />
           ) : activityLogs.length > 0 ? (
             <AgentActivityModalLogs
-              entries={activityLogs.map(e => activityLogToStreamEntry(e, activity?.id ?? '', agent.id))}
+              entries={activityLogs.map(e => activityLogToStreamEntry(e, activity?.id ?? '', agent.id)).filter((e): e is ExecutionStreamEntryUI => e !== null)}
               isActive={agent.status === 'working'}
             />
           ) : agent.status === 'working' ? (

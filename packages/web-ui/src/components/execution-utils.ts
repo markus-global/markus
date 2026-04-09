@@ -327,8 +327,11 @@ export function streamEntryToExecEntry(entry: ExecutionStreamEntryUI): ExecEntry
     case 'text':
       if (meta?.isThinking) return { type: 'thinking', content: entry.content, time, timestamp: ts };
       return { type: 'text', content: entry.content, time, timestamp: ts };
-    case 'status':
+    case 'status': {
+      const action = meta?.action as string | undefined;
+      if (action && ['chat', 'chat_stream', 'task_execution', 'respond_in_session'].includes(action)) return null;
       return { type: 'status', content: entry.content, time, timestamp: ts };
+    }
     case 'error':
       return { type: 'error', content: entry.content, time, timestamp: ts };
     case 'tool_start':

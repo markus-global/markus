@@ -1201,10 +1201,11 @@ export function taskLogToStreamEntry(e: TaskLogEntry): ExecutionStreamEntryAPI {
   };
 }
 
-export function activityLogToStreamEntry(e: AgentActivityLogEntry, activityId: string, agentId: string): ExecutionStreamEntryAPI {
+export function activityLogToStreamEntry(e: AgentActivityLogEntry, activityId: string, agentId: string): ExecutionStreamEntryAPI | null {
+  if (e.type === 'llm_request') return null;
   return {
     id: `alog_${activityId}_${e.seq}`, sourceType: 'activity', sourceId: activityId, agentId,
-    seq: e.seq, type: e.type === 'llm_request' ? 'status' : e.type as ExecutionStreamEntryAPI['type'],
+    seq: e.seq, type: e.type as ExecutionStreamEntryAPI['type'],
     content: e.content, metadata: e.metadata,
     createdAt: e.createdAt,
   };

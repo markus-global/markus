@@ -319,22 +319,16 @@ type ViewMode = 'all' | 'project';
 
 // ─── Comment Bubble ──────────────────────────────────────────────────────────────
 
-function CommentBubble({ comment }: { comment: TaskComment | RequirementComment }) {
+function CommentBubble({ comment, agents }: { comment: TaskComment | RequirementComment; agents: AgentInfo[] }) {
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
-  const renderContent = (text: string) => {
-    const parts = text.split(/(@\w[\w\s]*?)(?=\s|$)/g);
-    return parts.map((part, i) =>
-      part.startsWith('@') ? (
-        <span key={i} className="text-brand-500 font-medium">{part}</span>
-      ) : (
-        <span key={i}>{part}</span>
-      )
-    );
-  };
+  const handleMentionClick = useCallback((name: string) => {
+    const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+    if (agent) navBus.navigate('chat', { agentId: agent.id });
+  }, [agents]);
 
   return (
     <div className="flex gap-2.5 group py-1">
@@ -346,7 +340,7 @@ function CommentBubble({ comment }: { comment: TaskComment | RequirementComment 
           <span className={`text-[11px] font-medium ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}>{comment.authorName}</span>
           <span className="text-fg-tertiary text-[10px]">{dateStr} {timeStr}</span>
         </div>
-        <div className="text-xs text-fg-primary whitespace-pre-wrap break-words">{renderContent(comment.content)}</div>
+        <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} />
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
@@ -418,7 +412,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           if (item.type === 'note') {
             return <NoteComment key={`n-${i}`} note={item.note} compact />;
           }
-          return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />;
+          return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} />;
         })}
       </div>
       <CommentInput agents={agents} onSubmit={handleSubmit} />
@@ -428,7 +422,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
-function TaskExecutionLogs({ taskId, isRunning, authUser }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string } }) {
+function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
   const [loadingRounds, setLoadingRounds] = useState<Set<number>>(new Set());
@@ -649,7 +643,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser }: { taskId: string; is
         <div className="px-4 py-3 flex-1 space-y-0.5">
           {timeline.map((item, i) =>
             item.kind === 'comment'
-              ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />
+              ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} />
               : <MemoExecEntryRow key={`e-${i}`} entry={item.entry} showTime isLast={i === timeline.length - 1} />
           )}
           {isExecuting && streamingText && <StreamingText content={streamingText} />}
@@ -680,7 +674,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser }: { taskId: string; is
       <div className="px-4 py-3 flex-1 space-y-2">
         {commentsBeforeFirstRound.length > 0 && (
           <div className="space-y-0.5">
-            {commentsBeforeFirstRound.map(c => <CommentBubble key={c.id} comment={c} />)}
+            {commentsBeforeFirstRound.map(c => <CommentBubble key={c.id} comment={c} agents={agents} />)}
           </div>
         )}
         {roundsSummary.map((rs, rsIdx) => {
@@ -743,7 +737,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser }: { taskId: string; is
                     tl.sort((a, b) => a.ts - b.ts);
                     return tl.map((item, i) =>
                       item.kind === 'comment'
-                        ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} />
+                        ? <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} />
                         : <MemoExecEntryRow key={`e-${i}`} entry={item.entry} showTime isLast={i === tl.length - 1} />
                     );
                   })()}
@@ -1162,7 +1156,7 @@ function TaskDetailPanel({
                   <span className="font-medium">Failed to start:</span> {runError}
                 </div>
               )}
-              <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} />
+              <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
             </div>
           )}
 
@@ -3359,7 +3353,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
           <p className="text-xs text-fg-tertiary text-center py-4">No comments yet.</p>
         )}
         {comments.map(c => (
-          <CommentBubble key={c.id} comment={c} />
+          <CommentBubble key={c.id} comment={c} agents={agents} />
         ))}
       </div>
       <CommentInput agents={agents} onSubmit={handleSubmit} />
