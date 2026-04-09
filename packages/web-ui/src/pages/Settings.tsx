@@ -1130,13 +1130,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">Max Tool Iterations</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Safety cap on tool call loops per agent turn (applies to all agents and subagents)</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Safety cap on tool call loops per agent turn (0 = unlimited, applies to all agents and subagents)</div>
               </div>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
-                  min={1}
-                  max={10000}
+                  min={0}
                   value={agentMaxIter}
                   onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
                   className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"

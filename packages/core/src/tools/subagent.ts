@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 const log = createLogger('subagent');
 
-const DEFAULT_MAX_SUBAGENT_ITERATIONS = 200;
+const DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity;
 
 /**
  * Progress callback for subagent execution.

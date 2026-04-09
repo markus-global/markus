@@ -212,7 +212,7 @@ export class Agent {
   private static readonly NETWORK_RETRY_MAX = 3;
   private static readonly NETWORK_RETRY_BASE_MS = 2000;
   private static readonly MEMORY_CONSOLIDATION_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
-  private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
+  private static readonly DEFAULT_MAX_TOOL_ITERATIONS = Infinity;
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
 
@@ -901,7 +901,7 @@ export class Agent {
   }
 
   set maxToolIterations(value: number) {
-    this._maxToolIterations = Math.max(1, Math.min(value, 10000));
+    this._maxToolIterations = value <= 0 ? Infinity : value;
   }
 
   setOrgContext(ctx: OrgContext): void {
@@ -1800,14 +1800,13 @@ export class Agent {
         success: true,
       });
 
-      const MAX_STREAM_TOOL_ITERATIONS = 200;
       let streamToolIterations = 0;
 
       while (
         (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
         response.finishReason === 'max_tokens'
       ) {
-        if (++streamToolIterations > MAX_STREAM_TOOL_ITERATIONS) {
+        if (++streamToolIterations > this._maxToolIterations) {
           log.warn('Stream tool loop hit max iterations', {
             agentId: this.id,
             iterations: streamToolIterations,

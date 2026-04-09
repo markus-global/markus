@@ -309,7 +309,7 @@ export class AgentManager {
   };
   private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
-  private _maxToolIterations = 200;
+  private _maxToolIterations = Infinity;
   private templateRegistry?: TemplateRegistry;
   private groupChatHandlers?: {
     sendGroupMessage: (
@@ -507,7 +507,7 @@ export class AgentManager {
   }
 
   set maxToolIterations(value: number) {
-    this._maxToolIterations = Math.max(1, Math.min(value, 10000));
+    this._maxToolIterations = value <= 0 ? Infinity : value;
   }
 
   setTaskService(taskService: TaskServiceBridge): void {
