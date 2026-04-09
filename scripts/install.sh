@@ -158,7 +158,7 @@ detect_pkg_manager() {
 npm_install_global() {
   local pkg="$1"
   local logfile pm
-  logfile="$(mktemp /tmp/markus-install-XXXXXX.log)"
+  logfile="$(mktemp /tmp/markus-install-XXXXXX)"
   pm="$(detect_pkg_manager)"
 
   local install_cmd
