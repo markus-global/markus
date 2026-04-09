@@ -617,19 +617,20 @@ export class ContextEngine {
       } else {
         lines.push(`- Position: Team Member`);
       }
-      if (self.skills.length > 0) {
-        lines.push(`- Active Skills: ${self.skills.join(', ')}`);
-      }
       if (opts.availableSkills && opts.availableSkills.length > 0) {
         const filtered = this.filterSkillsByRelevance(opts.availableSkills, opts.currentQuery);
-        lines.push(`- Available Skills (activate via \`discover_tools\`):`);
+        const activeSet = new Set(self.skills);
+        lines.push(`- Installed Skills:`);
         for (const s of filtered) {
-          lines.push(`  - **${s.name}** [${s.category}]: ${s.description}`);
+          const tag = activeSet.has(s.name) ? ' ✦' : '';
+          lines.push(`  - **${s.name}** [${s.category}]: ${s.description}${tag}`);
         }
         if (filtered.length < opts.availableSkills.length) {
-          lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills available — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
+          lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills installed — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
         }
-        lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to activate a skill when needed.`);
+        lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to load a skill's full instructions when needed.`);
+      } else if (self.skills.length > 0) {
+        lines.push(`- Active Skills: ${self.skills.join(', ')}`);
       }
       lines.push(`- Organization: ${opts.identity.organization.name}`);
       lines.push(`- Agent ID: ${opts.agentId}`);

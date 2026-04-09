@@ -63,4 +63,6 @@ export interface SkillRegistry {
   getBuiltinInstructions(): Map<string, string>;
   /** Return name+description catalog of non-alwaysOn builtin skills (for system prompt discoverability) */
   getBuiltinSkillCatalog(): Array<{ name: string; description: string; category: string }>;
+  /** Return name+description catalog of ALL non-alwaysOn skills (builtin + installed) for system prompt */
+  getSkillCatalog(): Array<{ name: string; description: string; category: string }>;
 }

@@ -668,7 +668,7 @@ export class AgentManager {
       if (builtinInstructions.size > 0) {
         log.info(`Always-on builtin skills injected for agent ${id}`, { skills: [...builtinInstructions.keys()] });
       }
-      agent.setAvailableSkillCatalog(this.skillRegistry.getBuiltinSkillCatalog());
+      agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
     // Inject explicitly assigned skill instructions and connect skill MCP servers
@@ -1257,7 +1257,7 @@ export class AgentManager {
       for (const [skillName, instructions] of builtinInstructions) {
         agent.injectSkillInstructions(skillName, instructions);
       }
-      agent.setAvailableSkillCatalog(this.skillRegistry.getBuiltinSkillCatalog());
+      agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
     // Inject explicitly assigned skill instructions and connect skill MCP servers

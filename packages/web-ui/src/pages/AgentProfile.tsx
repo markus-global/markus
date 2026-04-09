@@ -111,7 +111,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
         {tab === 'activity' && <ActivityTab agentId={agentId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
-        {tab === 'skills' && <SkillsTab agent={agent} onUpdate={reload} />}
+        {tab === 'skills' && <SkillsTab agent={agent} />}
         {tab === 'memory' && <MemoryTab agentId={agentId} />}
         {tab === 'heartbeat' && <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />}
       </div>
@@ -700,14 +700,16 @@ const TOOL_CATEGORIES: Record<string, string[]> = {
   'Search': ['grep_search', 'glob_find', 'list_directory'],
   'Runtime': ['shell_execute', 'background_exec', 'process'],
   'Web': ['web_search', 'web_fetch', 'web_extract'],
-  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list'],
-  'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status'],
+  'Tasks': ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_comment', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
+  'Requirements': ['requirement_propose', 'requirement_list', 'requirement_update_status', 'requirement_comment'],
   'Projects': ['list_projects', 'get_project', 'project_info'],
   'Deliverables': ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   'Communication': ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'],
   'Memory': ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm'],
   'Planning': ['todo_write', 'todo_read'],
-  'Team (Manager)': ['team_list', 'team_status', 'delegate_message', 'create_task', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'],
+  'Team (Manager)': ['team_list', 'team_status', 'delegate_message', 'create_task'],
+  'Subagents': ['spawn_subagent', 'spawn_subagents'],
+  'LLM': ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'],
 };
 
 function categorizeTools(tools: AgentToolInfo[]): Array<{ category: string; tools: AgentToolInfo[] }> {
@@ -768,17 +770,19 @@ interface SkillDetail {
   requiredPermissions?: string[];
 }
 
-function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => void }) {
+function SkillsTab({ agent }: { agent: AgentDetail }) {
   const proficiency = agent.proficiency ?? {};
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [toggling, setToggling] = useState<string | null>(null);
 
-  const activeSkills = new Set(agent.skills);
   const allSkills = agent.availableSkills ?? [];
-  const activeList = allSkills.filter(s => activeSkills.has(s.name));
-  const inactiveList = allSkills.filter(s => !activeSkills.has(s.name));
+  const byCategory = new Map<string, typeof allSkills>();
+  for (const s of allSkills) {
+    const cat = s.category || 'custom';
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat)!.push(s);
+  }
 
   const toggleDetail = async (skillName: string) => {
     if (expandedSkill === skillName) { setExpandedSkill(null); setSkillDetail(null); return; }
@@ -796,39 +800,17 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
     setDetailLoading(false);
   };
 
-  const activateSkill = async (skillName: string) => {
-    setToggling(skillName);
-    try {
-      await fetch(`/api/agents/${agent.id}/skills`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skill: skillName }),
-      });
-      onUpdate();
-    } catch { /* ignore */ }
-    setToggling(null);
-  };
-
-  const deactivateSkill = async (skillName: string) => {
-    setToggling(skillName);
-    try {
-      await fetch(`/api/agents/${agent.id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' });
-      onUpdate();
-    } catch { /* ignore */ }
-    setToggling(null);
-  };
-
   const CATEGORY_COLORS: Record<string, string> = {
     development: 'bg-blue-500/15 text-blue-600', devops: 'bg-amber-500/15 text-amber-600',
     communication: 'bg-green-500/15 text-green-600', data: 'bg-brand-500/15 text-brand-500',
     productivity: 'bg-amber-500/15 text-amber-600', browser: 'bg-blue-500/15 text-blue-600',
-    custom: 'bg-gray-500/15 text-fg-secondary',
+    custom: 'bg-gray-500/15 text-fg-secondary', platform: 'bg-purple-500/15 text-purple-500',
   };
 
-  const renderSkillRow = (skill: { name: string; description: string; category: string; builtIn?: boolean; alwaysOn?: boolean }, isActive: boolean) => {
+  const renderSkillRow = (skill: { name: string; description: string; category: string; builtIn?: boolean; alwaysOn?: boolean }) => {
     const prof = proficiency[skill.name];
     const rate = prof && prof.uses > 0 ? Math.round(prof.successes / prof.uses * 100) : null;
     const isExpanded = expandedSkill === skill.name;
-    const isToggling = toggling === skill.name;
 
     return (
       <div key={skill.name}>
@@ -842,14 +824,14 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">{skill.name}</span>
-              <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${CATEGORY_COLORS[skill.category] ?? CATEGORY_COLORS['custom']}`}>
-                {skill.category}
-              </span>
               {skill.alwaysOn && (
                 <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-green-500/15 text-green-500">always-on</span>
               )}
               {skill.builtIn && !skill.alwaysOn && (
                 <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-surface-overlay/40 text-fg-tertiary">built-in</span>
+              )}
+              {!skill.builtIn && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-brand-500/15 text-brand-400">installed</span>
               )}
             </div>
             <div className="text-[10px] text-fg-tertiary mt-0.5 truncate">{skill.description}</div>
@@ -862,18 +844,6 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
               </div>
               <span className="text-[10px] text-fg-tertiary w-8 text-right">{rate}%</span>
             </div>
-          )}
-          {!skill.alwaysOn && (
-            <button
-              className={`px-2.5 py-1 rounded text-[10px] font-medium transition-all shrink-0 ${
-                isActive
-                  ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
-                  : 'bg-brand-500/10 text-brand-400 hover:bg-brand-500/20'
-              } ${isToggling ? 'opacity-50 pointer-events-none' : ''}`}
-              onClick={(e) => { e.stopPropagation(); isActive ? deactivateSkill(skill.name) : activateSkill(skill.name); }}
-            >
-              {isToggling ? '...' : isActive ? 'Deactivate' : 'Activate'}
-            </button>
           )}
         </div>
 
@@ -930,27 +900,26 @@ function SkillsTab({ agent, onUpdate }: { agent: AgentDetail; onUpdate: () => vo
     );
   };
 
+  const CATEGORY_ORDER = ['development', 'productivity', 'browser', 'communication', 'devops', 'data', 'platform', 'custom'];
+  const sortedCategories = [...byCategory.entries()].sort((a, b) => {
+    const ai = CATEGORY_ORDER.indexOf(a[0]);
+    const bi = CATEGORY_ORDER.indexOf(b[0]);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
+
   return (
     <div className="space-y-4">
-      <Card title={`Active Skills (${activeList.length})`} action={
-        <span className="text-[10px] text-fg-tertiary">Instructions injected into agent context</span>
-      }>
-        {activeList.length === 0 ? <Empty text="No active skills" /> : (
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-fg-tertiary">{allSkills.length} skills installed — descriptions auto-injected into agent context</div>
+      </div>
+      {sortedCategories.map(([cat, skills]) => (
+        <Card key={cat} title={<span className="capitalize">{cat} <span className="text-fg-tertiary font-normal">({skills.length})</span></span>}>
           <div className="space-y-2">
-            {activeList.map(s => renderSkillRow(s, true))}
-          </div>
-        )}
-      </Card>
-
-      {inactiveList.length > 0 && (
-        <Card title={`Available Skills (${inactiveList.length})`} action={
-          <span className="text-[10px] text-fg-tertiary">Discoverable via discover_tools</span>
-        }>
-          <div className="space-y-2">
-            {inactiveList.map(s => renderSkillRow(s, false))}
+            {skills.map(s => renderSkillRow(s))}
           </div>
         </Card>
-      )}
+      ))}
+      {allSkills.length === 0 && <Empty text="No skills installed" />}
     </div>
   );
 }
@@ -1430,7 +1399,7 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
 
-function Card({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+function Card({ title, action, children }: { title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="bg-surface-secondary/60 border border-border-default rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">

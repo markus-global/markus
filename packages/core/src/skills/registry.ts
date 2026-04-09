@@ -72,4 +72,18 @@ export class InMemorySkillRegistry implements SkillRegistry {
     }
     return catalog;
   }
+
+  getSkillCatalog(): Array<{ name: string; description: string; category: string }> {
+    const catalog: Array<{ name: string; description: string; category: string }> = [];
+    for (const [, skill] of this.skills) {
+      if (!skill.manifest.alwaysOn) {
+        catalog.push({
+          name: skill.manifest.name,
+          description: skill.manifest.description,
+          category: skill.manifest.category,
+        });
+      }
+    }
+    return catalog;
+  }
 }
