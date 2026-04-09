@@ -7,11 +7,13 @@
  * Implements the same repo interfaces as the PostgreSQL Drizzle-based repos
  * so the rest of the application is completely unaware of the storage backend.
  */
-import Database from 'better-sqlite3';
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createLogger } from '@markus/shared';
+
+type SqlParams = SQLInputValue[];
 
 const log = createLogger('sqlite-storage');
 
@@ -462,15 +464,15 @@ CREATE INDEX IF NOT EXISTS idx_exec_stream_source ON execution_stream_logs(sourc
 
 // ─── Open / close ────────────────────────────────────────────────────────────
 
-let _db: Database.Database | null = null;
+let _db: DatabaseSync | null = null;
 
-export function openSqlite(dbPath: string): Database.Database {
+export function openSqlite(dbPath: string): DatabaseSync {
   if (_db) return _db;
   mkdirSync(dirname(dbPath), { recursive: true });
-  _db = new Database(dbPath);
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('foreign_keys = ON');
-  _db.pragma('busy_timeout = 5000');
+  _db = new DatabaseSync(dbPath);
+  _db.exec('PRAGMA journal_mode = WAL');
+  _db.exec('PRAGMA foreign_keys = ON');
+  _db.exec('PRAGMA busy_timeout = 5000');
 
   for (const stmt of SCHEMA_SQL.split(';')
     .map(s => s.trim())
@@ -499,7 +501,7 @@ export function openSqlite(dbPath: string): Database.Database {
     { table: 'task_comments', column: 'mentions', sql: "ALTER TABLE task_comments ADD COLUMN mentions TEXT DEFAULT '[]'" },
   ];
   for (const m of migrations) {
-    const cols = _db.pragma(`table_info(${m.table})`) as Array<{ name: string }>;
+    const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === m.column)) {
       _db.exec(m.sql);
       log.info(`Migration: added column ${m.column} to ${m.table}`);
@@ -536,7 +538,7 @@ export function closeSqlite(): void {
 // ─── Repo implementations ────────────────────────────────────────────────────
 
 export class SqliteOrgRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   createOrg(data: {
     id: string;
@@ -610,7 +612,7 @@ export class SqliteOrgRepo {
 }
 
 export class SqliteAgentRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -701,7 +703,7 @@ export class SqliteAgentRepo {
 
   updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }) {
     const sets: string[] = ['updated_at = ?'];
-    const vals: unknown[] = [now()];
+    const vals: SqlParams = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
     if (data.agentRole !== undefined) { sets.push('agent_role = ?'); vals.push(data.agentRole); }
     if (data.skills !== undefined) { sets.push('skills = ?'); vals.push(toJson(data.skills)); }
@@ -739,7 +741,7 @@ export class SqliteAgentRepo {
 }
 
 export class SqliteTaskRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async create(data: {
     id: string;
@@ -802,7 +804,7 @@ export class SqliteTaskRepo {
   async updateStatus(id: string, status: string, updatedBy?: string) {
     const ts = now();
     const sets = ['status = ?', 'updated_at = ?'];
-    const vals: unknown[] = [status, ts];
+    const vals: SqlParams = [status, ts];
     if (updatedBy) { sets.push('updated_by = ?'); vals.push(updatedBy); }
     if (status === 'in_progress') {
       sets.push("started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END");
@@ -829,7 +831,7 @@ export class SqliteTaskRepo {
     data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerAgentId?: string; updatedBy?: string }
   ) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.title !== undefined) {
       sets.push('title = ?');
       vals.push(data.title);
@@ -903,7 +905,7 @@ export class SqliteTaskRepo {
 
   listByOrg(orgId: string, filters?: { status?: string; assignedAgentId?: string; projectId?: string; taskType?: string }) {
     let q = 'SELECT * FROM tasks WHERE org_id = ?';
-    const vals: unknown[] = [orgId];
+    const vals: SqlParams = [orgId];
     if (filters?.status) {
       q += ' AND status = ?';
       vals.push(filters.status);
@@ -1035,7 +1037,7 @@ export class SqliteTaskRepo {
 }
 
 export class SqliteRequirementRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async create(data: {
     id: string;
@@ -1105,7 +1107,7 @@ export class SqliteRequirementRepo {
     data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
   ) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title); }
     if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description); }
     if (data.priority !== undefined) { sets.push('priority = ?'); vals.push(data.priority); }
@@ -1120,7 +1122,7 @@ export class SqliteRequirementRepo {
 
   listByOrg(orgId: string, filters?: { status?: string; source?: string; projectId?: string }) {
     let q = 'SELECT * FROM requirements WHERE org_id = ?';
-    const vals: unknown[] = [orgId];
+    const vals: SqlParams = [orgId];
     if (filters?.status) { q += ' AND status = ?'; vals.push(filters.status); }
     if (filters?.source) { q += ' AND source = ?'; vals.push(filters.source); }
     if (filters?.projectId) { q += ' AND project_id = ?'; vals.push(filters.projectId); }
@@ -1154,7 +1156,7 @@ export class SqliteRequirementRepo {
 }
 
 export class SqliteProjectRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async create(data: {
     id: string;
@@ -1193,7 +1195,7 @@ export class SqliteProjectRepo {
 
   async update(id: string, data: Record<string, unknown>) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     const stringFields = ['name', 'description', 'status'] as const;
     const jsonFields = ['repositories', 'team_ids', 'governance_policy', 'archive_policy', 'report_schedule', 'onboarding_config'] as const;
     const fieldMap: Record<string, string> = {
@@ -1206,7 +1208,7 @@ export class SqliteProjectRepo {
     for (const [key, col] of Object.entries(fieldMap)) {
       if (data[key] !== undefined) {
         sets.push(`${col} = ?`);
-        vals.push(jsonFields.includes(col as any) ? toJson(data[key]) : data[key]);
+        vals.push(jsonFields.includes(col as any) ? toJson(data[key]) : data[key] as SQLInputValue);
       }
     }
     if (sets.length === 0) return;
@@ -1248,7 +1250,7 @@ export class SqliteProjectRepo {
 }
 
 export class SqliteTaskLogRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async append(data: {
     taskId: string;
@@ -1363,7 +1365,7 @@ export class SqliteTaskLogRepo {
 }
 
 export class SqliteTaskCommentRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async add(data: {
     taskId: string;
@@ -1418,7 +1420,7 @@ export class SqliteTaskCommentRepo {
 }
 
 export class SqliteRequirementCommentRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async add(data: {
     requirementId: string;
@@ -1473,7 +1475,7 @@ export class SqliteRequirementCommentRepo {
 }
 
 export class SqliteMessageRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -1527,7 +1529,7 @@ export class SqliteMessageRepo {
 }
 
 export class SqliteChatSessionRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   createSession(agentId: string, userId?: string) {
     const id = generateId('cs');
@@ -1618,7 +1620,7 @@ export class SqliteChatSessionRepo {
 
   getMessages(sessionId: string, limit = 50, before?: string) {
     let q = 'SELECT * FROM chat_messages WHERE session_id = ?';
-    const vals: unknown[] = [sessionId];
+    const vals: SqlParams = [sessionId];
     if (before) {
       q += ' AND created_at < ?';
       vals.push(before);
@@ -1665,7 +1667,7 @@ export class SqliteChatSessionRepo {
 }
 
 export class SqliteChannelMessageRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async append(data: {
     orgId: string;
@@ -1711,7 +1713,7 @@ export class SqliteChannelMessageRepo {
 
   getMessages(channel: string, limit = 50, before?: string) {
     let q = 'SELECT * FROM channel_messages WHERE channel = ?';
-    const vals: unknown[] = [channel];
+    const vals: SqlParams = [channel];
     if (before) {
       q += ' AND created_at < ?';
       vals.push(before);
@@ -1736,7 +1738,7 @@ export class SqliteChannelMessageRepo {
 }
 
 export class SqliteUserRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -1836,7 +1838,7 @@ export class SqliteUserRepo {
 
   updateProfile(id: string, data: { name?: string; email?: string; role?: string }) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.name !== undefined) {
       sets.push('name = ?');
       vals.push(data.name);
@@ -1878,7 +1880,7 @@ export class SqliteUserRepo {
 }
 
 export class SqliteTeamRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -1930,7 +1932,7 @@ export class SqliteTeamRepo {
     }
   ) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.name !== undefined) {
       sets.push('name = ?');
       vals.push(data.name);
@@ -1970,7 +1972,7 @@ export class SqliteTeamRepo {
 }
 
 export class SqliteMarketplaceTemplateRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -2040,7 +2042,7 @@ export class SqliteMarketplaceTemplateRepo {
     offset?: number;
   }) {
     let q = 'SELECT * FROM marketplace_templates WHERE 1=1';
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (opts?.source) {
       q += ' AND source = ?';
       vals.push(opts.source);
@@ -2060,7 +2062,7 @@ export class SqliteMarketplaceTemplateRepo {
 
   search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
     let q = 'SELECT * FROM marketplace_templates WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: unknown[] = [`%${query}%`, `%${query}%`];
+    const vals: SqlParams = [`%${query}%`, `%${query}%`];
     if (opts?.source) {
       q += ' AND source = ?';
       vals.push(opts.source);
@@ -2111,7 +2113,7 @@ export class SqliteMarketplaceTemplateRepo {
     }>
   ) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.name !== undefined) {
       sets.push('name = ?');
       vals.push(data.name);
@@ -2197,7 +2199,7 @@ export class SqliteMarketplaceTemplateRepo {
 }
 
 export class SqliteMarketplaceSkillRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -2261,7 +2263,7 @@ export class SqliteMarketplaceSkillRepo {
     offset?: number;
   }) {
     let q = 'SELECT * FROM marketplace_skills WHERE 1=1';
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (opts?.source) {
       q += ' AND source = ?';
       vals.push(opts.source);
@@ -2281,7 +2283,7 @@ export class SqliteMarketplaceSkillRepo {
 
   search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
     let q = 'SELECT * FROM marketplace_skills WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: unknown[] = [`%${query}%`, `%${query}%`];
+    const vals: SqlParams = [`%${query}%`, `%${query}%`];
     if (opts?.source) {
       q += ' AND source = ?';
       vals.push(opts.source);
@@ -2350,7 +2352,7 @@ export class SqliteMarketplaceSkillRepo {
 }
 
 export class SqliteMarketplaceRatingRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -2418,7 +2420,7 @@ export class SqliteMarketplaceRatingRepo {
 
   update(id: string, data: { rating?: number; review?: string }) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.rating !== undefined) {
       sets.push('rating = ?');
       vals.push(data.rating);
@@ -2462,7 +2464,7 @@ export class SqliteMarketplaceRatingRepo {
 }
 
 export class SqliteAgentKnowledgeRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   create(data: {
     id: string;
@@ -2508,7 +2510,7 @@ export class SqliteAgentKnowledgeRepo {
 
   findByAgent(agentId: string, opts?: { category?: string; limit?: number }) {
     let q = 'SELECT * FROM agent_knowledge WHERE agent_id = ?';
-    const vals: unknown[] = [agentId];
+    const vals: SqlParams = [agentId];
     if (opts?.category) {
       q += ' AND category = ?';
       vals.push(opts.category);
@@ -2561,7 +2563,7 @@ export class SqliteAgentKnowledgeRepo {
     }>
   ) {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (data.title !== undefined) {
       sets.push('title = ?');
       vals.push(data.title);
@@ -2647,7 +2649,7 @@ export interface SqliteExternalAgentRegistration {
 }
 
 export class SqliteExternalAgentRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async save(reg: SqliteExternalAgentRegistration): Promise<void> {
     this.db.prepare(`
@@ -2682,7 +2684,7 @@ export class SqliteExternalAgentRepo {
 
   async update(externalAgentId: string, orgId: string, patch: { connected?: boolean; lastHeartbeat?: string }): Promise<void> {
     const sets: string[] = ['updated_at = ?'];
-    const vals: unknown[] = [now()];
+    const vals: SqlParams = [now()];
     if (patch.connected !== undefined) { sets.push('connected = ?'); vals.push(patch.connected ? 1 : 0); }
     if (patch.lastHeartbeat !== undefined) { sets.push('last_heartbeat = ?'); vals.push(patch.lastHeartbeat); }
     vals.push(externalAgentId, orgId);
@@ -2711,7 +2713,7 @@ export class SqliteExternalAgentRepo {
 // ─── Deliverables ──────────────────────────────────────────────────────────────
 
 export class SqliteDeliverableRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   async create(data: {
     id: string; type: string; title: string; summary: string; reference?: string;
@@ -2747,7 +2749,7 @@ export class SqliteDeliverableRepo {
 
   async search(opts: { query?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; limit?: number }) {
     const where: string[] = [];
-    const params: unknown[] = [];
+    const params: SqlParams = [];
     if (opts.query) { where.push("(title LIKE ? OR summary LIKE ? OR tags LIKE ?)"); const q = `%${opts.query}%`; params.push(q, q, q); }
     if (opts.projectId) { where.push('project_id = ?'); params.push(opts.projectId); }
     if (opts.agentId) { where.push('agent_id = ?'); params.push(opts.agentId); }
@@ -2762,14 +2764,14 @@ export class SqliteDeliverableRepo {
 
   async update(id: string, patch: Record<string, unknown>) {
     const sets: string[] = ['updated_at = ?'];
-    const vals: unknown[] = [now()];
-    if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title); }
-    if (patch.summary !== undefined) { sets.push('summary = ?'); vals.push(patch.summary); }
-    if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status); }
+    const vals: SqlParams = [now()];
+    if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title as SQLInputValue); }
+    if (patch.summary !== undefined) { sets.push('summary = ?'); vals.push(patch.summary as SQLInputValue); }
+    if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status as SQLInputValue); }
     if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
-    if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference); }
-    if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type); }
-    if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType); }
+    if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference as SQLInputValue); }
+    if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
+    if (patch.artifactType !== undefined) { sets.push('artifact_type = ?'); vals.push(patch.artifactType as SQLInputValue); }
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
     vals.push(id);
     this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -2849,7 +2851,7 @@ export interface ActivityLogRecord {
 }
 
 export class SqliteActivityRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   insertActivity(data: {
     id: string;
@@ -2871,7 +2873,7 @@ export class SqliteActivityRepo {
     update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean }
   ): void {
     const sets: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SqlParams = [];
     if (update.endedAt !== undefined) { sets.push('ended_at = ?'); vals.push(update.endedAt); }
     if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
     if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
@@ -2900,7 +2902,7 @@ export class SqliteActivityRepo {
     opts?: { type?: string; limit?: number; before?: string }
   ): ActivityRecord[] {
     const conditions = ['agent_id = ?'];
-    const params: unknown[] = [agentId];
+    const params: SqlParams = [agentId];
 
     if (opts?.type) {
       const types = opts.type.split(',').map(t => t.trim()).filter(Boolean);
@@ -2975,7 +2977,7 @@ export interface ExecutionStreamRow {
 }
 
 export class SqliteExecutionStreamRepo {
-  constructor(private db: Database.Database) {}
+  constructor(private db: DatabaseSync) {}
 
   append(data: {
     sourceType: string;
@@ -3044,7 +3046,7 @@ export class SqliteExecutionStreamRepo {
 
 // ─── Auto-migration: task_logs + agent_activity_logs -> execution_stream_logs ─
 
-export function migrateToExecutionStreamLogs(db: Database.Database): void {
+export function migrateToExecutionStreamLogs(db: DatabaseSync): void {
   const countRow = db.prepare('SELECT COUNT(*) as cnt FROM execution_stream_logs').get() as { cnt: number };
   if (countRow.cnt > 0) return;
 

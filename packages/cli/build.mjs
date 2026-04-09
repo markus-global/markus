@@ -9,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outfile = resolve(__dirname, 'dist', 'markus.mjs');
 
-// Native / binary modules that cannot be bundled
+// Modules that cannot be bundled: native addons and Node.js built-ins
 const external = [
-  'better-sqlite3',
+  'node:sqlite',
   'sharp',
   'rfb2',
   'ws',
@@ -29,7 +29,7 @@ async function main() {
     outfile,
     bundle: true,
     platform: 'node',
-    target: 'node20',
+    target: 'node22',
     format: 'esm',
     external,
     banner: {

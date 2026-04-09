@@ -13,7 +13,7 @@
     "connectors/"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "build": "tsc -b",
@@ -22,7 +22,6 @@
     "clean": "rm -rf dist *.tsbuildinfo templates/"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
     "ws": "^8.19.0"
   },
   "optionalDependencies": {

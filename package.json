@@ -24,7 +24,7 @@
     "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus-global/cli build:bundle"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=9.0.0"
   },
   "dependencies": {
@@ -44,7 +44,6 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
       "esbuild"
     ]
   }

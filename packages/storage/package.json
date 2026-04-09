@@ -12,10 +12,6 @@
   },
   "dependencies": {
     "@markus/shared": "workspace:*",
-    "better-sqlite3": "^12.6.2",
     "drizzle-orm": "^0.45.1"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
   }
 }

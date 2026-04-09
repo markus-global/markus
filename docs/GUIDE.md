@@ -21,7 +21,7 @@
 
 | Dependency | Minimum Version | Purpose |
 |------------|-----------------|---------|
-| Node.js | 20.0.0+ | Runtime |
+| Node.js | 22.0.0+ | Runtime |
 | pnpm | 9.0.0+ | Package manager |
 | Docker | 24.0+ | Agent sandbox containers (optional) |
 

@@ -96,7 +96,7 @@ check_node() {
   fi
   local ver
   ver="$(node -v | sed 's/^v//' | cut -d. -f1)"
-  if [ "$ver" -lt 20 ] 2>/dev/null; then
+  if [ "$ver" -lt 22 ] 2>/dev/null; then
     return 2
   fi
   return 0
@@ -104,7 +104,7 @@ check_node() {
 
 install_node_guidance() {
   local os="$1"
-  error "Node.js 20+ is required but not found."
+  error "Node.js 22+ is required but not found."
   printf "\n"
   info "Install Node.js using one of these methods:"
   printf "\n"
@@ -145,15 +145,40 @@ check_npm() {
 
 # ─── npm install with spinner ───────────────────────────────────────────────
 
+detect_pkg_manager() {
+  if command -v bun &>/dev/null; then
+    echo "bun"
+  elif command -v pnpm &>/dev/null; then
+    echo "pnpm"
+  else
+    echo "npm"
+  fi
+}
+
 npm_install_global() {
   local pkg="$1"
-  local logfile
+  local logfile pm
   logfile="$(mktemp /tmp/markus-install-XXXXXX.log)"
+  pm="$(detect_pkg_manager)"
 
-  spinner_start "Installing ${pkg} (this may take a minute for native modules)..."
+  local install_cmd
+  case "$pm" in
+    bun)
+      install_cmd="bun install -g $pkg"
+      ;;
+    pnpm)
+      install_cmd="pnpm add -g --no-optional $pkg"
+      ;;
+    *)
+      install_cmd="npm install -g --no-audit --no-fund --ignore-optional --loglevel=error $pkg"
+      ;;
+  esac
+
+  info "Using $pm"
+  spinner_start "Installing ${pkg}..."
 
   local success=false
-  if npm install -g --loglevel=error "$pkg" >"$logfile" 2>&1; then
+  if $install_cmd >"$logfile" 2>&1; then
     success=true
   fi
 
@@ -165,25 +190,27 @@ npm_install_global() {
     return 0
   fi
 
-  # First attempt failed, try with sudo
-  warn "Global install failed (may need elevated permissions)."
-  info "Trying with sudo..."
+  # First attempt failed, try with sudo (npm/pnpm only)
+  if [ "$pm" != "bun" ]; then
+    warn "Global install failed (may need elevated permissions)."
+    info "Trying with sudo..."
 
-  spinner_start "Installing ${pkg} with sudo..."
+    spinner_start "Installing ${pkg} with sudo..."
 
-  if sudo npm install -g --loglevel=error "$pkg" >"$logfile" 2>&1; then
+    if sudo $install_cmd >"$logfile" 2>&1; then
+      spinner_stop
+      ok "Installed @markus-global/cli (with sudo)"
+      rm -f "$logfile"
+      return 0
+    fi
     spinner_stop
-    ok "Installed @markus-global/cli (with sudo)"
-    rm -f "$logfile"
-    return 0
   fi
 
-  spinner_stop
-  error "Installation failed. npm output:"
+  error "Installation failed. Output:"
   printf "\n"
   cat "$logfile"
   printf "\n"
-  error "Try manually: npm install -g ${NPM_PACKAGE}"
+  error "Try manually: $install_cmd"
   rm -f "$logfile"
   return 1
 }
@@ -212,7 +239,7 @@ main() {
     if [ "$exit_code" -eq 2 ]; then
       local current_ver
       current_ver="$(node -v)"
-      error "Node.js $current_ver is too old. Version 20+ is required."
+      error "Node.js $current_ver is too old. Version 22+ is required."
       printf "\n"
     fi
     install_node_guidance "$os"

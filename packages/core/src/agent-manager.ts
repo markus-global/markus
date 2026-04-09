@@ -1294,39 +1294,43 @@ export class AgentManager {
         }
       }
 
-      // Connect MCP servers declared by explicitly assigned skills
+      // Connect MCP servers declared by explicitly assigned skills (parallel)
+      const mcpConnections: Array<Promise<void>> = [];
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolated = skill.manifest.isolation === 'per-agent';
           for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
-            try {
-              let mcpTools: AgentToolHandler[];
-              if (isolated) {
-                await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
-                mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
-                mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
-              } else {
-                await this.mcpManager.connectServer(serverName, serverConfig);
-                mcpTools = this.mcpManager.getToolHandlers(serverName);
+            mcpConnections.push((async () => {
+              try {
+                let mcpTools: AgentToolHandler[];
+                if (isolated) {
+                  await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
+                  mcpTools = this.mcpManager.getToolHandlersScoped(serverName, id);
+                  mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, id);
+                } else {
+                  await this.mcpManager.connectServer(serverName, serverConfig);
+                  mcpTools = this.mcpManager.getToolHandlers(serverName);
+                }
+                const toolNames: string[] = [];
+                for (const tool of mcpTools) {
+                  agent.registerTool(tool);
+                  toolNames.push(tool.name);
+                }
+                agent.activateTools(toolNames);
+                log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
+                  toolCount: mcpTools.length, isolated,
+                });
+              } catch (error) {
+                log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
+                  error: String(error),
+                });
               }
-              const toolNames: string[] = [];
-              for (const tool of mcpTools) {
-                agent.registerTool(tool);
-                toolNames.push(tool.name);
-              }
-              agent.activateTools(toolNames);
-              log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
-                toolCount: mcpTools.length, isolated,
-              });
-            } catch (error) {
-              log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
-                error: String(error),
-              });
-            }
+            })());
           }
         }
       }
+      await Promise.all(mcpConnections);
     }
 
     // Set skill MCP activator callback for runtime activation via discover_tools

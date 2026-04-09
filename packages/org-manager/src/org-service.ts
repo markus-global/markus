@@ -733,24 +733,26 @@ export class OrganizationService {
     this.pendingAgentStartIds = [];
     try {
       const agentRows = await this.storage.agentRepo.findByOrgId(orgId);
-      let restoredCount = 0;
-      for (const row of agentRows) {
-        if (this.agentManager.hasAgent(row.id)) continue;
-        try {
-          await this.agentManager.restoreAgent(row);
-          this.pendingAgentStartIds.push(row.id);
-          restoredCount++;
+      const toRestore = agentRows.filter((row: { id: string }) => !this.agentManager.hasAgent(row.id));
+      const restorePromises = toRestore.map(async (row: typeof agentRows[number]) => {
+          try {
+            await this.agentManager.restoreAgent(row);
+            this.pendingAgentStartIds.push(row.id);
 
-          if (row.teamId) {
-            const team = this.teams.get(row.teamId);
-            if (team && !team.memberAgentIds.includes(row.id)) {
-              team.memberAgentIds.push(row.id);
+            if (row.teamId) {
+              const team = this.teams.get(row.teamId);
+              if (team && !team.memberAgentIds.includes(row.id)) {
+                team.memberAgentIds.push(row.id);
+              }
             }
+            return true;
+          } catch (agentErr) {
+            log.warn(`Failed to restore agent ${row.id}`, { error: String(agentErr) });
+            return false;
           }
-        } catch (agentErr) {
-          log.warn(`Failed to restore agent ${row.id}`, { error: String(agentErr) });
-        }
-      }
+        });
+      const results = await Promise.all(restorePromises);
+      const restoredCount = results.filter(Boolean).length;
       log.info(`Restored ${restoredCount} agents from DB`);
     } catch (error) {
       log.warn('Failed to restore agents from DB', { error: String(error) });
