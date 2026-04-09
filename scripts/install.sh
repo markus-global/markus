@@ -145,72 +145,34 @@ check_npm() {
 
 # ─── npm install with spinner ───────────────────────────────────────────────
 
-detect_pkg_manager() {
-  if command -v bun &>/dev/null; then
-    echo "bun"
-  elif command -v pnpm &>/dev/null; then
-    echo "pnpm"
-  else
-    echo "npm"
-  fi
-}
-
 npm_install_global() {
   local pkg="$1"
-  local logfile pm
+  local logfile
   logfile="$(mktemp /tmp/markus-install-XXXXXX)"
-  pm="$(detect_pkg_manager)"
+  local install_cmd="npm install -g --no-audit --no-fund --ignore-optional --loglevel=error $pkg"
 
-  local install_cmd
-  case "$pm" in
-    bun)
-      install_cmd="bun install -g $pkg"
-      ;;
-    pnpm)
-      install_cmd="pnpm add -g --no-optional $pkg"
-      ;;
-    *)
-      install_cmd="npm install -g --no-audit --no-fund --ignore-optional --loglevel=error $pkg"
-      ;;
-  esac
-
-  info "Using $pm"
   spinner_start "Installing ${pkg}..."
 
-  local success=false
   if $install_cmd >"$logfile" 2>&1; then
-    success=true
-  fi
-
-  spinner_stop
-
-  if $success; then
+    spinner_stop
     ok "Installed @markus-global/cli"
     rm -f "$logfile"
     return 0
   fi
 
-  # First attempt failed, try with sudo (npm/pnpm only)
-  if [ "$pm" != "bun" ]; then
-    warn "Global install failed (may need elevated permissions)."
-    info "Trying with sudo..."
-
-    spinner_start "Installing ${pkg} with sudo..."
-
-    if sudo $install_cmd >"$logfile" 2>&1; then
-      spinner_stop
-      ok "Installed @markus-global/cli (with sudo)"
-      rm -f "$logfile"
-      return 0
-    fi
-    spinner_stop
-  fi
+  spinner_stop
 
   error "Installation failed. Output:"
   printf "\n"
   cat "$logfile"
   printf "\n"
-  error "Try manually: $install_cmd"
+  printf "\n"
+  info "If you see permission errors, fix npm prefix instead of using sudo:"
+  printf "    ${BOLD}mkdir -p ~/.npm-global${NC}\n"
+  printf "    ${BOLD}npm config set prefix ~/.npm-global${NC}\n"
+  printf "    ${BOLD}export PATH=~/.npm-global/bin:\$PATH${NC}  (add to ~/.zshrc or ~/.bashrc)\n"
+  printf "\n"
+  error "Then retry: $install_cmd"
   rm -f "$logfile"
   return 1
 }
