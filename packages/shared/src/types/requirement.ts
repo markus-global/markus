@@ -1,6 +1,4 @@
-import type { TaskPriority } from './task.js';
-
-import type { ItemStatus } from './task.js';
+import type { TaskPriority, ItemStatus } from './task.js';
 
 export type RequirementStatus = ItemStatus;
 

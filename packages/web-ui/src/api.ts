@@ -791,8 +791,8 @@ export const api = {
       if (filters?.search) params.set('search', filters.search);
       if (filters?.sortBy) params.set('sortBy', filters.sortBy);
       if (filters?.sortOrder) params.set('sortOrder', filters.sortOrder);
-      if (filters?.page != null) params.set('page', String(filters.page));
-      if (filters?.pageSize != null) params.set('pageSize', String(filters.pageSize));
+      if (filters?.page !== null && filters?.page !== undefined) params.set('page', String(filters.page));
+      if (filters?.pageSize !== null && filters?.pageSize !== undefined) params.set('pageSize', String(filters.pageSize));
       const qs = params.toString();
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
@@ -825,7 +825,7 @@ export const api = {
     deleteSubtask: (taskId: string, subtaskId: string) =>
       request(`/tasks/${taskId}/subtasks/${subtaskId}`, { method: 'DELETE' }),
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
-    getLogs: (id: string, round?: number) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs${round != null ? `?round=${round}` : ''}`),
+    getLogs: (id: string, round?: number) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs${round !== null && round !== undefined ? `?round=${round}` : ''}`),
     getLogsSummary: (id: string) => request<{ rounds: RoundSummary[] }>(`/tasks/${id}/logs/summary`),
     accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerAgentId: reviewerId ?? 'human' }) }),
     revision: (id: string, reason: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerAgentId: reviewerId ?? 'human' }) }),

@@ -128,7 +128,7 @@ export function getToolMeta(tool: string): { label: string; icon: string } {
 // ─── Format Helpers ───────────────────────────────────────────────────────────
 
 export function formatDuration(ms: number | undefined): string {
-  if (ms == null) return '';
+  if (ms === null || ms === undefined) return '';
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -161,7 +161,7 @@ export function formatArgs(args: unknown): string {
   const obj = args as Record<string, unknown>;
   const parts: string[] = [];
   for (const [k, v] of Object.entries(obj)) {
-    if (v == null) continue;
+    if (v === null || v === undefined) continue;
     const val = typeof v === 'string' ? v : JSON.stringify(v);
     parts.push(`${k}: ${truncate(val, 120)}`);
   }
@@ -172,7 +172,7 @@ export function formatArgsDetail(args: unknown): Array<{ key: string; value: str
   if (!args || typeof args !== 'object') return [];
   const obj = args as Record<string, unknown>;
   return Object.entries(obj)
-    .filter(([, v]) => v != null)
+    .filter(([, v]) => v !== null && v !== undefined)
     .map(([k, v]) => ({ key: k, value: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }));
 }
 

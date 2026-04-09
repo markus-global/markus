@@ -1,7 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
-import { createLogger } from '@markus/shared';
-import type { MarkusConfig } from '@markus/shared';
+import { createLogger, type MarkusConfig } from '@markus/shared';
 
 const log = createLogger('settings-tools');
 

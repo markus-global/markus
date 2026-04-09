@@ -5195,7 +5195,7 @@ export class APIServer {
       try {
         const modelDef = {
           id, name, provider: providerName, contextWindow, maxOutputTokens, cost,
-          ...(reasoning != null ? { reasoning } : {}),
+          ...(reasoning !== null && reasoning !== undefined ? { reasoning } : {}),
           ...(inputTypes ? { inputTypes } : {}),
         };
         this.llmRouter.addCustomModel(providerName, modelDef);

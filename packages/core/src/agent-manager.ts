@@ -10,6 +10,7 @@ import {
   type SystemAnnouncement,
   type PathAccessPolicy,
   type RoleTemplate,
+  saveConfig,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -26,7 +27,6 @@ import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createSettingsTools } from './tools/settings.js';
-import { saveConfig } from '@markus/shared';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
