@@ -886,17 +886,11 @@ function TaskDetailPanel({
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const tabBarRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables') => {
     setActiveTab(tab);
     requestAnimationFrame(() => {
-      if (scrollContainerRef.current && tabBarRef.current) {
-        const containerTop = scrollContainerRef.current.getBoundingClientRect().top;
-        const tabTop = tabBarRef.current.getBoundingClientRect().top;
-        const offset = tabTop - containerTop + scrollContainerRef.current.scrollTop;
-        scrollContainerRef.current.scrollTo({ top: offset, behavior: 'instant' });
-      }
+      scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, []);
 
@@ -1075,136 +1069,22 @@ function TaskDetailPanel({
         {!isMobile && <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg shrink-0">×</button>}
       </div>
 
+        {/* Tabs — fixed at top */}
+        <div className="flex gap-1 px-6 pt-2 pb-0 border-b border-border-default shrink-0 bg-surface-secondary">
+          <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
+          <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            Execution Log
+            {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
+          </button>
+          <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            Deliverables
+            {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-fg-tertiary font-normal">{c}</span> : null; })()}
+          </button>
+        </div>
+
         {/* Scrollable content area */}
         <div className="flex-1 min-h-0 relative">
         <div ref={scrollContainerRef} className="h-full overflow-y-auto">
-          {/* Description */}
-          <div className="px-6 pt-4 pb-3 border-b border-border-default">
-            {editingDesc ? (
-              <div className="space-y-2">
-                <textarea
-                  value={descDraft}
-                  onChange={e => setDescDraft(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
-                  rows={4}
-                  placeholder="Add a description…"
-                />
-                <div className="flex gap-2 justify-end">
-                  <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
-                  <button
-                    onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
-                    disabled={busy}
-                    className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
-                  >Save</button>
-                </div>
-              </div>
-            ) : (
-              <div className="group relative">
-                {task.description ? (
-                  <div>
-                    <div className={isMobile && !descExpanded ? 'line-clamp-3' : ''}>
-                      <MarkdownMessage content={task.description} className="text-sm text-fg-secondary leading-relaxed" />
-                    </div>
-                    {isMobile && task.description.length > 150 && (
-                      <button onClick={() => setDescExpanded(!descExpanded)}
-                        className="text-[11px] text-brand-500 mt-1 font-medium">
-                        {descExpanded ? 'Collapse' : 'Show more'}
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-sm text-fg-tertiary italic">No description</p>
-                )}
-                <button
-                  onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
-                  className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                >Edit</button>
-              </div>
-            )}
-          </div>
-
-          {/* Context badges — project, requirement */}
-          {(taskProject || taskRequirement) && (
-            <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
-              {taskProject && (
-                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                  <span className="text-[9px] text-brand-500/60">Project</span>
-                  {taskProject.name}
-                </span>
-              )}
-              {taskRequirement && (
-                <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                  <span className="text-[9px] text-brand-500/60">Req</span>
-                  {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Dependencies — editable */}
-          <div className="px-6 py-2.5 border-b border-border-default">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">Dependencies</span>
-            </div>
-            {task.blockedBy && task.blockedBy.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {task.blockedBy.map(blockerId => {
-                  const blockerTask = allTasks.find(t => t.id === blockerId);
-                  const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
-                  return (
-                    <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>
-                      <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
-                      <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
-                      {!isTerminal && (
-                        <button
-                          onClick={async () => {
-                            const newBlockedBy = (task.blockedBy ?? []).filter(id => id !== blockerId);
-                            await api.tasks.update(task.id, { blockedBy: newBlockedBy });
-                            onRefresh();
-                          }}
-                          className="ml-0.5 text-current opacity-40 hover:opacity-100 transition-opacity"
-                          title="Remove dependency"
-                        >×</button>
-                      )}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-[11px] text-fg-tertiary mb-2">No dependencies</p>
-            )}
-            {!isTerminal && (
-              <select
-                value=""
-                onChange={async (e) => {
-                  const depId = e.target.value;
-                  if (!depId) return;
-                  const newBlockedBy = [...(task.blockedBy ?? []), depId];
-                  await api.tasks.update(task.id, { blockedBy: newBlockedBy });
-                  onRefresh();
-                }}
-                className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus:border-brand-500 outline-none"
-              >
-                <option value="">+ Add dependency…</option>
-                {allTasks
-                  .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
-                  .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
-              </select>
-            )}
-          </div>
-
-          {/* Tabs */}
-          <div ref={tabBarRef} className="flex gap-1 px-6 pt-3 border-b border-border-default sticky top-0 z-10 bg-surface-secondary">
-            <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
-            <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              Execution Log
-              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
-            </button>
-            <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              Deliverables
-              {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-fg-tertiary font-normal">{c}</span> : null; })()}
-            </button>
-          </div>
 
           {activeTab === 'logs' && (
             <div className="overflow-x-hidden min-w-0">
@@ -1219,6 +1099,121 @@ function TaskDetailPanel({
 
           {activeTab === 'details' && (
             <>
+              {/* Description */}
+              <div className="px-6 pt-4 pb-3 border-b border-border-default">
+                {editingDesc ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={descDraft}
+                      onChange={e => setDescDraft(e.target.value)}
+                      className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-y min-h-[80px]"
+                      rows={4}
+                      placeholder="Add a description…"
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+                      <button
+                        onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
+                        disabled={busy}
+                        className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
+                      >Save</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="group relative">
+                    {task.description ? (
+                      <div>
+                        <div className={isMobile && !descExpanded ? 'line-clamp-3' : ''}>
+                          <MarkdownMessage content={task.description} className="text-sm text-fg-secondary leading-relaxed" />
+                        </div>
+                        {isMobile && task.description.length > 150 && (
+                          <button onClick={() => setDescExpanded(!descExpanded)}
+                            className="text-[11px] text-brand-500 mt-1 font-medium">
+                            {descExpanded ? 'Collapse' : 'Show more'}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-fg-tertiary italic">No description</p>
+                    )}
+                    <button
+                      onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
+                      className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >Edit</button>
+                  </div>
+                )}
+              </div>
+
+              {/* Context badges — project, requirement */}
+              {(taskProject || taskRequirement) && (
+                <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
+                  {taskProject && (
+                    <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
+                      <span className="text-[9px] text-brand-500/60">Project</span>
+                      {taskProject.name}
+                    </span>
+                  )}
+                  {taskRequirement && (
+                    <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
+                      <span className="text-[9px] text-brand-500/60">Req</span>
+                      {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Dependencies — editable */}
+              <div className="px-6 py-2.5 border-b border-border-default">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">Dependencies</span>
+                </div>
+                {task.blockedBy && task.blockedBy.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {task.blockedBy.map(blockerId => {
+                      const blockerTask = allTasks.find(t => t.id === blockerId);
+                      const blockerDone = blockerTask && (blockerTask.status === 'completed' || blockerTask.status === 'cancelled');
+                      return (
+                        <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>
+                          <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
+                          <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
+                          {!isTerminal && (
+                            <button
+                              onClick={async () => {
+                                const newBlockedBy = (task.blockedBy ?? []).filter(id => id !== blockerId);
+                                await api.tasks.update(task.id, { blockedBy: newBlockedBy });
+                                onRefresh();
+                              }}
+                              className="ml-0.5 text-current opacity-40 hover:opacity-100 transition-opacity"
+                              title="Remove dependency"
+                            >×</button>
+                          )}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-fg-tertiary mb-2">No dependencies</p>
+                )}
+                {!isTerminal && (
+                  <select
+                    value=""
+                    onChange={async (e) => {
+                      const depId = e.target.value;
+                      if (!depId) return;
+                      const newBlockedBy = [...(task.blockedBy ?? []), depId];
+                      await api.tasks.update(task.id, { blockedBy: newBlockedBy });
+                      onRefresh();
+                    }}
+                    className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus:border-brand-500 outline-none"
+                  >
+                    <option value="">+ Add dependency…</option>
+                    {allTasks
+                      .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
+                      .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+                  </select>
+                )}
+              </div>
+
               {/* Editable fields */}
               <div className="px-6 py-4 border-b border-border-default/60 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
@@ -2226,7 +2221,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 export function ProjectsPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
   const isMobile = useIsMobile();
-  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth / 2), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.7), storageKey: 'markus_projects_detail_v2' });
+  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
