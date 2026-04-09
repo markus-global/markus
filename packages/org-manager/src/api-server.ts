@@ -2119,32 +2119,48 @@ export class APIServer {
           resolvedTaskAuthorName ?? 'User',
           body['content'] as string
         );
-        // Notify mentioned agents — persistent context so they can investigate and act
-        if (mentions.length > 0) {
+        // Notify agents about the comment
+        {
           const authorName = resolvedTaskAuthorName ?? 'User';
+          const commenterId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
           const task = this.taskService.getTask(taskId);
           const taskTitle = task?.title ?? taskId;
           const taskStatus = task?.status ?? 'unknown';
           const agentMgr = this.orgService.getAgentManager();
-          for (const mentionedId of mentions) {
+          const notified = new Set<string>();
+
+          const notifyAgent = (agentId: string, reason: string) => {
+            if (notified.has(agentId) || agentId === commenterId) return;
+            // Skip assigned agent on in_progress tasks — they already got the live inject above
+            if (task?.status === 'in_progress' && task.assignedAgentId === agentId) return;
+            notified.add(agentId);
             try {
-              const agent = agentMgr.getAgent(mentionedId);
-              if (agent) {
-                const notif = [
-                  `You were mentioned by ${authorName} in a comment on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
-                  ``,
-                  `Comment: ${body['content'] as string}`,
-                  ``,
-                  `You should proactively investigate and handle this. Use your available tools to:`,
-                  `1. Use get_task to retrieve the full task details and context`,
-                  `2. Use list_task_comments to read the full comment thread for context`,
-                  `3. Take whatever actions are needed based on what was asked`,
-                  `4. Use task_comment to reply when you have results or need clarification`,
-                ].join('\n');
-                agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-                  .catch(() => {});
-              }
-            } catch { /* agent not found, skip */ }
+              const agent = agentMgr.getAgent(agentId);
+              if (!agent) return;
+              const notif = [
+                `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
+                ``,
+                `Comment from ${authorName}: ${body['content'] as string}`,
+                ``,
+                `Review and respond if needed. Use \`task_get\` and \`task_comment\` to investigate and reply.`,
+              ].join('\n');
+              agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
+                .catch(() => {});
+            } catch { /* agent not found */ }
+          };
+
+          // 1. Notify @mentioned agents
+          for (const mid of mentions) {
+            notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
+          }
+
+          // 2. Always notify task assignee (even without @mention)
+          if (task?.assignedAgentId) {
+            notifyAgent(task.assignedAgentId, `New comment from ${authorName} on your assigned task`);
+          }
+          // 3. Notify creator only when task is NOT in_progress (assignee handles it during execution)
+          if (task?.createdBy && task.status !== 'in_progress') {
+            notifyAgent(task.createdBy, `New comment from ${authorName} on a task you created`);
           }
         }
         this.json(res, 201, { comment });
@@ -6450,32 +6466,42 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
-        // Notify mentioned agents — persistent context so they can investigate and act
-        if (mentions.length > 0) {
+        // Notify agents about the comment
+        {
           const authorName = resolvedAuthorName ?? 'User';
+          const commenterId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
           const req_ = this.requirementService?.getRequirement(reqId);
           const reqTitle = req_?.title ?? reqId;
           const reqStatus = req_?.status ?? 'unknown';
           const agentMgr = this.orgService.getAgentManager();
-          for (const mentionedId of mentions) {
+          const notified = new Set<string>();
+
+          const notifyAgent = (agentId: string, reason: string) => {
+            if (notified.has(agentId) || agentId === commenterId) return;
+            notified.add(agentId);
             try {
-              const agent = agentMgr.getAgent(mentionedId);
-              if (agent) {
-                const notif = [
-                  `You were mentioned by ${authorName} in a comment on requirement "${reqTitle}" (ID: ${reqId}, status: ${reqStatus}).`,
-                  ``,
-                  `Comment: ${body['content'] as string}`,
-                  ``,
-                  `You should proactively investigate and handle this. Use your available tools to:`,
-                  `1. Use get_requirement to retrieve the full requirement details and context`,
-                  `2. Use list_requirement_comments to read the full comment thread for context`,
-                  `3. Take whatever actions are needed based on what was asked`,
-                  `4. Use requirement_comment to reply when you have results or need clarification`,
-                ].join('\n');
-                agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-                  .catch(() => {});
-              }
-            } catch { /* agent not found, skip */ }
+              const agent = agentMgr.getAgent(agentId);
+              if (!agent) return;
+              const notif = [
+                `${reason} on requirement "${reqTitle}" (ID: ${reqId}, status: ${reqStatus}).`,
+                ``,
+                `Comment from ${authorName}: ${body['content'] as string}`,
+                ``,
+                `Review and respond if needed. Use \`requirement_list\` and \`requirement_comment\` to investigate and reply.`,
+              ].join('\n');
+              agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
+                .catch(() => {});
+            } catch { /* agent not found */ }
+          };
+
+          // 1. Notify @mentioned agents
+          for (const mid of mentions) {
+            notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
+          }
+
+          // 2. Always notify requirement creator (even without @mention)
+          if (req_?.createdBy) {
+            notifyAgent(req_.createdBy, `New comment from ${authorName} on a requirement you created`);
           }
         }
         this.json(res, 201, { comment });

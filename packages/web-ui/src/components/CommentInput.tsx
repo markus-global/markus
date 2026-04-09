@@ -79,17 +79,20 @@ function MentionDropdown({ agents, filter, anchorRef, onSelect, selectedIndex, o
   );
 }
 
-/** Format a mention for insertion into text. Brackets are used for names with spaces. */
+/** Format a mention for insertion into text. Brackets are used for names containing non-ASCII or special characters. */
 function formatMention(name: string): string {
-  return name.includes(' ') ? `@[${name}]` : `@${name}`;
+  return /^\w+$/.test(name) ? `@${name}` : `@[${name}]`;
 }
+
+/** Mention regex: matches `@[Name]` (bracketed, any characters) or `@Name` (Unicode-aware word chars). */
+const MENTION_RE = /@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu;
 
 /** Parse mention tokens from raw text. Supports both `@Name` and `@[Name With Spaces]`. */
 export function parseMentionNames(text: string): string[] {
   const result: string[] = [];
-  const re = /@\[([^\]]+)\]|@(\w+)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
+  MENTION_RE.lastIndex = 0;
+  while ((m = MENTION_RE.exec(text)) !== null) {
     result.push(m[1] ?? m[2]!);
   }
   return result;
@@ -106,7 +109,7 @@ export function renderMentionText(
   onMentionClick?: (agent: AgentInfo) => void,
 ): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
-  const re = /@\[([^\]]+)\]|@(\w+)/g;
+  const re = new RegExp(MENTION_RE.source, MENTION_RE.flags);
   let lastIndex = 0;
   let m: RegExpExecArray | null;
   let key = 0;

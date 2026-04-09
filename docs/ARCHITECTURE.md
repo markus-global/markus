@@ -187,13 +187,14 @@ pending → in_progress → review → completed → (scheduled rerun) → in_pr
 
 ```
 pending ──► in_progress ──► completed
-   │
-   ▼
-rejected           any ──► cancelled
+   │  ▲
+   ▼  │
+rejected ── resubmit ──┘     any ──► cancelled
 ```
 
 - User-created requirements auto-approve to `in_progress`.
 - Agent proposals start as `pending`, need human approval.
+- Rejected requirements can be resubmitted by the agent (with optional updates), returning to `pending`.
 - Completion is automatic when all linked tasks terminate.
 
 #### Unified Status Reference

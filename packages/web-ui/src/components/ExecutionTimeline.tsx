@@ -257,18 +257,69 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
 
 // ─── RequirementApprovalCard — inline approval for proposed requirements ──────
 
+type ReqCardState = 'loading' | 'pending' | 'approving' | 'rejecting' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'archived';
+
+const REQ_STATUS_TO_CARD_STATE: Record<string, ReqCardState> = {
+  pending: 'pending',
+  in_progress: 'in_progress',
+  completed: 'completed',
+  rejected: 'rejected',
+  cancelled: 'cancelled',
+  archived: 'archived',
+};
+
+const REQ_STATUS_CONFIG: Record<string, { icon: string; label: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
+  pending:     { icon: '📋', label: 'Pending Approval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  approving:   { icon: '⏳', label: 'Approving…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  rejecting:   { icon: '⏳', label: 'Rejecting…',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
+  in_progress: { icon: '▶',  label: 'In Progress',      borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
+  completed:   { icon: '✅', label: 'Completed',         borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
+  rejected:    { icon: '❌', label: 'Rejected',          borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  cancelled:   { icon: '⊘',  label: 'Cancelled',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  archived:    { icon: '📦', label: 'Archived',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
+  loading:     { icon: '⏳', label: 'Loading…',          borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+};
+
+const REQ_WS_EVENTS = [
+  'requirement:approved', 'requirement:rejected', 'requirement:updated',
+  'requirement:completed', 'requirement:cancelled', 'requirement:resubmitted',
+] as const;
+
 export function RequirementApprovalCard({ info }: { info: RequirementApprovalInfo }) {
-  const [state, setState] = useState<'idle' | 'approving' | 'rejecting' | 'approved' | 'rejected'>('idle');
+  const [cardState, setCardState] = useState<ReqCardState>('loading');
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    api.requirements.get(info.requirementId).then(({ requirement }) => {
+      if (cancelled) return;
+      setCardState(REQ_STATUS_TO_CARD_STATE[requirement.status] ?? 'pending');
+    }).catch(() => {
+      if (!cancelled) setCardState('pending');
+    });
+    return () => { cancelled = true; };
+  }, [info.requirementId]);
+
+  useEffect(() => {
+    const unsubs = REQ_WS_EVENTS.map(evt =>
+      wsClient.on(evt, (event) => {
+        const p = event.payload as Record<string, unknown>;
+        if ((p['id'] as string) === info.requirementId && p['status']) {
+          setCardState(REQ_STATUS_TO_CARD_STATE[p['status'] as string] ?? 'pending');
+        }
+      })
+    );
+    return () => unsubs.forEach(fn => fn());
+  }, [info.requirementId]);
+
   const handleApprove = async () => {
-    setState('approving');
+    setCardState('approving');
     try {
       await api.requirements.approve(info.requirementId);
-      setState('approved');
+      setCardState('in_progress');
     } catch {
-      setState('idle');
+      setCardState('pending');
     }
   };
 
@@ -278,26 +329,30 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
       return;
     }
     if (!rejectReason.trim()) return;
-    setState('rejecting');
+    setCardState('rejecting');
     try {
       await api.requirements.reject(info.requirementId, rejectReason.trim());
-      setState('rejected');
+      setCardState('rejected');
     } catch {
-      setState('idle');
+      setCardState('pending');
     }
   };
 
-  const isDone = state === 'approved' || state === 'rejected';
+  const isPending = cardState === 'pending' || cardState === 'approving' || cardState === 'rejecting';
+  const cfg = REQ_STATUS_CONFIG[cardState] ?? REQ_STATUS_CONFIG['loading']!;
 
   return (
-    <div className={`my-2 rounded-lg border ${isDone ? 'border-border-default/40 bg-surface-secondary/30' : 'border-amber-500/40 bg-amber-500/5'} p-3 max-w-md`}>
-      <div className="flex items-start gap-2 mb-2">
-        <span className="text-amber-500 text-sm mt-0.5">{isDone ? (state === 'approved' ? '✅' : '❌') : '📋'}</span>
+    <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>
+      <div className="flex items-start gap-2 mb-1">
+        <span className="text-sm mt-0.5">{cfg.icon}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 font-medium">REQ</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cfg.badgeClass}`}>REQ</span>
+            {!isPending && cardState !== 'loading' && (
+              <span className={`text-[10px] font-medium ${cfg.textClass}`}>{cfg.label}</span>
+            )}
           </div>
-          <div className="text-sm font-medium text-fg-primary truncate mt-1">{info.title}</div>
+          <div className={`text-sm font-medium truncate mt-1 ${!isPending && cardState !== 'loading' ? 'text-fg-secondary' : 'text-fg-primary'}`}>{info.title}</div>
           {info.description && (
             <div className="text-xs text-fg-secondary mt-0.5 line-clamp-3">{info.description}</div>
           )}
@@ -312,7 +367,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
         </div>
       </div>
 
-      {!isDone && (
+      {isPending && (
         <div className="mt-2 pt-2 border-t border-border-default/30 space-y-2">
           {showRejectInput && (
             <input
@@ -328,30 +383,19 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
           <div className="flex items-center gap-2">
             <button
               onClick={handleApprove}
-              disabled={state !== 'idle'}
+              disabled={cardState !== 'pending'}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {state === 'approving' ? 'Approving...' : 'Approve'}
+              {cardState === 'approving' ? 'Approving…' : 'Approve'}
             </button>
             <button
               onClick={handleReject}
-              disabled={state !== 'idle' || (showRejectInput && !rejectReason.trim())}
+              disabled={cardState !== 'pending' || (showRejectInput && !rejectReason.trim())}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {state === 'rejecting' ? 'Rejecting...' : 'Reject'}
+              {cardState === 'rejecting' ? 'Rejecting…' : 'Reject'}
             </button>
           </div>
-        </div>
-      )}
-
-      {state === 'approved' && (
-        <div className="text-xs text-green-500 mt-1.5">
-          Requirement approved — agents can now create tasks for it
-        </div>
-      )}
-      {state === 'rejected' && (
-        <div className="text-xs text-fg-tertiary mt-1.5">
-          Requirement rejected{rejectReason ? `: ${rejectReason}` : ''}
         </div>
       )}
     </div>

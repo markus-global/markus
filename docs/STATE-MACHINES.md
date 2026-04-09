@@ -187,7 +187,61 @@ When a task enters `review` status (via `updateTaskStatus`), the system automati
 
 ---
 
-## 6. Cancellation
+## 6. Comment & Notification Rules
+
+Comments on tasks and requirements trigger agent notifications via `handleMessage`. The system ensures **each agent receives at most one notification per comment**, regardless of how many rules match.
+
+### 6.1 Task Comment Notifications
+
+When a comment is posted on a task, the following agents are notified (in priority order, deduplicated):
+
+| # | Who | Condition | Mechanism | Reason |
+|---|-----|-----------|-----------|--------|
+| 1 | @mentioned agents | Always (except self and assignee on `in_progress` tasks) | `handleMessage` | Explicit intent to notify |
+| 2 | Assigned agent (`assignedAgentId`) | Task is `in_progress` | Live inject into LLM session (`injectUserMessage`) | Agent sees comment immediately in current work context |
+| 3 | Assigned agent (`assignedAgentId`) | Task is NOT `in_progress` | `handleMessage` | Agent is not actively working, needs separate notification |
+| 4 | Creator (`createdBy`) | Task is NOT `in_progress` | `handleMessage` | Creator should know about discussion on their task |
+
+**Key rules:**
+- **Deduplication**: A `Set` tracks notified agent IDs. Each agent gets exactly one notification, even if they match multiple rules (e.g., creator = assignee, or creator is also @mentioned).
+- **Self-skip**: The comment author never receives a notification about their own comment.
+- **In-progress optimization**: When the task is `in_progress`, the assigned agent already receives every comment via live session injection. No separate `handleMessage` is sent. The creator is also skipped — the assignee is responsible during execution.
+- **@mention overrides**: Explicit @mentions always trigger notification, even for agents who would otherwise be skipped (except the assigned agent on `in_progress` tasks who already gets inject, and the comment author).
+
+### 6.2 Requirement Comment Notifications
+
+| # | Who | Condition | Mechanism |
+|---|-----|-----------|-----------|
+| 1 | @mentioned agents | Always (except self) | `handleMessage` |
+| 2 | Creator (`createdBy`) | Always (except self) | `handleMessage` |
+
+Requirements have no running agent, so there is no live injection mechanism. Notifications are purely `handleMessage`-based.
+
+### 6.3 Requirement Approval Notifications
+
+When a human approves or rejects an agent-proposed requirement (`source: 'agent'`):
+
+| Decision | Notified | Message |
+|----------|----------|---------|
+| **Approved** | Creator agent | Requirement is now in progress; create tasks via `task_create` |
+| **Rejected** | Creator agent | Includes rejection reason; update and resubmit via `requirement_resubmit`, or abandon |
+
+Both decisions also create an HITL notification visible in the UI notification bell.
+
+### 6.4 Notification Paths
+
+Comments flow through two code paths depending on the caller:
+
+| Path | Caller | File |
+|------|--------|------|
+| HTTP API | Human via Web UI | `api-server.ts` POST `/api/tasks/:id/comments`, `/api/requirements/:id/comments` |
+| Agent tool | Agent via `task_comment` / `requirement_comment` | `task-service.ts` `postTaskComment()`, `postRequirementComment()` |
+
+Both paths apply identical notification logic (dedup, self-skip, stakeholder auto-notify).
+
+---
+
+## 7. Cancellation
 
 ### Single Task Cancellation
 
@@ -211,7 +265,7 @@ User can choose to cascade-cancel all dependent tasks:
 
 ---
 
-## 7. Requirement FSM
+## 8. Requirement FSM
 
 Requirements represent high-level work items fulfilled by one or more tasks.
 
@@ -222,9 +276,9 @@ Requirements represent high-level work items fulfilled by one or more tasks.
     │                       │                       │
     ▼                       ▼                       ▼
   pending ──────────► in_progress ──────────► completed
-    │
-    ▼
-  rejected
+    │  ▲
+    ▼  │
+  rejected ── resubmit ──┘
                
   any ──► cancelled
 ```
@@ -237,6 +291,7 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 | (new, human) | `in_progress` | User creates directly (auto-approved) |
 | `pending` | `in_progress` | User approves |
 | `pending` | `rejected` | User rejects |
+| `rejected` | `pending` | Agent resubmits via `requirement_resubmit` (optionally with updates) |
 | `in_progress` | `completed` | All linked tasks reach terminal state |
 | any | `cancelled` | Manual cancellation |
 
@@ -248,10 +303,11 @@ Requirements represent high-level work items fulfilled by one or more tasks.
 4. **Completion is automatic** — when all linked tasks terminate
 5. **No `approved` intermediate state** — approval goes directly to `in_progress`, same as tasks
 6. **No `draft` state** — items are created directly as `pending`; there is no separate drafting phase
+7. **Rejected requirements can be resubmitted** — agent calls `requirement_resubmit` to move back to `pending`, optionally updating title, description, priority, or tags. Rejection metadata is cleared on resubmit
 
 ---
 
-## 8. Migration from Legacy Statuses
+## 9. Migration from Legacy Statuses
 
 On startup, the following data migrations run automatically:
 

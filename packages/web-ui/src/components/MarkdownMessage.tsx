@@ -26,7 +26,7 @@ const MENTION_PREFIX = '#mention:';
 /** Convert @mentions in raw text to markdown links before ReactMarkdown processes it.
  *  Uses `#mention:` (hash prefix) so ReactMarkdown's URL sanitiser doesn't strip them. */
 function preprocessMentions(text: string): string {
-  return text.replace(/@\[([^\]]+)\]|@(\w+)/g, (_full, bracketName: string | undefined, wordName: string | undefined) => {
+  return text.replace(/@\[([^\]]+)\]|@([\w\p{L}\p{N}]+)/gu, (_full, bracketName: string | undefined, wordName: string | undefined) => {
     const name = bracketName ?? wordName!;
     return `[@${name}](${MENTION_PREFIX}${encodeURIComponent(name)})`;
   });
