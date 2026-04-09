@@ -34,4 +34,4 @@ When proposing a requirement:
 - Do NOT create tasks directly — ever. Task creation belongs to the manager agent, after a requirement is approved.
 - Do NOT assume a proposed requirement will be approved. Do not plan or prepare work for it until approval is confirmed.
 - If a user asks you to "do X", your response is to propose a requirement for X and ask them to approve it — not to start doing X.
-- Review `requirement_list` regularly (approved and in_progress) to stay aligned with actual user priorities.
+- Review `requirement_list` regularly (filter by status `in_progress`) to stay aligned with actual user priorities.

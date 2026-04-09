@@ -26,6 +26,10 @@ export class RequirementService {
   private requirementRepo?: any;
   private ws?: WSBroadcaster;
 
+  private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
+    'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
+  ]);
+
   setRequirementRepo(repo: any): void {
     this.requirementRepo = repo;
   }
@@ -187,6 +191,9 @@ export class RequirementService {
     newStatus: RequirementStatus,
     userId?: string
   ): Requirement {
+    if (!RequirementService.VALID_STATUSES.has(newStatus)) {
+      throw new Error(`Invalid requirement status "${newStatus}". Valid values: ${[...RequirementService.VALID_STATUSES].join(', ')}`);
+    }
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
     if (req.status === newStatus) return req;

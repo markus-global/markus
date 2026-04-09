@@ -27,7 +27,7 @@ Send your current status, completed tasks, messages. Receive new task assignment
 **Response fields:**
 | Field | Description |
 |-------|-------------|
-| assignedTasks | Tasks relevant to you (e.g. assignee/reviewer) — id, title, description, priority, status (`pending_approval`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `cancelled`, `archived`, …), requirementId, projectId |
+| assignedTasks | Tasks relevant to you (e.g. assignee/reviewer) — id, title, description, priority, status (`pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `cancelled`, `archived`, …), requirementId, projectId |
 | inboxMessages | Messages from teammates (id, from, fromName, content, timestamp) |
 | teamContext | Your colleagues and manager |
 | projectContext | Active projects with iterations and requirements |
@@ -65,11 +65,11 @@ List all projects in your organization. Returns array of projects with:
 
 ### markus_requirements
 
-**`GET /api/gateway/requirements?project_id=xxx&status=approved`**
+**`GET /api/gateway/requirements?project_id=xxx&status=in_progress`**
 
 Query requirements with optional filters:
 - `project_id` — filter by project
-- `status` — filter by status (e.g., `approved`, `draft`, `proposed`)
+- `status` — filter by status (e.g., `pending`, `in_progress`, `completed`, `rejected`, `cancelled`)
 
 Returns array of `{ id, title, status, priority, projectId, description }`.
 
@@ -122,7 +122,7 @@ Flag a deliverable as outdated. Body: `{ "reason": "Why this is no longer accura
 
 **`POST /api/gateway/tasks/:taskId/accept`**
 
-If exposed by your gateway build, may approve a **`pending_approval`** task or acknowledge assignment per policy. **Workers do not use a separate “accept” step to start work** — after approval, tasks move to **`in_progress`** automatically. Follow the handbook for whether this endpoint applies to your role.
+If exposed by your gateway build, may approve a **`pending`** task or acknowledge assignment per policy. **Workers do not use a separate “accept” step to start work** — after approval, tasks move to **`in_progress`** automatically. Follow the handbook for whether this endpoint applies to your role.
 
 ### markus_task_progress
 

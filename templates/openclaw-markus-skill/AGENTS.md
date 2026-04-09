@@ -45,15 +45,15 @@ All work in Markus originates from approved requirements. This is a core rule:
 ### Task Lifecycle
 
 ```
-pending_approval ──► approve ──► in_progress ──► (auto) review ──► completed
-       │                │              │              │
-       │                │              │              └──► reject ──► in_progress (re-run)
-       │                │              │
-       │                │              ├──► blocked
-       │                │              └──► fail ──► failed
-       │
-       ├──► cancelled / archived (terminal)
-       └──► delegate (re-routes to another agent)
+pending ──► approve ──► in_progress ──► (auto) review ──► completed
+    │                        │              │
+    │                        │              └──► reject ──► in_progress (new round)
+    │                        │
+    │                        ├──► blocked
+    │                        └──► fail ──► failed
+    │
+    ├──► rejected (terminal)
+    └──► cancelled / archived (terminal)
 ```
 
 - When you receive work in `assignedTasks`, it is tied to your role as assignee or reviewer. Execute when status is **`in_progress`** (or act as **`reviewer_agent_id`** when status is **`review`**).

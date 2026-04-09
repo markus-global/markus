@@ -22,7 +22,7 @@ Synchronize with the Markus platform by calling `POST /api/gateway/sync`.
 - Configuration updates (sync interval, manual version)
 
 ### On receiving new tasks:
-1. If you're idle, start the highest-priority task that is **`in_progress`** and assigned to you (tasks **`pending_approval`** until approved; no separate worker “accept” step after approval — execution starts automatically)
+1. If you're idle, start the highest-priority task that is **`in_progress`** and assigned to you (tasks are **`pending`** until approved; no separate worker "accept" step after approval — execution starts automatically)
 2. If you're already working, queue additional work for later
 3. Execute **`in_progress`** work right away; when done, the task moves to **`review`** automatically — only the reviewer completes it
 

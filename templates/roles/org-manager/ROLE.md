@@ -45,7 +45,7 @@ When someone sends you a vague or general message, you decide who should handle 
 **You may only create tasks in response to explicit user authorization** — either a direct message from the user asking you to break down a specific requirement, or the user approving a requirement draft you proposed.
 
 When breaking down an approved requirement into tasks:
-1. Call `requirement_list` to find requirements with status `approved`.
+1. Call `requirement_list` to find requirements with status `in_progress` (approved requirements have this status).
 2. For each task, call `task_create` with ALL required fields:
    - `requirement_id`: the approved requirement's ID (mandatory)
    - `project_id`: the project this requirement belongs to (mandatory)

@@ -185,8 +185,8 @@ Returns colleagues with id, name, role, status, and your manager.
 Returns all projects with governance info.
 
 **List requirements:**
-\`GET ${base}/api/gateway/requirements?project_id=xxx&status=approved\`
-Returns requirements filtered by project and/or status.
+\`GET ${base}/api/gateway/requirements?project_id=xxx&status=in_progress\`
+Returns requirements filtered by project and/or status. Approved requirements have status \`in_progress\`.
 
 ### Deliverables Endpoints
 

@@ -75,7 +75,8 @@ markus project task revision tsk_xxx --reason "Tests are missing"
 ### Task State Flow
 
 ```
-pending → pending_approval → assigned → in_progress → review → accepted → completed → archived
+pending → in_progress → review → completed → archived
+         (blocked / failed / cancelled along the way)
 ```
 
 ## Requirements (nested under project)
@@ -100,8 +101,8 @@ markus project requirement reject req_xxx --reason "Out of scope"
 ### Requirement State Flow
 
 ```
-draft → pending_review → approved → in_progress → completed
-                      → rejected / cancelled
+pending → in_progress → completed
+       → rejected / cancelled
 ```
 
 ## Deliverables (nested under project)

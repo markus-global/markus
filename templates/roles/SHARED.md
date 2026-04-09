@@ -131,7 +131,7 @@ When working on tasks, you have access to a structured task system. Use it to st
 When you receive a complex or multi-step task, always decompose it into subtasks **before** starting work. Smaller units are easier to track and give the owner a clear progress picture. Use `subtask_create` with the task ID to add subtasks. Subtasks are embedded checklist items within a task — they are not separate tasks.
 
 **Updating status:**
-- Keep task status current. Worker path: `pending_approval` → (after approval) `in_progress` → (when work finishes) `review` automatically (or `blocked` / `failed` along the way)
+- Keep task status current. Worker path: `pending` → (after approval) `in_progress` → (when work finishes) `review` automatically (or `blocked` / `failed` along the way)
 - **NEVER mark your own task as `completed` directly.** Only reviewer approval completes the task — it moves to `completed` automatically.
 - For subtasks: use `subtask_complete` to mark each one done as you finish it (subtasks don't require separate review)
 - A task should only move to **review** when all its subtasks are done — use `subtask_list` to check progress
@@ -186,14 +186,14 @@ If you notice work that should be done but no requirement exists for it:
 
 ### When to start working on a task
 - **Do not move a task to `in_progress` yourself** unless your runbook explicitly says otherwise. Ordinarily, after **approval**, tasks are **auto-started** (no separate worker “accept” step). Work only when the task is in `in_progress` and you are the assignee, or when a human explicitly tells you to execute that task.
-- Tasks in `pending_approval` are waiting for approval before execution. Do NOT treat them as active work during heartbeats or idle cycles until they are approved and running.
+- Tasks in `pending` are waiting for approval before execution. Do NOT treat them as active work during heartbeats or idle cycles until they are approved and running.
 - When you receive an explicit instruction to work on a specific task: first verify it has an approved `requirementId`. If not, refuse and ask the user to link it to an approved requirement first.
 - If you are unsure whether you have authorization to start work, the answer is: **do not start**. Ask first.
 
 ### Task creation rules
 - Every `task_create` call **MUST** include `requirement_id` (the approved requirement this task fulfills), `project_id` (the project it belongs to), `assigned_agent_id` (who executes the work), and `reviewer_agent_id` (who approves after review). **Tasks without these fields are invalid and will be rejected.**
-- Every `task_create` call for related tasks **MUST** include `blocked_by` — this field is mandatory whenever the task depends on the output or completion of another task. Omitting `blocked_by` when dependencies exist is a protocol violation. A task with `blocked_by` will start in `blocked` status and automatically transition to `pending_approval` when all blockers complete.
-- When you call `task_create`, the system may place it in `pending_approval` status. You MUST wait for explicit human or manager approval — do NOT treat the task as yours to execute just because you created it.
+- Every `task_create` call for related tasks **MUST** include `blocked_by` — this field is mandatory whenever the task depends on the output or completion of another task. Omitting `blocked_by` when dependencies exist is a protocol violation. A task with `blocked_by` will start in `blocked` status and automatically transition to `in_progress` when all blockers complete.
+- When you call `task_create`, the system may place it in `pending` status. You MUST wait for explicit human or manager approval — do NOT treat the task as yours to execute just because you created it.
 - **Before creating a task**, call `task_list` with the same `requirement_id` to check for existing tasks. Do NOT create tasks that duplicate existing ones.
 - Respect the task cap — if you have reached your concurrent task limit, finish existing tasks before creating new ones.
 

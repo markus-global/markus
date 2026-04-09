@@ -2438,8 +2438,8 @@ export class TaskService {
 
       parts.push('');
       parts.push(`Please review immediately. Use \`task_get\` with task_id "${task.id}" to inspect deliverable files, then either:`);
-      parts.push(`- **Approve**: Review the code, merge the branch (via \`git merge\` or \`gh pr create\` + \`gh pr merge\`), then \`task_update\` with status "completed"`);
-      parts.push(`- **Reject**: If the code has issues or merge conflicts, add a \`task_note\` explaining what needs to change, then \`task_update\` with status "in_progress" to send it back`);
+      parts.push(`- **Approve**: Review the code, merge the branch (via \`git merge\` or \`gh pr create\` + \`gh pr merge\`), then \`task_update\` with status "completed" and a review note`);
+      parts.push(`- **Reject**: \`task_update\` with status "in_progress" and a note explaining what needs to change — this sends the task back for revision with a new execution round`);
       parts.push('');
       parts.push(`CRITICAL: You MUST ONLY review this specific task (ID: ${task.id}). Do NOT change the status of any other task.`);
 

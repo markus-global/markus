@@ -563,7 +563,7 @@ export class ContextEngine {
         lines.push('1. **Review duty**: Check `task_list` for tasks in `review` status where you are the reviewer. For each:');
         lines.push('   - `task_get` → inspect deliverables/notes → `file_read` on artifacts');
         lines.push('   - Approve: `task_update(status:"completed")` with review note');
-        lines.push('   - Reject: `task_update(note:"what needs to change")` — auto-restarts execution');
+        lines.push('   - Reject: `task_update(status:"in_progress", note:"what needs to change")` — sends the task back for revision with a new execution round');
         lines.push('   - Unreviewed tasks block the team — review is your #1 responsibility');
         lines.push('2. **Status check**: Compare current state against last heartbeat. Report only changes.');
         lines.push('3. **Failed task recovery**: If any task assigned to you is in `failed` status, retry it via `task_update(status:"in_progress")` with a note — this auto-restarts execution.');

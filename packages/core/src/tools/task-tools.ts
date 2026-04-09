@@ -114,6 +114,11 @@ export interface AgentTaskContext {
     deliverables?: Array<{ type?: string; reference: string; summary: string }>,
     knownIssues?: string
   ) => Promise<{ id: string; status: string }>;
+  /** Request revision on a task in review — increments execution round and restarts with fresh context */
+  requestRevision?: (
+    taskId: string,
+    reason: string
+  ) => Promise<{ id: string; title: string; status: string }>;
   /** Update a requirement's status (cancel, reject, etc.) */
   updateRequirementStatus?: (
     id: string,
@@ -507,6 +512,25 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   status: 'denied',
                   error: `Setting your own running task to "${newStatus}" will immediately abort all ongoing work. If you truly need to stop, confirm by adding a note explaining why. Otherwise, continue working on the task.`,
                 });
+              }
+            }
+
+            // Route review→in_progress through requestRevision for proper round increment
+            if (newStatus === 'in_progress' && ctx.requestRevision) {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.status === 'review') {
+                const reason = note || 'Revision requested';
+                try {
+                  const task = await ctx.requestRevision(taskId, reason);
+                  log.info(`Task revision requested by agent ${ctx.agentId}`, { taskId: task.id, reason });
+                  return JSON.stringify({
+                    status: 'success',
+                    task,
+                    message: `Task "${task.title}" sent back for revision (new execution round) — reason: ${reason}`,
+                  });
+                } catch (err) {
+                  return JSON.stringify({ status: 'error', error: String(err) });
+                }
               }
             }
 

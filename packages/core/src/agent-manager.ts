@@ -202,6 +202,7 @@ export interface TaskServiceBridge {
   completeSubtask(taskId: string, subtaskId: string): { id: string; title: string; status: string };
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
   submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerAgentId?: string): Promise<{ id: string; status: string }>;
+  requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
@@ -884,6 +885,9 @@ export class AgentManager {
         updateTaskStatus: async (taskId, status) => {
           return ts.updateTaskStatus(taskId, status, id);
         },
+        requestRevision: async (taskId, reason) => {
+          return ts.requestRevision(taskId, reason, id);
+        },
         getTask: async taskId => {
           return ts.getTask(taskId) ?? null;
         },
@@ -1437,6 +1441,7 @@ export class AgentManager {
             pageSize: filter?.pageSize,
           }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
+        requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
         getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId),
         addTaskNote: async (taskId, note, author) => {
