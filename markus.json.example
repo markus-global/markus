@@ -28,6 +28,11 @@
         "apiKey": "sk-...",
         "baseUrl": "https://api.siliconflow.cn/v1",
         "model": "Qwen/Qwen3.5-35B-A3B"
+      },
+      "zai": {
+        "apiKey": "sk-...",
+        "baseUrl": "https://api.z.ai/api/paas/v4",
+        "model": "glm-5.1"
       }
     },
     "timeoutMs": 90000

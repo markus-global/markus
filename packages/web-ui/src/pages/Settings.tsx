@@ -326,11 +326,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
   // Add/Edit/Delete provider state
   const [showAddProvider, setShowAddProvider] = useState(false);
-  const [addProviderForm, setAddProviderForm] = useState({ name: '', apiKey: '', baseUrl: '', model: '' });
+  const [addProviderForm, setAddProviderForm] = useState({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 });
   const [addProviderSaving, setAddProviderSaving] = useState(false);
   const [addProviderMsg, setAddProviderMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
-  const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '' });
+  const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '', contextWindow: 0, maxOutputTokens: 0, costInput: 0, costOutput: 0 });
   const [editProviderSaving, setEditProviderSaving] = useState(false);
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
 
@@ -350,13 +350,18 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           apiKey: addProviderForm.apiKey || undefined,
           baseUrl: addProviderForm.baseUrl || undefined,
           model: addProviderForm.model,
+          contextWindow: addProviderForm.contextWindow || undefined,
+          maxOutputTokens: addProviderForm.maxOutputTokens || undefined,
+          cost: (addProviderForm.costInput || addProviderForm.costOutput)
+            ? { input: addProviderForm.costInput, output: addProviderForm.costOutput }
+            : undefined,
         }),
       });
       const data = await res.json();
       if (res.ok) {
         setLlm(data as LLMSettings);
         setShowAddProvider(false);
-        setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '' });
+        setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 });
         setAddProviderMsg({ type: 'ok', text: `Provider ${addProviderForm.name} added` });
       } else {
         setAddProviderMsg({ type: 'err', text: (data as { error: string }).error ?? 'Failed to add' });
@@ -367,7 +372,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
   const startEditProvider = (name: string, info: ProviderInfo) => {
     setEditingProvider(name);
-    setEditProviderForm({ apiKey: '', baseUrl: info.baseUrl ?? '', model: info.model });
+    setEditProviderForm({
+      apiKey: '', baseUrl: info.baseUrl ?? '', model: info.model,
+      contextWindow: info.contextWindow ?? 0,
+      maxOutputTokens: info.maxOutputTokens ?? 0,
+      costInput: info.cost?.input ?? 0,
+      costOutput: info.cost?.output ?? 0,
+    });
   };
 
   const saveEditProvider = async (name: string) => {
@@ -377,6 +388,11 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       if (editProviderForm.apiKey) body.apiKey = editProviderForm.apiKey;
       if (editProviderForm.baseUrl !== undefined) body.baseUrl = editProviderForm.baseUrl;
       if (editProviderForm.model) body.model = editProviderForm.model;
+      if (editProviderForm.contextWindow) body.contextWindow = editProviderForm.contextWindow;
+      if (editProviderForm.maxOutputTokens) body.maxOutputTokens = editProviderForm.maxOutputTokens;
+      if (editProviderForm.costInput || editProviderForm.costOutput) {
+        body.cost = { input: editProviderForm.costInput, output: editProviderForm.costOutput };
+      }
       const res = await fetch(`/api/settings/llm/providers/${name}`, {
         method: 'PUT', headers: authHeaders(),
         body: JSON.stringify(body),
@@ -805,6 +821,36 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none" />
                               </div>
                             </div>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                                <input type="number" value={editProviderForm.contextWindow || ''}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, contextWindow: Number(e.target.value) })}
+                                  placeholder="e.g. 128000"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                                <input type="number" value={editProviderForm.maxOutputTokens || ''}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, maxOutputTokens: Number(e.target.value) })}
+                                  placeholder="e.g. 16384"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Input</label>
+                                <input type="number" step="0.01" value={editProviderForm.costInput || ''}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, costInput: Number(e.target.value) })}
+                                  placeholder="e.g. 1"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Output</label>
+                                <input type="number" step="0.01" value={editProviderForm.costOutput || ''}
+                                  onChange={e => setEditProviderForm({ ...editProviderForm, costOutput: Number(e.target.value) })}
+                                  placeholder="e.g. 5"
+                                  className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                              </div>
+                            </div>
                             <div className="flex gap-2">
                               <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
                                 className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
@@ -1015,6 +1061,36 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   <input type="text" value={addProviderForm.model}
                     onChange={e => setAddProviderForm({ ...addProviderForm, model: e.target.value })}
                     placeholder="e.g. deepseek-chat, gpt-4o"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                  <input type="number" value={addProviderForm.contextWindow}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, contextWindow: Number(e.target.value) })}
+                    placeholder="128000"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                  <input type="number" value={addProviderForm.maxOutputTokens}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, maxOutputTokens: Number(e.target.value) })}
+                    placeholder="16384"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Input</label>
+                  <input type="number" step="0.01" value={addProviderForm.costInput}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, costInput: Number(e.target.value) })}
+                    placeholder="1"
+                    className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">$/1M Output</label>
+                  <input type="number" step="0.01" value={addProviderForm.costOutput}
+                    onChange={e => setAddProviderForm({ ...addProviderForm, costOutput: Number(e.target.value) })}
+                    placeholder="5"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
               </div>

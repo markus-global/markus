@@ -5066,8 +5066,9 @@ export class APIServer {
         return;
       }
       const body = await this.readBody(req);
-      const { name, apiKey, baseUrl, model, enabled } = body as {
+      const { name, apiKey, baseUrl, model, enabled, contextWindow, maxOutputTokens, cost } = body as {
         name?: string; apiKey?: string; baseUrl?: string; model?: string; enabled?: boolean;
+        contextWindow?: number; maxOutputTokens?: number; cost?: { input: number; output: number };
       };
       if (!name || typeof name !== 'string') {
         this.json(res, 400, { error: 'name (string) is required' });
@@ -5090,6 +5091,13 @@ export class APIServer {
         });
         if (enabled === false) {
           this.llmRouter.setProviderEnabled(name, false);
+        }
+        if (contextWindow || maxOutputTokens || cost) {
+          this.llmRouter.updateProviderModelConfig(name, {
+            ...(contextWindow ? { contextWindow } : {}),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
+            ...(cost ? { cost } : {}),
+          });
         }
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -5123,8 +5131,9 @@ export class APIServer {
       }
       const providerName = path.split('/')[5]!;
       const body = await this.readBody(req);
-      const { apiKey, baseUrl, model, enabled } = body as {
+      const { apiKey, baseUrl, model, enabled, contextWindow, maxOutputTokens, cost } = body as {
         apiKey?: string; baseUrl?: string; model?: string; enabled?: boolean;
+        contextWindow?: number; maxOutputTokens?: number; cost?: { input: number; output: number };
       };
       try {
         const provider = this.llmRouter.getProvider(providerName);
@@ -5144,6 +5153,13 @@ export class APIServer {
         }
         if (typeof enabled === 'boolean') {
           this.llmRouter.setProviderEnabled(providerName, enabled);
+        }
+        if (contextWindow || maxOutputTokens || cost) {
+          this.llmRouter.updateProviderModelConfig(providerName, {
+            ...(contextWindow ? { contextWindow } : {}),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
+            ...(cost ? { cost } : {}),
+          });
         }
         try {
           const { loadConfig: loadCfg } = await import('@markus/shared');
@@ -5365,6 +5381,7 @@ export class APIServer {
         { provider: 'siliconflow', displayName: 'SiliconFlow', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
         { provider: 'minimax', displayName: 'MiniMax', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M2.7', defaultBaseUrl: 'https://api.minimax.io/v1' },
         { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
+        { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
       ];
 
       const detected: Array<{

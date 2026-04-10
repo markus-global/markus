@@ -50,7 +50,7 @@ function buildTiers(providerNames: string[], defaultProvider: string): ProviderT
   return tiers;
 }
 
-interface ProviderHealth {
+interface ModelHealth {
   consecutiveFailures: number;
   lastFailureAt: number;
   degraded: boolean;
@@ -64,7 +64,10 @@ export class LLMRouter {
   private autoSelect = false;
   private providerTiers: ProviderTier[] = [];
   private fallbackOrder: string[] = [];
-  private health = new Map<string, ProviderHealth>();
+  /** Health tracked per model: key = "providerName:modelId" */
+  private modelHealth = new Map<string, ModelHealth>();
+  /** Provider-level degradation for non-retryable (auth/billing) errors */
+  private providerDegraded = new Map<string, { degraded: boolean; lastFailureAt: number; resetMs: number }>();
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
@@ -150,6 +153,18 @@ export class LLMRouter {
     return this.defaultProvider;
   }
 
+  /** Attach provider:model context to an error so upstream loggers can identify the source. */
+  private static enrichError(error: unknown, provider: string, model: string): Error {
+    const prefix = `[${provider}:${model}]`;
+    if (error instanceof Error) {
+      if (!error.message.startsWith(prefix)) {
+        error.message = `${prefix} ${error.message}`;
+      }
+      return error;
+    }
+    return new Error(`${prefix} ${String(error)}`);
+  }
+
   /**
    * Detect errors that will never succeed on retry (billing, auth, region restrictions).
    * These should immediately degrade the provider instead of waiting for CIRCUIT_OPEN_AFTER.
@@ -163,51 +178,120 @@ export class LLMRouter {
       /authentication/i.test(msg);
   }
 
-  private getHealth(name: string): ProviderHealth {
-    if (!this.health.has(name)) {
-      this.health.set(name, { consecutiveFailures: 0, lastFailureAt: 0, degraded: false });
-    }
-    return this.health.get(name)!;
+  private static healthKey(provider: string, model: string): string {
+    return `${provider}:${model}`;
   }
 
-  private recordSuccess(name: string): void {
-    const h = this.getHealth(name);
+  private getModelHealth(provider: string, model: string): ModelHealth {
+    const key = LLMRouter.healthKey(provider, model);
+    if (!this.modelHealth.has(key)) {
+      this.modelHealth.set(key, { consecutiveFailures: 0, lastFailureAt: 0, degraded: false });
+    }
+    return this.modelHealth.get(key)!;
+  }
+
+  private recordSuccess(provider: string, model: string): void {
+    const h = this.getModelHealth(provider, model);
     h.consecutiveFailures = 0;
     h.degraded = false;
   }
 
-  private recordFailure(name: string, error?: unknown): void {
-    const h = this.getHealth(name);
-    h.consecutiveFailures++;
-    h.lastFailureAt = Date.now();
-
+  private recordFailure(provider: string, model: string, error?: unknown): void {
     const fatal = LLMRouter.isNonRetryableError(error);
-    if (fatal && !h.degraded) {
-      h.degraded = true;
-      h.resetMs = this.CIRCUIT_RESET_FATAL_MS;
-      log.warn(`Provider ${name} immediately degraded (non-retryable error) — skipping for ${this.CIRCUIT_RESET_FATAL_MS / 60000} min`);
+
+    if (fatal) {
+      const pd = this.providerDegraded.get(provider);
+      if (!pd?.degraded) {
+        this.providerDegraded.set(provider, { degraded: true, lastFailureAt: Date.now(), resetMs: this.CIRCUIT_RESET_FATAL_MS });
+        log.warn(`Provider ${provider} immediately degraded (non-retryable auth/billing error) — skipping for ${this.CIRCUIT_RESET_FATAL_MS / 60000} min`);
+      }
       return;
     }
+
+    const h = this.getModelHealth(provider, model);
+    h.consecutiveFailures++;
+    h.lastFailureAt = Date.now();
 
     if (h.consecutiveFailures >= this.CIRCUIT_OPEN_AFTER && !h.degraded) {
       h.degraded = true;
       h.resetMs = this.CIRCUIT_RESET_MS;
-      log.warn(`Provider ${name} marked as degraded after ${h.consecutiveFailures} failures — skipping for ${this.CIRCUIT_RESET_MS / 60000} min`);
+      log.warn(`Model ${provider}:${model} marked as degraded after ${h.consecutiveFailures} failures — skipping for ${this.CIRCUIT_RESET_MS / 60000} min`);
     }
   }
 
-  private isAvailable(name: string): boolean {
-    if (this.disabledProviders.has(name)) return false;
-    const h = this.getHealth(name);
+  /** Check if a specific model on a provider is available */
+  private isModelAvailable(provider: string, model: string): boolean {
+    if (this.disabledProviders.has(provider)) return false;
+
+    const pd = this.providerDegraded.get(provider);
+    if (pd?.degraded) {
+      if (Date.now() - pd.lastFailureAt > pd.resetMs) {
+        log.info(`Provider ${provider} circuit reset — will retry`);
+        pd.degraded = false;
+      } else {
+        return false;
+      }
+    }
+
+    const h = this.getModelHealth(provider, model);
     if (!h.degraded) return true;
     const resetMs = h.resetMs ?? this.CIRCUIT_RESET_MS;
     if (Date.now() - h.lastFailureAt > resetMs) {
-      log.info(`Provider ${name} circuit reset — will retry`);
+      log.info(`Model ${provider}:${model} circuit reset — will retry`);
       h.degraded = false;
       h.consecutiveFailures = 0;
       return true;
     }
     return false;
+  }
+
+  /** Check if a provider has at least one available model (for tier selection) */
+  private isAvailable(name: string): boolean {
+    if (this.disabledProviders.has(name)) return false;
+
+    const pd = this.providerDegraded.get(name);
+    if (pd?.degraded) {
+      if (Date.now() - pd.lastFailureAt > pd.resetMs) {
+        pd.degraded = false;
+      } else {
+        return false;
+      }
+    }
+
+    const provider = this.providers.get(name);
+    if (!provider) return false;
+
+    if (this.isModelAvailable(name, provider.model)) return true;
+
+    const catalog = this.getProviderModels(name);
+    return catalog.some(m => m.id !== provider.model && this.isModelAvailable(name, m.id));
+  }
+
+  /** Get all model definitions for a provider (builtin + custom) */
+  private getProviderModels(providerName: string): ModelDefinition[] {
+    const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
+    const customModels = this.customModelCatalog.get(providerName) ?? [];
+    return [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+  }
+
+  /**
+   * Try alternate models on the same provider when the active model is degraded.
+   * Returns the model ID to use, or null if no healthy alternative exists.
+   */
+  private findHealthyModel(providerName: string): string | null {
+    const provider = this.providers.get(providerName);
+    if (!provider) return null;
+
+    if (this.isModelAvailable(providerName, provider.model)) return provider.model;
+
+    const catalog = this.getProviderModels(providerName);
+    for (const m of catalog) {
+      if (m.id !== provider.model && this.isModelAvailable(providerName, m.id)) {
+        log.info(`Model ${providerName}:${provider.model} degraded, trying alternate model: ${m.id}`);
+        return m.id;
+      }
+    }
+    return null;
   }
 
   registerProvider(name: string, provider: LLMProviderInterface): void {
@@ -217,7 +301,10 @@ export class LLMRouter {
 
   unregisterProvider(name: string): void {
     this.providers.delete(name);
-    this.health.delete(name);
+    for (const key of this.modelHealth.keys()) {
+      if (key.startsWith(`${name}:`)) this.modelHealth.delete(key);
+    }
+    this.providerDegraded.delete(name);
     this.customModelConfigs.delete(name);
     this.disabledProviders.delete(name);
     log.info(`Unregistered LLM provider: ${name}`);
@@ -422,6 +509,30 @@ export class LLMRouter {
     return request;
   }
 
+  /**
+   * Try a chat request on a specific provider, optionally with an alternate model.
+   * Returns the response or throws on failure (after recording health).
+   */
+  private async tryChat(providerName: string, request: LLMRequest, altModel?: string): Promise<{ response: LLMResponse; model: string }> {
+    const provider = this.providers.get(providerName)!;
+    const originalModel = provider.model;
+    if (altModel && altModel !== originalModel) {
+      provider.configure({ provider: providerName as any, model: altModel });
+    }
+    const activeModel = provider.model;
+    try {
+      const response = await provider.chat(request);
+      this.recordSuccess(providerName, activeModel);
+      return { response, model: activeModel };
+    } catch (error) {
+      this.recordFailure(providerName, activeModel, error);
+      if (altModel && altModel !== originalModel) {
+        provider.configure({ provider: providerName as any, model: originalModel });
+      }
+      throw LLMRouter.enrichError(error, providerName, activeModel);
+    }
+  }
+
   async chat(request: LLMRequest, providerName?: string): Promise<LLMResponse> {
     const primary = this.selectProvider(request, providerName);
     const provider = this.providers.get(primary);
@@ -435,32 +546,48 @@ export class LLMRouter {
     const span = startSpan('llm.chat', { provider: primary, model: provider.model });
     const startTime = Date.now();
     let lastError: unknown = null;
+
+    // Try primary provider's active model
     try {
-      const response = await provider.chat(request);
-      this.recordSuccess(primary);
+      const { response, model } = await this.tryChat(primary, request);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
       log.debug(`Response from ${primary}`, { tokens: response.usage, finishReason: response.finishReason });
-      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
+      this.emitLog(primary, model, request, response, Date.now() - startTime);
       return response;
     } catch (error) {
       lastError = error;
-      this.recordFailure(primary, error);
-      log.error(`LLM request failed for ${primary}`, { error: String(error) });
+      log.error(`LLM request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // Try alternate models on the same provider
+      if (!LLMRouter.isNonRetryableError(error)) {
+        const altModel = this.findHealthyModel(primary);
+        if (altModel && altModel !== provider.model) {
+          log.info(`Trying alternate model ${altModel} on ${primary}`);
+          try {
+            const { response, model } = await this.tryChat(primary, request, altModel);
+            span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
+            log.info(`Alternate model ${altModel} on ${primary} succeeded`);
+            this.emitLog(primary, model, request, response, Date.now() - startTime);
+            return response;
+          } catch (altError) {
+            lastError = altError;
+            log.error(`Alternate model ${altModel} on ${primary} also failed`, { error: String(altError) });
+          }
+        }
+      }
 
       // Fallback to other providers
       for (const fallbackName of this.getFallbacks(primary)) {
         const fb = this.providers.get(fallbackName)!;
         log.info(`Falling back to ${fallbackName}`, { model: fb.model });
         try {
-          const response = await fb.chat(request);
-          this.recordSuccess(fallbackName);
+          const { response, model } = await this.tryChat(fallbackName, request);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           log.info(`Fallback to ${fallbackName} succeeded`);
-          this.emitLog(fallbackName, fb.model, request, response, Date.now() - startTime);
+          this.emitLog(fallbackName, model, request, response, Date.now() - startTime);
           return response;
         } catch (fbError) {
           lastError = fbError;
-          this.recordFailure(fallbackName, fbError);
           log.error(`Fallback ${fallbackName} also failed`, { error: String(fbError) });
         }
       }
@@ -468,6 +595,39 @@ export class LLMRouter {
       span.setError(lastError instanceof Error ? lastError : String(lastError));
       span.end();
       throw lastError;
+    }
+  }
+
+  /**
+   * Try a streaming chat on a specific provider, optionally with an alternate model.
+   */
+  private async tryStream(
+    providerName: string, request: LLMRequest,
+    onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal, altModel?: string,
+  ): Promise<{ response: LLMResponse; model: string }> {
+    const provider = this.providers.get(providerName)!;
+    const originalModel = provider.model;
+    if (altModel && altModel !== originalModel) {
+      provider.configure({ provider: providerName as any, model: altModel });
+    }
+    const activeModel = provider.model;
+    try {
+      let response: LLMResponse;
+      if (provider.chatStream) {
+        response = await provider.chatStream(request, onEvent, signal);
+      } else {
+        response = await provider.chat(request);
+        if (response.content) onEvent({ type: 'text_delta', text: response.content });
+        onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
+      }
+      this.recordSuccess(providerName, activeModel);
+      return { response, model: activeModel };
+    } catch (error) {
+      this.recordFailure(providerName, activeModel, error);
+      if (altModel && altModel !== originalModel) {
+        provider.configure({ provider: providerName as any, model: originalModel });
+      }
+      throw LLMRouter.enrichError(error, providerName, activeModel);
     }
   }
 
@@ -482,54 +642,57 @@ export class LLMRouter {
     const span = startSpan('llm.chatStream', { provider: primary, model: provider.model });
     const startTime = Date.now();
 
-    if (!provider.chatStream) {
-      log.debug(`Provider ${primary} does not support streaming, falling back to non-stream`);
-      const response = await provider.chat(request);
-      if (response.content) onEvent({ type: 'text_delta', text: response.content });
-      onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
-      span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
-      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
-      return response;
-    }
-
     let lastError: unknown = null;
+
+    // Try primary provider's active model
     try {
-      const response = await provider.chatStream(request, onEvent, signal);
-      this.recordSuccess(primary);
+      const { response, model } = await this.tryStream(primary, request, onEvent, signal);
       span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
-      this.emitLog(primary, provider.model, request, response, Date.now() - startTime);
+      this.emitLog(primary, model, request, response, Date.now() - startTime);
       return response;
     } catch (error) {
       lastError = error;
-      this.recordFailure(primary, error);
-      // If externally aborted, don't try fallbacks
       if (signal?.aborted) {
         span.setError(lastError instanceof Error ? lastError : String(lastError));
         span.end();
         throw lastError;
       }
-      log.error(`LLM stream request failed for ${primary}`, { error: String(error) });
+      log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
 
+      // Try alternate models on the same provider
+      if (!LLMRouter.isNonRetryableError(error)) {
+        const altModel = this.findHealthyModel(primary);
+        if (altModel && altModel !== provider.model) {
+          log.info(`Stream: trying alternate model ${altModel} on ${primary}`);
+          try {
+            const { response, model } = await this.tryStream(primary, request, onEvent, signal, altModel);
+            span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
+            log.info(`Stream: alternate model ${altModel} on ${primary} succeeded`);
+            this.emitLog(primary, model, request, response, Date.now() - startTime);
+            return response;
+          } catch (altError) {
+            lastError = altError;
+            if (signal?.aborted) {
+              span.setError(lastError instanceof Error ? lastError : String(lastError));
+              span.end();
+              throw lastError;
+            }
+            log.error(`Stream: alternate model ${altModel} on ${primary} also failed`, { error: String(altError) });
+          }
+        }
+      }
+
+      // Fallback to other providers
       for (const fallbackName of this.getFallbacks(primary)) {
-        const fb = this.providers.get(fallbackName)!;
         log.info(`Stream fallback to ${fallbackName}`);
         try {
-          let response: LLMResponse;
-          if (fb.chatStream) {
-            response = await fb.chatStream(request, onEvent, signal);
-          } else {
-            response = await fb.chat(request);
-            if (response.content) onEvent({ type: 'text_delta', text: response.content });
-            onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
-          }
-          this.recordSuccess(fallbackName);
+          const { response, model } = await this.tryStream(fallbackName, request, onEvent, signal);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
-          this.emitLog(fallbackName, fb.model, request, response, Date.now() - startTime);
+          this.emitLog(fallbackName, model, request, response, Date.now() - startTime);
           log.info(`Stream fallback to ${fallbackName} succeeded`);
           return response;
         } catch (fbError) {
           lastError = fbError;
-          this.recordFailure(fallbackName, fbError);
           if (signal?.aborted) break;
           log.error(`Stream fallback ${fallbackName} failed`, { error: String(fbError) });
         }
@@ -582,7 +745,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -617,7 +780,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'siliconflow', 'openrouter', 'zai']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === name);
@@ -786,6 +949,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   siliconflow: 'SiliconFlow',
   minimax: 'MiniMax',
   openrouter: 'OpenRouter',
+  zai: 'ZAI',
 };
 
 // Sources:

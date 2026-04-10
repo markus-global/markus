@@ -87,7 +87,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
     const base = this.baseUrl.replace(/\/+$/, '');
-    const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
     try {
@@ -180,7 +180,7 @@ export class OpenAIProvider implements LLMProviderInterface {
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
     const base = this.baseUrl.replace(/\/+$/, '');
-    const endpoint = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });

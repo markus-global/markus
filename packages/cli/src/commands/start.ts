@@ -151,6 +151,24 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
+  const zaiKey =
+    config.llm.providers['zai']?.apiKey ?? process.env['ZAI_API_KEY'];
+  if (zaiKey) {
+    providerConfigs['zai'] = {
+      provider: 'zai',
+      model: config.llm.providers['zai']?.model ?? process.env['ZAI_MODEL'] ?? 'glm-5.1',
+      apiKey: zaiKey,
+      baseUrl:
+        config.llm.providers['zai']?.baseUrl ??
+        process.env['ZAI_BASE_URL'] ??
+        'https://api.z.ai/api/paas/v4',
+      timeoutMs: llmTimeoutMs,
+    };
+    if (config.llm.defaultProvider === 'zai') {
+      defaultProvider = 'zai';
+    }
+  }
+
   // If the configured default provider has no API key, fall back to the first available one
   if (!providerConfigs[defaultProvider]) {
     const available = Object.keys(providerConfigs);
