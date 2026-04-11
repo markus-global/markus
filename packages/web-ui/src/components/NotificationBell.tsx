@@ -19,8 +19,16 @@ const PRIORITY_DOT: Record<string, string> = {
 const TYPE_ICON: Record<string, string> = {
   approval_request: 'M9 12l2 2 4-4 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
   task_completed: 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3',
+  task_created: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8',
+  task_status_changed: 'M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15',
+  requirement_created: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
+  requirement_decision: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   agent_alert: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
+  agent_report: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8',
+  agent_chat_request: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  agent_escalation: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
   bounty_posted: 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z M19 10v2a7 7 0 0 1-14 0v-2',
+  mention: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M12.5 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0z M20 8v6 M23 11h-6',
   system: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
 };
 
@@ -40,6 +48,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -51,6 +60,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         api.approvals.list(),
       ]);
       setNotifications(n.notifications);
+      setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
       setApprovals(a.approvals);
     } catch { /* */ }
   }, [userId]);
@@ -90,17 +100,45 @@ export function NotificationBell({ collapsed, userId }: Props) {
     return true;
   });
 
-  const unreadCount = displayNotifications.filter(n => !n.read).length;
   const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
   const badgeCount = unreadCount + pendingApprovals;
 
   const handleMarkRead = async (id: string) => {
     await api.notifications.markRead(id);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    setUnreadCount(prev => Math.max(0, prev - 1));
   };
 
   const navigateForNotification = (n: NotificationInfo) => {
     const meta = n.metadata ?? {};
+    const actionType = (n as any).actionType;
+    const actionTarget = (n as any).actionTarget;
+
+    if (actionType === 'open_chat' && actionTarget) {
+      try {
+        const target = typeof actionTarget === 'string' ? JSON.parse(actionTarget) : actionTarget;
+        if (target.agentId) {
+          navBus.navigate(PAGE.TEAM, { selectAgent: target.agentId, sessionId: target.sessionId });
+          return;
+        }
+      } catch { /* fallthrough */ }
+    }
+
+    if (actionType === 'navigate' && actionTarget) {
+      try {
+        const target = typeof actionTarget === 'string' ? JSON.parse(actionTarget) : actionTarget;
+        if (target.path) {
+          if (target.path.startsWith('/work')) {
+            const params: Record<string, string> = {};
+            const searchParams = new URLSearchParams(target.path.split('?')[1] || '');
+            for (const [k, v] of searchParams.entries()) params[k] = v;
+            navBus.navigate(PAGE.WORK, params);
+            return;
+          }
+        }
+      } catch { /* fallthrough */ }
+    }
+
     switch (n.type) {
       case 'approval_request': {
         const approvalId = meta.approvalId as string | undefined;
@@ -111,10 +149,22 @@ export function NotificationBell({ collapsed, userId }: Props) {
         break;
       }
       case 'task_completed':
+      case 'task_created':
+      case 'task_status_changed':
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else navBus.navigate(PAGE.WORK);
         break;
+      case 'requirement_created':
+      case 'requirement_decision':
+        if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
+        else navBus.navigate(PAGE.WORK);
+        break;
+      case 'agent_chat_request':
+        if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
+        else navBus.navigate(PAGE.TEAM);
+        break;
       case 'agent_alert':
+      case 'agent_escalation':
         if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
         else navBus.navigate(PAGE.TEAM);
         break;
@@ -154,9 +204,16 @@ export function NotificationBell({ collapsed, userId }: Props) {
   };
 
   const handleMarkAllRead = async () => {
-    const unread = displayNotifications.filter(n => !n.read);
-    await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    try {
+      await api.notifications.markAllRead(userId ?? 'default');
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+    } catch {
+      const unread = displayNotifications.filter(n => !n.read);
+      await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+    }
   };
 
   const navigateForApproval = (a: ApprovalInfo) => {
@@ -276,7 +333,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                       }`}
                     >
                       <div className="shrink-0 mt-0.5">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={n.type === 'agent_chat_request' ? 'text-brand-500' : 'text-fg-tertiary'}>
                           <path d={TYPE_ICON[n.type] ?? TYPE_ICON.system} />
                         </svg>
                       </div>
@@ -288,9 +345,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
                         <p className="text-[11px] text-fg-tertiary line-clamp-2 mt-0.5">{n.body}</p>
                         <span className="text-[10px] text-fg-muted mt-0.5">{timeAgo(n.createdAt)}</span>
                       </div>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-muted shrink-0 mt-1 opacity-0 group-hover:opacity-100">
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
+                      {n.type === 'agent_chat_request' && (
+                        <span className="text-[9px] text-brand-500 shrink-0 mt-1 font-medium">CHAT</span>
+                      )}
                     </button>
                   ))}
                 </div>

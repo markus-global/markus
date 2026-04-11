@@ -2445,7 +2445,18 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
         });
       }
     });
-    return () => { clearInterval(i); unsub(); };
+    const unsubTaskCreate = wsClient.on('task:create', () => {
+      refreshBoard();
+    });
+    const reqEvents = [
+      'requirement:created', 'requirement:approved', 'requirement:rejected',
+      'requirement:updated', 'requirement:completed', 'requirement:cancelled',
+      'requirement:resubmitted',
+    ];
+    const reqUnsubs = reqEvents.map(evt =>
+      wsClient.on(evt, () => { refreshRequirements(); })
+    );
+    return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
   }, [refreshBoard, refreshAgents, refreshRequirements, selectedTask]);
 
   // Board ref for event handlers that need current board without re-registering

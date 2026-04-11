@@ -52,7 +52,7 @@ packages/
 ├── storage/      # Database schema + Repository layer
 ├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
 ├── comms/        # Communication adapters (Feishu, etc.)
-├── a2a/          # Agent-to-Agent protocol
+├── a2a/          # Agent-to-Agent protocol types + DelegationManager (A2ABus retired)
 ├── gui/          # GUI automation (VNC + OmniParser)
 ├── web-ui/       # Web admin UI (governance/project/knowledge/report pages)
 └── cli/          # CLI entry point + service assembly
@@ -167,7 +167,9 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
 | `code_search` | Code search (ripgrep) |
 | `git_*` | Git operations |
-| `agent_send_message` | Send message to another Agent (A2A) |
+| `agent_send_message` | Send message to another Agent (A2A via mailbox) |
+| `notify_user` | Send one-way notification to user notification bell |
+| `request_user_chat` | Request interactive chat with user (creates notification + chat message) |
 | `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
 | `task_submit_review` | Submit delivery for review |
 | `requirement_propose` / `requirement_list` | Requirement management |
@@ -400,6 +402,17 @@ system_announcements (id, type, title, content, priority, created_by,
 -- Audit logs
 audit_logs (id, org_id, agent_id, task_id, project_id, event_type,
             action, metadata, created_at)
+
+-- User notifications (persistent mailbox for humans)
+user_notifications (id, user_id, type, title, body, priority,
+                    read, action_type, action_target, metadata, created_at)
+
+-- Mailbox items (agent attention queue)
+mailbox_items (id, agent_id, source_type, source_id, priority, summary, payload,
+               status, received_at, processed_at, decision, decision_reason)
+
+-- Agent decisions (attention decision log)
+agent_decisions (id, agent_id, mailbox_item_id, decision, reason, context, decided_at)
 ```
 
 ---
@@ -420,7 +433,16 @@ Connection: `ws://localhost:8056`
 | Event | Trigger |
 |-------|---------|
 | `agent:update` | Agent state change (idle/working/offline/paused) |
+| `agent:mailbox` | New item enqueued to an agent's mailbox |
+| `agent:decision` | Agent attention decision (pick/defer/drop) |
+| `agent:attention` | Agent focus change (current activity) |
+| `agent:focus` | Agent switches to a new mailbox item |
 | `task:update` | Task state update (including review/accepted/archived) |
+| `task:create` | New task created |
+| `requirement:created` | Requirement proposed |
+| `requirement:approved` / `rejected` / `updated` / `completed` / `cancelled` | Requirement lifecycle |
+| `notification` | User notification (triggers NotificationBell refresh) |
+| `chat:proactive_message` | Agent proactively messages user |
 | `chat` | Agent sends message in channel |
 | `system:announcement` | System announcement broadcast |
 | `system:pause-all` | Global pause event |

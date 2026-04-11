@@ -319,6 +319,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   const projectService = new ProjectService();
   const storage = orgService.getStorage();
+  if (storage?.notificationRepo) {
+    hitlService.setNotificationRepo(storage.notificationRepo);
+  }
   if (storage?.projectRepo) {
     projectService.setProjectRepo(storage.projectRepo);
   }
@@ -407,14 +410,18 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (storage?.chatSessionRepo) {
     const ws = apiServer.getWSBroadcaster();
     for (const info of agentManager.listAgents()) {
-      agentManager.setUserMessageSender(info.id, async (message: string) => {
-        const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
+      agentManager.setUserMessageSender(info.id, async (message: string, opts?: { sessionId?: string }) => {
         let sessionId: string;
-        if (sessions.length > 0) {
-          sessionId = sessions[0]!.id;
+        if (opts?.sessionId) {
+          sessionId = opts.sessionId;
         } else {
-          const newSess = await storage.chatSessionRepo.createSession(info.id);
-          sessionId = newSess.id;
+          const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
+          if (sessions.length > 0) {
+            sessionId = sessions[0]!.id;
+          } else {
+            const newSess = await storage.chatSessionRepo.createSession(info.id);
+            sessionId = newSess.id;
+          }
         }
         const msg = await storage.chatSessionRepo.appendMessage(sessionId, info.id, 'assistant', message);
         ws.broadcastProactiveMessage(info.id, info.name, sessionId, msg.id, message);
@@ -422,6 +429,35 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       });
     }
   }
+
+  // Wire chat sessions fetcher for session-aware prompts
+  if (storage?.chatSessionRepo) {
+    for (const info of agentManager.listAgents()) {
+      agentManager.setChatSessionsFetcher(info.id, async () => {
+        const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
+        return sessions.slice(0, 5).map((s: any) => ({
+          id: s.id,
+          title: s.title,
+          lastMessageAt: s.lastMessageAt ?? s.createdAt ?? new Date().toISOString(),
+          lastMessagePreview: s.lastMessagePreview,
+        }));
+      });
+    }
+  }
+
+  // Wire user notifier through HITL service
+  agentManager.setUserNotifier((opts) => {
+    hitlService.notify({
+      targetUserId: 'default',
+      type: opts.type as any,
+      title: opts.title,
+      body: opts.body,
+      priority: opts.priority as any,
+      actionType: opts.actionType as any,
+      actionTarget: opts.actionTarget,
+      metadata: opts.metadata,
+    });
+  });
 
   // Auto-resume in_progress tasks after agents are fully loaded.
   // Tasks retain their execution history in DB (task_logs + comments),

@@ -274,9 +274,17 @@ export class AttentionController {
    * Fast heuristic decision when no LLM judgment is available.
    * Rules are evaluated top-to-bottom; first match wins.
    */
+  /** Types that represent direct user interaction — always highest priority. */
+  private static readonly USER_INTERACTION_TYPES: Set<MailboxItemType> = new Set([
+    'human_chat', 'task_comment',
+  ]);
+
   heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
-    // R1: System-critical events always preempt
-    if (newItem.priority <= MailboxPriorityLevel.critical) {
+    const isNewUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(newItem.sourceType);
+    const isCurrentUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(currentItem.sourceType);
+
+    // R1: User chat/comments ALWAYS preempt non-user work — users are top priority
+    if (isNewUserInteraction && !isCurrentUserInteraction) {
       return 'preempt';
     }
 
@@ -298,7 +306,15 @@ export class AttentionController {
       return 'merge';
     }
 
-    // R4: Status update on the currently focused task → preempt
+    // R4: System-critical events (priority 0) preempt lower-priority work
+    if (
+      newItem.priority <= MailboxPriorityLevel.critical &&
+      currentItem.priority > MailboxPriorityLevel.critical
+    ) {
+      return 'preempt';
+    }
+
+    // R5: Status update on the currently focused task → preempt
     //     (external state change: approval, rejection, pause, etc.)
     if (
       newItem.sourceType === 'task_status_update' &&
@@ -307,12 +323,12 @@ export class AttentionController {
       return 'preempt';
     }
 
-    // R5: Strictly higher priority (lower number) → preempt
+    // R6: Strictly higher priority (lower number) → preempt
     if (newItem.priority < currentItem.priority) {
       return 'preempt';
     }
 
-    // R6: Human chat always preempts background work (system category from registry)
+    // R7: Human chat always preempts background work (system category from registry)
     const bgTypes = (Object.entries(MAILBOX_TYPE_REGISTRY) as [MailboxItemType, typeof MAILBOX_TYPE_REGISTRY[MailboxItemType]][])
       .filter(([, d]) => d.category === 'system')
       .map(([k]) => k);
@@ -323,7 +339,7 @@ export class AttentionController {
       return 'preempt';
     }
 
-    // R7: Same priority but current is background work → preempt
+    // R8: Same priority but current is background work → preempt
     if (
       newItem.priority === currentItem.priority &&
       bgTypes.includes(currentItem.sourceType)
@@ -331,7 +347,7 @@ export class AttentionController {
       return 'preempt';
     }
 
-    // R8: Mentions always preempt low-priority work
+    // R9: Mentions always preempt low-priority work
     if (
       newItem.sourceType === 'mention' &&
       currentItem.priority >= MailboxPriorityLevel.normal
@@ -384,8 +400,14 @@ export class AttentionController {
       `- ${d.decisionType}: ${d.reasoning}`
     ).join('\n');
 
+    const queuedItems = this.mailbox.getQueuedItems();
+    const queueSection = queuedItems.length > 0
+      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary.slice(0, 80)}"`).join('\n')
+      : '  (empty)';
+
     return [
       'You are an attention manager for an AI agent. Decide how to handle a new incoming item.',
+      'CRITICAL RULE: User chat (human_chat) and user comments (task_comment) ALWAYS take priority over all other work.',
       '',
       `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
       `  "${currentItem.payload.summary}"`,
@@ -395,7 +417,8 @@ export class AttentionController {
       `  "${newItem.payload.summary}"`,
       `  Task: ${newItem.payload.taskId ?? 'none'}`,
       '',
-      `QUEUE DEPTH: ${this.mailbox.depth}`,
+      `FULL QUEUE (${this.mailbox.depth} items):`,
+      queueSection,
       '',
       'RECENT DECISIONS:',
       recentDecs || '(none)',

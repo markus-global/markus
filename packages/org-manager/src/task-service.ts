@@ -1467,7 +1467,7 @@ export class TaskService {
       this.requirementService.linkTask(task.requirementId, task.id);
     }
 
-    this.ws?.broadcastTaskUpdate(task.id, task.status, { title: task.title, assignedAgentId: task.assignedAgentId });
+    this.ws?.broadcastTaskCreate(task.id, task.title, { assignedAgentId: task.assignedAgentId });
     this.emitTaskEvent({
       type: 'created',
       taskId: task.id,
@@ -1477,6 +1477,17 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
+    if (this.hitlService && request.createdBy && request.createdBy !== 'default') {
+      this.hitlService.notify({
+        targetUserId: 'default',
+        type: 'task_created' as any,
+        title: `Task created: ${task.title}`,
+        body: `Agent created task "${task.title}"`,
+        actionType: 'navigate',
+        actionTarget: JSON.stringify({ path: `/work?openTask=${task.id}` }),
+        metadata: { taskId: task.id, agentId: task.assignedAgentId },
+      });
+    }
     log.info(`Task created: ${task.title}`, {
       id: task.id,
       status: task.status,
@@ -1708,6 +1719,23 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.updatedAt,
     });
+
+    if (this.hitlService && (status === 'review' || status === 'completed' || status === 'failed')) {
+      const notifType = status === 'completed' ? 'task_completed' : 'task_status_changed';
+      const priority = status === 'failed' ? 'high' : 'normal';
+      this.hitlService.notify({
+        targetUserId: 'default',
+        type: notifType as any,
+        title: status === 'review' ? `Task ready for review: ${task.title}` :
+               status === 'completed' ? `Task completed: ${task.title}` :
+               `Task failed: ${task.title}`,
+        body: `Task "${task.title}" status changed to ${status}`,
+        priority: priority as any,
+        actionType: 'navigate',
+        actionTarget: JSON.stringify({ path: `/work?openTask=${id}` }),
+        metadata: { taskId: id, status, agentId: task.assignedAgentId },
+      });
+    }
 
     log.info(`Task status updated: ${task.title}`, { id, status, prevStatus });
     return task;

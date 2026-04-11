@@ -157,7 +157,9 @@ export class Agent {
   ) => Promise<AgentToolHandler[]>;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSender?: (message: string) => Promise<{ sessionId: string; messageId: string }>;
+  private userMessageSender?: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>;
+  private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  private chatSessionsFetcher?: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>;
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
@@ -1474,8 +1476,23 @@ export class Agent {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(cb: (message: string) => Promise<{ sessionId: string; messageId: string }>): void {
+  setUserMessageSender(cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
     this.userMessageSender = cb;
+  }
+
+  setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
+    this.userNotifier = cb;
+  }
+
+  setChatSessionsFetcher(cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
+    this.chatSessionsFetcher = cb;
+  }
+
+  private async fetchChatSessions(): Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }> | undefined> {
+    if (!this.chatSessionsFetcher) return undefined;
+    try {
+      return await this.chatSessionsFetcher();
+    } catch { return undefined; }
   }
 
   private getDynamicContext(): string | undefined {
@@ -1509,7 +1526,7 @@ export class Agent {
         taskId: focus.payload.taskId,
       } : undefined,
       queueDepth: mind.mailboxDepth,
-      topQueued: mind.queuedItems.slice(0, 3).map(i => ({
+      topQueued: mind.queuedItems.map(i => ({
         type: i.sourceType,
         priority: i.priority,
         summary: i.summary,
@@ -1875,6 +1892,7 @@ export class Agent {
     }
 
     const scenario = options?.scenario ?? (isEphemeral && senderId ? 'a2a' : 'chat');
+    const chatSessions = isEphemeral ? undefined : await this.fetchChatSessions();
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -1898,6 +1916,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      chatSessions,
       ...this.getTeamContextParams(),
     });
 
@@ -3678,21 +3697,66 @@ export class Agent {
       return await this.handleDiscoverTools(toolCall.arguments);
     }
 
-    // Handle send_user_message: proactively send a message to the user
-    if (toolCall.name === 'send_user_message') {
+    // Handle notify_user: one-way notification to the user
+    if (toolCall.name === 'notify_user') {
+      const title = (toolCall.arguments.title as string) ?? '';
+      const body = (toolCall.arguments.body as string) ?? '';
+      if (!title || !body) {
+        return JSON.stringify({ status: 'error', message: 'title and body are required' });
+      }
+      if (!this.userNotifier) {
+        return JSON.stringify({ status: 'error', message: 'User notifications are not available.' });
+      }
+      try {
+        const priority = (toolCall.arguments.priority as string) ?? 'normal';
+        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const actionType = relatedTaskId ? 'navigate' : 'none';
+        const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
+        this.userNotifier({
+          type: 'agent_report',
+          title,
+          body,
+          priority,
+          actionType,
+          actionTarget,
+          metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+        });
+        log.info('User notification sent', { agentId: this.id, title });
+        return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', message: `Failed to send notification: ${String(err)}` });
+      }
+    }
+
+    // Handle request_user_chat: interactive chat request with notification
+    if (toolCall.name === 'request_user_chat') {
+      const topic = (toolCall.arguments.topic as string) ?? '';
       const message = (toolCall.arguments.message as string) ?? '';
-      if (!message) {
-        return JSON.stringify({ status: 'error', message: 'message is required' });
+      if (!topic || !message) {
+        return JSON.stringify({ status: 'error', message: 'topic and message are required' });
       }
       if (!this.userMessageSender) {
         return JSON.stringify({ status: 'error', message: 'User messaging is not available.' });
       }
       try {
-        const result = await this.userMessageSender(message);
-        log.info('Proactive message sent to user', { agentId: this.id, sessionId: result.sessionId });
+        const priority = (toolCall.arguments.priority as string) ?? 'normal';
+        const requestedSessionId = toolCall.arguments.session_id as string | undefined;
+        const result = await this.userMessageSender(message, { sessionId: requestedSessionId });
+        if (this.userNotifier) {
+          this.userNotifier({
+            type: 'agent_chat_request',
+            title: `${this.config.name} wants to discuss: ${topic}`,
+            body: message.slice(0, 200),
+            priority,
+            actionType: 'open_chat',
+            actionTarget: JSON.stringify({ agentId: this.id, sessionId: result.sessionId }),
+            metadata: { agentId: this.id, agentName: this.config.name, sessionId: result.sessionId, topic },
+          });
+        }
+        log.info('Chat request sent to user', { agentId: this.id, sessionId: result.sessionId, topic });
         return JSON.stringify({ status: 'ok', sessionId: result.sessionId, messageId: result.messageId });
       } catch (err) {
-        return JSON.stringify({ status: 'error', message: `Failed to send message: ${String(err)}` });
+        return JSON.stringify({ status: 'error', message: `Failed to send chat request: ${String(err)}` });
       }
     }
 
@@ -4023,7 +4087,9 @@ export class Agent {
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Send messages**: `agent_send_message`, `send_user_message` — notify people of issues or updates',
+      '- **Notify user**: `notify_user` — send status updates, reports, alerts to the user notification bell',
+      '- **Request user chat**: `request_user_chat` — when you need user input or a decision',
+      '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
       '- **Retry failed tasks**: If tasks assigned to you are in `failed` status, retry via `task_update(status: "in_progress")` with a note',
@@ -4034,7 +4100,8 @@ export class Agent {
       '## What You Must NOT Do',
       '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
       '- If you identify something complex that needs doing:',
-      '  1. Notify the user via `send_user_message` explaining what you found and why it matters',
+      '  1. Notify the user via `notify_user` explaining what you found and why it matters',
+      '     (Use `request_user_chat` only if you need the user to make a decision or provide input)',
       '  2. Create a task via `task_create` with clear description and acceptance criteria',
       '  3. The user will approve and the task system handles execution',
       '',
@@ -4057,7 +4124,7 @@ export class Agent {
       'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
-      'discover_tools', 'send_user_message',
+      'discover_tools', 'notify_user', 'request_user_chat',
     ];
     if (isManager) {
       baseTools.push(

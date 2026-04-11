@@ -6,6 +6,23 @@ export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 export type BountyStatus = 'open' | 'claimed' | 'completed' | 'cancelled';
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+export type NotificationType =
+  | 'approval_request'
+  | 'bounty_posted'
+  | 'task_completed'
+  | 'agent_alert'
+  | 'system'
+  | 'agent_report'
+  | 'agent_chat_request'
+  | 'task_status_changed'
+  | 'requirement_decision'
+  | 'agent_escalation'
+  | 'mention'
+  | 'task_created'
+  | 'requirement_created';
+
+export type NotificationActionType = 'none' | 'navigate' | 'open_chat';
+
 export interface ApprovalRequest {
   id: string;
   agentId: string;
@@ -39,14 +56,48 @@ export interface BountyTask {
 export interface Notification {
   id: string;
   targetUserId: string;
-  type: 'approval_request' | 'bounty_posted' | 'task_completed' | 'agent_alert' | 'system';
+  type: NotificationType;
   title: string;
   body: string;
   priority: NotificationPriority;
   read: boolean;
+  actionType: NotificationActionType;
+  actionTarget?: string;
   actionUrl?: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface NotificationRepo {
+  insert(n: {
+    id: string;
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    priority: string;
+    read: boolean;
+    actionType: string;
+    actionTarget: string | null;
+    metadata: Record<string, unknown> | null;
+    createdAt: string;
+  }): void;
+  list(userId: string, opts?: { unreadOnly?: boolean; limit?: number; offset?: number; type?: string }): Array<{
+    id: string;
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    priority: string;
+    read: boolean;
+    actionType: string;
+    actionTarget: string | null;
+    metadata: Record<string, unknown> | null;
+    createdAt: string;
+  }>;
+  count(userId: string, unreadOnly?: boolean): number;
+  markRead(id: string): boolean;
+  markAllRead(userId: string): number;
 }
 
 type NotificationHandler = (notification: Notification) => void;
@@ -60,8 +111,12 @@ export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
   private pendingResolvers = new Map<string, (approved: boolean) => void>();
   private bounties = new Map<string, BountyTask>();
-  private notifications = new Map<string, Notification>();
   private notificationHandlers: NotificationHandler[] = [];
+  private notificationRepo?: NotificationRepo;
+
+  setNotificationRepo(repo: NotificationRepo): void {
+    this.notificationRepo = repo;
+  }
 
   onNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.push(handler);
@@ -104,25 +159,20 @@ export class HITLService {
     this.approvals.set(id, approval);
     log.info(`Approval requested: ${id} by ${opts.agentName}`);
 
-    const notification: Notification = {
-      id: genId('ntf'),
+    this.notify({
       targetUserId: opts.targetUserId ?? 'default',
       type: 'approval_request',
       title: `Approval needed: ${opts.title}`,
       body: opts.description,
       priority: 'high',
-      read: false,
-      actionUrl: `/approvals/${id}`,
-      createdAt: now,
+      actionType: 'navigate',
+      actionTarget: JSON.stringify({ path: `/approvals/${id}` }),
       metadata: { approvalId: id },
-    };
-    this.notifications.set(notification.id, notification);
-    this.emit(notification);
+    });
 
     return approval;
   }
 
-  /** Request approval and wait for human response. Resolves when approve/reject is called via API. */
   async requestApprovalAndWait(opts: {
     agentId: string;
     agentName: string;
@@ -156,10 +206,15 @@ export class HITLService {
     approval.respondedBy = respondedBy;
     log.info(`Approval ${id} ${approval.status} by ${respondedBy}`);
 
-    for (const notif of this.notifications.values()) {
-      if (notif.type === 'approval_request' && notif.metadata?.approvalId === id && !notif.read) {
-        notif.read = true;
-      }
+    if (this.notificationRepo) {
+      try {
+        const rows = this.notificationRepo.list(approval.agentId, { type: 'approval_request', limit: 100 });
+        for (const row of rows) {
+          if (row.metadata && (row.metadata as Record<string, unknown>).approvalId === id && !row.read) {
+            this.notificationRepo.markRead(row.id);
+          }
+        }
+      } catch { /* best effort */ }
     }
 
     const resolve = this.pendingResolvers.get(id);
@@ -203,20 +258,13 @@ export class HITLService {
     this.bounties.set(id, bounty);
     log.info(`Bounty posted: ${id} by ${opts.agentName}`);
 
-    const notification: Notification = {
-      id: genId('ntf'),
+    this.notify({
       targetUserId: 'all',
       type: 'bounty_posted',
       title: `New bounty: ${opts.title}`,
       body: `${opts.agentName} needs help: ${opts.description}`,
-      priority: 'normal',
-      read: false,
-      actionUrl: `/bounties/${id}`,
-      createdAt: now,
       metadata: { bountyId: id },
-    };
-    this.notifications.set(notification.id, notification);
-    this.emit(notification);
+    });
 
     return bounty;
   }
@@ -251,30 +299,51 @@ export class HITLService {
     return this.bounties.get(id);
   }
 
-  listNotifications(userId?: string, unreadOnly = false): Notification[] {
-    let result = [...this.notifications.values()];
-    if (userId) {
-      result = result.filter(n => n.targetUserId === userId || n.targetUserId === 'all');
+  listNotifications(userId?: string, unreadOnly = false, opts?: { limit?: number; offset?: number; type?: string }): Notification[] {
+    if (this.notificationRepo && userId) {
+      const rows = this.notificationRepo.list(userId, {
+        unreadOnly,
+        limit: opts?.limit,
+        offset: opts?.offset,
+        type: opts?.type,
+      });
+      return rows.map(r => this.rowToNotification(r));
     }
-    if (unreadOnly) {
-      result = result.filter(n => !n.read);
+    return [];
+  }
+
+  countNotifications(userId: string, unreadOnly = false): { total: number; unread: number } {
+    if (this.notificationRepo) {
+      return {
+        total: this.notificationRepo.count(userId, false),
+        unread: this.notificationRepo.count(userId, true),
+      };
     }
-    return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return { total: 0, unread: 0 };
   }
 
   markNotificationRead(id: string): boolean {
-    const n = this.notifications.get(id);
-    if (!n) return false;
-    n.read = true;
-    return true;
+    if (this.notificationRepo) {
+      return this.notificationRepo.markRead(id);
+    }
+    return false;
+  }
+
+  markAllNotificationsRead(userId: string): number {
+    if (this.notificationRepo) {
+      return this.notificationRepo.markAllRead(userId);
+    }
+    return 0;
   }
 
   notify(opts: {
     targetUserId: string;
-    type: Notification['type'];
+    type: NotificationType;
     title: string;
     body: string;
     priority?: NotificationPriority;
+    actionType?: NotificationActionType;
+    actionTarget?: string;
     metadata?: Record<string, unknown>;
   }): Notification {
     const notification: Notification = {
@@ -285,11 +354,61 @@ export class HITLService {
       body: opts.body,
       priority: opts.priority ?? 'normal',
       read: false,
+      actionType: opts.actionType ?? 'none',
+      actionTarget: opts.actionTarget,
       createdAt: new Date().toISOString(),
       metadata: opts.metadata,
     };
-    this.notifications.set(notification.id, notification);
+
+    if (this.notificationRepo) {
+      try {
+        this.notificationRepo.insert({
+          id: notification.id,
+          userId: notification.targetUserId,
+          type: notification.type,
+          title: notification.title,
+          body: notification.body,
+          priority: notification.priority,
+          read: false,
+          actionType: notification.actionType,
+          actionTarget: notification.actionTarget ?? null,
+          metadata: notification.metadata ?? null,
+          createdAt: notification.createdAt,
+        });
+      } catch (err) {
+        log.warn('Failed to persist notification', { error: String(err) });
+      }
+    }
+
     this.emit(notification);
     return notification;
+  }
+
+  private rowToNotification(r: {
+    id: string;
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    priority: string;
+    read: boolean;
+    actionType: string;
+    actionTarget: string | null;
+    metadata: Record<string, unknown> | null;
+    createdAt: string;
+  }): Notification {
+    return {
+      id: r.id,
+      targetUserId: r.userId,
+      type: r.type as NotificationType,
+      title: r.title,
+      body: r.body,
+      priority: r.priority as NotificationPriority,
+      read: r.read,
+      actionType: r.actionType as NotificationActionType,
+      actionTarget: r.actionTarget ?? undefined,
+      createdAt: r.createdAt,
+      metadata: r.metadata ?? undefined,
+    };
   }
 }

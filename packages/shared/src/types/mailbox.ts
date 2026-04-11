@@ -53,9 +53,9 @@ export interface MailboxTypeDescriptor {
 
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   system_event:         { label: 'System Event',         defaultPriority: 0, category: 'system',       icon: '⚙',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
-  human_chat:           { label: 'Chat',                 defaultPriority: 1, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
+  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
   task_assignment:      { label: 'Task',                 defaultPriority: 1, category: 'task',          icon: '☑',  activityType: 'task',               createsActivity: true,  invokesLLM: true  },
-  task_comment:         { label: 'Task Comment',         defaultPriority: 1, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
+  task_comment:         { label: 'Task Comment',         defaultPriority: 0, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
   mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
   session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true  },
   task_status_update:   { label: 'Task Status',          defaultPriority: 2, category: 'notification',  icon: '📋', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
@@ -183,3 +183,46 @@ export interface AgentMindState {
   }>;
   recentDecisions: AttentionDecision[];
 }
+
+// ─── User Notification Type Registry ─────────────────────────────────────────
+
+export type UserNotificationType =
+  | 'approval_request'
+  | 'bounty_posted'
+  | 'task_completed'
+  | 'agent_alert'
+  | 'system'
+  | 'agent_report'
+  | 'agent_chat_request'
+  | 'task_status_changed'
+  | 'requirement_decision'
+  | 'agent_escalation'
+  | 'mention'
+  | 'task_created'
+  | 'requirement_created';
+
+export type UserNotificationActionType = 'none' | 'navigate' | 'open_chat';
+
+export interface UserNotificationTypeDescriptor {
+  label: string;
+  icon: string;
+  defaultPriority: 'low' | 'normal' | 'high' | 'urgent';
+  actionType: UserNotificationActionType;
+  category: 'agent' | 'task' | 'approval' | 'system';
+}
+
+export const USER_NOTIFICATION_TYPE_REGISTRY: Record<UserNotificationType, UserNotificationTypeDescriptor> = {
+  approval_request:    { label: 'Approval Request',      icon: '🔐', defaultPriority: 'high',   actionType: 'navigate',  category: 'approval' },
+  bounty_posted:       { label: 'Bounty Posted',         icon: '🎯', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_completed:      { label: 'Task Completed',        icon: '✅', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_created:        { label: 'Task Created',          icon: '📋', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_status_changed: { label: 'Task Status Changed',   icon: '🔄', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  requirement_created: { label: 'Requirement Proposed',  icon: '📝', defaultPriority: 'high',   actionType: 'navigate',  category: 'task' },
+  requirement_decision:{ label: 'Requirement Decision',  icon: '⚖️', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  agent_alert:         { label: 'Agent Alert',           icon: '⚠️', defaultPriority: 'high',   actionType: 'none',      category: 'agent' },
+  agent_report:        { label: 'Agent Report',          icon: '📊', defaultPriority: 'normal', actionType: 'none',      category: 'agent' },
+  agent_chat_request:  { label: 'Chat Request',          icon: '💬', defaultPriority: 'normal', actionType: 'open_chat', category: 'agent' },
+  agent_escalation:    { label: 'Agent Escalation',      icon: '🚨', defaultPriority: 'high',   actionType: 'open_chat', category: 'agent' },
+  mention:             { label: 'Mention',               icon: '@',  defaultPriority: 'normal', actionType: 'navigate',  category: 'system' },
+  system:              { label: 'System',                icon: '⚙️', defaultPriority: 'normal', actionType: 'none',      category: 'system' },
+};

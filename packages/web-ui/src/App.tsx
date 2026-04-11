@@ -103,13 +103,16 @@ export function App() {
       .catch(() => setAuthUser(null));
 
     wsClient.connect();
+    const unsubNotif = wsClient.on('notification', () => {
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+    });
     const onHash = () => {
       const p = getPageFromHash();
       setPage(p);
       setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
     };
     window.addEventListener('hashchange', onHash);
-    return () => { wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
+    return () => { unsubNotif(); wsClient.disconnect(); window.removeEventListener('hashchange', onHash); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

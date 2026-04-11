@@ -1,3 +1,4 @@
+/** @deprecated A2ABus is no longer used — inter-agent messaging goes through the Mailbox. Kept for backward compat. */
 export { A2ABus, type A2AHandler } from './bus.js';
 export { DelegationManager, type DelegationResult } from './delegation.js';
 export { CollaborationManager, type CollaborationSession } from './collaboration.js';

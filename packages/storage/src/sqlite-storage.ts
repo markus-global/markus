@@ -490,6 +490,21 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'normal',
+  read INTEGER NOT NULL DEFAULT 0,
+  action_type TEXT NOT NULL DEFAULT 'none',
+  action_target TEXT,
+  metadata TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, read, created_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -3245,6 +3260,104 @@ export class SqliteDecisionRepo {
       context: fromJson<Record<string, unknown>>(r['context'] as string) ?? {},
       reasoning: r['reasoning'] as string,
       outcome: r['outcome'] as string | null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── User Notifications ──────────────────────────────────────────────────────
+
+export interface NotificationRow {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  priority: string;
+  read: boolean;
+  actionType: string;
+  actionTarget: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export class SqliteNotificationRepo {
+  constructor(private db: DatabaseSync) {}
+
+  insert(n: NotificationRow): void {
+    this.db.prepare(
+      `INSERT INTO user_notifications (id, user_id, type, title, body, priority, read, action_type, action_target, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      n.id,
+      n.userId,
+      n.type,
+      n.title,
+      n.body,
+      n.priority,
+      n.read ? 1 : 0,
+      n.actionType,
+      n.actionTarget,
+      n.metadata ? JSON.stringify(n.metadata) : null,
+      n.createdAt,
+    );
+  }
+
+  list(userId: string, opts?: { unreadOnly?: boolean; limit?: number; offset?: number; type?: string }): NotificationRow[] {
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
+
+    if (opts?.unreadOnly) {
+      conditions.push('read = 0');
+    }
+    if (opts?.type) {
+      conditions.push('type = ?');
+      params.push(opts.type);
+    }
+
+    const limit = opts?.limit ?? 50;
+    const offset = opts?.offset ?? 0;
+
+    const sql = `SELECT * FROM user_notifications WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  count(userId: string, unreadOnly = false): number {
+    const conditions = ['(user_id = ? OR user_id = ?)'];
+    const params: SQLInputValue[] = [userId, 'all'];
+    if (unreadOnly) conditions.push('read = 0');
+
+    const row = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM user_notifications WHERE ${conditions.join(' AND ')}`
+    ).get(...params) as { cnt: number };
+    return row.cnt;
+  }
+
+  markRead(id: string): boolean {
+    const info = this.db.prepare('UPDATE user_notifications SET read = 1 WHERE id = ?').run(id);
+    return info.changes > 0;
+  }
+
+  markAllRead(userId: string): number {
+    const info = this.db.prepare(
+      'UPDATE user_notifications SET read = 1 WHERE (user_id = ? OR user_id = ?) AND read = 0'
+    ).run(userId, 'all');
+    return Number(info.changes);
+  }
+
+  private mapRow(r: Record<string, unknown>): NotificationRow {
+    return {
+      id: r['id'] as string,
+      userId: r['user_id'] as string,
+      type: r['type'] as string,
+      title: r['title'] as string,
+      body: r['body'] as string,
+      priority: r['priority'] as string,
+      read: !!(r['read'] as number),
+      actionType: r['action_type'] as string,
+      actionTarget: r['action_target'] as string | null,
+      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       createdAt: r['created_at'] as string,
     };
   }

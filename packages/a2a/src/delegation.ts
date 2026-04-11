@@ -1,5 +1,4 @@
 import { createLogger } from '@markus/shared';
-import type { A2ABus } from './bus.js';
 import type { A2AEnvelope, TaskDelegation, TaskUpdate, AgentCard } from './protocol.js';
 
 const log = createLogger('a2a-delegation');
@@ -13,22 +12,13 @@ export interface DelegationResult {
 /**
  * Manages task delegation between agents.
  * Handles routing tasks to the most suitable agent based on skills/availability.
+ *
+ * No longer depends on A2ABus — delegation calls go directly through the
+ * registered handler, which typically creates a real task via TaskService.
  */
 export class DelegationManager {
   private agentCards = new Map<string, AgentCard>();
-  private pendingDelegations = new Map<string, { delegation: TaskDelegation; from: string; resolvers: { resolve: (r: DelegationResult) => void; reject: (e: Error) => void } }>();
   private delegationHandler?: (envelope: A2AEnvelope, delegation: TaskDelegation) => Promise<void>;
-
-  constructor(private bus: A2ABus) {
-    bus.on('task_delegate', (env) => this.handleDelegation(env));
-    bus.on('task_update', (env) => this.handleUpdate(env));
-    bus.on('task_complete', (env) => this.handleComplete(env));
-  }
-
-  /** Set a handler that will be called when a task_delegate message arrives */
-  onDelegationReceived(handler: (envelope: A2AEnvelope, delegation: TaskDelegation) => Promise<void>): void {
-    this.delegationHandler = handler;
-  }
 
   registerAgentCard(card: AgentCard): void {
     this.agentCards.set(card.agentId, card);
@@ -38,9 +28,11 @@ export class DelegationManager {
     this.agentCards.delete(agentId);
   }
 
-  /**
-   * Find the best agent for a task based on required skills.
-   */
+  /** Set a handler that will be called when a task delegation arrives */
+  onDelegationReceived(handler: (envelope: A2AEnvelope, delegation: TaskDelegation) => Promise<void>): void {
+    this.delegationHandler = handler;
+  }
+
   findBestAgent(requiredSkills: string[], excludeAgentId?: string): AgentCard | undefined {
     let bestAgent: AgentCard | undefined;
     let bestScore = 0;
@@ -64,6 +56,7 @@ export class DelegationManager {
 
   /**
    * Delegate a task to another agent.
+   * Directly invokes the delegation handler instead of going through A2ABus.
    */
   async delegateTask(fromAgentId: string, delegation: TaskDelegation, toAgentId?: string): Promise<DelegationResult> {
     const targetId = toAgentId ?? this.findBestAgent([], fromAgentId)?.agentId;
@@ -80,7 +73,9 @@ export class DelegationManager {
       payload: delegation,
     };
 
-    await this.bus.send(envelope);
+    if (this.delegationHandler) {
+      await this.delegationHandler(envelope, delegation);
+    }
 
     log.info(`Task delegated from ${fromAgentId} to ${targetId}`, {
       taskId: delegation.taskId,
@@ -90,65 +85,7 @@ export class DelegationManager {
     return { accepted: true, delegatedTo: targetId };
   }
 
-  /**
-   * Send a task status update back to the delegating agent.
-   */
-  async sendUpdate(fromAgentId: string, toAgentId: string, update: TaskUpdate): Promise<void> {
-    await this.bus.send({
-      id: `a2a_upd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: 'task_update',
-      from: fromAgentId,
-      to: toAgentId,
-      timestamp: new Date().toISOString(),
-      correlationId: update.taskId,
-      payload: update,
-    });
-  }
-
-  /**
-   * Mark a delegated task as complete.
-   */
-  async completeTask(fromAgentId: string, toAgentId: string, update: TaskUpdate): Promise<void> {
-    await this.bus.send({
-      id: `a2a_cmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: 'task_complete',
-      from: fromAgentId,
-      to: toAgentId,
-      timestamp: new Date().toISOString(),
-      correlationId: update.taskId,
-      payload: update,
-    });
-  }
-
   getAgentCards(): AgentCard[] {
     return [...this.agentCards.values()];
-  }
-
-  private async handleDelegation(envelope: A2AEnvelope): Promise<void> {
-    const delegation = envelope.payload as TaskDelegation;
-    log.info(`Received task delegation: ${delegation.title}`, {
-      from: envelope.from,
-      to: envelope.to,
-      taskId: delegation.taskId,
-    });
-    if (this.delegationHandler) {
-      await this.delegationHandler(envelope, delegation);
-    }
-  }
-
-  private async handleUpdate(envelope: A2AEnvelope): Promise<void> {
-    const update = envelope.payload as TaskUpdate;
-    log.info(`Task update: ${update.taskId} -> ${update.status}`, {
-      from: envelope.from,
-      progress: update.progress,
-    });
-  }
-
-  private async handleComplete(envelope: A2AEnvelope): Promise<void> {
-    const update = envelope.payload as TaskUpdate;
-    log.info(`Task completed: ${update.taskId}`, {
-      from: envelope.from,
-      to: envelope.to,
-    });
   }
 }

@@ -304,7 +304,16 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `send_user_message`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_chat`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
+
+Agent-to-user communication:
+| Situation | Tool | Example |
+|-----------|------|---------|
+| Status report, finding, alert | `notify_user` | "Daily report: completed 3 tasks today" |
+| Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
+| Need user decision | `request_user_chat` | "Should I use approach A or B for the auth refactor?" |
+| Blocked, need human help | `request_user_chat` (high priority) | "I'm blocked on task X, need credentials" |
+| Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
 
 Retry: 3 retries with exponential backoff (3s base).
 

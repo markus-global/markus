@@ -161,6 +161,7 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
+    chatSessions?: Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -468,6 +469,19 @@ export class ContextEngine {
       parts.push(this.buildMailboxSection(opts.mailboxContext));
     }
 
+    // --- Chat session context for session-aware user communication ---
+    if (opts.chatSessions && opts.chatSessions.length > 0) {
+      const sessionLines = ['\n## Your Chat Sessions with the User'];
+      for (const s of opts.chatSessions.slice(0, 5)) {
+        const preview = s.lastMessagePreview ? `: "${s.lastMessagePreview}"` : '';
+        const title = s.title ? ` (${s.title})` : '';
+        sessionLines.push(`- Session ${s.id}${title} (last active: ${s.lastMessageAt})${preview}`);
+      }
+      sessionLines.push('');
+      sessionLines.push('When using `request_user_chat`, you can provide the `session_id` of an existing session to continue that conversation thread.');
+      parts.push(sessionLines.join('\n'));
+    }
+
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
     parts.push(this.buildScenarioSection(scenario));
@@ -502,11 +516,9 @@ export class ContextEngine {
 
     lines.push(`**Mailbox queue**: ${ctx.queueDepth} item(s) waiting`);
     if (ctx.topQueued && ctx.topQueued.length > 0) {
-      for (const q of ctx.topQueued.slice(0, 3)) {
-        lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, 80)}`);
-      }
-      if (ctx.queueDepth > 3) {
-        lines.push(`  - ... and ${ctx.queueDepth - 3} more`);
+      lines.push('You MUST review all waiting items and prioritize user chat/comments above everything else:');
+      for (const q of ctx.topQueued) {
+        lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, 120)}`);
       }
     }
 
@@ -603,6 +615,11 @@ export class ContextEngine {
         lines.push('- If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action');
         lines.push('- Large outputs should be saved to files and referenced by path in deliverables');
         lines.push('- **NEVER write a large file in one shot.** If the output is >200 lines or >4000 chars, write it section by section: `file_write` the first section (with a heading/skeleton), then `file_edit` to append each subsequent section. This prevents LLM output truncation and tool call timeouts.');
+        lines.push('');
+        lines.push('**Communicating with the user:**');
+        lines.push('- Use `notify_user` for status updates and progress reports (one-way, no response expected)');
+        lines.push('- Use `request_user_chat` ONLY when you are genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints, access issues)');
+        lines.push('- Do NOT use `request_user_chat` for routine updates — use `notify_user` instead');
         break;
 
       case 'heartbeat':
@@ -619,6 +636,12 @@ export class ContextEngine {
         lines.push('4. **Daily report (managers, after 20:00)**: If the prompt includes a "Daily Report Required" section, produce the report as your top priority after reviews.');
         lines.push('5. **Self-evolution**: Reflect briefly — record specific, actionable lessons learned since last heartbeat.');
         lines.push('6. **Do NOT**: Create new tasks, start work, or do research during heartbeat (exception: daily report creation and failed task retry).');
+        lines.push('');
+        lines.push('');
+        lines.push('**Communicating with the user:**');
+        lines.push('- Use `notify_user` for findings and reports (e.g., "Daily report: completed 3 tasks today")');
+        lines.push('- Use `request_user_chat` ONLY if you need the user to make a decision or provide input');
+        lines.push('- Do NOT use `request_user_chat` for routine status updates');
         lines.push('');
         lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;

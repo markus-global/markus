@@ -30,7 +30,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
-import { A2ABus, DelegationManager, type TaskDelegation } from '@markus/a2a';
+import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
 import { join } from 'node:path';
@@ -283,7 +283,9 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSenders?: Map<string, (message: string) => Promise<{ sessionId: string; messageId: string }>>;
+  private userMessageSenders?: Map<string, (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>>;
+  private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  private chatSessionsFetchers?: Map<string, () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>>;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
@@ -315,7 +317,6 @@ export class AgentManager {
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
-  private a2aBus: A2ABus;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private templateRegistry?: TemplateRegistry;
@@ -470,8 +471,7 @@ export class AgentManager {
       });
     }
 
-    this.a2aBus = new A2ABus();
-    this.delegationManager = new DelegationManager(this.a2aBus);
+    this.delegationManager = new DelegationManager();
     this.delegationManager.onDelegationReceived(async (envelope, delegation) => {
       const targetAgent = this.agents.get(envelope.to);
       if (!targetAgent) {
@@ -546,9 +546,18 @@ export class AgentManager {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(agentId: string, cb: (message: string) => Promise<{ sessionId: string; messageId: string }>): void {
+  setUserMessageSender(agentId: string, cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
     if (!this.userMessageSenders) this.userMessageSenders = new Map();
     this.userMessageSenders.set(agentId, cb);
+  }
+
+  setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
+    this.userNotifier = cb;
+  }
+
+  setChatSessionsFetcher(agentId: string, cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
+    if (!this.chatSessionsFetchers) this.chatSessionsFetchers = new Map();
+    this.chatSessionsFetchers.set(agentId, cb);
   }
 
   getSharedDataDir(): string | undefined {
@@ -757,6 +766,11 @@ export class AgentManager {
       const sender = this.userMessageSenders.get(id);
       if (sender) agent.setUserMessageSender(sender);
     }
+    if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.chatSessionsFetchers) {
+      const fetcher = this.chatSessionsFetchers.get(id);
+      if (fetcher) agent.setChatSessionsFetcher(fetcher);
+    }
 
     // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
@@ -837,17 +851,6 @@ export class AgentManager {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
       agent.setSemanticSearch(this.semanticSearch);
     }
-
-    // Register agent on A2A bus for structured message delivery
-    this.a2aBus.registerAgent(id, async envelope => {
-      const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      agent.enqueueToMailbox('a2a_message', {
-        summary: summary.slice(0, 100),
-        content: summary,
-      }, {
-        metadata: { senderId: envelope.from, senderName: envelope.from, senderRole: 'worker' },
-      });
-    });
 
     // Task tools — every agent can create/list/update tasks
     if (this.taskService) {
@@ -1358,6 +1361,11 @@ export class AgentManager {
       const sender = this.userMessageSenders.get(id);
       if (sender) agent.setUserMessageSender(sender);
     }
+    if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.chatSessionsFetchers) {
+      const fetcher = this.chatSessionsFetchers.get(id);
+      if (fetcher) agent.setChatSessionsFetcher(fetcher);
+    }
 
     const a2aCtx = {
       selfId: id,
@@ -1426,16 +1434,6 @@ export class AgentManager {
       agent.getContextEngine().setSemanticSearch(this.semanticSearch);
       agent.setSemanticSearch(this.semanticSearch);
     }
-
-    this.a2aBus.registerAgent(id, async envelope => {
-      const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      agent.enqueueToMailbox('a2a_message', {
-        summary: summary.slice(0, 100),
-        content: summary,
-      }, {
-        metadata: { senderId: envelope.from, senderName: envelope.from, senderRole: 'worker' },
-      });
-    });
 
     if (this.taskService) {
       const ts = this.taskService;
@@ -1732,7 +1730,6 @@ export class AgentManager {
       try { await agent.stop(); } catch { /* proceed with removal even if stop fails */ }
       this.browserSessionManager.cleanupAgent(agentId);
       await this.mcpManager.disconnectAllForScope(agentId);
-      this.a2aBus.unregisterAgent(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);
       this.eventBus.emit('agent:removed', { agentId });
@@ -1921,9 +1918,6 @@ export class AgentManager {
   }
 
 
-  getA2ABus(): A2ABus {
-    return this.a2aBus;
-  }
 
   getDelegationManager(): DelegationManager {
     return this.delegationManager;
@@ -2251,13 +2245,11 @@ export class AgentManager {
 
     for (const [, agent] of this.agents) {
       if (agent.getState().status !== 'offline') {
-        this.a2aBus.send({
-          id: `a2a_ann_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          from: 'system',
-          to: agent.id,
-          type: 'announcement',
-          timestamp: new Date().toISOString(),
-          payload: announcement,
+        agent.enqueueToMailbox('system_event', {
+          summary: `[Announcement] ${announcement.title}`.slice(0, 100),
+          content: JSON.stringify(announcement),
+        }, {
+          metadata: { senderId: 'system', senderName: 'System' },
         });
       }
     }

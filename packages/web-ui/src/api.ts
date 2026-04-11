@@ -158,6 +158,8 @@ export interface NotificationInfo {
   body: string;
   priority: string;
   read: boolean;
+  actionType?: string;
+  actionTarget?: string;
   actionUrl?: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
@@ -1167,13 +1169,17 @@ export const api = {
       request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy }) }),
   },
   notifications: {
-    list: (userId?: string, unread?: boolean) => {
+    list: (userId?: string, unread?: boolean, opts?: { type?: string; limit?: number; offset?: number }) => {
       const params = new URLSearchParams();
       if (userId) params.set('userId', userId);
       if (unread) params.set('unread', 'true');
-      return request<{ notifications: NotificationInfo[] }>(`/notifications?${params}`);
+      if (opts?.type) params.set('type', opts.type);
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.offset) params.set('offset', String(opts.offset));
+      return request<{ notifications: NotificationInfo[]; totalCount?: number; unreadCount?: number }>(`/notifications?${params}`);
     },
     markRead: (id: string) => request<{ success: boolean }>(`/notifications/${id}`, { method: 'POST' }),
+    markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
 
   // ─── Projects ──────────────────────────────────────────────────────

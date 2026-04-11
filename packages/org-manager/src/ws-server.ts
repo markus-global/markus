@@ -67,6 +67,14 @@ export class WSBroadcaster {
     });
   }
 
+  broadcastTaskCreate(taskId: string, title: string, extra?: Record<string, unknown>): void {
+    this.broadcast({
+      type: 'task:create',
+      payload: { taskId, title, ...extra },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   broadcastTeamUpdate(teamId: string, extra?: Record<string, unknown>): void {
     this.broadcast({
       type: 'team:update',

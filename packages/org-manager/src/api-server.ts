@@ -4796,11 +4796,33 @@ export class APIServer {
 
     // Notifications
     if (path === '/api/notifications' && req.method === 'GET') {
-      const userId = url.searchParams.get('userId') ?? undefined;
+      const userId = url.searchParams.get('userId') ?? 'default';
       const unread = url.searchParams.get('unread') === 'true';
+      const type = url.searchParams.get('type') ?? undefined;
+      const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+      const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+      const notifications = this.hitlService?.listNotifications(userId, unread, { type, limit, offset }) ?? [];
+      const counts = this.hitlService?.countNotifications(userId) ?? { total: 0, unread: 0 };
       this.json(res, 200, {
-        notifications: this.hitlService?.listNotifications(userId, unread) ?? [],
+        notifications,
+        totalCount: counts.total,
+        unreadCount: counts.unread,
       });
+      return;
+    }
+
+    if (path === '/api/notifications/mark-all-read' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const userId = (body.userId as string) ?? 'default';
+      const count = this.hitlService?.markAllNotificationsRead(userId) ?? 0;
+      this.json(res, 200, { success: true, count });
+      return;
+    }
+
+    if (path.startsWith('/api/notifications/') && path.endsWith('/read') && req.method === 'POST') {
+      const notifId = path.split('/')[3]!;
+      const read = this.hitlService?.markNotificationRead(notifId);
+      this.json(res, 200, { success: read ?? false });
       return;
     }
 

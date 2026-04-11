@@ -164,14 +164,32 @@ export class ToolSelector {
     result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
 
     result.push({
-      name: 'send_user_message',
-      description: 'Send a proactive message to the user via their chat session. Use this to notify the user about important findings, ask for approval (e.g. before installing a skill), or provide status updates.',
+      name: 'notify_user',
+      description: 'Send a notification to the user. Use for status updates, reports, alerts, and findings that do not require user input. The notification appears in the user notification bell.',
       inputSchema: {
         type: 'object',
         properties: {
-          message: { type: 'string', description: 'The message to send to the user' },
+          title: { type: 'string', description: 'Short headline (1 line)' },
+          body: { type: 'string', description: 'Full notification content' },
+          priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: 'Default: normal' },
+          related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
         },
-        required: ['message'],
+        required: ['title', 'body'],
+      },
+    });
+
+    result.push({
+      name: 'request_user_chat',
+      description: 'Request a conversation with the user about a specific topic. Use when you need user input, a decision, approval, or want to discuss something interactively. The user receives a notification they can click to open a chat with you. If you want to continue an existing conversation, provide the session_id from a previous interaction.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'What you want to discuss (shown in notification title)' },
+          message: { type: 'string', description: 'Your opening message (shown when user opens the chat)' },
+          priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
+          session_id: { type: 'string', description: 'Optional. ID of an existing chat session to continue. If omitted, reuses the most recent session or creates a new one.' },
+        },
+        required: ['topic', 'message'],
       },
     });
 

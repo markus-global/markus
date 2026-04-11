@@ -62,9 +62,9 @@ All mailbox item types, their metadata, and their processing behaviour are defin
 
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   system_event:         { label: 'System Event',        defaultPriority: 0, category: 'system',       icon: '⚙', createsActivity: true,  invokesLLM: true  },
-  human_chat:           { label: 'Chat',                defaultPriority: 1, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
+  human_chat:           { label: 'Chat',                defaultPriority: 0, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
   task_assignment:      { label: 'Task',                defaultPriority: 1, category: 'task',          icon: '☑', createsActivity: true,  invokesLLM: true  },
-  task_comment:         { label: 'Task Comment',        defaultPriority: 1, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
+  task_comment:         { label: 'Task Comment',        defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
   mention:              { label: 'Mention',             defaultPriority: 1, category: 'interaction',   icon: '@', createsActivity: true,  invokesLLM: true  },
   session_reply:        { label: 'Session Reply',       defaultPriority: 1, category: 'task',          icon: '↩', createsActivity: true,  invokesLLM: true  },
   task_status_update:   { label: 'Task Status',         defaultPriority: 2, category: 'notification',  icon: '📋', createsActivity: true,  invokesLLM: true  },
@@ -149,6 +149,14 @@ There is **no polling**. When a new item arrives while the agent is focused:
 | `defer` | Explicitly postpone the new item |
 | `delegate` | Hand off to another agent (future) |
 | `drop` | Discard the item |
+
+### Priority Invariant: User Interactions First
+
+User chat (`human_chat`) and task comments (`task_comment`) are assigned **priority 0 (critical)** — the highest possible level. The heuristic rules enforce:
+
+1. **R1**: If a new `human_chat` or `task_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
+2. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
+3. The agent's system prompt includes the **full mailbox queue** (not a truncated view), so the agent is always aware of everything waiting for its attention.
 
 ### Safe Yield Points
 
@@ -490,7 +498,170 @@ No LLM call is made outside this architecture.
 
 ---
 
-## 10. Future Work
+## 11. Agent-to-Agent Communication (A2A via Mailbox)
+
+Inter-agent messaging is fully consolidated into the Mailbox system. The legacy `A2ABus` class has been retired — it added a redundant routing layer when `agent.sendMessage()` already routes through the mailbox.
+
+### How It Works Now
+
+```
+Agent A                              Agent B
+────────                             ────────
+tool: agent_send_message ──►  agentManager.sendAgentMessage()
+                                     │
+                                     ▼
+                               agentB.sendMessage(text, senderInfo)
+                                     │
+                                     ▼
+                               mailbox.enqueue('a2a_message', ...)
+                                     │
+                                     ▼
+                               AttentionController picks it up
+```
+
+- **`agent_send_message`** tool: Agent calls this to message a peer. It resolves to `agentManager.sendAgentMessage()` which calls `targetAgent.sendMessage()`.
+- **`agent_delegate_task`** tool: Delegation still uses `DelegationManager` for protocol orchestration (handshake, progress updates, completion), but the underlying message transport goes through `sendMessage()` → mailbox.
+- **`agent_broadcast_status`** tool: Broadcasts to all other agents via `enqueueToMailbox('system_event', ...)` on each recipient.
+
+The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABus` is exported with a `@deprecated` annotation for backward compatibility only.
+
+---
+
+## 12. User Notifications (Human Mailbox)
+
+Just as agents have a mailbox for incoming stimuli, users have a **persistent notification system** for events that require their attention. This is the user-facing counterpart to the agent mailbox.
+
+### 12.1 Storage
+
+```sql
+CREATE TABLE user_notifications (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL,             -- UserNotificationType
+  title TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  priority TEXT DEFAULT 'normal', -- 'low' | 'normal' | 'high' | 'urgent'
+  read INTEGER DEFAULT 0,
+  action_type TEXT,               -- 'navigate' | 'open_chat' | null
+  action_target TEXT,             -- JSON: { path } or { agentId, sessionId }
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### 12.2 Notification Type Registry
+
+Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `USER_NOTIFICATION_TYPE_REGISTRY` in `@markus/shared`:
+
+| Type | Label | Icon | Default Priority |
+|------|-------|------|-----------------|
+| `approval_request` | Approval Request | ⚠ | high |
+| `bounty_posted` | Bounty Posted | 🎯 | normal |
+| `task_created` | Task Created | ☑ | normal |
+| `task_review` | Task Review | 👀 | high |
+| `task_completed` | Task Completed | ✓ | normal |
+| `task_failed` | Task Failed | ✗ | high |
+| `requirement_created` | Requirement Proposed | 📝 | normal |
+| `agent_chat_request` | Chat Request | 💬 | high |
+| `agent_notification` | Agent Notification | 🔔 | normal |
+| `system` | System | ⚙ | normal |
+
+### 12.3 Action Types
+
+Notifications can be **actionable** — clicking them navigates the user to the relevant context:
+
+| `action_type` | `action_target` format | Behaviour |
+|---------------|----------------------|-----------|
+| `navigate` | `{ "path": "/work?task=T123" }` | Navigate to the specified route |
+| `open_chat` | `{ "agentId": "...", "sessionId": "..." }` | Open chat with agent, resume session |
+| *(null)* | — | Notification only, no navigation |
+
+### 12.4 REST API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications?type=...&limit=...&offset=...` | List notifications with filtering, returns `totalCount` and `unreadCount` |
+| POST | `/api/notifications/:id/read` | Mark single notification as read |
+| POST | `/api/notifications/mark-all-read` | Mark all notifications as read |
+
+### 12.5 Real-Time Delivery
+
+When a notification is created (via `HITLService.notify()`), a WebSocket `notification` event is broadcast. The frontend `App.tsx` listens for this and dispatches a `markus:notifications-changed` custom DOM event, which triggers the `NotificationBell` component to refresh.
+
+---
+
+## 13. Agent-to-User Communication
+
+Agents have two distinct modes for communicating with users, reflecting different conversational intents:
+
+### 13.1 `notify_user` — One-Way Notification
+
+Fire-and-forget informational updates. Creates a persistent notification in the user's notification bell.
+
+```typescript
+// Tool schema
+{
+  name: 'notify_user',
+  parameters: {
+    title: string,     // Short notification headline
+    message: string,   // Notification body
+    priority: 'low' | 'normal' | 'high' | 'urgent'  // optional, default 'normal'
+  }
+}
+```
+
+**When to use**: Status updates, task completion notices, FYI messages, non-blocking announcements.
+
+**Flow**: `agent.executeTool('notify_user')` → `agent.userNotifier(title, message, priority)` → `HITLService.notify()` → SQLite + WebSocket → NotificationBell
+
+### 13.2 `request_user_chat` — Interactive Chat Request
+
+Opens (or continues) a two-way chat conversation. Creates both a notification AND a chat message.
+
+```typescript
+// Tool schema
+{
+  name: 'request_user_chat',
+  parameters: {
+    message: string,      // The chat message to send
+    reason: string,       // Why the agent needs user input (shown in notification)
+    session_id?: string   // Optional: continue an existing chat session
+  }
+}
+```
+
+**When to use**: Blocking questions, approval requests, design decisions, anything requiring user response.
+
+**Flow**: `agent.executeTool('request_user_chat')` → `agent.userMessageSender(message, sessionId)` → chat session created/reused → `HITLService.notify('agent_chat_request', ...)` → WebSocket `notification` + `chat:proactive_message`
+
+### 13.3 Session Awareness
+
+Agents are given context about their recent chat sessions in the system prompt:
+
+```
+## Recent user conversations
+- Session abc123: "API design discussion" (last: 2h ago) — "Should we use REST or..."
+- Session def456: "Bug report follow-up" (last: 1d ago) — "The fix has been deployed..."
+```
+
+This enables agents to continue existing conversations by passing `session_id` to `request_user_chat`, rather than always creating new sessions.
+
+### 13.4 Prompt Guidance
+
+The system prompt includes scenario-specific guidance on which tool to use:
+
+| Situation | Tool |
+|-----------|------|
+| Task completed, just informing | `notify_user` |
+| Need approval or clarification | `request_user_chat` |
+| Encountered an error, FYI | `notify_user` |
+| Design question, need answer | `request_user_chat` |
+| Progress update | `notify_user` |
+| Continuing a previous conversation | `request_user_chat` with `session_id` |
+
+---
+
+## 14. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met (e.g., blocked task unblocked).

@@ -115,6 +115,18 @@ export class RequirementService {
     }
 
     this.broadcast('requirement:created', req);
+    if (this.hitlService && req.source === 'agent') {
+      this.hitlService.notify({
+        targetUserId: 'default',
+        type: 'requirement_created' as any,
+        title: `Requirement proposed: ${req.title}`,
+        body: `Agent proposed requirement "${req.title}" — needs approval`,
+        priority: 'high' as any,
+        actionType: 'navigate',
+        actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
+        metadata: { requirementId: req.id, createdBy: req.createdBy },
+      });
+    }
     log.info('Requirement created', {
       id: req.id,
       source: req.source,
