@@ -14,21 +14,21 @@ Every LLM invocation falls into one of eight categories:
 | 2 | **Human Chat** (stream/SSE) | API `/api/agents/:id/chat?stream=1` | `handleMessageStream()` | Yes | Yes | Yes | 200 (safety net) |
 | 3 | **Task Execution** | `TaskService.runTask()` → `_executeTaskInternal()` | `llmRouter.chatStream()` | Yes | Yes | Yes | **None** |
 | 4 | **Respond-in-Session** | API `/api/agents/:id/sessions/:sid/messages` | `respondInSession()` | Yes | Yes | Yes | 200 (safety net) |
-| 5 | **Heartbeat** | `HeartbeatScheduler` → `handleHeartbeat()` | `handleMessage(ephemeral)` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
-| 6 | **A2A Chat** | API `/api/agents/:id/a2a` / channel routing | `handleMessage(ephemeral)` | No | Yes | Yes (via handleMessage) | 200 |
-| 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(ephemeral, scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
-| 8 | **Ephemeral Internal** | Various | `handleMessage(ephemeral)` | No | Varies | Yes (via handleMessage) | 200 |
+| 5 | **Heartbeat** | `HeartbeatScheduler` → `handleHeartbeat()` | `handleMessage(scenario:'heartbeat')` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
+| 6 | **A2A Chat** | API `/api/agents/:id/a2a` / channel routing | `handleMessage(scenario:'a2a')` | No | Yes | Yes (via handleMessage) | 200 |
+| 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
+| 8 | **Internal (Lightweight)** | Various | `handleMessage(scenario:'heartbeat')` | No | Varies | Yes (via handleMessage) | 200 |
 
-### Ephemeral Internal Calls (Scenario 7)
+### Lightweight Internal Calls (Scenario 8)
 
-These are `handleMessage()` calls with `ephemeral: true` and no `senderId`, creating throwaway sessions. They use `scenario: 'heartbeat'` to receive lightweight instructions instead of full chat scenario guidance.
+These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session IDs (e.g. `sys_<agentId>_<ts>`). Each call creates a persisted session for full traceability.
 
-| Sub-scenario | Trigger | Purpose |
-|-------------|---------|---------|
-| **Daily Report** | `consolidateMemory()` (once/day) | Generate brief status report → `daily-logs/` |
-| **Memory Flush** | `consolidateMemory()` (before compaction) | Prompt agent to `memory_save` important info before context window is compacted |
-| **LLM Summarizer** | `contextEngine.smartSummarizeAndTruncate()` | Compress older conversation messages into a summary (no tools) |
-| **Dream Consolidation** | `consolidateMemory()` (once/day, ≥50 entries) | LLM reviews memory entries, outputs prune/merge plan (no tools) |
+| Sub-scenario | Trigger | Session ID Pattern | Purpose |
+|-------------|---------|-------------------|---------|
+| **Daily Report** | `consolidateMemory()` (once/day) | `sys_<agentId>_<ts>` | Generate brief status report → `daily-logs/` |
+| **Memory Flush** | `consolidateMemory()` (before compaction) | `sys_<agentId>_<ts>` | Prompt agent to `memory_save` important info before context window is compacted |
+| **LLM Summarizer** | `contextEngine.smartSummarizeAndTruncate()` | N/A (internal) | Compress older conversation messages into a summary (no tools) |
+| **Dream Consolidation** | `consolidateMemory()` (once/day, ≥50 entries) | `sys_<agentId>_<ts>` | LLM reviews memory entries, outputs prune/merge plan (no tools) |
 
 ---
 
@@ -173,7 +173,7 @@ Session Messages
  Final: [system prompt, ...compressed messages]
 ```
 
-**Ephemeral sessions**: Ephemeral calls (heartbeat, A2A, memory flush) skip the full `prepareMessages` pipeline but use a lightweight `shrinkEphemeralMessages()` guard that caps each message at `contextWindow/20` chars and drops the oldest non-system messages when the total exceeds 70% of the context window. This prevents unbounded growth during multi-tool ephemeral interactions.
+**Lightweight sessions**: All interactions (heartbeat, A2A, memory flush, comments) use the same `prepareMessages()` pipeline. Sessions are persisted to JSON files for full traceability. The `scenario` parameter controls what context is included in the system prompt — lightweight scenarios (`heartbeat`, `a2a`, `comment_response`) skip heavy context like assigned tasks, deliverables, and chat session lists.
 
 ### 3.3 Task Prompt Protection
 
@@ -266,8 +266,8 @@ In `_executeTaskInternal`, every 10 tool iterations, a `[SYSTEM REMINDER]` messa
 ```
 
 Session management:
-- Non-ephemeral: Uses `currentSessionId`. Creates session if none exists.
-- Messages persisted to session store and replayed on next call.
+- Uses `currentSessionId`. Creates session if none exists.
+- Messages persisted to session JSON files and replayed on next call.
 - Input/output guardrails applied.
 
 ### 5.2 Task Execution (`_executeTaskInternal`)
@@ -293,7 +293,7 @@ Key differences from chat:
 
 ### 5.3 Heartbeat (`handleHeartbeat`)
 
-Heartbeat uses `handleMessage(prompt, undefined, undefined, { ephemeral: true, maxHistory: 30, allowedTools, scenario: 'heartbeat' })`.
+Heartbeat uses `handleMessage(prompt, undefined, undefined, { sessionId: 'hb_<agentId>_<ts>', allowedTools, scenario: 'heartbeat' })`.
 
 The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and includes:
 1. `[HEARTBEAT CHECK-IN]` header
@@ -321,17 +321,15 @@ Retry: 3 retries with exponential backoff (3s base).
 
 ### 5.4 A2A Chat
 
-Uses `handleMessage(message, fromAgentId, senderInfo, { ephemeral: true })`.
+Uses `handleMessage(message, fromAgentId, senderInfo, { sessionId: 'a2a_<agentId>_<ts>', scenario: 'a2a' })`.
 
-The `scenario` is auto-detected: when `isEphemeral && senderId` are both truthy, scenario defaults to `'a2a'`. The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`.
-
-Channel-based A2A (via group chats) passes `channelContext` — recent channel messages for multi-party conversation context.
+The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. Channel-based A2A (via group chats) passes `channelContext` — recent channel messages are prepended to the session for multi-party conversation context.
 
 ### 5.5 Respond-in-Session
 
 `respondInSession()` is used for continuing a specific session (e.g., task execution follow-up messages via the API). It always uses `scenario: 'chat'` and streams output via `onLog` events.
 
-### 5.6 Ephemeral: Daily Report
+### 5.6 Daily Report
 
 ```
 [DAILY REPORT REQUEST]
@@ -343,10 +341,10 @@ Generate a brief daily status report. Include:
 Keep the report concise (3-5 sentences). Do NOT use any tools.
 ```
 
-Called via `handleMessage(prompt, undefined, undefined, { ephemeral: true, maxHistory: 5, scenario: 'heartbeat' })`.  
+Called via `sendMessage(prompt, undefined, undefined, { sourceType: 'daily_report', sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.
 Result written to `daily-logs/` via `memory.writeDailyLog()`.
 
-### 5.7 Ephemeral: Memory Flush
+### 5.7 Memory Flush
 
 ```
 [MEMORY FLUSH — System Request]
@@ -356,7 +354,7 @@ Use memory_save to persist:
 - Important facts learned...
 ```
 
-Called via `handleMessage(prompt, undefined, undefined, { ephemeral: true, maxHistory: 25, scenario: 'heartbeat' })`.  
+Called via `handleMessage(prompt, undefined, undefined, { sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.  
 Triggered when main session exceeds 30 messages, before compaction.
 
 ### 5.8 Dream Consolidation
@@ -426,7 +424,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers feed into system prompt (§2: long-term knowledge, lessons, daily logs, relevant memories) and are maintained by ephemeral LLM calls (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers feed into system prompt (§2: long-term knowledge, lessons, daily logs, relevant memories) and are maintained by lightweight internal LLM calls (§5.6-5.8) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |

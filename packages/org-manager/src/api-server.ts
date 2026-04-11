@@ -447,7 +447,7 @@ export class APIServer {
           { name: 'workflow', role: 'system' },
           {
             sourceType: 'task_assignment',
-            ephemeral: true,
+            sessionId: `sys_${agentId}_${Date.now()}`,
           }
         );
         return { reply, input };
@@ -598,7 +598,6 @@ export class APIServer {
         senderInfo,
         {
           sourceType: 'human_chat',
-          ephemeral: true,
           channelContext,
           toolEventCollector: toolEvents,
         }
@@ -1035,7 +1034,6 @@ export class APIServer {
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
-          ephemeral: true,
           channelContext,
           toolEventCollector: toolEvents,
         });

@@ -85,7 +85,7 @@ The vector store is shared across all agents (created once at `AgentManager` lev
 │  Relevant entries retrieved per query (semantic/text).  │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 1: Conversation Context (sessions/)              │
-│  Raw message history. Ephemeral per interaction.        │
+│  Raw message history. Persisted per interaction.        │
 │  Auto-compacted when large. Most volatile layer.        │
 ├─────────────────────────────────────────────────────────┤
 │  Layer 0: Episodic Memory (mailbox timeline)            │
@@ -135,7 +135,7 @@ See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete architecture.
 5. The summary is also written to daily logs (Layer 3)
 6. Key assistant statements are extracted and saved as `conversation` type entries in `memories.json` (Layer 2)
 
-**LLM-assisted compaction**: Before heuristic compaction, `memoryFlush()` sends an ephemeral prompt asking the agent to persist any important information via `memory_save`. This ensures high-value content is promoted to Layer 2 before the conversation is truncated.
+**LLM-assisted compaction**: Before heuristic compaction, `memoryFlush()` sends a lightweight prompt asking the agent to persist any important information via `memory_save`. This ensures high-value content is promoted to Layer 2 before the conversation is truncated.
 
 #### Layer 2: Structured Memories
 
@@ -288,7 +288,7 @@ The Dream Cycle is a periodic, LLM-assisted process that maintains memory health
 ```
 consolidateMemory() — every 4 hours
 ├── Step 1: Session compaction (if session > 30 messages)
-│   ├── memoryFlush() — ephemeral LLM call to persist important info
+│   ├── memoryFlush() — lightweight LLM call to persist important info
 │   └── compactSession() — heuristic truncation + summary
 │
 ├── Step 2: Daily report generation (once per day)
@@ -314,7 +314,7 @@ dreamConsolidateMemory(entries)
 │   ├── Each entry: id, type, date, tags, content (first 200 chars)
 │   └── Total prompt stays within safe context bounds
 │
-├── 2. Send to LLM (ephemeral, no tools)
+├── 2. Send to LLM (lightweight, no tools)
 │   ├── Prompt: identify duplicates, outdated entries, merge candidates
 │   └── Response: JSON { "remove": [...ids], "merge": [...groups] }
 │
@@ -437,7 +437,7 @@ Agent.endActivity() → onActivityEndCb → SqliteActivityRepo.updateActivity()
 
 3. **Memory tools are agent-facing**: `memory_save`, `memory_search`, `memory_list`, and `memory_update_longterm` are the agent's interface to the memory system. The system (consolidation, compaction) operates on the same stores but through internal methods.
 
-4. **Sessions are ephemeral**: Session files contain raw conversation history. They are compacted and summarized when large, with key information promoted to Layer 2 (`memories.json`) before truncation.
+4. **Sessions are persistent**: All session files (including lightweight internal ones like heartbeat, A2A, comments) contain raw conversation history persisted to `sessions/*.json`. They are compacted and summarized when large, with key information promoted to Layer 2 (`memories.json`) before truncation. Typed session ID prefixes (`hb_`, `a2a_`, `comment_`, `sys_`) enable easy identification and filtering.
 
 5. **Daily logs are append-only**: Never delete or modify daily log files. They serve as historical audit trail for debugging and analysis.
 

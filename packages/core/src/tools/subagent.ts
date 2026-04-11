@@ -307,7 +307,7 @@ export async function runSubagentLoop(
       }
     }
 
-    messages = ctx.contextEngine.shrinkEphemeralMessages(messages, contextWindow);
+    messages = ctx.contextEngine.shrinkMessages(messages, contextWindow);
 
     response = await llmCallWithRetry(
       () => ctx.llmRouter.chat({

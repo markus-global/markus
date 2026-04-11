@@ -2781,7 +2781,8 @@ export class TaskService {
 
     void agent.sendMessage(prompt, undefined, undefined, {
       sourceType: 'system_event',
-      ephemeral: true,
+      sessionId: `sys_${agent.id}_${Date.now()}`,
+      scenario: 'heartbeat',
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
     });

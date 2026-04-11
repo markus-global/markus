@@ -478,9 +478,7 @@ export class Agent {
     options?: {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
-      ephemeral?: boolean;
       sessionId?: string;
-      maxHistory?: number;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
@@ -505,9 +503,7 @@ export class Agent {
       taskId: options?.taskId,
       requirementId: options?.requirementId,
       extra: {
-        ephemeral: options?.ephemeral,
         sessionId: options?.sessionId,
-        maxHistory: options?.maxHistory,
         channelContext: options?.channelContext,
         images: options?.images,
         allowedTools: options?.allowedTools
@@ -705,7 +701,7 @@ export class Agent {
 
   /**
    * Route a mailbox item to the appropriate Agent processing method.
-   * Options like ephemeral/maxHistory/images are forwarded from payload.extra
+   * Options like sessionId/images/scenario are forwarded from payload.extra
    * when present, falling back to type-appropriate defaults.
    */
   private async processMailboxItemInternal(item: MailboxItem): Promise<string | void> {
@@ -721,11 +717,11 @@ export class Agent {
       item.metadata?.responsePromise?.reject(err);
     };
 
+    const ts = Date.now();
+
     const buildHandleOpts = (defaults: Record<string, unknown> = {}) => {
       const opts: Record<string, unknown> = { ...defaults };
-      if (extra.ephemeral !== undefined) opts.ephemeral = extra.ephemeral;
       if (extra.sessionId !== undefined) opts.sessionId = extra.sessionId;
-      if (extra.maxHistory !== undefined) opts.maxHistory = extra.maxHistory;
       if (extra.channelContext !== undefined) opts.channelContext = extra.channelContext;
       if (extra.images !== undefined) opts.images = extra.images;
       if (extra.scenario !== undefined) opts.scenario = extra.scenario;
@@ -753,7 +749,7 @@ export class Agent {
             return reply;
           }
           const defaults = item.sourceType === 'a2a_message'
-            ? { ephemeral: true }
+            ? { sessionId: `a2a_${this.id}_${ts}`, scenario: 'a2a' as const }
             : {};
           const reply = await this.handleMessage(
             item.payload.content,
@@ -789,18 +785,19 @@ export class Agent {
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ ephemeral: true }),
+            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
           );
           resolveResponse(reply);
           return reply;
         }
 
         case 'requirement_update': {
+          const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ ephemeral: true, scenario: 'comment_response' }),
+            buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
           );
           resolveResponse(reply);
           return reply;
@@ -813,11 +810,12 @@ export class Agent {
             const sessionId = `task_${taskId}_r${round}`;
             this.injectUserMessage(sessionId, item.payload.content);
           } else {
+            const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
               item.payload.content,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ ephemeral: true, scenario: 'comment_response' }),
+              buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
             );
           }
           resolveResponse('');
@@ -831,7 +829,7 @@ export class Agent {
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts(),
+            buildHandleOpts({ sessionId: `review_${this.id}_${ts}` }),
           );
           resolveResponse(reply);
           return reply;
@@ -853,7 +851,7 @@ export class Agent {
             item.payload.content,
             undefined,
             undefined,
-            buildHandleOpts({ ephemeral: true, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'heartbeat' }),
           );
           resolveResponse(reply);
           return reply;
@@ -871,7 +869,7 @@ export class Agent {
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ ephemeral: true }),
+            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}` }),
           );
           resolveResponse(reply);
           return reply;
@@ -1791,7 +1789,7 @@ export class Agent {
     try {
       const report = await this.sendMessage(prompt, undefined, undefined, {
         sourceType: 'daily_report',
-        ephemeral: true,
+        sessionId: `sys_${this.id}_${Date.now()}`,
         scenario: 'heartbeat',
       });
       this.memory.writeDailyLog(this.id, `## Daily Report\n\n${report}`);
@@ -1813,10 +1811,7 @@ export class Agent {
     senderId?: string,
     senderInfo?: { name: string; role: string },
     options?: {
-      ephemeral?: boolean;
-      /** Resume a specific session instead of using the current or ephemeral one */
       sessionId?: string;
-      maxHistory?: number;
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
@@ -1834,28 +1829,32 @@ export class Agent {
       this.setStatus('working');
     }
 
+    const scenario = options?.scenario ?? 'chat';
+    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+
     // Track chat activity (only if not already in a heartbeat or other activity)
-    const isEphemeral = options?.ephemeral ?? false;
     let chatActivityId: string | undefined;
     if (!this.state.currentActivity) {
       let actType: AgentActivity['type'] = 'chat';
       let actLabel: string;
-      if (isEphemeral && senderId) {
-        actType = 'a2a';
-        actLabel = `A2A: Chat with ${senderInfo?.name ?? senderId}`;
-      } else if (isEphemeral && !senderId) {
-        if (userMessage.includes('DAILY REPORT')) {
+      switch (scenario) {
+        case 'a2a':
+          actType = 'a2a';
+          actLabel = `A2A: Chat with ${senderInfo?.name ?? senderId}`;
+          break;
+        case 'heartbeat':
           actType = 'internal';
-          actLabel = 'Daily Report';
-        } else if (userMessage.includes('MEMORY FLUSH')) {
-          actType = 'internal';
-          actLabel = 'Memory Flush';
-        } else {
-          actType = 'internal';
-          actLabel = 'Internal Operation';
-        }
-      } else {
-        actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
+          actLabel = userMessage.includes('DAILY REPORT') ? 'Daily Report'
+            : userMessage.includes('MEMORY FLUSH') ? 'Memory Flush'
+            : 'Internal Operation';
+          break;
+        case 'comment_response':
+          actType = 'chat';
+          actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          break;
+        default:
+          actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
+          break;
       }
       chatActivityId = this.startActivity(actType, actLabel);
     }
@@ -1871,24 +1870,35 @@ export class Agent {
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    const maxHistory = options?.maxHistory ?? 200; // load generously; context engine will trim intelligently
+    const maxHistory = 200;
 
-    // Session resolution: explicit sessionId > ephemeral > current main session
+    // Session resolution: explicit sessionId > auto-generated
     let sessionId: string;
     if (options?.sessionId) {
       sessionId = options.sessionId;
-      const userContent = this.buildUserContent(userMessage, options?.images);
-      this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
-    } else if (isEphemeral) {
-      sessionId = `ephemeral_${Date.now()}`;
-    } else {
+    } else if (!isLightweight) {
       if (!this.currentSessionId) {
         const session = this.memory.createSession(this.id);
         this.currentSessionId = session.id;
       }
       sessionId = this.currentSessionId;
-      const userContent = this.buildUserContent(userMessage, options?.images);
-      this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
+    } else {
+      sessionId = options?.sessionId ?? `${scenario}_${this.id}_${Date.now()}`;
+    }
+    this.memory.getOrCreateSession(this.id, sessionId);
+    const userContent = this.buildUserContent(userMessage, options?.images);
+    this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
+
+    // Prepend channel context as prior messages so they are visible in the session
+    if (options?.channelContext?.length) {
+      const session = this.memory.getSession(sessionId);
+      if (session && session.messages.length <= 1) {
+        const channelMsgs: LLMMessage[] = options.channelContext.map(m => ({
+          role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
+          content: m.content,
+        }));
+        session.messages = [...channelMsgs, ...session.messages];
+      }
     }
 
     // Set active model on token counter and ensure tiktoken encoder is loaded
@@ -1900,8 +1910,7 @@ export class Agent {
       await counter.ensureReady();
     }
 
-    const scenario = options?.scenario ?? (isEphemeral && senderId ? 'a2a' : 'chat');
-    const chatSessions = isEphemeral ? undefined : await this.fetchChatSessions();
+    const chatSessions = isLightweight ? undefined : await this.fetchChatSessions();
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -1912,8 +1921,8 @@ export class Agent {
       currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
-      assignedTasks: isEphemeral ? undefined : this.tasksFetcher?.(),
-      deliverableContext: isEphemeral ? undefined : this.getDeliverableContext(effectiveMessage),
+      assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
+      deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
       agentWorkspace: this.pathPolicy ? {
@@ -1934,32 +1943,19 @@ export class Agent {
       llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
     }
 
-    let messages: LLMMessage[];
-    if (isEphemeral) {
-      const channelMsgs = (options?.channelContext ?? []).map(m => ({
-        role: (m.role === 'assistant' ? 'assistant' : 'user') as LLMMessage['role'],
-        content: m.content,
-      }));
-      messages = [
-        { role: 'system' as const, content: systemPrompt },
-        ...channelMsgs.slice(-maxHistory),
-        { role: 'user' as const, content: effectiveMessage },
-      ];
-    } else {
-      const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-      const prepared = await this.contextEngine.prepareMessages({
-        systemPrompt,
-        sessionMessages,
-        memory: this.memory,
-        sessionId,
-        agentId: this.id,
-        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
-        toolDefinitions: llmTools,
-      });
-      messages = prepared.messages;
-      log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
-    }
+    const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+    const prepared = await this.contextEngine.prepareMessages({
+      systemPrompt,
+      sessionMessages,
+      memory: this.memory,
+      sessionId,
+      agentId: this.id,
+      modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+      modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+      toolDefinitions: llmTools,
+    });
+    let messages = prepared.messages;
+    log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     try {
@@ -2002,36 +1998,19 @@ export class Agent {
 
         // Handle max_tokens continuation (model was cut off mid-response)
         if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
-          if (!isEphemeral) {
-            this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
-          } else {
-            messages.push({ role: 'assistant', content: response.content });
-          }
-          // Continue generation from where it left off
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
           const contMsg: LLMMessage = {
             role: 'user',
             content: '[Continue from where you left off. Do not repeat what you already said.]',
           };
-          if (!isEphemeral) {
-            this.memory.appendMessage(sessionId, contMsg);
-          } else {
-            messages.push(contMsg);
-          }
+          this.memory.appendMessage(sessionId, contMsg);
         } else {
           // Normal tool_use flow
-          if (!isEphemeral) {
-            this.memory.appendMessage(sessionId, {
-              role: 'assistant',
-              content: response.content,
-              toolCalls: response.toolCalls,
-            });
-          } else {
-            messages.push({
-              role: 'assistant',
-              content: response.content,
-              toolCalls: response.toolCalls,
-            });
-          }
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
 
           // Execute all tool calls in parallel
           const currentActId = this.state.currentActivity?.id;
@@ -2099,15 +2078,11 @@ export class Agent {
           );
 
           for (const tr of toolResults) {
-            if (!isEphemeral) {
-              this.memory.appendMessage(sessionId, {
-                role: 'tool',
-                content: tr.content,
-                toolCallId: tr.toolCallId,
-              });
-            } else {
-              messages.push({ role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
-            }
+            this.memory.appendMessage(sessionId, {
+              role: 'tool',
+              content: tr.content,
+              toolCallId: tr.toolCallId,
+            });
           }
 
           // Record calls for loop detection
@@ -2123,11 +2098,7 @@ export class Agent {
                 pattern: loopCheck.pattern,
               });
               const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
-              if (!isEphemeral) {
-                this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
-              } else {
-                messages.push({ role: 'user', content: warningMsg });
-              }
+              this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
             }
           }
         }
@@ -2137,33 +2108,21 @@ export class Agent {
         const chatYield = await this.checkAttentionYieldPoint();
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
-          if (!isEphemeral) {
-            this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
-          } else {
-            messages.push({ role: 'user', content: mergeMsg });
-          }
+          this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
         }
 
-        let updatedMessages: typeof messages;
-        if (isEphemeral) {
-          updatedMessages = this.contextEngine.shrinkEphemeralMessages(
-            messages,
-            this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          );
-        } else {
-          const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-          const prepared2 = await this.contextEngine.prepareMessages({
-            systemPrompt,
-            sessionMessages: updatedSessionMessages,
-            memory: this.memory,
-            sessionId,
-            agentId: this.id,
-            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
-            toolDefinitions: llmTools,
-          });
-          updatedMessages = prepared2.messages;
-        }
+        const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const prepared2 = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: updatedSessionMessages,
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+        const updatedMessages = prepared2.messages;
 
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
@@ -2192,20 +2151,15 @@ export class Agent {
       const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
-        if (!isEphemeral) {
-          this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
-        }
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
         return filtered;
       }
-      if (!isEphemeral) {
-        this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
-        // Post-interaction: write to daily log for medium-term memory
-        if (reply.length > 50 && senderId) {
-          this.memory.writeDailyLog(
-            this.id,
-            `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`
-          );
-        }
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
+      if (!isLightweight && reply.length > 50 && senderId) {
+        this.memory.writeDailyLog(
+          this.id,
+          `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`
+        );
       }
       if (chatActivityId && reply.trim()) {
         this.emitActivityLog(chatActivityId, 'text', reply);
@@ -2225,16 +2179,13 @@ export class Agent {
     } catch (error) {
       if (chatActivityId) this.endActivity(chatActivityId);
 
-      // Append error as assistant message so the next conversation turn has full context
-      if (!isEphemeral && this.currentSessionId) {
-        const errContent = `[Error: ${String(error).slice(0, 300)}]`;
-        try {
-          this.memory.appendMessage(this.currentSessionId, {
-            role: 'assistant',
-            content: errContent,
-          });
-        } catch { /* avoid masking the original error */ }
-      }
+      const errContent = `[Error: ${String(error).slice(0, 300)}]`;
+      try {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: errContent,
+        });
+      } catch { /* avoid masking the original error */ }
 
       if (this.activeTasks.size === 0) this.setStatus('error', String(error));
       this.emitAudit({
@@ -4150,7 +4101,7 @@ export class Agent {
     for (let attempt = 0; attempt <= HEARTBEAT_MAX_RETRIES; attempt++) {
       try {
         const reply = await this.handleMessage(prompt, undefined, undefined, {
-          ephemeral: true,
+          sessionId: `hb_${this.id}_${Date.now()}`,
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
         });
@@ -4229,7 +4180,7 @@ export class Agent {
       ].join('\n');
 
       await this.handleMessage(flushPrompt, undefined, undefined, {
-        ephemeral: true,
+        sessionId: `sys_${this.id}_${Date.now()}`,
         scenario: 'heartbeat',
       });
       log.info('Memory flush completed before compaction', { agentId: this.id, sessionId });
@@ -4330,7 +4281,7 @@ export class Agent {
     try {
       const response = await this.sendMessage(prompt, undefined, undefined, {
         sourceType: 'memory_consolidation',
-        ephemeral: true,
+        sessionId: `sys_${this.id}_${Date.now()}`,
         scenario: 'heartbeat',
       });
 

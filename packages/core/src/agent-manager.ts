@@ -502,7 +502,7 @@ export class AgentManager {
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'task_assignment', ephemeral: true }
+          { sourceType: 'task_assignment', sessionId: `sys_${envelope.from}_${Date.now()}` }
         );
       }
     });
@@ -809,7 +809,8 @@ export class AgentManager {
           { name: fromName, role: config.agentRole ?? 'worker' },
           {
             sourceType: 'a2a_message',
-            ephemeral: true,
+            sessionId: `a2a_${targetId}_${Date.now()}`,
+            scenario: 'a2a',
           }
         );
         return stripInternalBlocks(reply);
@@ -1294,7 +1295,9 @@ export class AgentManager {
         }
       }
 
-      // Connect MCP servers declared by explicitly assigned skills (parallel)
+      // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
+      // Connections complete asynchronously and register tools when ready.
+      // This avoids blocking startup for slow MCP processes (e.g. npx chrome-devtools).
       const mcpConnections: Array<Promise<void>> = [];
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
@@ -1330,7 +1333,7 @@ export class AgentManager {
           }
         }
       }
-      await Promise.all(mcpConnections);
+      void Promise.all(mcpConnections);
     }
 
     // Set skill MCP activator callback for runtime activation via discover_tools
@@ -1402,7 +1405,8 @@ export class AgentManager {
           { name: fromName, role: config.agentRole ?? 'worker' },
           {
             sourceType: 'a2a_message',
-            ephemeral: true,
+            sessionId: `a2a_${targetId}_${Date.now()}`,
+            scenario: 'a2a',
           }
         );
       },

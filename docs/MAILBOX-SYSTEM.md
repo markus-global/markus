@@ -393,8 +393,8 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `a2a_message` | `a2a` | |
 | `task_assignment` | `task` | Has `task_id` |
 | `task_comment` | *(none or `chat`)* | Active task → inject only (no activity); inactive → `chat` |
-| `task_status_update` | `notification` | Ephemeral LLM call |
-| `requirement_update` | `notification` | Ephemeral LLM call |
+| `task_status_update` | `notification` | Lightweight LLM call (scenario: `a2a`) |
+| `requirement_update` | `notification` | Lightweight LLM call (scenario: `comment_response`) |
 | `mention` | `chat` | |
 | `review_request` | `chat` | |
 | `session_reply` | `respond_in_session` | Has `task_id` |

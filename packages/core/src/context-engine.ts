@@ -1074,11 +1074,11 @@ export class ContextEngine {
   }
 
   /**
-   * Lightweight compression for ephemeral sessions that skip the full prepareMessages pipeline.
-   * Caps each message to a reasonable size relative to the context window and drops
-   * the oldest non-system messages when total estimate exceeds 80% of the window.
+   * Lightweight in-place shrinking for local message arrays (e.g. subagent loops)
+   * that don't go through the full prepareMessages pipeline.
+   * Caps each message size and drops oldest non-system messages when over budget.
    */
-  shrinkEphemeralMessages(messages: LLMMessage[], contextWindow: number): LLMMessage[] {
+  shrinkMessages(messages: LLMMessage[], contextWindow: number): LLMMessage[] {
     const maxPerMsg = Math.max(3000, Math.floor(contextWindow / 20));
     let result = this.shrinkOversizedMessages(messages, maxPerMsg);
 
