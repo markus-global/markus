@@ -34,7 +34,7 @@ async function main() {
     external,
     banner: {
       js: [
-        '#!/usr/bin/env node',
+        '#!/usr/bin/env -S node --disable-warning=ExperimentalWarning',
         "import { createRequire } from 'module';",
         'const require = createRequire(import.meta.url);',
       ].join('\n'),

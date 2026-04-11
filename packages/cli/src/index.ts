@@ -5,15 +5,6 @@ import { Command } from 'commander';
 import { APP_VERSION } from '@markus/shared';
 import { setGlobalJson } from './output.js';
 
-// Suppress node:sqlite ExperimentalWarning
-const originalEmit = process.emit.bind(process) as typeof process.emit;
-process.emit = function (event: string, ...args: unknown[]) {
-  if (event === 'warning' && (args[0] as { name?: string })?.name === 'ExperimentalWarning') {
-    return false;
-  }
-  return (originalEmit as Function).call(process, event, ...args);
-} as typeof process.emit;
-
 // Load .env file from project root
 const envPath = resolve(process.cwd(), '.env');
 if (existsSync(envPath)) {
