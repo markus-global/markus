@@ -81,16 +81,34 @@ export class BrowserSessionManager {
   }
 
   /**
+   * The ownerKey of the session that last operated under each agent's lock.
+   * Used to skip redundant select_page calls when only one session is active.
+   */
+  private lastActiveSession = new Map<string, { ownerKey: string; pageId: number }>();
+
+  /**
    * Ensure the MCP server's selected tab matches this session's current page.
    * Called inside the agent lock before any tool that operates on the active tab.
+   *
+   * Uses bringToFront: false to prevent Chrome from stealing window focus on
+   * macOS (Chromium CDP activates the window on select_page by default).
+   * Skips the call entirely when the agent's last operation was already on
+   * this session's current page.
    */
   private async ensureCorrectPage(agentId: string, ownerKey: string): Promise<void> {
     const pageId = this.currentPage.get(ownerKey);
     if (pageId === undefined) return;
+
+    const last = this.lastActiveSession.get(agentId);
+    if (last && last.ownerKey === ownerKey && last.pageId === pageId) {
+      return;
+    }
+
     const selectHandler = this.selectPageHandlers.get(agentId);
     if (!selectHandler) return;
     try {
-      await selectHandler.execute({ pageId });
+      await selectHandler.execute({ pageId, bringToFront: false });
+      this.lastActiveSession.set(agentId, { ownerKey, pageId });
     } catch (err) {
       log.warn(`Auto-select page ${pageId} failed for ${ownerKey}: ${err}`);
     }
@@ -193,14 +211,18 @@ export class BrowserSessionManager {
       ...handler,
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
+        if (args.background === undefined) {
+          args.background = true;
+        }
         return this.withAgentLock(agentId, async () => {
           const result = await handler.execute(args);
           const pages = this.parsePageEntries(result);
           const owned = this.getOwned(ownerKey);
-          const newPage = pages.find((p) => p.selected);
+          const newPage = pages.find((p) => p.selected) ?? pages.find((p) => !owned.has(p.id));
           if (newPage) {
             owned.add(newPage.id);
             this.currentPage.set(ownerKey, newPage.id);
+            this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
             log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
           } else {
             log.warn(`new_page response did not contain a [selected] page for ${ownerKey}`);
@@ -234,10 +256,14 @@ export class BrowserSessionManager {
           log.warn(msg, { ownerKey, pageId });
           return JSON.stringify({ error: msg });
         }
+        if (args.bringToFront === undefined) {
+          args.bringToFront = false;
+        }
         return this.withAgentLock(agentId, async () => {
           const result = await handler.execute(args);
           if (pageId !== undefined) {
             this.currentPage.set(ownerKey, pageId);
+            this.lastActiveSession.set(agentId, { ownerKey, pageId });
           }
           return this.annotateResponse(result, ownerKey);
         });
@@ -310,17 +336,18 @@ export class BrowserSessionManager {
           log.info(`Session ${ownerKey} called navigate_page with no owned pages -- auto-creating via new_page`, { url });
 
           return this.withAgentLock(agentId, async () => {
-            const newPageArgs: Record<string, unknown> = { url };
+            const newPageArgs: Record<string, unknown> = { url, background: true };
             if (args.timeout) newPageArgs.timeout = args.timeout;
 
             try {
               const result = await newPageHandler.execute(newPageArgs);
               const pages = this.parsePageEntries(result);
-              const newPage = pages.find((p) => p.selected);
+              const newPage = pages.find((p) => p.selected) ?? pages.find((p) => !owned.has(p.id));
 
               if (newPage) {
                 owned.add(newPage.id);
                 this.currentPage.set(ownerKey, newPage.id);
+                this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
                 log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
               } else {
                 log.warn(`Auto-created page but could not determine its ID for ${ownerKey}`);
@@ -390,6 +417,7 @@ export class BrowserSessionManager {
     }
     this.agentLocks.delete(agentId);
     this.selectPageHandlers.delete(agentId);
+    this.lastActiveSession.delete(agentId);
     if (total > 0) {
       log.info(`Cleaning up ${total} browser page(s) for agent ${agentId}`);
     }

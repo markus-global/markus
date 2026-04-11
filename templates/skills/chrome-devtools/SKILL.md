@@ -44,9 +44,9 @@ tabs to wake them, or use a dedicated Chrome profile with few tabs.
 |------|---------|
 | `chrome-devtools__navigate_page` | Navigate current tab to a URL (**replaces** current page — see warning above). Auto-creates a new tab if you have none. |
 | `chrome-devtools__list_pages` | List your open tabs (only shows tabs you own) |
-| `chrome-devtools__new_page` | Open a new tab without affecting existing tabs. Use this when you need to keep the current page open. |
+| `chrome-devtools__new_page` | Open a new tab. **Always pass `background: true`** to avoid stealing user focus. |
 | `chrome-devtools__close_page` | Close a tab you own |
-| `chrome-devtools__select_page` | Switch to one of your tabs |
+| `chrome-devtools__select_page` | Switch to one of your tabs. **Never pass `bringToFront: true`** unless user requests it. |
 | `chrome-devtools__wait_for` | Wait for selector, navigation, or network idle |
 
 ### Input (9 tools)
@@ -133,14 +133,33 @@ select_page → switch back to first tab if needed
 **Rule of thumb:** Before calling `navigate_page`, ask yourself: "Do I still need what's
 on the current page?" If yes, call `new_page` first.
 
+## CRITICAL: operate in the background — never steal user focus
+
+The user may be working in another application (IDE, terminal, another browser tab) while
+you interact with Chrome. **You must never cause Chrome to steal window focus.**
+
+The system enforces this automatically for internal operations, but you must also follow
+these rules for your own tool calls:
+
+- **`new_page`**: Always pass `background: true`. This opens the tab without bringing
+  Chrome to the foreground. Example: `new_page({ url: "...", background: true })`
+- **`select_page`**: Always pass `bringToFront: false` (or omit `bringToFront` — the
+  system defaults it to `false`). Never pass `bringToFront: true` unless the user
+  explicitly asks you to show them a page.
+- **`navigate_page`**: This navigates the current tab in-place and does not have a
+  focus parameter. The system handles background selection automatically.
+- **Do NOT call `select_page` unnecessarily.** The system auto-selects your current
+  tab before each operation. Only call `select_page` when you need to switch between
+  multiple tabs you own.
+
 ## Best practices
 
 1. **Start with `navigate_page`**: Just call `navigate_page` with your target URL.
    The system auto-creates a fresh tab for you if you don't have one yet.
 
 2. **Preserve important pages**: If the current tab has useful content (results, data,
-   a page you may need to revisit), call `new_page` before navigating to a new URL.
-   Otherwise `navigate_page` will destroy the current page's content.
+   a page you may need to revisit), call `new_page` (with `background: true`) before
+   navigating to a new URL. Otherwise `navigate_page` will destroy the current page's content.
 
 3. **Snapshot before interaction**: Always call `take_snapshot` before clicking or filling.
    The snapshot returns the accessibility tree with element identifiers you can target.

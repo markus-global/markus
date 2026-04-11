@@ -216,7 +216,6 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const handleNotificationClick = async (n: NotificationInfo) => {
     if (!n.read) handleMarkRead(n.id);
     navigateForNotification(n);
-    setOpen(false);
   };
 
   const handleApprovalResponse = async (id: string, approved: boolean) => {
@@ -254,7 +253,6 @@ export function NotificationBell({ collapsed, userId }: Props) {
     const taskId = a.details?.taskId as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
     else navBus.navigate(PAGE.WORK);
-    setOpen(false);
   };
 
   return (
@@ -280,7 +278,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
       {open && createPortal(
         <div ref={panelRef} className="fixed w-80 max-h-[28rem] bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left }}>
-          {/* Tabs */}
+          {/* Tabs + Close */}
           <div className="flex border-b border-border-default shrink-0">
             <button
               onClick={() => setTab('approvals')}
@@ -297,6 +295,15 @@ export function NotificationBell({ collapsed, userId }: Props) {
               }`}
             >
               Notifications{unreadCount > 0 ? ` (${unreadCount})` : ''}
+            </button>
+            <button
+              onClick={() => setOpen(false)}
+              className="px-2 py-2 text-fg-tertiary hover:text-fg-primary transition-colors shrink-0"
+              title="Close"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+              </svg>
             </button>
           </div>
 
