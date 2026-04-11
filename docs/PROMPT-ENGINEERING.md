@@ -6,7 +6,7 @@ This document specifies how Markus constructs prompts, manages context, and orch
 
 ## 1. LLM Call Taxonomy
 
-Every LLM invocation falls into one of seven categories:
+Every LLM invocation falls into one of eight categories:
 
 | # | Scenario | Entry Point | Method | Streaming | Tools | Network Retry | Loop Limit |
 |---|----------|-------------|--------|-----------|-------|---------------|------------|
@@ -16,7 +16,8 @@ Every LLM invocation falls into one of seven categories:
 | 4 | **Respond-in-Session** | API `/api/agents/:id/sessions/:sid/messages` | `respondInSession()` | Yes | Yes | Yes | 200 (safety net) |
 | 5 | **Heartbeat** | `HeartbeatScheduler` → `handleHeartbeat()` | `handleMessage(ephemeral)` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
 | 6 | **A2A Chat** | API `/api/agents/:id/a2a` / channel routing | `handleMessage(ephemeral)` | No | Yes | Yes (via handleMessage) | 200 |
-| 7 | **Ephemeral Internal** | Various | `handleMessage(ephemeral)` | No | Varies | Yes (via handleMessage) | 200 |
+| 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(ephemeral, scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
+| 8 | **Ephemeral Internal** | Various | `handleMessage(ephemeral)` | No | Varies | Yes (via handleMessage) | 200 |
 
 ### Ephemeral Internal Calls (Scenario 7)
 
@@ -111,7 +112,7 @@ All 13 mailbox item types (`human_chat`, `task_assignment`, `session_reply`, `da
 
 #### Scenario Section (§24)
 Source: `buildScenarioSection()`.  
-Four distinct instruction sets depending on `scenario` parameter:
+Five distinct instruction sets depending on `scenario` parameter:
 
 | Scenario | Key Instructions |
 |----------|-----------------|
@@ -119,6 +120,7 @@ Four distinct instruction sets depending on `scenario` parameter:
 | `task_execution` | Decompose into subtasks. Work systematically. Call `task_submit_review` when done (mandatory). |
 | `heartbeat` | Patrol mode: observe, triage, take lightweight actions. Can check status, send messages, create tasks, retry failed tasks, do quick reviews, save insights. No complex implementation — heavy work goes into tasks. |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. |
+| `comment_response` | **Context-first protocol**: MUST call `task_get`/`requirement_list` and read ALL previous comments before replying. Never reply based solely on the incoming comment text. |
 
 ### 2.3 Skill Filtering
 

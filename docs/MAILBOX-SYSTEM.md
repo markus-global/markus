@@ -110,6 +110,19 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 - `invokesLLM: false` — it does not invoke a new LLM call; the injected text becomes part of the current task's next LLM turn
 - If the task is NOT active, it falls back to `handleMessage` and DOES create an activity
 
+### 3.5 Context-First Protocol for Comments
+
+When processing `task_comment` (on inactive tasks) or `requirement_update` (comments), the agent uses `scenario: 'comment_response'`. This instructs the LLM to follow a mandatory context-gathering protocol **before** replying:
+
+1. **Fetch the full item** — call `task_get` or `requirement_list` to get the complete current state
+2. **Read ALL previous comments** — understand the full conversation thread
+3. **Identify the commenter's intent** — question, request, feedback, objection, etc.
+4. **Check related context** — look up referenced tasks, requirements, or files
+
+Only after completing these steps does the agent formulate its reply. This prevents superficial responses that ignore important context already discussed in the comment thread.
+
+The notification text sent to agents also includes explicit MANDATORY instructions reinforcing this protocol.
+
 Priorities can be overridden per-item when enqueuing.
 
 ---

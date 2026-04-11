@@ -2134,7 +2134,6 @@ export class APIServer {
 
           const notifyAgent = (agentId: string, reason: string) => {
             if (notified.has(agentId) || agentId === commenterId) return;
-            // Skip assigned agent on in_progress tasks — they already got the live inject above
             if (task?.status === 'in_progress' && task.assignedAgentId === agentId) return;
             notified.add(agentId);
             try {
@@ -2145,7 +2144,11 @@ export class APIServer {
                 ``,
                 `Comment from ${authorName}: ${body['content'] as string}`,
                 ``,
-                `Review and respond if needed. Use \`task_get\` and \`task_comment\` to investigate and reply.`,
+                `**MANDATORY before replying**: You MUST first understand the full context:`,
+                `1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`,
+                `2. Read ALL previous comments on this task to understand the conversation thread`,
+                `3. Only THEN formulate your response using \`task_comment\``,
+                `Do NOT reply based solely on the comment above — you need the full picture.`,
               ].join('\n');
               agent.enqueueToMailbox('task_comment', {
                 summary: `Comment on task "${taskTitle}" from ${authorName}`,
@@ -6633,7 +6636,11 @@ export class APIServer {
                 ``,
                 `Comment from ${authorName}: ${body['content'] as string}`,
                 ``,
-                `Review and respond if needed. Use \`requirement_list\` and \`requirement_comment\` to investigate and reply.`,
+                `**MANDATORY before replying**: You MUST first understand the full context:`,
+                `1. Call \`requirement_list\` to get the full requirement details and linked tasks`,
+                `2. Read ALL previous comments to understand the conversation thread`,
+                `3. Only THEN formulate your response using \`requirement_comment\``,
+                `Do NOT reply based solely on the comment above — you need the full picture.`,
               ].join('\n');
               agent.enqueueToMailbox('requirement_update', {
                 summary: `Comment on requirement "${reqTitle}" from ${authorName}`,

@@ -141,7 +141,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -536,7 +536,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response'): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -659,6 +659,29 @@ export class ContextEngine {
         lines.push('- For substantial work requests: create a `task_create` assigned to the target agent — do NOT ask them to do complex work via chat');
         lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
         lines.push('- If you cannot help, explain why and suggest who can');
+        break;
+
+      case 'comment_response':
+        lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
+        lines.push('');
+        lines.push('**MANDATORY context-gathering protocol (do this BEFORE writing any reply):**');
+        lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_list` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, and all fields');
+        lines.push('2. **Read ALL previous comments**: Review the entire comment thread to understand the conversation history, who said what, and what has already been discussed or decided');
+        lines.push('3. **Identify the commenter\'s intent**: Is it a question? A request for action? Feedback? A status inquiry? An objection?');
+        lines.push('4. **Check related context**: If the comment references other tasks, requirements, or files, look them up too');
+        lines.push('');
+        lines.push('**Only AFTER completing steps 1-4**, formulate your reply using `task_comment` or `requirement_comment`.');
+        lines.push('');
+        lines.push('**Reply quality standards:**');
+        lines.push('- Reference specific details from the task/requirement state and prior comments to show you understood the context');
+        lines.push('- Address the commenter\'s actual concern, not just the surface-level text of the latest comment');
+        lines.push('- If action is needed, state what you will do (or have done) concretely');
+        lines.push('- If the comment is unclear, ask a clarifying question rather than guessing');
+        lines.push('');
+        lines.push('**NEVER do this:**');
+        lines.push('- Reply immediately without calling `task_get`/`requirement_list` first');
+        lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
+        lines.push('- Ignore prior comments that provide important context for the current discussion');
         break;
     }
 

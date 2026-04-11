@@ -484,7 +484,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -784,13 +784,23 @@ export class Agent {
         }
 
         case 'task_status_update':
-        case 'requirement_update':
         case 'mention': {
           const reply = await this.handleMessage(
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ ephemeral: true, maxHistory: 10 }),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'requirement_update': {
+          const reply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            senderInfo,
+            buildHandleOpts({ ephemeral: true, maxHistory: 30, scenario: 'comment_response' }),
           );
           resolveResponse(reply);
           return reply;
@@ -807,7 +817,7 @@ export class Agent {
               item.payload.content,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ ephemeral: true, maxHistory: 10 }),
+              buildHandleOpts({ ephemeral: true, maxHistory: 30, scenario: 'comment_response' }),
             );
           }
           resolveResponse('');
@@ -1811,7 +1821,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
