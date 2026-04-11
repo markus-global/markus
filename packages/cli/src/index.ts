@@ -51,6 +51,30 @@ async function registerCommands() {
   const { registerStartCommand } = await import('./commands/start.js');
   registerStartCommand(program);
 
+  // ── 1b. model ──────────────────────────────────────────────────────
+  const { registerModelCommand } = await import('./commands/model.js');
+  registerModelCommand(program);
+
+  // ── 1e. models ────────────────────────────────────────────────────
+  const { registerModelsCommand } = await import('./commands/models.js');
+  registerModelsCommand(program);
+
+  // ── 1c. doctor ──────────────────────────────────────────────────────
+  const { registerDoctorCommand } = await import('./commands/doctor.js');
+  registerDoctorCommand(program);
+
+  // ── 1d. auth ───────────────────────────────────────────────────────
+  const { registerAuthCommand } = await import('./commands/auth.js');
+  registerAuthCommand(program);
+
+  // ── 1f. channel ───────────────────────────────────────────────────
+  const { registerChannelCommand } = await import('./commands/channel.js');
+  registerChannelCommand(program);
+
+  // ── 1g. gateway ───────────────────────────────────────────────────
+  const { registerGatewayCommand } = await import('./commands/gateway.js');
+  registerGatewayCommand(program);
+
   // ── 2. agent ───────────────────────────────────────────────────────
   const { registerAgentCommands } = await import('./commands/agent.js');
   registerAgentCommands(program);
@@ -96,7 +120,6 @@ async function registerCommands() {
   const { registerRoleCommands } = await import('./commands/role.js');
   const { registerTemplateCommands } = await import('./commands/template.js');
   const { registerBuilderCommands } = await import('./commands/builder.js');
-  const { registerGatewayCommands } = await import('./commands/gateway.js');
   const { registerExternalAgentCommands } = await import('./commands/external-agent.js');
   const { registerSettingsCommands } = await import('./commands/settings.js');
 
@@ -107,7 +130,6 @@ async function registerCommands() {
   registerRoleCommands(admin);
   registerTemplateCommands(admin);
   registerBuilderCommands(admin);
-  registerGatewayCommands(admin);
   registerExternalAgentCommands(admin);
   registerSettingsCommands(admin);
 }

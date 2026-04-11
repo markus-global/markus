@@ -7,6 +7,7 @@ import {
   loadConfig,
   getDefaultConfigPath,
   createLogger,
+  closeRuntimeLogger,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -41,6 +42,9 @@ import {
   type AuditEventType,
 } from '@markus/org-manager';
 import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
+import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
+import { openBrowser } from '../utils/browser.js';
+import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
 
@@ -271,7 +275,77 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
 }
 
 async function startServer(config: ReturnType<typeof loadConfig>, values: Record<string, unknown>) {
-  console.log('Starting Markus server...');
+  // Initialize startup logger first — all startup output goes to file AND console
+  const logPath = initStartupLogger();
+
+  // Boot the animated progress display
+  const progress = new StartupProgress(logPath);
+  progress.start();
+
+  // ── Step 0: Boot ──────────────────────────────────────────────────────────
+  progress.setActive(0);
+  progress.complete(0, 'markus CLI initialised');
+
+  startupSection('Markus 启动');
+  startupLog('INFO', `日志文件: ${logPath}`);
+
+  // ── Step 1: Config ─────────────────────────────────────────────────────────
+  progress.setActive(1);
+  progress.complete(1, `config loaded from ~/.markus/markus.json`);
+
+  // LLM preflight check: warn if no VALID LLM API key is configured
+  // "***" or other placeholder patterns are NOT valid keys
+  const PLACEHOLDER_PATTERNS = ['***', 'your-', 'dummy', 'fake', 'test-key', 'replace-me'];
+  const isPlaceholder = (key: string): boolean =>
+    PLACEHOLDER_PATTERNS.some(p => key.toLowerCase().includes(p)) || key.length < 8;
+
+  const configuredLLMProviders: string[] = [];
+  const llmProviders = config.llm?.providers ?? {};
+  for (const [name, cfg] of Object.entries(llmProviders)) {
+    const key = (cfg as any)?.apiKey ?? process.env[`${name.toUpperCase()}_API_KEY`];
+    if (key && !isPlaceholder(key)) configuredLLMProviders.push(name);
+  }
+
+  // ── Step 2: LLM Providers ──────────────────────────────────────────────────
+  progress.setActive(2);
+  if (configuredLLMProviders.length > 0) {
+    progress.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
+    for (const name of configuredLLMProviders) {
+      startupLog('OK', `LLM Provider: ${name}`, (llmProviders[name] as any)?.model ?? 'default');
+    }
+  } else {
+    progress.fail(2, 'no valid LLM API key detected');
+    startupLog('FAIL', '未检测到有效的 LLM API key', '*** 占位符不会被识别为有效 key');
+    startupLog('INFO', '请选择配置方式:', '');
+    startupLog('INFO', '  1. 在浏览器中配置  → http://localhost:8056');
+    startupLog('INFO', '  2. 交互式配置    → 正在启动向导...');
+    startupBlank();
+    // Launch interactive init wizard inline — don't proceed without valid config
+    const { quickInit } = await import('./init.js');
+    await quickInit();
+    // Reload config after init
+    const { loadConfig: reloadConfig } = await import('@markus/shared');
+    const updatedConfig = reloadConfig(values['config'] as string | undefined);
+    // Re-check after init
+    for (const [name, cfg] of Object.entries(updatedConfig.llm?.providers ?? {})) {
+      const key = (cfg as any)?.apiKey ?? process.env[`${name.toUpperCase()}_API_KEY`];
+      if (key && !isPlaceholder(key)) configuredLLMProviders.push(name);
+    }
+    if (configuredLLMProviders.length > 0) {
+      progress.complete(2, `providers ready: ${configuredLLMProviders.join(', ')}`);
+      startupLog('OK', 'LLM 配置成功', `已配置: ${configuredLLMProviders.join(', ')}`);
+      startupBlank();
+    } else {
+      progress.skip(2, 'LLM not configured — server will start with disabled provider');
+      startupLog('WARN', '仍未配置有效的 LLM key', '服务将使用 disabled provider 启动');
+      startupLog('INFO', '稍后可运行 markus init 或 markus model 重新配置');
+      startupBlank();
+    }
+  }
+
+  // ── Step 3: Database ───────────────────────────────────────────────────────
+  progress.setActive(3);
+  startupLog('INFO', '正在启动服务...');
 
   // Ensure `markus` is available in PATH for agents invoking it via shell_execute.
   // In npm-global mode: process.argv[1] is the installed binary (e.g. /usr/local/bin/markus)
@@ -299,6 +373,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     process.env['BRAVE_SEARCH_API_KEY'] = config.integrations.search.braveApiKey;
   }
 
+  const apiPort = Number(values['port']) || config.server.apiPort;
+
   const {
     orgService,
     taskService,
@@ -309,8 +385,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     billingService,
     auditService,
   } = await createServices(config);
+  progress.complete(3, 'SQLite storage initialised');
+  progress.complete(4, `services ready: agent manager, task service, api server on :${apiPort}`);
 
-  const apiPort = Number(values['port']) || config.server.apiPort;
   const apiServer = new APIServer(orgService, taskService, apiPort);
   apiServer.setSkillRegistry(skillRegistry);
   apiServer.setHITLService(hitlService);
@@ -841,6 +918,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   });
 
   const commPort = apiPort + 2;
+
+  // ── Step 5: Gateway ───────────────────────────────────────────────────────
+  progress.setActive(5);
   await messageRouter.connectAll([{ platform: 'webui', port: commPort }]);
 
   // Check for Feishu config
@@ -856,34 +936,36 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         appSecret: feishuAppSecret,
       },
     ]);
-    console.log('  Feishu integration enabled');
+    startupLog('OK', '飞书适配器已连接');
+    progress.complete(5, 'webhook adapters: WebUI + Feishu');
+  } else {
+    progress.complete(5, 'webhook adapter: WebUI only');
   }
 
-  const webPort = config.server.webPort;
-  if (webUiDir) {
-    console.log(`
-  Markus is running!
+  startupBlank();
 
-  Dashboard:   http://localhost:${apiPort}
+  // ── Done — replace console.error spam with progress.finish() ────────────────
+  const logFile = getStartupLogFile();
+  const logFileName = logFile.split('/').pop() ?? logFile;
+  const uiUrl = `http://localhost:${apiPort}`;
 
-  Press Ctrl+C to stop.
-  `);
+  // Auto-open browser (skip if NO_BROWSER env var is set)
+  if (!process.env['NO_BROWSER'] && webUiDir) {
+    progress.finish(uiUrl);
+    setTimeout(() => {
+      openBrowser(uiUrl);
+    }, 500);
   } else {
-    console.log(`
-  Markus is running!
-
-  API Server:  http://localhost:${apiPort}
-  Web UI:      http://localhost:${webPort}  (run: pnpm --filter @markus/web-ui dev)
-
-  Press Ctrl+C to stop.
-  `);
+    progress.finish(uiUrl);
   }
 
   // Start restored agents in background (server is already accepting requests)
   orgService.startRestoredAgentsInBackground();
 
   process.on('SIGINT', () => {
-    console.log('\nShutting down...');
+    console.error('\nShutting down...');
+    closeStartupLogger();
+    closeRuntimeLogger();
     scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()

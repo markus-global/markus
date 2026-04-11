@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createLogger, msgId, type Message } from '@markus/shared';
 import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
 import { FeishuClient } from './client.js';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes, createCipheriv, createDecipheriv, scrypt } from 'node:crypto';
+import { promisify } from 'node:util';
 
 const log = createLogger('feishu-adapter');
 
@@ -37,7 +38,11 @@ interface FeishuEvent {
   };
   challenge?: string;
   type?: string;
+  /** Encrypted payload — present when Feishu webhook encryption is enabled */
+  encrypt?: string;
 }
+
+const scryptAsync = promisify(scrypt);
 
 export class FeishuAdapter implements CommAdapter {
   readonly platform = 'feishu';
@@ -103,6 +108,22 @@ export class FeishuAdapter implements CommAdapter {
     return this.connected;
   }
 
+  /**
+   * Decrypt Feishu encrypted webhook payload using AES-256-CBC.
+   * The encryptKey is derived via scrypt with salt='key' (Feishu convention).
+   * The encrypted payload is base64-encoded; the first 16 bytes are the IV.
+   */
+  private async decryptFeishuPayload(encrypted: string): Promise<string> {
+    if (!this.config?.encryptKey) throw new Error('encryptKey not configured');
+    const keyBuffer = (await scryptAsync(this.config.encryptKey, 'key', 32)) as Buffer;
+    const encryptedBuffer = Buffer.from(encrypted, 'base64');
+    const iv = encryptedBuffer.subarray(0, 16);
+    const data = encryptedBuffer.subarray(16);
+    const decipher = createDecipheriv('aes-256-cbc', keyBuffer, iv);
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+    return decrypted.toString('utf8');
+  }
+
   private handleWebhook(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'POST') {
       res.writeHead(405);
@@ -113,18 +134,20 @@ export class FeishuAdapter implements CommAdapter {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
-      const body = Buffer.concat(chunks).toString();
+      const rawBody = Buffer.concat(chunks).toString();
 
-      try {
-        const event = JSON.parse(body) as FeishuEvent;
+      // Parse initial payload — may contain an encrypted event
+      const raw = JSON.parse(rawBody) as FeishuEvent;
 
-        // URL verification challenge
-        if (event.challenge) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ challenge: event.challenge }));
-          return;
-        }
+      // URL verification challenge (can come encrypted or plaintext)
+      if (raw.challenge) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ challenge: raw.challenge }));
+        return;
+      }
 
+      // If Feishu sent an encrypted payload, decrypt it first
+      const processEvent = (event: FeishuEvent) => {
         // Deduplicate events
         const eventId = event.header?.event_id;
         if (eventId) {
@@ -136,7 +159,7 @@ export class FeishuAdapter implements CommAdapter {
           this.processedEvents.add(eventId);
           // Cleanup old events (keep last 1000)
           if (this.processedEvents.size > 1000) {
-            const arr = [...this.processedEvents];
+            const arr = Array.from(this.processedEvents);
             this.processedEvents = new Set(arr.slice(-500));
           }
         }
@@ -156,11 +179,29 @@ export class FeishuAdapter implements CommAdapter {
             log.error('Failed to process card action', { error: err.message });
           });
         }
-      } catch (error) {
-        log.error('Failed to parse webhook body', { error });
-        res.writeHead(400);
-        res.end('bad request');
-      }
+      };
+
+      (async () => {
+        try {
+          if (raw.encrypt && this.config?.encryptKey) {
+            // Decrypt the encrypted payload
+            const decrypted = await this.decryptFeishuPayload(raw.encrypt);
+            const event = JSON.parse(decrypted) as FeishuEvent;
+            processEvent(event);
+          } else if (raw.encrypt && !this.config?.encryptKey) {
+            log.warn('Received encrypted Feishu payload but no encryptKey configured');
+            res.writeHead(200);
+            res.end('ok');
+          } else {
+            // Plaintext payload
+            processEvent(raw);
+          }
+        } catch (err) {
+          log.error('Failed to process Feishu webhook', { error: err instanceof Error ? err.message : String(err) });
+          res.writeHead(400);
+          res.end('bad request');
+        }
+      })();
     });
   }
 

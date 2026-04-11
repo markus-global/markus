@@ -1,3 +1,4 @@
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('slack-client');
@@ -36,6 +37,27 @@ export interface SlackMessageResponse {
   error?: string;
 }
 
+// Slack event types
+export interface SlackEventEnvelope {
+  type: string;
+  token?: string;
+  team_id?: string;
+  event?: SlackEvent;
+  challenge?: string;
+}
+
+export interface SlackEvent {
+  type: string;
+  channel?: string;
+  user?: string;
+  text?: string;
+  ts?: string;
+  thread_ts?: string;
+  subtype?: string;
+  message?: SlackEvent;
+  bot_id?: string;
+}
+
 export class SlackClient {
   private config: SlackClientConfig;
   private botToken: string;
@@ -47,8 +69,43 @@ export class SlackClient {
     this.botToken = config.botToken;
     this.signingSecret = config.signingSecret;
     this.apiUrl = config.apiUrl || 'https://slack.com/api';
-    
+
     log.info('Slack client initialized');
+  }
+
+  /**
+   * Verify Slack request signature using HMAC-SHA256
+   * Follows Slack's signing secret verification protocol:
+   * 1. Concatenate version, timestamp, body
+   * 2. HMAC-SHA256 with signing secret
+   * 3. Compare using timing-safe comparison
+   */
+  verifySignature(signature: string, timestamp: string, body: string): boolean {
+    if (!this.signingSecret) {
+      log.warn('Slack signature verification skipped: no signing secret configured');
+      return true;
+    }
+
+    // Slack rejects requests older than 5 minutes to prevent replay attacks
+    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 5 * 60;
+    if (parseInt(timestamp, 10) < fiveMinutesAgo) {
+      log.warn('Slack signature verification failed: request timestamp too old');
+      return false;
+    }
+
+    const base = `v0:${timestamp}:${body}`;
+    const mySignature = 'v0=' + createHmac('sha256', this.signingSecret)
+      .update(base)
+      .digest('hex');
+
+    try {
+      const sigBuffer = Buffer.from(signature);
+      const mySigBuffer = Buffer.from(mySignature);
+      if (sigBuffer.length !== mySigBuffer.length) return false;
+      return timingSafeEqual(sigBuffer, mySigBuffer);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -190,14 +247,5 @@ export class SlackClient {
     return result;
   }
 
-  /**
-   * Verify request signature (for webhook verification)
-   */
-  verifySignature(signature: string, timestamp: string, body: string): boolean {
-    // TODO: Implement Slack signature verification
-    // This requires creating a HMAC SHA256 signature using the signing secret
-    // and comparing it with the provided signature
-    log.warn('Slack signature verification not implemented');
-    return true; // For development only
-  }
+  // verifySignature is now defined inline above
 }

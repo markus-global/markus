@@ -1,3 +1,7 @@
+import { appendFileSync, existsSync, mkdirSync, createWriteStream } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -6,6 +10,32 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   warn: 2,
   error: 3,
 };
+
+// Singleton file stream for all runtime logs
+const LOG_DIR = join(homedir(), '.markus', 'logs');
+let runtimeLogStream: ReturnType<typeof createWriteStream> | null = null;
+
+function ensureLogDir(): void {
+  if (!existsSync(LOG_DIR)) {
+    mkdirSync(LOG_DIR, { recursive: true, mode: 0o755 });
+  }
+}
+
+function getRuntimeLogPath(): string {
+  const date = new Date().toISOString().slice(0, 10);
+  return join(LOG_DIR, `runtime-${date}.log`);
+}
+
+function initRuntimeLogger(): void {
+  if (runtimeLogStream) return;
+  ensureLogDir();
+  runtimeLogStream = createWriteStream(getRuntimeLogPath(), { flags: 'a', mode: 0o644 });
+}
+
+function writeToFile(line: string): void {
+  if (!runtimeLogStream) return;
+  runtimeLogStream.write(line + '\n');
+}
 
 export class Logger {
   private minLevel: number;
@@ -49,16 +79,19 @@ export class Logger {
     const suffix = data ? ` ${JSON.stringify(data)}` : '';
     const line = `${prefix} ${msg}${suffix}`;
 
-    if (level === 'error') {
-      console.error(line);
-    } else if (level === 'warn') {
-      console.warn(line);
-    } else {
-      console.log(line);
-    }
+    // Write to log file only — stderr/stdout reserved for user-facing output
+    initRuntimeLogger();
+    writeToFile(line);
   }
 }
 
 export function createLogger(name: string, level?: LogLevel): Logger {
   return new Logger(name, level ?? (process.env['LOG_LEVEL'] as LogLevel) ?? 'info');
+}
+
+export function closeRuntimeLogger(): void {
+  if (runtimeLogStream) {
+    runtimeLogStream.end();
+    runtimeLogStream = null;
+  }
 }
