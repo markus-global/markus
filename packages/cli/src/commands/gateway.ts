@@ -1,149 +1,102 @@
 import type { Command } from 'commander';
-import { createClient, ApiError } from '../api-client.js';
-import { detail, success, fail } from '../output.js';
+import { loadConfig } from '@markus/shared';
 
-function printManual(data: unknown, json: boolean) {
-  if (json) {
-    console.log(JSON.stringify(data, null, 2));
-    return;
-  }
-  if (typeof data === 'string') {
-    console.log(data);
-    return;
-  }
-  if (data && typeof data === 'object') {
-    const o = data as Record<string, unknown>;
-    const md = o['markdown'] ?? o['content'] ?? o['body'] ?? o['manual'];
-    if (typeof md === 'string') {
-      console.log(md);
-      return;
-    }
-  }
-  console.log(JSON.stringify(data, null, 2));
-}
+const C = { GREEN: '\x1b[32m', YELLOW: '\x1b[33m', CYAN: '\x1b[36m', DIM: '\x1b[2m', RESET: '\x1b[0m', BOLD: '\x1b[1m' };
+const ok = (t: string, d = '') => console.log(`  ${C.GREEN}✓${C.RESET} ${t}${d ? ` ${C.DIM}${d}${C.RESET}` : ''}`);
+const warn = (t: string, d = '') => console.log(`  ${C.YELLOW}⚠${C.RESET} ${t}${d ? ` ${C.DIM}${d}${C.RESET}` : ''}`);
+const info = (t: string) => console.log(`    ${C.CYAN}→${C.RESET} ${t}`);
 
-export function registerGatewayCommands(program: Command) {
-  const root = program.command('gateway').description('External agent gateway');
+export function registerGatewayCommand(program: Command) {
+  const gateway = program
+    .command('gateway')
+    .description('Gateway service management (status, config, logs)');
 
-  root.command('info').action(async (_opts, cmd) => {
-    const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-    const client = createClient(g);
-    const out = { json: !!g.json };
-    try {
-      const data = await client.get<Record<string, unknown>>('/gateway/info');
-      detail(data, { ...out, title: 'Gateway info' });
-    } catch (e) {
-      if (e instanceof ApiError) fail(e.message);
-      throw e;
-    }
-  });
+  gateway
+    .command('status')
+    .description('Show gateway service status')
+    .action(async () => {
+      const config = loadConfig(undefined);
+      const secret = config.security?.gatewaySecret ?? '';
+      const secretMasked = secret.length > 8 ? secret.slice(0, 4) + '****' + secret.slice(-3) : '****';
 
-  root
-    .command('register')
-    .requiredOption('--agent-id <id>')
-    .requiredOption('--agent-name <n>')
-    .option('--org-id <id>')
-    .option('--capabilities <csv>')
-    .action(async (opts, cmd) => {
-      const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-      const client = createClient(g);
-      const out = { json: !!g.json };
-      const caps = opts.capabilities
-        ? String(opts.capabilities).split(',').map(s => s.trim()).filter(Boolean)
-        : undefined;
+      console.log(`\n${C.BOLD}╔══════════════════════════════════════════════════════════════╗
+║                  ${C.CYAN}Markus Gateway Status${C.RESET}${C.BOLD}                      ║
+╚══════════════════════════════════════════════════════════════╝${C.RESET}\n`);
+
+      const port = config.server?.apiPort ?? 8056;
       try {
-        const data = await client.post<unknown>('/gateway/register', {
-          agentId: opts.agentId,
-          agentName: opts.agentName,
-          ...(opts.orgId && { orgId: opts.orgId }),
-          ...(caps && { capabilities: caps }),
+        const res = await fetch(`http://localhost:${port}/health`, {
+          signal: AbortSignal.timeout(2000),
         });
-        success('Gateway registration', data, out);
-      } catch (e) {
-        if (e instanceof ApiError) fail(e.message);
-        throw e;
+        if (res.ok) {
+          ok('Gateway API', `running on port ${port}`);
+        }
+      } catch {
+        warn('Gateway API', `not reachable on port ${port}`);
+        info('Start with: markus start');
       }
+
+      console.log(`\n  ${C.BOLD}Configuration:${C.RESET}`);
+      info(`API Port: ${config.server?.apiPort ?? 8056}`);
+      info(`Web Port: ${config.server?.webPort ?? 8057}`);
+      info(`Gateway Secret: ${secretMasked}`);
+
+      const integrations = config.integrations as Record<string, any> ?? {};
+      const channels = Object.keys(integrations).filter(k => !!(integrations[k] as any));
+      if (channels.length > 0) {
+        console.log(`\n  ${C.BOLD}Active Channels:${C.RESET}`);
+        for (const ch of channels) {
+          info(ch);
+        }
+      }
+      console.log('');
     });
 
-  root
-    .command('auth')
-    .requiredOption('--agent-id <id>')
-    .requiredOption('--secret <s>')
-    .option('--org-id <id>')
-    .action(async (opts, cmd) => {
-      const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-      const client = createClient(g);
-      const out = { json: !!g.json };
+  gateway
+    .command('logs')
+    .description('Show recent gateway logs')
+    .option('--lines <n>', 'Number of lines', '50')
+    .action(async (opts) => {
+      const lines = parseInt(opts.lines ?? '50', 10);
+      const { homedir } = await import('node:os');
+      const { join } = await import('node:path');
+      const fs = await import('node:fs');
+      const logPath = join(homedir(), '.markus', 'logs', 'markus.log');
+
+      if (!fs.existsSync(logPath)) {
+        warn('No log file found', logPath);
+        return;
+      }
+
       try {
-        const data = await client.post<Record<string, unknown>>('/gateway/auth', {
-          agentId: opts.agentId,
-          secret: opts.secret,
-          ...(opts.orgId && { orgId: opts.orgId }),
-        });
-        success('Authenticated', data, out);
-        if (!out.json) {
-          const token = data['token'] ?? data['accessToken'] ?? data['jwt'];
-          if (token && typeof token === 'string') console.log(`Token: ${token}`);
+        const content = fs.readFileSync(logPath, 'utf8');
+        const allLines = content.split('\n');
+        const recent = allLines.slice(-lines);
+        for (const line of recent) {
+          console.log(line);
         }
       } catch (e) {
-        if (e instanceof ApiError) fail(e.message);
-        throw e;
+        warn(`Could not read log file: ${e}`);
       }
     });
 
-  root
-    .command('message')
-    .requiredOption('--text <t>')
-    .requiredOption('--api-key <k>')
-    .action(async (opts, cmd) => {
-      const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-      const client = createClient({ server: g.server, apiKey: opts.apiKey });
-      const out = { json: !!g.json };
-      try {
-        const data = await client.post<unknown>('/gateway/message', { text: opts.text });
-        success('Message sent', data, out);
-      } catch (e) {
-        if (e instanceof ApiError) fail(e.message);
-        throw e;
-      }
+  gateway
+    .command('config')
+    .description('Show current gateway configuration (masked)')
+    .action(async () => {
+      const config = loadConfig(undefined);
+      const safe = JSON.stringify(config, (key, value) => {
+        if (
+          typeof value === 'string' &&
+          (key.toLowerCase().includes('secret') ||
+            key.toLowerCase().includes('key') ||
+            key.toLowerCase().includes('token')) &&
+          value.length > 8
+        ) {
+          return value.slice(0, 4) + '****' + value.slice(-3);
+        }
+        return value;
+      }, 2);
+      console.log(safe);
     });
-
-  root.command('status').action(async (_opts, cmd) => {
-    const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-    const client = createClient(g);
-    const out = { json: !!g.json };
-    try {
-      const data = await client.get<Record<string, unknown>>('/gateway/status');
-      detail(data, { ...out, title: 'Gateway status' });
-    } catch (e) {
-      if (e instanceof ApiError) fail(e.message);
-      throw e;
-    }
-  });
-
-  root.command('manual').action(async (_opts, cmd) => {
-    const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-    const client = createClient(g);
-    const out = { json: !!g.json };
-    try {
-      const data = await client.get<unknown>('/gateway/manual');
-      printManual(data, out.json);
-    } catch (e) {
-      if (e instanceof ApiError) fail(e.message);
-      throw e;
-    }
-  });
-
-  root.command('team').action(async (_opts, cmd) => {
-    const g = cmd.optsWithGlobals() as { server?: string; apiKey?: string; json?: boolean };
-    const client = createClient(g);
-    const out = { json: !!g.json };
-    try {
-      const data = await client.get<Record<string, unknown>>('/gateway/team');
-      detail(data, { ...out, title: 'Gateway team' });
-    } catch (e) {
-      if (e instanceof ApiError) fail(e.message);
-      throw e;
-    }
-  });
 }

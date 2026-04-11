@@ -1954,7 +1954,7 @@ export class Agent {
       modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
       toolDefinitions: llmTools,
     });
-    let messages = prepared.messages;
+    const messages = prepared.messages;
     log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
