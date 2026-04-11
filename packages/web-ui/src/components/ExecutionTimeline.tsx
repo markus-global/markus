@@ -8,6 +8,7 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { api, wsClient, type TaskLogEntry } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import {
   getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail,
@@ -205,7 +206,7 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
   const isPending = cardState === 'pending' || cardState === 'approving' || cardState === 'rejecting';
   const cfg = TASK_STATUS_CONFIG[cardState] ?? TASK_STATUS_CONFIG['loading']!;
 
-  const goToTask = () => navBus.navigate('tasks', { openTask: info.taskId });
+  const goToTask = () => navBus.navigate(PAGE.WORK, { openTask: info.taskId });
 
   return (
     <div className={`my-2 rounded-lg border ${cfg.borderClass} ${cfg.bgClass} p-3 max-w-md transition-colors`}>

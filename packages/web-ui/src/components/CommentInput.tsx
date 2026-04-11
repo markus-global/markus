@@ -140,10 +140,18 @@ export function renderMentionText(
   return parts.length > 0 ? parts : [<span key={0}>{text}</span>];
 }
 
-export function CommentInput({ agents, onSubmit, placeholder }: {
+export interface ReplyQuote {
+  id: string;
+  authorName: string;
+  content: string;
+}
+
+export function CommentInput({ agents, onSubmit, placeholder, replyTo, onCancelReply }: {
   agents: AgentInfo[];
-  onSubmit: (content: string, mentions: string[]) => Promise<void>;
+  onSubmit: (content: string, mentions: string[], replyToId?: string) => Promise<void>;
   placeholder?: string;
+  replyTo?: ReplyQuote | null;
+  onCancelReply?: () => void;
 }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -163,10 +171,11 @@ export function CommentInput({ agents, onSubmit, placeholder }: {
     setError(null);
     lastSubmitRef.current = { content: text, mentions: [...selectedMentions] };
     try {
-      await onSubmit(text, selectedMentions);
+      await onSubmit(text, selectedMentions, replyTo?.id);
       setText('');
       setSelectedMentions([]);
       lastSubmitRef.current = null;
+      onCancelReply?.();
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e) || 'Failed to send comment');
     }
@@ -275,6 +284,17 @@ export function CommentInput({ agents, onSubmit, placeholder }: {
       )}
 
       <div className="border border-border-default rounded-lg bg-surface-elevated">
+        {replyTo && (
+          <div className="flex items-center gap-2 px-2.5 pt-2 pb-1 border-b border-border-default/50">
+            <div className="flex-1 min-w-0 pl-2 border-l-2 border-brand-500/50">
+              <span className="text-[10px] font-medium text-brand-500">{replyTo.authorName}</span>
+              <p className="text-[10px] text-fg-tertiary truncate">{replyTo.content}</p>
+            </div>
+            <button onClick={onCancelReply} className="text-fg-tertiary hover:text-fg-secondary shrink-0 p-0.5">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </button>
+          </div>
+        )}
         {selectedMentions.length > 0 && (
           <div className="flex gap-1 px-2.5 pt-2 flex-wrap">
             {selectedMentions.map(mid => {

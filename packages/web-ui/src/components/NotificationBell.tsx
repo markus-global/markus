@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { api, type NotificationInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 
 interface Props {
   collapsed?: boolean;
@@ -105,25 +106,25 @@ export function NotificationBell({ collapsed, userId }: Props) {
         const approvalId = meta.approvalId as string | undefined;
         const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
         const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
-        if (taskId) navBus.navigate('projects', { openTask: taskId });
-        else navBus.navigate('projects');
+        if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+        else navBus.navigate(PAGE.WORK);
         break;
       }
       case 'task_completed':
-        if (meta.taskId) navBus.navigate('projects', { openTask: meta.taskId as string });
-        else navBus.navigate('projects');
+        if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
+        else navBus.navigate(PAGE.WORK);
         break;
       case 'agent_alert':
-        if (meta.agentId) navBus.navigate('team', { selectAgent: meta.agentId as string });
-        else navBus.navigate('team');
+        if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
+        else navBus.navigate(PAGE.TEAM);
         break;
       case 'bounty_posted':
-        navBus.navigate('governance');
+        navBus.navigate(PAGE.SETTINGS);
         break;
       default:
-        if (meta.taskId) navBus.navigate('projects', { openTask: meta.taskId as string });
-        else if (meta.projectId) navBus.navigate('projects', { projectId: meta.projectId as string });
-        else if (meta.agentId) navBus.navigate('team', { selectAgent: meta.agentId as string });
+        if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
+        else if (meta.projectId) navBus.navigate(PAGE.WORK, { projectId: meta.projectId as string });
+        else if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
         break;
     }
   };
@@ -160,8 +161,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const navigateForApproval = (a: ApprovalInfo) => {
     const taskId = a.details?.taskId as string | undefined;
-    if (taskId) navBus.navigate('projects', { openTask: taskId });
-    else navBus.navigate('projects');
+    if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+    else navBus.navigate(PAGE.WORK);
     setOpen(false);
   };
 

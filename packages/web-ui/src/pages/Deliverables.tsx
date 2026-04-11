@@ -3,6 +3,7 @@ import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo }
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
@@ -274,7 +275,7 @@ export function DeliverablesPage() {
   };
 
   const handleOpenInBuilder = () => {
-    navBus.navigate('builder');
+    navBus.navigate(PAGE.BUILDER);
   };
 
   const loadPreview = async (d: DeliverableInfo) => {
@@ -408,7 +409,7 @@ export function DeliverablesPage() {
     setSelected(item);
     if (isMobile) {
       setMobileShowDetail(true);
-      history.pushState({ mobileDetail: 'deliverables' }, '', window.location.hash);
+      history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
     }
   };
 
@@ -742,19 +743,19 @@ export function DeliverablesPage() {
               <div className="text-xs text-fg-tertiary font-medium">Links</div>
               <div className="flex gap-3 flex-wrap">
                 {selected.taskId && (
-                  <button onClick={() => navBus.navigate('projects', { openTask: selected.taskId! })}
+                  <button onClick={() => navBus.navigate(PAGE.WORK, { openTask: selected.taskId! })}
                     className="text-xs text-brand-500 hover:underline bg-brand-500/10 px-2.5 py-1 rounded">
                     Task: {selected.taskId.slice(0, 12)}...
                   </button>
                 )}
                 {selected.agentId && (
-                  <button onClick={() => navBus.navigate('team', { selectAgent: selected.agentId! })}
+                  <button onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: selected.agentId! })}
                     className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
                     Agent: {agentMap.get(selected.agentId)?.name ?? selected.agentId.slice(0, 12)}
                   </button>
                 )}
                 {selected.projectId && (
-                  <button onClick={() => navBus.navigate('projects', { projectId: selected.projectId! })}
+                  <button onClick={() => navBus.navigate(PAGE.WORK, { projectId: selected.projectId! })}
                     className="text-xs text-blue-600 hover:underline bg-blue-500/10 px-2.5 py-1 rounded">
                     Project: {projectMap.get(selected.projectId)?.name ?? selected.projectId.slice(0, 12)}
                   </button>

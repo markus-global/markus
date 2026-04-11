@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 interface ReportsPageProps { authUser?: AuthUser }
@@ -525,7 +526,7 @@ function TaskSection({ title, color, items }: { title: string; color: string; it
           <div
             key={item.id ?? i}
             className={`text-sm text-fg-secondary flex items-center gap-2 ${item.id ? 'cursor-pointer hover:text-fg-primary group' : ''}`}
-            onClick={item.id ? () => navBus.navigate('projects', { openTask: item.id! }) : undefined}
+            onClick={item.id ? () => navBus.navigate(PAGE.WORK, { openTask: item.id! }) : undefined}
           >
             <span className={`w-1.5 h-1.5 rounded-full bg-${color}-500 shrink-0`} />
             <span className={`truncate ${item.id ? 'group-hover:text-brand-500 transition-colors' : ''}`}>{item.label}</span>
@@ -572,7 +573,7 @@ function AgentRow({ agent, maxTokens }: { agent: AgentUsageInfo; maxTokens: numb
 
   return (
     <tr className="border-b border-border-default/50 hover:bg-surface-elevated/30 transition-colors cursor-pointer"
-        onClick={() => navBus.navigate('team', { selectAgent: agent.agentId })}>
+        onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId })}>
       <td className="px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className={`w-2 h-2 rounded-full ${statusColor}`} />

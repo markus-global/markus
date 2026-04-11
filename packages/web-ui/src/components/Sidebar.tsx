@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import type { PageId } from '../types.ts';
+import { type PageId, PAGE, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS, hashPath, resolvePageId } from '../routes.ts';
 import { api, type AuthUser, type ProjectInfo } from '../api.ts';
 import { NewProjectModal } from './NewProjectModal.tsx';
 import { NotificationBell } from './NotificationBell.tsx';
@@ -22,21 +22,6 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
   );
 }
 
-const ICONS: Record<string, string> = {
-  dashboard: 'M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10',
-  projects:  'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
-  chat:      'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
-  reports:   'M18 20V10 M12 20V4 M6 20v-6',
-  deliverables: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z',
-  usage:     'M21.21 15.89A10 10 0 1 1 8 2.83 M22 12A10 10 0 0 0 12 2v10z',
-  builder:   'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
-  agents:    'M8 3H5a2 2 0 0 0-2 2v3 M21 8V5a2 2 0 0 0-2-2h-3 M3 16v3a2 2 0 0 0 2 2h3 M16 21h3a2 2 0 0 0 2-2v-3 M9 9h6v6H9z',
-  teams:     'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75',
-  skills:    'M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5',
-  governance:'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
-  settings:  'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
-};
-
 const STATUS_COLORS: Record<string, string> = {
   active: 'bg-green-500',
   paused: 'bg-amber-500',
@@ -44,24 +29,6 @@ const STATUS_COLORS: Record<string, string> = {
   archived: 'bg-gray-600',
 };
 
-const navItems: Array<{ id: PageId; label: string; section: string }> = [
-  { id: 'dashboard', label: 'Overview', section: 'workspace' },
-  { id: 'chat', label: 'Chat', section: 'workspace' },
-  { id: 'deliverables', label: 'Deliverables', section: 'workspace' },
-  { id: 'builder', label: 'Builder', section: 'build' },
-  { id: 'agents', label: 'Agents', section: 'build' },
-  { id: 'teams', label: 'Teams', section: 'build' },
-  { id: 'skills', label: 'Skills', section: 'build' },
-  { id: 'governance', label: 'Governance', section: 'system' },
-  { id: 'reports', label: 'Reports', section: 'system' },
-  { id: 'settings', label: 'Settings', section: 'system' },
-];
-
-const sections = [
-  { key: 'workspace', label: 'WORKSPACE' },
-  { key: 'build', label: 'BUILD' },
-  { key: 'system', label: 'SYSTEM' },
-];
 
 const DEFAULT_VISIBLE_PROJECTS = 5;
 
@@ -83,10 +50,10 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
 
   // Sync project selection from hash on mount and page changes
   useEffect(() => {
-    if (currentPage !== 'projects') { setSelectedProjectId(null); return; }
+    if (currentPage !== PAGE.WORK) { setSelectedProjectId(null); return; }
     const raw = window.location.hash.slice(1);
     const parts = raw.split('/');
-    if (parts[0] === 'projects' && parts[1]) setSelectedProjectId(parts[1]);
+    if (resolvePageId(parts[0]) === PAGE.WORK && parts[1]) setSelectedProjectId(parts[1]);
   }, [currentPage]);
 
   const handleLogout = async () => {
@@ -127,7 +94,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
         )}
       </div>
       <nav className={`${collapsed ? 'p-1.5' : 'p-3'} flex-1 overflow-y-auto`}>
-        {sections.map((section, si) => (
+        {SIDEBAR_SECTIONS.map((section, si) => (
           <div key={section.key}>
             <div className="mb-3">
               {!collapsed && (
@@ -137,7 +104,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
               )}
               {collapsed && si > 0 && <div className="my-2 mx-1" />}
               {/* Render nav items, but defer Deliverables to after Projects */}
-              {navItems.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === 'deliverables')).map((item) => {
+              {SIDEBAR_NAV.filter(i => i.section === section.key && !(section.key === 'workspace' && i.id === PAGE.DELIVERABLES)).map((item) => {
                 const isActive = currentPage === item.id;
                 return (
                   <button
@@ -150,53 +117,53 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                         : 'text-fg-primary hover:bg-surface-overlay'
                     }`}
                   >
-                    <Icon d={ICONS[item.id] ?? ''} />
+                    <Icon d={PAGE_ICONS[item.id] ?? ''} />
                     {!collapsed && item.label}
                   </button>
                 );
               })}
 
-              {/* Projects + sub-list — inside WORKSPACE, after Chat, before Deliverables */}
+              {/* Work (Projects) + sub-list — inside WORKSPACE, after Team, before Deliverables */}
               {section.key === 'workspace' && collapsed && (
                 <>
                   <button
-                    onClick={() => { setSelectedProjectId(null); onNavigate('projects'); }}
-                    title="Projects"
+                    onClick={() => { setSelectedProjectId(null); onNavigate(PAGE.WORK); }}
+                    title="Work"
                     className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-all ${
-                      currentPage === 'projects' && !selectedProjectId
+                      currentPage === PAGE.WORK && !selectedProjectId
                         ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30'
-                        : currentPage === 'projects'
+                        : currentPage === PAGE.WORK
                           ? 'bg-brand-600/15 text-fg-primary'
                           : 'text-fg-primary hover:bg-surface-overlay'
                     }`}
                   >
-                    <Icon d={ICONS.projects ?? ''} />
+                    <Icon d={PAGE_ICONS[PAGE.WORK] ?? ''} />
                   </button>
                   <button
-                    onClick={() => onNavigate('deliverables')}
+                    onClick={() => onNavigate(PAGE.DELIVERABLES)}
                     title="Deliverables"
                     className={`w-full flex items-center justify-center px-2 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'deliverables' ? 'bg-brand-600 text-white' : 'text-fg-primary hover:bg-surface-elevated'
+                      currentPage === PAGE.DELIVERABLES ? 'bg-brand-600 text-white' : 'text-fg-primary hover:bg-surface-elevated'
                     }`}
                   >
-                    <Icon d={ICONS.deliverables ?? ''} />
+                    <Icon d={PAGE_ICONS[PAGE.DELIVERABLES] ?? ''} />
                   </button>
                 </>
               )}
               {section.key === 'workspace' && !collapsed && (
                 <>
-                  {/* Projects nav item */}
+                  {/* Work nav item */}
                   <div className="flex items-center mb-0.5">
                     <button
-                      onClick={() => { setSelectedProjectId(null); window.location.hash = 'projects'; onNavigate('projects'); }}
+                      onClick={() => { setSelectedProjectId(null); window.location.hash = PAGE.WORK; onNavigate(PAGE.WORK); }}
                       className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                        currentPage === 'projects' && !selectedProjectId
+                        currentPage === PAGE.WORK && !selectedProjectId
                           ? 'bg-brand-600 text-white'
                           : 'text-fg-primary hover:bg-surface-elevated'
                       }`}
                     >
-                      <Icon d={ICONS.projects ?? ''} />
-                      Projects
+                      <Icon d={PAGE_ICONS[PAGE.WORK] ?? ''} />
+                      Work
                     </button>
                     <button
                       onClick={() => setShowNewProject(true)}
@@ -217,14 +184,14 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                     </button>
                   )}
                   {visibleProjects.map(p => {
-                    const isActive = currentPage === 'projects' && selectedProjectId === p.id;
+                    const isActive = currentPage === PAGE.WORK && selectedProjectId === p.id;
                     return (
                       <button
                         key={p.id}
                         onClick={() => {
                           setSelectedProjectId(p.id);
-                          if (currentPage !== 'projects') onNavigate('projects');
-                          window.location.hash = 'projects/' + p.id;
+                          if (currentPage !== PAGE.WORK) onNavigate(PAGE.WORK);
+                          window.location.hash = hashPath(PAGE.WORK, p.id).slice(1);
                         }}
                         className={`w-full flex items-center gap-2.5 pl-9 pr-3 py-1.5 rounded-lg text-sm mb-0.5 transition-colors ${
                           isActive
@@ -247,12 +214,12 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   )}
                   {/* Deliverables — after Projects */}
                   <button
-                    onClick={() => onNavigate('deliverables')}
+                    onClick={() => onNavigate(PAGE.DELIVERABLES)}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm mb-0.5 transition-colors ${
-                      currentPage === 'deliverables' ? 'bg-brand-600 text-white' : 'text-fg-primary hover:bg-surface-elevated'
+                      currentPage === PAGE.DELIVERABLES ? 'bg-brand-600 text-white' : 'text-fg-primary hover:bg-surface-elevated'
                     }`}
                   >
-                    <Icon d={ICONS.deliverables ?? ''} />
+                    <Icon d={PAGE_ICONS[PAGE.DELIVERABLES] ?? ''} />
                     Deliverables
                   </button>
                 </>

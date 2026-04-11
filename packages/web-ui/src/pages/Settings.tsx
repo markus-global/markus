@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -1289,7 +1290,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                               onClick={() => setExpandedAgents(prev => { const n = new Set(prev); if (n.has(ag.id)) n.delete(ag.id); else n.add(ag.id); return n; })}>
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-[10px] text-fg-tertiary">{expanded ? '▼' : '▶'}</span>
-                                <button onClick={e => { e.stopPropagation(); navBus.navigate('chat', { agentId: ag.id }); }}
+                                <button onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.TEAM, { agentId: ag.id }); }}
                                   className="text-sm text-brand-500 hover:text-brand-400 truncate">
                                   {ag.name}
                                 </button>

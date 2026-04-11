@@ -1,13 +1,14 @@
 import { useEffect, useState, useMemo } from 'react';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 
-export function Dashboard() {
+export function HomePage() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
   const [ops, setOps] = useState<OpsDashboard | null>(null);
-  const [opsPeriod, setOpsPeriod] = useState<'1h' | '24h' | '7d'>('24h');
+  const opsPeriod = '7d' as const;
   const [pendingReqs, setPendingReqs] = useState<RequirementInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
 
@@ -64,28 +65,19 @@ export function Dashboard() {
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between px-6 h-14 border-b border-border-default bg-surface-secondary">
-        <div className="flex items-center gap-3">
-          <h2 className="text-lg font-semibold">Overview</h2>
-          <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-            {(['1h', '24h', '7d'] as const).map(p => (
-              <button key={p} onClick={() => setOpsPeriod(p)}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${opsPeriod === p ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'}`}
-              >{p}</button>
-            ))}
-          </div>
-        </div>
+        <h2 className="text-lg font-semibold">Overview</h2>
         <div className="flex gap-2">
-          <button onClick={() => navBus.navigate('agents')} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
+          <button onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
         </div>
       </div>
 
       <div className="p-7 space-y-6">
         {/* Hero Metrics */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricTile label="Active Agents" value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate('team')} />
-          <MetricTile label="Tasks In Progress" value={inProgress} color="blue" onClick={() => navBus.navigate('tasks')} />
-          <MetricTile label="Pending Queue" value={pending} color="amber" onClick={() => navBus.navigate('tasks')} />
-          <MetricTile label="Completed" value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate('tasks')} />
+          <MetricTile label="Active Agents" value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate(PAGE.TEAM)} />
+          <MetricTile label="Tasks In Progress" value={inProgress} color="blue" onClick={() => navBus.navigate(PAGE.WORK)} />
+          <MetricTile label="Pending Queue" value={pending} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
+          <MetricTile label="Completed" value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate(PAGE.WORK)} />
         </div>
 
         {/* Getting Started — shown when no tasks exist yet */}
@@ -95,9 +87,9 @@ export function Dashboard() {
             <p className="text-xs text-fg-secondary mb-4">Get started in under a minute — describe what you need and let your team take it from here.</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { label: 'Describe Your Goal', desc: 'Chat with the Secretary — it will assemble a team and break down tasks', page: 'chat' as const },
-                { label: 'Hire Agents', desc: 'Browse templates: developers, researchers, writers, analysts, and more', page: 'agents' as const },
-                { label: 'Create a Project', desc: 'Set up requirements and let agents plan, execute, and deliver', page: 'projects' as const },
+                { label: 'Describe Your Goal', desc: 'Chat with the Secretary — it will assemble a team and break down tasks', page: PAGE.TEAM },
+                { label: 'Hire Agents', desc: 'Browse templates: developers, researchers, writers, analysts, and more', page: PAGE.STORE },
+                { label: 'Create a Project', desc: 'Set up requirements and let agents plan, execute, and deliver', page: PAGE.WORK },
               ].map(item => (
                 <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-lg p-4 transition-colors">
                   <div className="text-xs font-medium text-fg-primary">{item.label}</div>
@@ -119,7 +111,7 @@ export function Dashboard() {
               {agents.filter(a => a.status === 'working').map(a => (
                 <div key={a.id}
                   className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer transition-colors"
-                  onClick={() => navBus.navigate('agents', { agentId: a.id })}
+                  onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id, profileTab: 'mind' })}
                 >
                   <div className="w-5 h-5 rounded-full bg-brand-600/30 flex items-center justify-center text-[9px] font-bold text-brand-400 shrink-0">
                     {a.name.charAt(0)}
@@ -148,7 +140,7 @@ export function Dashboard() {
           <div className="lg:col-span-2 space-y-6">
             {/* Task Distribution Bar Chart */}
             {totalRootTasks > 0 && (
-              <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-gray-600 transition-colors" onClick={() => navBus.navigate('tasks')}>
+              <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-gray-600 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
                 <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">Task Distribution</h3>
                 <TaskBar statusCounts={rootStatusCounts} total={totalRootTasks} />
                 {(rootStatusCounts['blocked'] ?? 0) > 0 && (
@@ -164,14 +156,14 @@ export function Dashboard() {
             <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Team Status</h3>
-                <button onClick={() => navBus.navigate('team')} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
+                <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
               </div>
               {teamSummaries.length === 0 && agents.length === 0 ? (
-                <div className="text-sm text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate('team')}>No teams yet. Create a team or hire agents to get started.</div>
+                <div className="text-sm text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>No teams yet. Create a team or hire agents to get started.</div>
               ) : (
                 <div className="space-y-4">
                   {teamSummaries.map(ts => (
-                    <div key={ts.team.id} className="bg-surface-elevated/30 border border-border-default/30 rounded-lg p-4 hover:border-brand-500/20 transition-colors cursor-pointer" onClick={() => navBus.navigate('team')}>
+                    <div key={ts.team.id} className="bg-surface-elevated/30 border border-border-default/30 rounded-lg p-4 hover:border-brand-500/20 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-brand-600/30 flex items-center justify-center text-xs font-bold text-brand-500">{ts.team.name.charAt(0)}</div>
@@ -188,7 +180,7 @@ export function Dashboard() {
                       </div>
                       <div className="flex gap-2 flex-wrap">
                         {ts.agents.slice(0, 6).map(a => (
-                          <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30" onClick={e => { e.stopPropagation(); navBus.navigate('team', { selectAgent: a.id }); }}>
+                          <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30" onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.TEAM, { selectAgent: a.id }); }}>
                             <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-brand-400 animate-pulse' : 'bg-gray-600'}`} />
                             <span className="text-[11px] text-fg-secondary">{a.name}</span>
                           </div>
@@ -210,7 +202,7 @@ export function Dashboard() {
                         </div>
                         <div className="flex gap-2 flex-wrap">
                           {ungrouped.slice(0, 6).map(a => (
-                            <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30 cursor-pointer" onClick={() => navBus.navigate('team', { selectAgent: a.id })}>
+                            <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30 cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>
                               <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-brand-400 animate-pulse' : 'bg-gray-600'}`} />
                               <span className="text-[11px] text-fg-secondary">{a.name}</span>
                             </div>
@@ -236,11 +228,11 @@ export function Dashboard() {
                     <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
                     <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">Pending Reviews</h3>
                   </div>
-                  <button onClick={() => navBus.navigate('projects')} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">Review →</button>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">Review →</button>
                 </div>
                 <div className="space-y-2">
                   {pendingReqs.slice(0, 5).map(req => (
-                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-lg bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate('projects')}>
+                    <div key={req.id} className="flex items-start gap-2.5 py-2 px-2.5 rounded-lg bg-surface-elevated/40 hover:bg-surface-elevated/60 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK)}>
                       <div className="flex-1 min-w-0">
                         <div className="text-xs text-fg-primary font-medium truncate">{req.title}</div>
                         <div className="text-[10px] text-fg-tertiary mt-0.5">
@@ -267,11 +259,11 @@ export function Dashboard() {
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Recent Activity</h3>
-                  <button onClick={() => navBus.navigate('tasks')} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
                 </div>
                 <div className="space-y-1.5">
                   {ops.taskKPI.recentActivity.slice(0, 8).map(act => (
-                    <div key={act.taskId} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/40 transition-colors cursor-pointer" onClick={() => navBus.navigate('tasks', { openTask: act.taskId })}>
+                    <div key={act.taskId} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-surface-elevated/40 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.WORK, { openTask: act.taskId })}>
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[act.status] ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-fg-secondary truncate flex-1">{act.title}</span>
                       <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -299,7 +291,7 @@ export function Dashboard() {
                       <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                       Needs attention:
                       {ops.systemHealth.criticalAgents.map(a => (
-                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded text-red-500 cursor-pointer hover:bg-red-500/20" onClick={() => navBus.navigate('team', { selectAgent: a.id })}>{a.name} ({a.score}%)</span>
+                        <span key={a.id} className="px-2 py-0.5 bg-red-500/10 rounded text-red-500 cursor-pointer hover:bg-red-500/20" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>{a.name} ({a.score}%)</span>
                       ))}
                     </div>
                   </div>
@@ -310,7 +302,7 @@ export function Dashboard() {
             {/* Storage Summary */}
             {storageInfo && (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-brand-500/30 transition-colors"
-                onClick={() => navBus.navigate('settings')}>
+                onClick={() => navBus.navigate(PAGE.SETTINGS)}>
                 <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Storage</h3>
                 <div className="flex items-baseline gap-2">
                   <span className="text-2xl font-bold text-fg-primary">{fmtBytes(storageInfo.totalSize)}</span>

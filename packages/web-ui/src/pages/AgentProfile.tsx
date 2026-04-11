@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -72,7 +73,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab }: Props) {
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            <button onClick={() => navBus.navigate('chat', { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
+            <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
             <button onClick={async () => {
               if (!agent) return;
               try {
@@ -256,7 +257,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
         </Card>
 
         {recentTasks.length > 0 && (
-          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
+          <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
             <div className="divide-y divide-gray-800/50 -mx-5">
               {recentTasks.map(t => (
                 <div key={t.id} className="flex items-center gap-2.5 px-5 py-2.5">
@@ -423,7 +424,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
       {/* Recent Tasks */}
       {recentTasks.length > 0 && (
-        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate('projects')} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
+        <Card title="Recent Tasks" action={<button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs text-fg-tertiary hover:text-fg-secondary">View all →</button>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
             {recentTasks.map(t => {
               const isExpanded = expandedTaskId === t.id;

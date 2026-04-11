@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import { Settings } from '../pages/Settings.tsx';
-import { GovernancePage } from '../pages/Governance.tsx';
 import { ReportsPage } from '../pages/Reports.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 
 const tabs = [
   { id: 'settings', label: 'Settings' },
-  { id: 'governance', label: 'Governance' },
   { id: 'reports', label: 'Reports' },
 ] as const;
 
@@ -36,7 +34,6 @@ export function MobileSettingsTabs({ theme, onThemeChange }: { theme?: ThemeMode
       </div>
       <div className="flex-1 overflow-hidden flex flex-col">
         {activeTab === 'settings' && <Settings theme={theme} onThemeChange={onThemeChange} />}
-        {activeTab === 'governance' && <GovernancePage />}
         {activeTab === 'reports' && <ReportsPage />}
       </div>
     </div>

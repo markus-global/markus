@@ -1,14 +1,11 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import type { PageId } from './types.ts';
-import { Dashboard } from './pages/Dashboard.tsx';
-import { Chat } from './pages/Chat.tsx';
+import { type PageId, PAGE, resolvePageId, getPageFromHash, MOBILE_REDIRECTS } from './routes.ts';
+import { HomePage } from './pages/Home.tsx';
+import { TeamPage } from './pages/Team.tsx';
 import { Settings } from './pages/Settings.tsx';
-import { SkillStore } from './pages/SkillStore.tsx';
-import { TemplateMarketplace } from './pages/TemplateMarketplace.tsx';
-import { TeamsStore } from './pages/TeamsStore.tsx';
+import { StorePage } from './pages/Store.tsx';
 import { AgentBuilder } from './pages/AgentBuilder.tsx';
-import { GovernancePage } from './pages/Governance.tsx';
-import { ProjectsPage } from './pages/Projects.tsx';
+import { WorkPage } from './pages/Work.tsx';
 import { DeliverablesPage } from './pages/Deliverables.tsx';
 import { ReportsPage } from './pages/Reports.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -25,20 +22,7 @@ import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 
-const validPages: PageId[] = ['dashboard', 'tasks', 'chat', 'team', 'usage', 'skills', 'agents', 'teams', 'builder', 'prompts', 'settings', 'governance', 'projects', 'deliverables', 'reports'];
-
-function getPageFromHash(): PageId {
-  const hash = window.location.hash.slice(1).split('/')[0];
-  if (hash === 'team') return 'chat';
-  if (hash === 'tasks') return 'projects';
-  if (hash === 'usage') return 'reports';
-  if (hash === 'prompts') return 'builder';
-  if (hash === 'templates') return 'agents';
-  if (hash === 'knowledge') return 'deliverables';
-  return validPages.includes(hash as PageId) ? (hash as PageId) : 'dashboard';
-}
-
-// Preserve sub-path hashes (e.g. #chat/d) across page switches
+// Preserve sub-path hashes (e.g. #team/d) across page switches
 const _savedPageHashes: Record<string, string> = {};
 
 export function App() {
@@ -62,12 +46,11 @@ export function App() {
   const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
 
   const navigate = useCallback((p: PageId) => {
-    let normalized: PageId = p === 'tasks' ? 'projects' : p === 'team' ? 'chat' : p === 'usage' ? 'reports' : p === 'prompts' ? 'builder' : (p as string) === 'templates' ? 'agents' : p;
+    let normalized = resolvePageId(p);
     if (isMobile) {
-      if (normalized === 'agents' || normalized === 'teams' || normalized === 'skills') normalized = 'builder';
-      if (normalized === 'governance' || normalized === 'reports') normalized = 'settings';
+      normalized = MOBILE_REDIRECTS[normalized] ?? normalized;
     }
-    // Save current page's full hash (e.g. 'chat/d') so it can be restored later
+    // Save current page's full hash (e.g. 'team/d') so it can be restored later
     const curBase = getPageFromHash();
     const curFull = window.location.hash.slice(1);
     if (curFull !== curBase) _savedPageHashes[curBase] = curFull;
@@ -89,7 +72,7 @@ export function App() {
   }, [isMobile]);
 
   useEffect(() => {
-    navBus.setHandler((p) => navigate(p as PageId));
+    navBus.setHandler((p) => navigate(p));
   }, [navigate]);
 
   const checkLlmConfig = useCallback(() => {
@@ -134,26 +117,23 @@ export function App() {
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
     if (isMobile) {
       return {
-        dashboard: <Dashboard />,
-        chat: <Chat authUser={currentUser} />,
-        builder: <MobileBuilderTabs authUser={currentUser} />,
-        settings: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} />,
-        projects: <ProjectsPage authUser={currentUser} />,
-        deliverables: <DeliverablesPage />,
+        [PAGE.HOME]: <HomePage />,
+        [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
+        [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
+        [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} />,
+        [PAGE.WORK]: <WorkPage authUser={currentUser} />,
+        [PAGE.DELIVERABLES]: <DeliverablesPage />,
       };
     }
     return {
-      dashboard: <Dashboard />,
-      chat: <Chat authUser={currentUser} />,
-      settings: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
-      skills: <SkillStore />,
-      agents: <TemplateMarketplace authUser={currentUser} />,
-      teams: <TeamsStore />,
-      builder: <AgentBuilder />,
-      governance: <GovernancePage />,
-      projects: <ProjectsPage authUser={currentUser} />,
-      deliverables: <DeliverablesPage />,
-      reports: <ReportsPage authUser={currentUser} />,
+      [PAGE.HOME]: <HomePage />,
+      [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
+      [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} />,
+      [PAGE.STORE]: <StorePage authUser={currentUser} />,
+      [PAGE.BUILDER]: <AgentBuilder />,
+      [PAGE.WORK]: <WorkPage authUser={currentUser} />,
+      [PAGE.DELIVERABLES]: <DeliverablesPage />,
+      [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, theme.mode, isMobile]);
@@ -219,11 +199,11 @@ export function App() {
       )}
 
       <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile ? 'pb-14' : ''}`}>
-        {llmConfigured === false && !llmBannerDismissed && page !== 'settings' && (
+        {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>No LLM provider configured — agents cannot process requests.</span>
             <div className="flex items-center gap-3">
-              <button onClick={() => { navigate('settings'); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
+              <button onClick={() => { navigate(PAGE.SETTINGS); }} className="px-3 py-1 bg-amber-700/50 hover:bg-amber-700/70 text-white text-xs rounded-lg transition-colors">
                 Go to Settings
               </button>
               <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">Dismiss</button>

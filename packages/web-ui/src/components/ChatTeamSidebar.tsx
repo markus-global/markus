@@ -6,6 +6,7 @@ import {
   type TaskInfo, type HumanUserInfo, type ExternalAgentInfo, type AuthUser,
 } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import {
   NewTeamModal, AddHumanModal, AddExistingModal,
@@ -88,6 +89,32 @@ export function ChatTeamSidebar({
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
+
+  // System pause/resume
+  const [globalPaused, setGlobalPaused] = useState(false);
+  const [pauseLoading, setPauseLoading] = useState(false);
+
+  useEffect(() => {
+    api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => {});
+  }, []);
+
+  const handlePauseClick = useCallback(() => {
+    setPendingConfirm({
+      title: globalPaused ? 'Resume All Agents' : 'Pause All Agents',
+      message: globalPaused
+        ? 'All agents will resume processing events from their mailbox.'
+        : 'All agents will be paused. Events will still enter the mailbox but will not be processed. In-progress tasks will be blocked.',
+      confirmLabel: globalPaused ? 'Resume' : 'Pause',
+      onConfirm: async () => {
+        setPauseLoading(true);
+        try {
+          if (globalPaused) { await api.governance.resumeAll(); setGlobalPaused(false); }
+          else { await api.governance.pauseAll(); setGlobalPaused(true); }
+        } catch { /* ignore */ }
+        setPauseLoading(false);
+      },
+    });
+  }, [globalPaused]);
 
   // Confirm dialog
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -559,9 +586,27 @@ export function ChatTeamSidebar({
   return (
     <>
       <div className={`bg-surface-secondary/60 border-r border-border-default flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
-        {/* Header with title */}
+        {/* Header with title + pause toggle */}
         <div className="px-4 h-14 flex items-center border-b border-border-default shrink-0">
           <h2 className="text-lg font-semibold">Chat</h2>
+          <div className="ml-auto">
+            <button
+              onClick={handlePauseClick}
+              disabled={pauseLoading}
+              title={globalPaused ? 'Resume all agents' : 'Pause all agents'}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                globalPaused
+                  ? 'bg-green-500/10 border-green-500/30 text-green-500 hover:bg-green-500/20'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-600 hover:bg-amber-500/20'
+              } disabled:opacity-50`}
+            >
+              {globalPaused ? (
+                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> Resume</>
+              ) : (
+                <><svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> Pause</>
+              )}
+            </button>
+          </div>
         </div>
         {/* Action bar */}
         {isAdmin && (
@@ -586,7 +631,7 @@ export function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">Create an empty team</div>
                   </button>
-                  <button onClick={() => { setActionMenu(false); navBus.navigate('agents'); }}
+                  <button onClick={() => { setActionMenu(false); navBus.navigate(PAGE.STORE); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated border-t border-border-default transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
@@ -780,7 +825,7 @@ export function ChatTeamSidebar({
               </button>
             )}
             <div className="border-t border-border-default/50 my-1" />
-            <button onClick={() => { setTeamMenu(null); navBus.navigate('agents'); }}
+            <button onClick={() => { setTeamMenu(null); navBus.navigate(PAGE.STORE); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
               Add Agent

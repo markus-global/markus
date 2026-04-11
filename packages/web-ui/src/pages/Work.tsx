@@ -8,6 +8,7 @@ import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput } from '../components/CommentInput.tsx';
 import { navBus } from '../navBus.ts';
+import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 
@@ -52,7 +53,7 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-green-400'}`} />
           </div>
           <button
-            onClick={() => { setOpen(false); navBus.navigate('team', { selectAgent: agent.id }); }}
+            onClick={() => { setOpen(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             View Profile →
@@ -356,7 +357,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
         </div>
       </div>
       <button
-        onClick={() => { onClose(); navBus.navigate('chat', { selectAgent: agent.id }); }}
+        onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
         className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
       >
         View Profile →
@@ -365,7 +366,11 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   );
 }
 
-function CommentBubble({ comment, agents }: { comment: TaskComment | RequirementComment; agents: AgentInfo[] }) {
+function CommentBubble({ comment, agents, onReply }: {
+  comment: TaskComment | RequirementComment;
+  agents: AgentInfo[];
+  onReply?: (comment: TaskComment | RequirementComment) => void;
+}) {
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -380,16 +385,54 @@ function CommentBubble({ comment, agents }: { comment: TaskComment | Requirement
     }
   }, [agents]);
 
+  const handleAvatarClick = useCallback((e: React.MouseEvent) => {
+    const agent = agents.find(a => a.name.toLowerCase() === comment.authorName.toLowerCase());
+    if (agent) {
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setMentionPopover({ agent, top: rect.bottom, left: rect.left });
+    }
+  }, [agents, comment.authorName]);
+
   return (
-    <div className="flex gap-2.5 group py-1">
-      <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] mt-0.5 ${isAgent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-blue-500/20 text-blue-400'}`}>
+    <div className="flex gap-2.5 group py-1" id={`comment-${comment.id}`}>
+      <div
+        onClick={handleAvatarClick}
+        className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] mt-0.5 cursor-pointer transition-all hover:ring-1 hover:ring-brand-500/40 ${
+          isAgent ? 'bg-indigo-500/20 text-indigo-400' : 'bg-blue-500/20 text-blue-400'
+        }`}
+      >
         {comment.authorName.slice(0, 2).toUpperCase()}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-1.5 mb-0.5">
-          <span className={`text-[11px] font-medium ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}>{comment.authorName}</span>
+          <span
+            className={`text-[11px] font-medium cursor-pointer hover:underline ${isAgent ? 'text-indigo-400' : 'text-blue-400'}`}
+            onClick={handleAvatarClick}
+          >
+            {comment.authorName}
+          </span>
           <span className="text-fg-tertiary text-[10px]">{dateStr} {timeStr}</span>
+          {onReply && (
+            <button
+              onClick={() => onReply(comment)}
+              className="text-fg-tertiary hover:text-fg-secondary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1"
+            >
+              Reply
+            </button>
+          )}
         </div>
+        {comment.replyTo && comment.replyToAuthor && (
+          <button
+            onClick={() => {
+              const el = document.getElementById(`comment-${comment.replyTo}`);
+              if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-brand-500/10'); setTimeout(() => el.classList.remove('bg-brand-500/10'), 1500); }
+            }}
+            className="flex items-center gap-1.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
+          >
+            <span className="font-medium text-brand-500/70">{comment.replyToAuthor}</span>
+            <span className="truncate max-w-[200px]">{comment.replyToContent ?? '...'}</span>
+          </button>
+        )}
         <MarkdownMessage content={comment.content} className="text-xs text-fg-primary" onMentionClick={handleMentionClick} />
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
@@ -454,9 +497,15 @@ function TaskActivitySection({ task, agents, users, authUser }: {
     return result;
   }, [task.notes, comments]);
 
-  const handleSubmit = async (content: string, mentions: string[]) => {
-    await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined);
+  const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
+
+  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
+    await api.tasks.addComment(task.id, content, authUser?.name, undefined, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
   };
+
+  const handleReply = useCallback((c: TaskComment | RequirementComment) => {
+    setReplyTo({ id: c.id, authorName: c.authorName, content: c.content.slice(0, 100) });
+  }, []);
 
   return (
     <div className="mt-5">
@@ -469,10 +518,10 @@ function TaskActivitySection({ task, agents, users, authUser }: {
           if (item.type === 'note') {
             return <NoteComment key={`n-${i}`} note={item.note} compact />;
           }
-          return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} />;
+          return <CommentBubble key={`c-${item.comment.id}`} comment={item.comment} agents={agents} onReply={handleReply} />;
         })}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} />
+      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
     </div>
   );
 }
@@ -2222,7 +2271,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
-export function ProjectsPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
+export function WorkPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
   const isMobile = useIsMobile();
   const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -2331,7 +2380,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       }
       if (isMobile) {
         setMobileShowDetail(true);
-        history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+        history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
       }
       return task;
     });
@@ -2346,7 +2395,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
       }
       if (isMobile) {
         setMobileShowDetail(true);
-        history.pushState({ mobileDetail: 'projects' }, '', window.location.hash);
+        history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
       }
       return req;
     });
@@ -2428,7 +2477,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
     const hashParts = window.location.hash.slice(1).split('/');
-    if (hashParts[0] === 'projects' && hashParts[1]) {
+    if (resolvePageId(hashParts[0]) === PAGE.WORK && hashParts[1]) {
       selectProject(hashParts[1]);
     } else {
       const navProjectId = localStorage.getItem('markus_nav_projectId');
@@ -2444,16 +2493,16 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
   useEffect(() => {
     const onHashChange = () => {
       const parts = window.location.hash.slice(1).split('/');
-      if (parts[0] === 'projects' && parts[1]) {
+      if (resolvePageId(parts[0]) === PAGE.WORK && parts[1]) {
         selectProject(parts[1]);
-      } else if (parts[0] === 'projects') {
+      } else if (resolvePageId(parts[0]) === PAGE.WORK) {
         selectAllTasks();
       }
     };
 
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.page === 'tasks' || detail.page === 'projects') {
+      if (resolvePageId(detail.page) === PAGE.WORK) {
         if (detail.params?.openTask) {
           const allTasks = Object.values(boardRef.current).flat();
           const task = allTasks.find(t => t.id === detail.params!.openTask);
@@ -2485,7 +2534,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     setSelectedProjectId(projectId);
     setViewMode('project');
     setShowProjectSettings(false);
-    history.replaceState(null, '', '#projects/' + projectId);
+    history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
   };
 
   const selectAllTasks = () => {
@@ -2493,7 +2542,7 @@ export function ProjectsPage({ authUser }: { authUser?: { id: string; name: stri
     setSelectedProjectId(null);
     setViewMode('all');
     setShowProjectSettings(false);
-    history.replaceState(null, '', '#projects');
+    history.replaceState(null, '', hashPath(PAGE.WORK));
   };
 
   const handleProjectCreated = () => {
@@ -3411,15 +3460,22 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
     return unsub;
   }, [requirementId]);
 
-  const handleSubmit = async (content: string, mentions: string[]) => {
+  const [replyTo, setReplyTo] = useState<{ id: string; authorName: string; content: string } | null>(null);
+
+  const handleSubmit = async (content: string, mentions: string[], replyToId?: string) => {
     await api.requirements.addComment(
       requirementId,
       content,
       authUser?.name,
       authUser?.id,
       mentions.length > 0 ? mentions : undefined,
+      replyToId,
     );
   };
+
+  const handleReply = useCallback((c: TaskComment | RequirementComment) => {
+    setReplyTo({ id: c.id, authorName: c.authorName, content: c.content.slice(0, 100) });
+  }, []);
 
   return (
     <div>
@@ -3431,10 +3487,10 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
           <p className="text-xs text-fg-tertiary text-center py-4">No comments yet.</p>
         )}
         {comments.map(c => (
-          <CommentBubble key={c.id} comment={c} agents={agents} />
+          <CommentBubble key={c.id} comment={c} agents={agents} onReply={handleReply} />
         ))}
       </div>
-      <CommentInput agents={agents} onSubmit={handleSubmit} />
+      <CommentInput agents={agents} onSubmit={handleSubmit} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
     </div>
   );
 }

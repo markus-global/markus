@@ -17,6 +17,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { navBus } from '../navBus.ts';
+import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { AgentProfile } from './AgentProfile.tsx';
@@ -48,6 +49,10 @@ interface ChatMsg {
   isStopped?: boolean;
   /** Attached image data URLs */
   images?: string[];
+  /** Reply quote */
+  replyToId?: string;
+  replyToSender?: string;
+  replyToText?: string;
 }
 
 type ChatMode = 'channel' | 'direct' | 'dm';
@@ -257,11 +262,12 @@ function friendlyAgentError(err: unknown): string {
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
-  msg, onCopy, onRetry, isCopied,
+  msg, onCopy, onRetry, onReply, isCopied,
 }: {
   msg: ChatMsg;
   onCopy: (msg: ChatMsg) => void;
   onRetry?: (msg: ChatMsg) => void;
+  onReply?: (msg: ChatMsg) => void;
   isCopied: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
@@ -301,6 +307,17 @@ function MessageActions({
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
           Retry
+        </button>
+      )}
+      {/* Reply */}
+      {onReply && (
+        <button
+          onClick={() => onReply(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
+          title="Reply"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 00-4-4H4" /></svg>
+          Reply
         </button>
       )}
     </div>
@@ -450,17 +467,17 @@ if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', () => _hashSubs.forEach(fn => fn()));
 }
 
-export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
+export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string; authUser?: AuthUser } = {}) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
   const isMobile = useIsMobile();
 
   // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
   const hash = useSyncExternalStore(_subHash, _getHash);
-  const mobileShowChat = isMobile && hash.startsWith('#chat/');
+  const mobileShowChat = isMobile && (hash.startsWith(`#${PAGE.TEAM}/`) || hash.startsWith('#chat/'));
 
   const enterMobileDetail = useCallback(() => {
-    window.location.hash = 'chat/d';
+    window.location.hash = `${PAGE.TEAM}/d`;
   }, []);
 
   // Profile tab: still uses pushState for back navigation
@@ -530,6 +547,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Displayed state — always mirrors the current conv's buffer
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
+  const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   const [sending, setSending] = useState(false);
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -662,10 +680,14 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   useEffect(() => {
     const handleNav = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.page === 'chat' || detail.page === 'team') {
+      if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
-          setChatMode('direct');
-          setSelectedAgent(detail.params.agentId);
+          if (detail.params.profileTab) {
+            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'mind' });
+          } else {
+            setChatMode('direct');
+            setSelectedAgent(detail.params.agentId);
+          }
         }
         if (detail.params?.selectAgent) {
           handleViewProfile(detail.params.selectAgent);
@@ -678,8 +700,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     const navAgent = localStorage.getItem('markus_nav_agentId');
     if (navAgent) {
       localStorage.removeItem('markus_nav_agentId');
-      setChatMode('direct');
-      setSelectedAgent(navAgent);
+      const pTab = localStorage.getItem('markus_nav_profileTab');
+      if (pTab) { localStorage.removeItem('markus_nav_profileTab'); handleViewProfile(navAgent, { tab: pTab as 'mind' }); }
+      else { setChatMode('direct'); setSelectedAgent(navAgent); }
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
@@ -1052,6 +1075,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
     const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
     const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
+    const replyCtx = chatReplyTo;
 
     if (!retryText) {
       setInput('');
@@ -1059,6 +1083,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
     }
     setPendingImages([]);
     setMentionDropdown(false);
+    setChatReplyTo(null);
 
     // Mark this conv as sending (skip for DM — instant DB write, no LLM wait)
     const isDm = chatMode === 'dm';
@@ -1073,7 +1098,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       // Human-to-human DM or personal notepad — no agent routing
       const dmChannel = makeDmChannel(authUser?.id ?? '', activeDmUserId);
       const optId = `opt_${Date.now()}`;
-      updateConvMsgs(sendKey, prev => [...prev, { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() }]);
+      const userMsgDm: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() };
+      if (replyCtx) { userMsgDm.replyToId = replyCtx.id; userMsgDm.replyToSender = replyCtx.sender; userMsgDm.replyToText = replyCtx.text; }
+      updateConvMsgs(sendKey, prev => [...prev, userMsgDm]);
       try {
         const result = await api.channels.sendMessage(dmChannel, {
           text, senderName: authUser?.name ?? 'You',
@@ -1097,7 +1124,9 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       if (currentConvKeyRef.current === sendKey) setSending(false);
     } else if (chatMode === 'channel') {
       const optId = `opt_${Date.now()}`;
-      updateConvMsgs(sendKey, prev => [...prev, { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() }]);
+      const userMsgCh: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() };
+      if (replyCtx) { userMsgCh.replyToId = replyCtx.id; userMsgCh.replyToSender = replyCtx.sender; userMsgCh.replyToText = replyCtx.text; }
+      updateConvMsgs(sendKey, prev => [...prev, userMsgCh]);
       try {
         const mentions = parseMentions(text);
         const mentionedAgent = mentions.length > 0
@@ -1129,6 +1158,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
       const agentMsgId = `a_${Date.now()}`;
       const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
       if (imagesToSend?.length) userMsg.images = imagesToSend;
+      if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
       updateConvMsgs(sendKey, prev => [
         ...prev,
         userMsg,
@@ -1448,6 +1478,15 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
+  const handleReplyMsg = useCallback((msg: ChatMsg) => {
+    setChatReplyTo({
+      id: msg.id,
+      sender: msg.sender === 'user' ? (authUser?.name ?? 'You') : (msg.agentName ?? 'Agent'),
+      text: msg.text.slice(0, 120),
+    });
+    textareaRef.current?.focus();
+  }, [authUser?.name]);
+
   const switchSession = async (s: ChatSessionInfo) => {
     setActiveSessionId(s.id);
     setShowSessions(false);
@@ -1632,7 +1671,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               {/* Mobile Row 1: back + name + status */}
               <div className="flex items-center px-3 h-11 gap-2">
                 <button
-                  onClick={() => { window.location.hash = 'chat'; }}
+                  onClick={() => { window.location.hash = PAGE.TEAM; }}
                   className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -1717,9 +1756,10 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               </div>
             )}
 
-            {/* Right: New Chat + History buttons */}
+            {/* Right side buttons */}
+            <div className="ml-auto flex items-center gap-2">
             {chatMode === 'direct' && currentAgent && (
-              <div className="ml-auto flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={newConversation}
                   className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
@@ -1738,6 +1778,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 </button>
               </div>
             )}
+            </div>
           </div>
           )}
 
@@ -1886,7 +1927,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
 
           {chatMode === 'channel'
             ? messages.map(msg => (
-                <div key={msg.id} className="group/msg flex gap-3">
+                <div key={msg.id} id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
                   <div
                     className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 cursor-pointer ${
                       msg.sender === 'user' ? 'bg-brand-600 text-white' : 'bg-brand-500/15 text-brand-600 hover:ring-1 hover:ring-brand-500/40'
@@ -1907,6 +1948,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       </span>
                       <span className="text-xs text-fg-tertiary">{msg.time}</span>
                     </div>
+                    {msg.replyToId && msg.replyToSender && (
+                      <button
+                        onClick={() => {
+                          const el = document.getElementById(`msg-${msg.replyToId}`);
+                          if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-brand-500/10'); setTimeout(() => el.classList.remove('bg-brand-500/10'), 1500); }
+                        }}
+                        className="flex items-center gap-1.5 mt-0.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
+                      >
+                        <span className="font-medium text-brand-500/70">{msg.replyToSender}</span>
+                        <span className="truncate max-w-[250px]">{msg.replyToText ?? '...'}</span>
+                      </button>
+                    )}
                     <div className={msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                       ? 'mt-0.5 px-3 py-2 rounded-lg border-b-2 border-red-500/60'
                       : 'mt-0.5'
@@ -1926,7 +1979,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       }
                     </div>
                     <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} isCopied={copiedMsgId === msg.id} />
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
                     </div>
                   </div>
                 </div>
@@ -1937,7 +1990,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
                 return (
-                  <div key={msg.id} className={`group/msg flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={
                       msg.sender === 'agent' && expandedMsgIds.has(msg.id)
                         ? 'max-w-full w-full'
@@ -1954,6 +2007,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                             />
                         } · {msg.time}
                       </div>
+                      {msg.replyToId && msg.replyToSender && (
+                        <button
+                          onClick={() => {
+                            const el = document.getElementById(`msg-${msg.replyToId}`);
+                            if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('bg-brand-500/10'); setTimeout(() => el.classList.remove('bg-brand-500/10'), 1500); }
+                          }}
+                          className="flex items-center gap-1.5 mb-1 pl-2 py-0.5 border-l-2 border-brand-500/40 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors cursor-pointer"
+                        >
+                          <span className="font-medium text-brand-500/70">{msg.replyToSender}</span>
+                          <span className="truncate max-w-[200px]">{msg.replyToText ?? '...'}</span>
+                        </button>
+                      )}
                       <div className={`rounded-2xl text-sm ${isMobile ? 'px-3 py-2' : 'px-4 py-3'} ${
                         msg.sender === 'user'
                           ? 'bg-brand-600 text-white rounded-br-sm'
@@ -1986,7 +2051,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
                       </div>
                       {showActions && (
                         <div className={`transition-opacity ${msg.isStopped ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} isCopied={copiedMsgId === msg.id} />
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
                         </div>
                       )}
                     </div>
@@ -2064,6 +2129,17 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
             </div>
           )}
           <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={e => { if (e.target.files) addImageFiles(e.target.files); e.target.value = ''; }} />
+          {chatReplyTo && (
+            <div className="flex items-center gap-2 mb-2 px-3 py-1.5 bg-surface-elevated rounded-lg border border-border-default/50">
+              <div className="flex-1 min-w-0 pl-2 border-l-2 border-brand-500/50">
+                <span className="text-[11px] font-medium text-brand-500">{chatReplyTo.sender}</span>
+                <p className="text-[11px] text-fg-tertiary truncate">{chatReplyTo.text}</p>
+              </div>
+              <button onClick={() => setChatReplyTo(null)} className="text-fg-tertiary hover:text-fg-secondary shrink-0 p-0.5">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+          )}
           <div className="flex gap-2 items-end">
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -2202,7 +2278,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           {currentTask ? (
             <div
               className="flex items-center gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/30 cursor-pointer hover:bg-brand-500/10 transition-colors"
-              onClick={() => { setOpen(false); navBus.navigate('tasks', { openTask: currentTask.id }); }}
+              onClick={() => { setOpen(false); navBus.navigate(PAGE.WORK, { openTask: currentTask.id }); }}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">

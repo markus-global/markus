@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, hubApi, type AgentInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { PAGE } from '../routes.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
@@ -163,7 +164,7 @@ export function AgentBuilder() {
     loadAll();
     const onNav = (e: Event) => {
       const detail = (e as CustomEvent).detail as { page?: string } | undefined;
-      if (detail?.page === 'builder') loadAll();
+      if (detail?.page === PAGE.BUILDER) loadAll();
     };
     window.addEventListener('markus:navigate', onNav);
     return () => window.removeEventListener('markus:navigate', onNav);
@@ -172,9 +173,9 @@ export function AgentBuilder() {
   const navigateToBuilder = (_roleId: string, roleName: string) => {
     const builderAgent = agents.find(a => a.role === roleName || a.name === roleName);
     if (builderAgent) {
-      navBus.navigate('chat', { agentId: builderAgent.id });
+      navBus.navigate(PAGE.TEAM, { agentId: builderAgent.id });
     } else {
-      navBus.navigate('chat');
+      navBus.navigate(PAGE.TEAM);
     }
   };
 
