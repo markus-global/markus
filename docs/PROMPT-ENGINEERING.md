@@ -58,9 +58,10 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │ 19. Task Board (capped)                     │
 │ 20. Task Workflow Instructions              │
 │ 21. Environment Profile                     │
-│ 22. Current Conversation (sender info)      │
-│ 23. Scenario Section (mode-specific)        │  ← Volatile: changes per call
-│ 24. Timestamp                               │
+│ 22. Mailbox & Attention Context             │
+│ 23. Current Conversation (sender info)      │
+│ 24. Scenario Section (mode-specific)        │  ← Volatile: changes per call
+│ 25. Timestamp                               │
 └─────────────────────────────────────────────┘
 ```
 
@@ -98,7 +99,17 @@ Displays the agent's active tasks and team tasks, **capped to prevent prompt blo
 - Overflow is indicated with a count and a hint to use `task_list` for the full list.
 - Completed/closed tasks are only shown as a count.
 
-#### Scenario Section (§23)
+#### Mailbox & Attention Context (§22)
+Source: `getMailboxContext()` → `buildMailboxSection()` in `ContextEngine`.
+Every LLM call passes through the mailbox, so this section is always populated. It injects:
+- **Current focus**: What the agent is currently working on (item type, summary, time elapsed).
+- **Pending queue**: Count and top items in the mailbox, so the agent knows what's waiting.
+- **Recent decisions**: Last 3-5 attention decisions (continue/preempt/merge/defer) with reasoning.
+- **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
+
+All 13 mailbox item types (`human_chat`, `task_assignment`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
+
+#### Scenario Section (§24)
 Source: `buildScenarioSection()`.  
 Four distinct instruction sets depending on `scenario` parameter:
 

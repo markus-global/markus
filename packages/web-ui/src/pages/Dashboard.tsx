@@ -45,6 +45,7 @@ export function Dashboard() {
 
   const activeAgents = agents.filter(a => a.status === 'idle' || a.status === 'working').length;
   const workingAgents = agents.filter(a => a.status === 'working').length;
+  const totalMailboxDepth = agents.reduce((sum, a) => sum + (a.mailboxDepth ?? 0), 0);
 
   const teamSummaries = useMemo(() => {
     const agentMap = new Map(agents.map(a => [a.id, a]));
@@ -102,6 +103,40 @@ export function Dashboard() {
                   <div className="text-xs font-medium text-fg-primary">{item.label}</div>
                   <div className="text-[11px] text-fg-tertiary mt-1">{item.desc}</div>
                 </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Agent Focus Summary — shows what each working agent is doing */}
+        {workingAgents > 0 && (
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Agent Focus</h3>
+              {totalMailboxDepth > 0 && <span className="text-xs text-fg-tertiary">{totalMailboxDepth} total queued</span>}
+            </div>
+            <div className="space-y-1.5">
+              {agents.filter(a => a.status === 'working').map(a => (
+                <div key={a.id}
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface-elevated/30 hover:bg-surface-elevated/60 cursor-pointer transition-colors"
+                  onClick={() => navBus.navigate('agents', { agentId: a.id })}
+                >
+                  <div className="w-5 h-5 rounded-full bg-brand-600/30 flex items-center justify-center text-[9px] font-bold text-brand-400 shrink-0">
+                    {a.name.charAt(0)}
+                  </div>
+                  <span className="text-xs font-medium text-fg-primary truncate">{a.name}</span>
+                  <span className="text-[10px] text-fg-tertiary truncate flex-1">
+                    {a.currentActivity?.label ?? 'Working...'}
+                  </span>
+                  {(a.mailboxDepth ?? 0) > 0 && (
+                    <span className="text-[9px] bg-amber-500/20 text-amber-400 rounded-full px-1.5 shrink-0">{a.mailboxDepth} queued</span>
+                  )}
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${
+                    a.attentionState === 'focused' ? 'bg-brand-400 animate-pulse'
+                    : a.attentionState === 'deciding' ? 'bg-amber-400 animate-pulse'
+                    : 'bg-green-400'
+                  }`} />
+                </div>
               ))}
             </div>
           </div>

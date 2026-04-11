@@ -296,6 +296,26 @@ export class RequirementService {
       }
     }
 
+    // Notify the creator agent of every requirement status transition
+    if (req.createdBy && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(req.createdBy);
+        if (agent) {
+          agent.enqueueToMailbox('requirement_update', {
+            summary: `Requirement "${req.title}" status: ${oldStatus} → ${newStatus}`,
+            content: [
+              `[REQUIREMENT STATUS UPDATE] "${req.title}" (ID: ${id})`,
+              `Status changed: ${oldStatus} → ${newStatus}`,
+              userId ? `Updated by: ${userId}` : '',
+            ].filter(Boolean).join('\n'),
+            requirementId: id,
+          }, {
+            metadata: { senderName: 'System', senderRole: 'manager' },
+          });
+        }
+      } catch { /* agent not found — skip */ }
+    }
+
     this.broadcast('requirement:updated', req);
     log.info('Requirement status updated', { id, from: oldStatus, to: newStatus });
 
@@ -542,15 +562,12 @@ export class RequirementService {
       }
 
       const agent = this.agentManager.getAgent(creatorId);
-      agent.handleMessage(
-        parts.join('\n'),
-        'system',
-        { name: 'System', role: 'manager' },
-        { ephemeral: true, maxHistory: 10 },
-      ).catch(err => {
-        log.warn('Failed to notify creator agent about requirement decision', {
-          requirementId: req.id, creatorId, decision, error: String(err),
-        });
+      agent.enqueueToMailbox('requirement_update', {
+        summary: `Requirement "${req.title}" ${decision}`,
+        content: parts.join('\n'),
+        requirementId: req.id,
+      }, {
+        metadata: { senderName: 'System', senderRole: 'manager' },
       });
 
       log.info('Notified creator agent about requirement decision', {

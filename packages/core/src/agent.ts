@@ -13,6 +13,14 @@ import {
   type LLMStreamEvent,
   type IdentityContext,
   type PathAccessPolicy,
+  type MailboxItem,
+  type MailboxItemType,
+  type MailboxPayload,
+  type MailboxPriority,
+  type AttentionDecision,
+  type DecisionType,
+  type AgentMindState,
+  MailboxPriorityLevel,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -35,6 +43,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
+import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
+import { AttentionController, type AttentionDelegate } from './attention.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -189,6 +199,8 @@ export class Agent {
    */
   private pendingInjections = new Map<string, string[]>();
   private activeStreamToken?: { cancelled: boolean };
+  /** The mailbox item ID currently being processed – threaded into activity records. */
+  private processingMailboxItemId?: string;
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
@@ -223,6 +235,11 @@ export class Agent {
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
 
+  /** Mailbox for single-threaded attention model */
+  private mailbox: AgentMailbox;
+  /** Attention controller for event-driven focus management */
+  private attentionController: AttentionController;
+
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
     this.config = { ...options.config, id: this.id };
@@ -244,6 +261,9 @@ export class Agent {
     this.skillRegistry = options.skillRegistry;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.eventBus = new EventBus();
+    this.mailbox = new AgentMailbox(this.id, this.eventBus);
+    this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
+    this.attentionController.setDelegate(this.createAttentionDelegate());
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
@@ -312,9 +332,11 @@ export class Agent {
     this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
 
     this.eventBus.on('heartbeat:trigger', ctx => {
-      this.handleHeartbeat(
-        ctx as { agentId: string; triggeredAt: string }
-      ).catch(e => log.error('Heartbeat handler failed', { error: String(e) }));
+      const { triggeredAt } = ctx as { agentId: string; triggeredAt: string };
+      this.mailbox.enqueue('heartbeat', {
+        summary: 'Scheduled heartbeat check-in',
+        content: `Heartbeat triggered at ${triggeredAt}`,
+      });
     });
 
     // Auto-reload role when agent modifies its own ROLE.md
@@ -398,6 +420,7 @@ export class Agent {
     }
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
+    this.attentionController.start();
 
     // Periodic memory consolidation: compact sessions and generate daily insights
     this.memoryConsolidationTimer = setInterval(() => {
@@ -411,6 +434,7 @@ export class Agent {
   }
 
   async stop(): Promise<void> {
+    this.attentionController.stop();
     this.heartbeat.stop();
     this._bgCompletionUnsub?.();
     if (this.memoryConsolidationTimer) {
@@ -421,6 +445,439 @@ export class Agent {
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`);
+  }
+
+  // ─── Mailbox & Attention ──────────────────────────────────────────────────
+
+  /**
+   * Enqueue an item into this agent's mailbox.
+   * This is the primary entry point for all external events reaching the agent.
+   * The AttentionController will process items according to the agent's focus state.
+   */
+  enqueueToMailbox(
+    sourceType: MailboxItemType,
+    payload: MailboxPayload,
+    options?: EnqueueOptions,
+  ): MailboxItem {
+    return this.mailbox.enqueue(sourceType, payload, options);
+  }
+
+  /**
+   * Route a message through the mailbox and return a promise that resolves
+   * when the agent finishes processing it.  This is the external replacement
+   * for direct `handleMessage` calls — callers await the returned promise
+   * exactly as they did before, but the work is now serialised through the
+   * agent's attention loop.
+   */
+  sendMessage(
+    userMessage: string,
+    senderId?: string,
+    senderInfo?: { name: string; role: string },
+    options?: {
+      sourceType?: MailboxItemType;
+      priority?: MailboxPriority;
+      ephemeral?: boolean;
+      sessionId?: string;
+      maxHistory?: number;
+      channelContext?: Array<{ role: string; content: string }>;
+      images?: string[];
+      allowedTools?: Set<string>;
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a';
+      toolEventCollector?: Array<{
+        tool: string;
+        status: 'done' | 'error';
+        arguments?: unknown;
+        result?: string;
+        durationMs?: number;
+      }>;
+      taskId?: string;
+      requirementId?: string;
+    },
+  ): Promise<string> {
+    const sourceType = options?.sourceType
+      ?? (senderId ? 'human_chat' : 'system_event');
+
+    const payload: MailboxPayload = {
+      summary: userMessage.slice(0, 100),
+      content: userMessage,
+      taskId: options?.taskId,
+      requirementId: options?.requirementId,
+      extra: {
+        ephemeral: options?.ephemeral,
+        sessionId: options?.sessionId,
+        maxHistory: options?.maxHistory,
+        channelContext: options?.channelContext,
+        images: options?.images,
+        allowedTools: options?.allowedTools
+          ? [...options.allowedTools]
+          : undefined,
+        scenario: options?.scenario,
+        toolEventCollector: options?.toolEventCollector,
+      },
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      this.mailbox.enqueue(sourceType, payload, {
+        priority: options?.priority,
+        metadata: {
+          senderId,
+          senderName: senderInfo?.name,
+          senderRole: senderInfo?.role,
+          responsePromise: { resolve, reject },
+        },
+      });
+    });
+  }
+
+  /**
+   * Streaming counterpart of `sendMessage`.  Routes the request through the
+   * mailbox, but passes the SSE event callback and cancel token so that
+   * `processMailboxItemInternal` can delegate to `handleMessageStream`.
+   */
+  sendMessageStream(
+    userMessage: string,
+    onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
+    senderId?: string,
+    senderInfo?: { name: string; role: string },
+    cancelToken?: { cancelled: boolean },
+    images?: string[],
+  ): Promise<string> {
+    const payload: MailboxPayload = {
+      summary: userMessage.slice(0, 100),
+      content: userMessage,
+      extra: {
+        images,
+        stream: true,
+        onEvent,
+        cancelToken,
+      },
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      this.mailbox.enqueue('human_chat', payload, {
+        priority: 1,
+        metadata: {
+          senderId,
+          senderName: senderInfo?.name,
+          senderRole: senderInfo?.role,
+          responsePromise: { resolve, reject },
+        },
+      });
+    });
+  }
+
+  /**
+   * Route a task execution through the mailbox.  Fire-and-forget: the returned
+   * promise resolves when the agent finishes (or errors out), but the caller
+   * does not need to await it.
+   */
+  sendTaskExecution(
+    taskId: string,
+    taskDescription: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    cancelToken?: { cancelled: boolean },
+    taskWorkspace?: TaskWorkspace,
+    executionRound?: number,
+  ): Promise<string> {
+    const payload: MailboxPayload = {
+      summary: `Task: ${taskDescription.slice(0, 80)}`,
+      content: taskDescription,
+      taskId,
+      extra: {
+        onLog,
+        cancelToken,
+        taskWorkspace,
+        executionRound,
+      },
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      this.mailbox.enqueue('task_assignment', payload, {
+        metadata: {
+          taskId,
+          responsePromise: { resolve, reject },
+        },
+      });
+    });
+  }
+
+  /**
+   * Route a session reply (e.g. post-task comment) through the mailbox.
+   * The returned promise resolves with the agent's reply text.
+   */
+  sendSessionReply(
+    sessionId: string,
+    userMessage: string,
+    onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
+    senderId?: string,
+    senderInfo?: { name: string; role: string },
+  ): Promise<string> {
+    const payload: MailboxPayload = {
+      summary: userMessage.slice(0, 100),
+      content: userMessage,
+      extra: {
+        sessionId,
+        onLog,
+      },
+    };
+
+    return new Promise<string>((resolve, reject) => {
+      this.mailbox.enqueue('session_reply', payload, {
+        metadata: {
+          senderId,
+          senderName: senderInfo?.name,
+          senderRole: senderInfo?.role,
+          responsePromise: { resolve, reject },
+        },
+      });
+    });
+  }
+
+  /** Get the current cognitive state of the agent. */
+  getMindState(): AgentMindState {
+    return this.attentionController.getMindState();
+  }
+
+  /** Get the raw mailbox instance (for persistence wiring). */
+  getMailbox(): AgentMailbox {
+    return this.mailbox;
+  }
+
+  /** Get the attention controller (for persistence wiring). */
+  getAttentionController(): AttentionController {
+    return this.attentionController;
+  }
+
+  /**
+   * Check yield point during task execution — called between LLM turns.
+   * Returns decision info so the tool loop can act on preemption or merges.
+   */
+  async checkAttentionYieldPoint(): Promise<{
+    decision: DecisionType;
+    item?: MailboxItem;
+    reasoning?: string;
+  }> {
+    return this.attentionController.checkYieldPoint();
+  }
+
+  /**
+   * Build the AttentionDelegate that bridges the AttentionController
+   * back to the Agent's existing processing methods.
+   */
+  private createAttentionDelegate(): AttentionDelegate {
+    return {
+      processMailboxItem: async (item: MailboxItem) => {
+        return this.processMailboxItemInternal(item);
+      },
+      onDecisionMade: (decision: AttentionDecision) => {
+        this.eventBus.emit('agent:decision', { agentId: this.id, decision });
+        log.debug('Attention decision', {
+          agentId: this.id,
+          type: decision.decisionType,
+          itemType: this.attentionController.getCurrentFocus()?.sourceType,
+          reasoning: decision.reasoning.slice(0, 120),
+        });
+      },
+      onFocusChanged: (item: MailboxItem | undefined) => {
+        this.eventBus.emit('agent:focus-changed', {
+          agentId: this.id,
+          focus: item ? {
+            mailboxItemId: item.id,
+            type: item.sourceType,
+            label: item.payload.summary,
+            taskId: item.payload.taskId,
+          } : undefined,
+          mailboxDepth: this.mailbox.depth,
+        });
+        if (item) {
+          this.setStatus('working');
+        } else if (this.activeTasks.size === 0) {
+          this.setStatus('idle');
+        }
+      },
+      evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
+        return this.attentionController.heuristicDecision(currentItem, newItem);
+      },
+    };
+  }
+
+  /**
+   * Route a mailbox item to the appropriate Agent processing method.
+   * Options like ephemeral/maxHistory/images are forwarded from payload.extra
+   * when present, falling back to type-appropriate defaults.
+   */
+  private async processMailboxItemInternal(item: MailboxItem): Promise<string | void> {
+    this.processingMailboxItemId = item.id;
+    const extra = item.payload.extra ?? {};
+    const senderInfo = item.metadata?.senderName
+      ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
+      : undefined;
+    const resolveResponse = (reply: string) => {
+      item.metadata?.responsePromise?.resolve(reply);
+    };
+    const rejectResponse = (err: unknown) => {
+      item.metadata?.responsePromise?.reject(err);
+    };
+
+    const buildHandleOpts = (defaults: Record<string, unknown> = {}) => {
+      const opts: Record<string, unknown> = { ...defaults };
+      if (extra.ephemeral !== undefined) opts.ephemeral = extra.ephemeral;
+      if (extra.sessionId !== undefined) opts.sessionId = extra.sessionId;
+      if (extra.maxHistory !== undefined) opts.maxHistory = extra.maxHistory;
+      if (extra.channelContext !== undefined) opts.channelContext = extra.channelContext;
+      if (extra.images !== undefined) opts.images = extra.images;
+      if (extra.scenario !== undefined) opts.scenario = extra.scenario;
+      if (extra.toolEventCollector !== undefined) opts.toolEventCollector = extra.toolEventCollector;
+      if (extra.allowedTools !== undefined) {
+        opts.allowedTools = new Set(extra.allowedTools as string[]);
+      }
+      return opts;
+    };
+
+    try {
+      switch (item.sourceType) {
+        case 'human_chat':
+        case 'a2a_message': {
+          if (extra.stream && typeof extra.onEvent === 'function') {
+            const reply = await this.handleMessageStream(
+              item.payload.content,
+              extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
+              item.metadata?.senderId,
+              senderInfo,
+              extra.cancelToken as { cancelled: boolean } | undefined,
+              extra.images as string[] | undefined,
+            );
+            resolveResponse(reply);
+            return reply;
+          }
+          const defaults = item.sourceType === 'a2a_message'
+            ? { ephemeral: true, maxHistory: 15 }
+            : {};
+          const reply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            senderInfo,
+            buildHandleOpts(defaults),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'task_assignment': {
+          if (item.payload.taskId) {
+            const taskId = item.payload.taskId;
+            const description = item.payload.content;
+            const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
+            await this.executeTask(
+              taskId,
+              description,
+              onLog,
+              extra.cancelToken as { cancelled: boolean } | undefined,
+              extra.taskWorkspace as TaskWorkspace | undefined,
+              extra.executionRound as number | undefined,
+            );
+          }
+          resolveResponse('');
+          return;
+        }
+
+        case 'task_status_update':
+        case 'requirement_update':
+        case 'mention': {
+          const reply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            senderInfo,
+            buildHandleOpts({ ephemeral: true, maxHistory: 10 }),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'task_comment': {
+          const taskId = item.metadata?.taskId ?? item.payload.taskId;
+          if (taskId && this.activeTasks.has(taskId)) {
+            const round = this.getTaskExecutionRound(taskId);
+            const sessionId = `task_${taskId}_r${round}`;
+            this.injectUserMessage(sessionId, item.payload.content);
+          } else {
+            await this.handleMessage(
+              item.payload.content,
+              item.metadata?.senderId,
+              senderInfo,
+              buildHandleOpts({ ephemeral: true, maxHistory: 10 }),
+            );
+          }
+          resolveResponse('');
+          return;
+        }
+
+        case 'review_request': {
+          const reply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            item.metadata?.senderName
+              ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
+              : undefined,
+            buildHandleOpts(),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'heartbeat': {
+          await this.handleHeartbeat({
+            agentId: this.id,
+            triggeredAt: item.queuedAt,
+          });
+          resolveResponse('');
+          return;
+        }
+
+        case 'system_event':
+        case 'daily_report':
+        case 'memory_consolidation': {
+          const reply = await this.handleMessage(
+            item.payload.content,
+            undefined,
+            undefined,
+            buildHandleOpts({ ephemeral: true, maxHistory: 5, scenario: 'heartbeat' }),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'session_reply': {
+          const sessionId = extra.sessionId as string | undefined;
+          const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
+          if (sessionId) {
+            const reply = await this.respondInSession(sessionId, item.payload.content, onLog);
+            resolveResponse(reply);
+            return reply;
+          }
+          const reply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            senderInfo,
+            buildHandleOpts({ ephemeral: true }),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+      }
+    } catch (err) {
+      rejectResponse(err);
+      throw err;
+    } finally {
+      this.processingMailboxItemId = undefined;
+    }
+  }
+
+  /**
+   * Get the current execution round for a task (used for session ID construction).
+   */
+  private getTaskExecutionRound(_taskId: string): number {
+    return 1;
   }
 
   /**
@@ -1029,6 +1486,41 @@ export class Agent {
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
 
+  private getMailboxContext(): {
+    currentFocus?: { type: string; label: string; elapsedMs: number; taskId?: string };
+    queueDepth: number;
+    topQueued?: Array<{ type: string; priority: number; summary: string }>;
+    recentDecisions?: Array<{ type: string; reasoning: string }>;
+    mergedContent?: string;
+  } | undefined {
+    const mind = this.attentionController.getMindState();
+    if (mind.attentionState === 'idle' && mind.mailboxDepth === 0 && mind.recentDecisions.length === 0) {
+      return undefined;
+    }
+
+    const focus = this.attentionController.getCurrentFocus();
+    return {
+      currentFocus: focus ? {
+        type: focus.sourceType,
+        label: focus.payload.summary,
+        elapsedMs: focus.startedAt
+          ? Date.now() - new Date(focus.startedAt).getTime()
+          : Date.now() - new Date(focus.queuedAt).getTime(),
+        taskId: focus.payload.taskId,
+      } : undefined,
+      queueDepth: mind.mailboxDepth,
+      topQueued: mind.queuedItems.slice(0, 3).map(i => ({
+        type: i.sourceType,
+        priority: i.priority,
+        summary: i.summary,
+      })),
+      recentDecisions: mind.recentDecisions.slice(-5).map(d => ({
+        type: d.decisionType,
+        reasoning: d.reasoning,
+      })),
+    };
+  }
+
   setAuditCallback(
     cb: (event: {
       type: string;
@@ -1123,7 +1615,8 @@ export class Agent {
 
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const activity = { id, type, label, startedAt: new Date().toISOString(), ...extra };
+    const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
+    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}) };
     this.state.currentActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
@@ -1269,7 +1762,8 @@ export class Agent {
     ].join('\n');
 
     try {
-      const report = await this.handleMessage(prompt, undefined, undefined, {
+      const report = await this.sendMessage(prompt, undefined, undefined, {
+        sourceType: 'daily_report',
         ephemeral: true,
         maxHistory: 5,
         scenario: 'heartbeat',
@@ -1403,6 +1897,7 @@ export class Agent {
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
+      mailboxContext: this.getMailboxContext(),
       ...this.getTeamContextParams(),
     });
 
@@ -1599,7 +2094,6 @@ export class Agent {
                 agentId: this.id,
                 pattern: loopCheck.pattern,
               });
-              // Inject a warning message so the model can self-correct
               const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
               if (!isEphemeral) {
                 this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
@@ -1607,6 +2101,18 @@ export class Agent {
                 messages.push({ role: 'user', content: warningMsg });
               }
             }
+          }
+        }
+
+        // Attention yield point (merge only — no preemption during chat,
+        // since the caller is awaiting a response).
+        const chatYield = await this.checkAttentionYieldPoint();
+        if (chatYield.decision === 'merge' && chatYield.item) {
+          const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
+          if (!isEphemeral) {
+            this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
+          } else {
+            messages.push({ role: 'user', content: mergeMsg });
           }
         }
 
@@ -1774,6 +2280,7 @@ export class Agent {
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
+      mailboxContext: this.getMailboxContext(),
       ...this.getTeamContextParams(),
     });
 
@@ -2386,6 +2893,7 @@ export class Agent {
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
+      mailboxContext: this.getMailboxContext(),
       ...this.getTeamContextParams(),
     });
 
@@ -2509,6 +3017,35 @@ export class Agent {
 
         // Flush buffered live comments now that all tool results are safely appended.
         this.flushPendingInjections(sessionId);
+
+        // ── Attention yield point ──────────────────────────────────────
+        // Between LLM turns is a safe point to check for higher-priority
+        // mailbox items. All tool results are saved to the session, so we
+        // can pause and resume without data loss.
+        const yieldResult = await this.checkAttentionYieldPoint();
+        if (yieldResult.decision === 'preempt') {
+          emit('status', 'preempted', {
+            reason: yieldResult.reasoning,
+            preemptedBy: yieldResult.item?.sourceType,
+          });
+          log.info('Task preempted by higher-priority mailbox item', {
+            taskId,
+            agentId: this.id,
+            preemptedBy: yieldResult.item?.sourceType,
+            reasoning: yieldResult.reasoning?.slice(0, 120),
+          });
+          return;
+        }
+        if (yieldResult.decision === 'merge' && yieldResult.item) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: `[LIVE UPDATE] ${yieldResult.item.payload.summary}\n\n${yieldResult.item.payload.content}`,
+          });
+          log.debug('Merged mailbox item into active task session', {
+            taskId,
+            mergedType: yieldResult.item.sourceType,
+          });
+        }
 
         // Re-inject critical task completion reminder every 10 tool iterations
         // to prevent "lost in the middle" — the original task_submit_review
@@ -2691,6 +3228,7 @@ export class Agent {
       dynamicContext: this.getDynamicContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
+      mailboxContext: this.getMailboxContext(),
       ...this.getTeamContextParams(),
     });
 
@@ -3716,9 +4254,11 @@ export class Agent {
     ].join('\n');
 
     try {
-      const response = await this.handleMessage(prompt, undefined, undefined, {
+      const response = await this.sendMessage(prompt, undefined, undefined, {
+        sourceType: 'memory_consolidation',
         ephemeral: true,
         maxHistory: 5,
+        scenario: 'heartbeat',
       });
 
       const jsonMatch = response.match(/\{[\s\S]*\}/);

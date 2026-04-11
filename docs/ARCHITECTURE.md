@@ -1,6 +1,6 @@
 # Markus -- Technical Architecture
 
-> Last updated: 2026-03
+> Last updated: 2026-04
 
 ---
 
@@ -28,8 +28,9 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
    │         │          │         │           │
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
 │                Agent Runtime (@markus/core)                   │
-│  Agent · ContextEngine · LLMRouter · Memory · WorkspaceManager│
-│  HeartbeatScheduler · Tools · MCP Client · ReviewService      │
+│  Agent · Mailbox · AttentionController · ContextEngine        │
+│  LLMRouter · Memory · WorkspaceManager · HeartbeatScheduler   │
+│  Tools · MCP Client · ReviewService                           │
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────▼──────────────┐
@@ -90,7 +91,28 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 | `trusted` | score >= 60, >= 15 deliveries | Higher autonomy, can review others |
 | `senior` | score >= 80, >= 25 deliveries | Highest autonomy, key reviewer |
 
-### 3.2 Organization Structure
+### 3.2 Mailbox & Attention (Single-Threaded Cognition)
+
+Each agent has a **single-threaded attention model** — it processes one item at a time. **Every LLM invocation** flows through a per-agent **Mailbox** (priority queue), and an **AttentionController** manages which item the agent focuses on.
+
+Key components:
+- **AgentMailbox** — Priority queue accepting 13 item types: `human_chat`, `a2a_message`, `task_assignment`, `task_comment`, `task_status_update`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
+- **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
+- **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
+- **Decision Engine** — Produces decisions: `continue`, `preempt`, `merge`, `defer`, `drop`
+
+External callers use the mailbox API exclusively:
+- `agent.sendMessage()` — Awaitable chat/notification
+- `agent.sendMessageStream()` — Streaming chat (SSE)
+- `agent.sendTaskExecution()` — Task execution (fire-and-forget)
+- `agent.sendSessionReply()` — Post-task session reply
+- `agent.enqueueToMailbox()` — Fire-and-forget notification
+
+Internal processes (heartbeat, daily report, memory consolidation) also enqueue to the mailbox, ensuring **no LLM call bypasses the attention controller**. The mailbox timeline (items + decisions) forms the agent's **episodic memory ground truth**.
+
+See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
+
+### 3.3 Organization Structure
 
 ```
 Organization (Org)
@@ -110,7 +132,7 @@ Organization (Org)
 - Each Task belongs to one Project and traces to a Requirement
 - Each Project can link multiple code repositories
 
-### 3.3 Memory and Knowledge System
+### 3.4 Memory and Knowledge System
 
 **Agent memory (three layers):**
 
@@ -132,7 +154,7 @@ Short-term (session)       Mid-term (daily log)       Long-term (MEMORY.md)
 
 Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`
 
-### 3.4 Tool System
+### 3.5 Tool System
 
 **Built-in tools (all Agents have by default):**
 
@@ -153,7 +175,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 
 **Git commit metadata injection:** When an Agent runs `git commit`, `shell_execute` auto-injects `--author` and `--trailer` with Agent ID, name, Team, Org, Task ID, etc., so all commits are traceable.
 
-### 3.5 Task System
+### 3.6 Task System
 
 See [Task & Requirement State Machines](./STATE-MACHINES.md) for the complete FSM specification.
 
@@ -221,7 +243,7 @@ rejected ── resubmit ──┘     any ──► cancelled
 
 Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
 
-### 3.6 Context Engine (System Prompt Assembly)
+### 3.7 Context Engine (System Prompt Assembly)
 
 Before each conversation, the ContextEngine dynamically builds the system prompt:
 
@@ -241,7 +263,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 14. Current conversation identity (sender info)
 15. Environment info (OS, toolchain, runtime)
 
-### 3.7 LLM Routing
+### 3.8 LLM Routing
 
 ```
 LLMRouter

@@ -52,9 +52,13 @@ export {
   SqliteDeliverableRepo,
   SqliteActivityRepo,
   SqliteExecutionStreamRepo,
+  SqliteMailboxRepo,
+  SqliteDecisionRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,
   type ActivityLogRecord,
   type ExecutionStreamRow,
+  type MailboxItemRow,
+  type DecisionRow,
 } from './sqlite-storage.js';

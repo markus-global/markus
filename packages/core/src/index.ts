@@ -105,6 +105,13 @@ export {
   type DiffStats,
 } from './workspace-manager.js';
 export { EventBus } from './events.js';
+export { AgentMailbox, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
+export {
+  AttentionController,
+  type AttentionDelegate,
+  type DecisionPersistence,
+  type LLMDecisionJudge,
+} from './attention.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
 export {
   GuardrailPipeline,

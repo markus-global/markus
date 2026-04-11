@@ -4,8 +4,6 @@ import {
   type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type StoredSegment,
-  type AgentActivityInfo, type AgentActivityLogEntry, type TaskLogEntry,
-  taskLogToStreamEntry, activityLogToStreamEntry,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
@@ -492,15 +490,18 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
-  const switchToProfile = useCallback(() => {
+  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | 'mind' | undefined>();
+
+  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind') => {
+    setProfileDefaultTab(defaultTab);
     setMainTab('profile');
     if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
   }, [isMobile]);
 
-  const handleViewProfile = useCallback((agentId: string) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind' }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
-    switchToProfile();
+    switchToProfile(opts?.tab);
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [switchToProfile]);
@@ -1839,6 +1840,7 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
               agentId={selectedAgent}
               onBack={() => setMainTab('chat')}
               inline
+              defaultTab={profileDefaultTab}
             />
           </div>
         )}
@@ -2132,9 +2134,8 @@ export function Chat({ initialAgentId, authUser }: { initialAgentId?: string; au
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string) => void }) {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
   const [open, setOpen] = useState(false);
-  const [showActivityModal, setShowActivityModal] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const isWorking = agent.status === 'working';
   const isError = agent.status === 'error';
@@ -2172,6 +2173,9 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
         <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-amber-600' : 'text-green-600'}`}>{label}</span>
+        {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
+          <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
+        )}
       </button>
 
       {open && isError && (
@@ -2225,195 +2229,14 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
             </div>
           )}
           <button
-            onClick={() => { setOpen(false); setShowActivityModal(true); }}
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'mind' }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1.5 transition-colors"
           >
-            View Execution Log →
+            View Mind →
           </button>
         </div>
       )}
-
-      {showActivityModal && (
-        <AgentActivityModal
-          agent={agent}
-          currentTask={currentTask}
-          onClose={() => setShowActivityModal(false)}
-          onGoToTask={currentTask ? () => { setShowActivityModal(false); navBus.navigate('tasks', { openTask: currentTask.id }); } : undefined}
-        />
-      )}
     </div>
   );
 }
 
-function AgentActivityModalLogs({ entries, isActive, showRounds }: { entries: ExecutionStreamEntryUI[]; isActive: boolean; showRounds?: boolean }) {
-  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
-  if (entries.length === 0) return null;
-  return viewMode === 'compact' ? (
-    <CompactExecutionCard entries={entries} isActive={isActive} onExpand={() => setViewMode('full')} showRounds={showRounds} />
-  ) : (
-    <FullExecutionLog entries={entries} isActive={isActive} onCollapse={() => setViewMode('compact')} showRounds={showRounds} />
-  );
-}
-
-// ─── Agent Activity Modal ────────────────────────────────────────────────────
-
-function AgentActivityModal({ agent, currentTask, onClose, onGoToTask }: {
-  agent: AgentInfo;
-  currentTask: TaskInfo | null | undefined;
-  onClose: () => void;
-  onGoToTask?: () => void;
-}) {
-  const activity = agent.currentActivity;
-  const [taskLogs, setTaskLogs] = useState<TaskLogEntry[]>([]);
-  const [activityLogs, setActivityLogs] = useState<AgentActivityLogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const endRef = useRef<HTMLDivElement>(null);
-  const modalScrollRef = useRef<HTMLDivElement>(null);
-  const modalAtBottomRef = useRef(true);
-
-  useEffect(() => {
-    const el = modalScrollRef.current;
-    if (!el) return;
-    const handleScroll = () => {
-      const threshold = 80;
-      modalAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-    };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  // Fetch logs on mount (use stable IDs as deps to avoid re-fetching on object reference changes)
-  const currentTaskId = currentTask?.id;
-  const activityId = activity?.id;
-  useEffect(() => {
-    setLoading(true);
-    if (currentTaskId) {
-      api.tasks.getLogs(currentTaskId).then(d => { setTaskLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
-    } else if (activityId) {
-      api.agents.getActivityLogs(agent.id, activityId).then(d => { setActivityLogs(d.logs); setLoading(false); }).catch(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
-  }, [agent.id, activityId, currentTaskId]);
-
-  // Real-time task:log events
-  useEffect(() => {
-    if (!currentTaskId) return;
-    const unsub = wsClient.on('task:log', (event) => {
-      const p = event.payload;
-      if (p.taskId !== currentTaskId) return;
-      const entry: TaskLogEntry = {
-        id: p.id as string, taskId: p.taskId as string, agentId: p.agentId as string,
-        seq: p.seq as number, type: p.logType as string, content: p.content as string,
-        metadata: p.metadata as Record<string, unknown> | undefined, createdAt: p.createdAt as string,
-      };
-      setTaskLogs(prev => {
-        if (entry.id && prev.some(e => e.id === entry.id)) return prev;
-        return [...prev, entry];
-      });
-    });
-    return unsub;
-  }, [currentTaskId]);
-
-  // Real-time agent:activity_log events
-  useEffect(() => {
-    if (!activityId || currentTaskId) return;
-    const unsub = wsClient.on('agent:activity_log', (event) => {
-      const p = event.payload;
-      if (p.agentId !== agent.id || p.activityId !== activityId) return;
-      const entry: AgentActivityLogEntry = {
-        seq: p.seq as number,
-        type: p.type as AgentActivityLogEntry['type'],
-        content: p.content as string,
-        metadata: p.metadata as Record<string, unknown> | undefined,
-        createdAt: p.createdAt as string,
-      };
-      setActivityLogs(prev => {
-        if (prev.some(e => e.seq === entry.seq)) return prev;
-        return [...prev, entry];
-      });
-    });
-    return unsub;
-  }, [agent.id, activityId, currentTaskId]);
-
-  useEffect(() => {
-    if (!modalAtBottomRef.current) return;
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [taskLogs, activityLogs]);
-
-  const activityTypeLabel = activity?.type === 'heartbeat' ? 'Heartbeat Task'
-    : activity?.type === 'chat' ? 'Chat Response'
-    : activity?.type === 'task' ? 'Task Execution'
-    : 'Processing';
-
-  const activityTypeColor = activity?.type === 'heartbeat' ? 'text-blue-600'
-    : activity?.type === 'chat' ? 'text-blue-600'
-    : 'text-brand-500';
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-surface-secondary border border-border-default rounded-xl w-[780px] max-w-[95vw] max-h-[75vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border-default">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${
-              activity?.type === 'heartbeat' ? 'bg-blue-400 animate-pulse'
-              : activity?.type === 'chat' ? 'bg-blue-400 animate-pulse'
-              : 'bg-blue-400 animate-pulse'
-            }`} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{agent.name}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${activityTypeColor} border-current/20 bg-current/5`}>
-                  {activityTypeLabel}
-                </span>
-              </div>
-              <div className="text-xs text-fg-secondary truncate mt-0.5">
-                {activity?.label ?? currentTask?.title ?? 'Processing...'}
-              </div>
-              {activity?.startedAt && (
-                <div className="text-[10px] text-fg-tertiary mt-0.5">
-                  Started {new Date(activity.startedAt).toLocaleTimeString()}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {onGoToTask && (
-              <button onClick={onGoToTask} className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">
-                Go to Task →
-              </button>
-            )}
-            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg leading-none px-1">×</button>
-          </div>
-        </div>
-
-        {/* Logs — unified rendering for both task logs and activity logs */}
-        <div ref={modalScrollRef} className="flex-1 overflow-y-auto p-4">
-          {loading ? (
-            <div className="text-center py-8 text-xs text-fg-tertiary">Loading logs…</div>
-          ) : currentTask && taskLogs.length > 0 ? (
-            <AgentActivityModalLogs
-              entries={taskLogs.map(l => taskLogToStreamEntry(l))}
-              isActive={agent.status === 'working'}
-              showRounds={new Set(taskLogs.filter(l => l.executionRound != null).map(l => l.executionRound!)).size > 1}
-            />
-          ) : activityLogs.length > 0 ? (
-            <AgentActivityModalLogs
-              entries={activityLogs.map(e => activityLogToStreamEntry(e, activity?.id ?? '', agent.id)).filter((e): e is ExecutionStreamEntryUI => e !== null)}
-              isActive={agent.status === 'working'}
-            />
-          ) : agent.status === 'working' ? (
-            <div className="text-center py-8 space-y-2">
-              <div className="text-xs text-fg-tertiary">Agent just started processing...</div>
-              <div className="text-[10px] text-fg-tertiary">Execution logs will appear here as the agent makes progress.</div>
-            </div>
-          ) : (
-            <div className="text-center py-8 text-xs text-fg-tertiary">No execution logs available.</div>
-          )}
-          <div ref={endRef} />
-        </div>
-      </div>
-    </div>
-  );
-}

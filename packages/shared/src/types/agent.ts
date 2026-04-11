@@ -40,6 +40,8 @@ export interface AgentActivity {
   label: string;
   /** For task type, the task ID */
   taskId?: string;
+  /** Links this activity back to the mailbox item that triggered it */
+  mailboxItemId?: string;
   /** For heartbeat type, the heartbeat task name */
   heartbeatName?: string;
   startedAt: string;

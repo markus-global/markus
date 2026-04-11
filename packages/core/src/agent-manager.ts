@@ -498,11 +498,11 @@ export class AgentManager {
         });
       } else {
         // No task service — send as a direct message to the agent
-        await targetAgent.handleMessage(
+        await targetAgent.sendMessage(
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { ephemeral: true }
+          { sourceType: 'task_assignment', ephemeral: true }
         );
       }
     });
@@ -789,11 +789,12 @@ export class AgentManager {
         } catch { /* not JSON — fall through to full LLM handling */ }
 
         const target = this.getAgent(targetId);
-        const reply = await target.handleMessage(
+        const reply = await target.sendMessage(
           message,
           fromId,
           { name: fromName, role: config.agentRole ?? 'worker' },
           {
+            sourceType: 'a2a_message',
             ephemeral: true,
             maxHistory: 15,
           }
@@ -840,15 +841,12 @@ export class AgentManager {
     // Register agent on A2A bus for structured message delivery
     this.a2aBus.registerAgent(id, async envelope => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(
-        summary,
-        envelope.from,
-        { name: envelope.from, role: 'worker' },
-        {
-          ephemeral: true,
-          maxHistory: 10,
-        }
-      );
+      agent.enqueueToMailbox('a2a_message', {
+        summary: summary.slice(0, 100),
+        content: summary,
+      }, {
+        metadata: { senderId: envelope.from, senderName: envelope.from, senderRole: 'worker' },
+      });
     });
 
     // Task tools — every agent can create/list/update tasks
@@ -1053,7 +1051,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -1391,11 +1389,12 @@ export class AgentManager {
         } catch { /* not JSON — fall through to full LLM handling */ }
 
         const target = this.getAgent(targetId);
-        return target.handleMessage(
+        return target.sendMessage(
           message,
           fromId,
           { name: fromName, role: config.agentRole ?? 'worker' },
           {
+            sourceType: 'a2a_message',
             ephemeral: true,
             maxHistory: 15,
           }
@@ -1430,15 +1429,12 @@ export class AgentManager {
 
     this.a2aBus.registerAgent(id, async envelope => {
       const summary = `[A2A:${envelope.type}] from=${envelope.from}: ${JSON.stringify(envelope.payload).slice(0, 200)}`;
-      await agent.handleMessage(
-        summary,
-        envelope.from,
-        { name: envelope.from, role: 'worker' },
-        {
-          ephemeral: true,
-          maxHistory: 10,
-        }
-      );
+      agent.enqueueToMailbox('a2a_message', {
+        summary: summary.slice(0, 100),
+        content: summary,
+      }, {
+        metadata: { senderId: envelope.from, senderName: envelope.from, senderRole: 'worker' },
+      });
     });
 
     if (this.taskService) {
@@ -1609,7 +1605,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          const reply = await target.handleMessage(message, id, { name: config.name, role: 'manager' });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message' });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -1886,9 +1882,17 @@ export class AgentManager {
     lastErrorAt?: string;
     currentTaskId?: string;
     currentActivity?: AgentActivity;
+    mailboxDepth?: number;
+    attentionState?: string;
   }> {
     return [...this.agents.values()].map(a => {
       const state = a.getState();
+      let mailboxDepth: number | undefined;
+      let attentionState: string | undefined;
+      try {
+        mailboxDepth = a.getMailbox().depth;
+        attentionState = a.getAttentionController().getState();
+      } catch { /* mailbox may not be initialized */ }
       return {
         id: a.id,
         name: a.config.name,
@@ -1902,6 +1906,8 @@ export class AgentManager {
         lastErrorAt: state.lastErrorAt,
         currentTaskId: state.currentTaskId,
         currentActivity: state.currentActivity,
+        mailboxDepth,
+        attentionState,
       };
     });
   }

@@ -441,11 +441,12 @@ export class APIServer {
         input: Record<string, unknown>
       ) => {
         const agent = agentManager.getAgent(agentId);
-        const reply = await agent.handleMessage(
+        const reply = await agent.sendMessage(
           taskDescription,
           'workflow-engine',
           { name: 'workflow', role: 'system' },
           {
+            sourceType: 'task_assignment',
             ephemeral: true,
             maxHistory: 15,
           }
@@ -592,11 +593,12 @@ export class APIServer {
       ].join('\n');
 
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
-      const reply = await agent.handleMessage(
+      const reply = await agent.sendMessage(
         groupChatPrefix + userMessage,
         senderId,
         senderInfo,
         {
+          sourceType: 'human_chat',
           ephemeral: true,
           maxHistory: 20,
           channelContext,
@@ -1033,7 +1035,8 @@ export class APIServer {
       let reply: string;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       try {
-        reply = await agent.handleMessage(text, senderId, senderInfo, {
+        reply = await agent.sendMessage(text, senderId, senderInfo, {
+          sourceType: 'human_chat',
           ephemeral: true,
           maxHistory: 20,
           channelContext,
@@ -1209,10 +1212,10 @@ export class APIServer {
         const messageText = body['message'] as string;
         const targetAgent = this.orgService.getAgentManager().getAgent(agentId!);
         const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
-        const reply = await targetAgent.handleMessage(messageText, fromAgentId, {
+        const reply = await targetAgent.sendMessage(messageText, fromAgentId, {
           name: fromAgent.config.name,
           role: fromAgent.config.agentRole ?? 'worker',
-        });
+        }, { sourceType: 'a2a_message' });
         this.json(res, 200, { from: fromAgentId, to: agentId, reply });
         return;
       }
@@ -1277,7 +1280,7 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           try {
-            reply = await agent.handleMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
+            reply = await agent.sendMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
@@ -2144,8 +2147,13 @@ export class APIServer {
                 ``,
                 `Review and respond if needed. Use \`task_get\` and \`task_comment\` to investigate and reply.`,
               ].join('\n');
-              agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-                .catch(() => {});
+              agent.enqueueToMailbox('task_comment', {
+                summary: `Comment on task "${taskTitle}" from ${authorName}`,
+                content: notif,
+                taskId,
+              }, {
+                metadata: { senderName: authorName, senderRole: 'user', taskId },
+              });
             } catch { /* agent not found */ }
           };
 
@@ -2305,6 +2313,105 @@ export class APIServer {
         this.json(res, 404, { error: `Skill not found: ${skillName}` });
       } else {
         this.json(res, 200, { files });
+      }
+      return;
+    }
+
+    // Agent mind state — current attention, focus, mailbox snapshot
+    if (path.match(/^\/api\/agents\/[^/]+\/mind$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        this.json(res, 200, agent.getMindState());
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent mailbox — queued items + enriched history (decisions + activity)
+    if (path.match(/^\/api\/agents\/[^/]+\/mailbox$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+      const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+      const status = url.searchParams.get('status') ?? undefined;
+      const category = url.searchParams.get('category') ?? undefined;
+      const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const queued = agent.getMailbox().getQueuedItems();
+
+        let sourceTypes: string[] | undefined;
+        if (sourceType) {
+          sourceTypes = sourceType.split(',').map(s => s.trim()).filter(Boolean);
+        } else if (category) {
+          const { MAILBOX_CATEGORIES } = await import('@markus/shared');
+          const cat = MAILBOX_CATEGORIES[category as keyof typeof MAILBOX_CATEGORIES];
+          if (cat) sourceTypes = cat.types;
+        }
+
+        let history: Array<Record<string, unknown>> = [];
+        if (this.storage?.mailboxRepo) {
+          const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          history = raw.map((item: { id: string; [k: string]: unknown }) => {
+            const enriched: Record<string, unknown> = { ...item };
+            if (this.storage?.decisionRepo) {
+              enriched.decisions = this.storage.decisionRepo.getByMailboxItemId(item.id);
+            }
+            if (this.storage?.activityRepo) {
+              const act = this.storage.activityRepo.getByMailboxItemId(item.id);
+              enriched.activity = act ? {
+                id: act.id,
+                type: act.type,
+                label: act.label,
+                startedAt: act.startedAt,
+                endedAt: act.endedAt,
+                totalTokens: act.totalTokens,
+                totalTools: act.totalTools,
+                success: act.success,
+              } : null;
+            }
+            return enriched;
+          });
+        }
+
+        this.json(res, 200, {
+          queued: queued.map(i => ({
+            id: i.id,
+            sourceType: i.sourceType,
+            priority: i.priority,
+            status: i.status,
+            summary: i.payload.summary,
+            queuedAt: i.queuedAt,
+          })),
+          queueDepth: queued.length,
+          history,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent attention decisions — decision timeline
+    if (path.match(/^\/api\/agents\/[^/]+\/decisions$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const recent = agent.getAttentionController().getRecentDecisions(limit);
+
+        let persisted: unknown[] = [];
+        if (this.storage?.decisionRepo) {
+          persisted = this.storage.decisionRepo.getByAgent(agentId, limit);
+        }
+
+        this.json(res, 200, {
+          recent,
+          persisted,
+        });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
       return;
     }
@@ -3405,7 +3512,7 @@ export class APIServer {
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
         try {
-          reply = await agent.handleMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
         } catch (err) {
           throw err;
         }
@@ -6506,8 +6613,13 @@ export class APIServer {
                 ``,
                 `Review and respond if needed. Use \`requirement_list\` and \`requirement_comment\` to investigate and reply.`,
               ].join('\n');
-              agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-                .catch(() => {});
+              agent.enqueueToMailbox('requirement_update', {
+                summary: `Comment on requirement "${reqTitle}" from ${authorName}`,
+                content: notif,
+                requirementId: reqId,
+              }, {
+                metadata: { senderName: authorName, senderRole: 'user' },
+              });
             } catch { /* agent not found */ }
           };
 

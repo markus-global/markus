@@ -154,6 +154,13 @@ export class ContextEngine {
     teamDataDir?: string;
     isTeamManager?: boolean;
     availableSkills?: Array<{ name: string; description: string; category: string }>;
+    mailboxContext?: {
+      currentFocus?: { type: string; label: string; elapsedMs: number; taskId?: string };
+      queueDepth: number;
+      topQueued?: Array<{ type: string; priority: number; summary: string }>;
+      recentDecisions?: Array<{ type: string; reasoning: string }>;
+      mergedContent?: string;
+    };
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -456,6 +463,11 @@ export class ContextEngine {
     parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files. (6) For heavy subtasks that need many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your own context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
     parts.push('**CRITICAL — Large file writing**: NEVER attempt to write a large document (>200 lines or >4000 characters) in a single `file_write` call. This causes LLM output truncation, token limit errors, and tool call timeouts. Instead: (a) Write the file **section by section** — first call `file_write` with the initial section, then use `file_edit` to append subsequent sections, or (b) Split the deliverable into multiple smaller files. Plan the document structure first, then write each section in a separate tool call.');
 
+    // --- Mailbox & attention context ---
+    if (opts.mailboxContext) {
+      parts.push(this.buildMailboxSection(opts.mailboxContext));
+    }
+
     // --- Scenario-specific behavioral guidance ---
     const scenario = opts.scenario ?? 'chat';
     parts.push(this.buildScenarioSection(scenario));
@@ -473,6 +485,43 @@ export class ContextEngine {
     parts.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
 
     return parts.join('\n');
+  }
+
+  private buildMailboxSection(ctx: NonNullable<Parameters<ContextEngine['buildSystemPrompt']>[0]['mailboxContext']>): string {
+    const lines: string[] = ['\n## Your Attention State'];
+
+    if (ctx.currentFocus) {
+      const elapsed = Math.round(ctx.currentFocus.elapsedMs / 1000);
+      lines.push(`**Current focus**: [${ctx.currentFocus.type}] ${ctx.currentFocus.label} (${elapsed}s elapsed)`);
+      if (ctx.currentFocus.taskId) {
+        lines.push(`  Task: ${ctx.currentFocus.taskId}`);
+      }
+    } else {
+      lines.push('**Current focus**: idle (no active work)');
+    }
+
+    lines.push(`**Mailbox queue**: ${ctx.queueDepth} item(s) waiting`);
+    if (ctx.topQueued && ctx.topQueued.length > 0) {
+      for (const q of ctx.topQueued.slice(0, 3)) {
+        lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, 80)}`);
+      }
+      if (ctx.queueDepth > 3) {
+        lines.push(`  - ... and ${ctx.queueDepth - 3} more`);
+      }
+    }
+
+    if (ctx.recentDecisions && ctx.recentDecisions.length > 0) {
+      lines.push('**Recent attention decisions**:');
+      for (const d of ctx.recentDecisions.slice(-5)) {
+        lines.push(`  - ${d.type}: ${d.reasoning.slice(0, 120)}`);
+      }
+    }
+
+    if (ctx.mergedContent) {
+      lines.push(`**Merged context** (absorbed into current work):\n${ctx.mergedContent.slice(0, 500)}`);
+    }
+
+    return lines.join('\n');
   }
 
   private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a'): string {

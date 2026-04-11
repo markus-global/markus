@@ -424,6 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_gw_msg_target ON gateway_message_queue(target_age
 CREATE TABLE IF NOT EXISTS agent_activities (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
+  mailbox_item_id TEXT,
   type TEXT NOT NULL,
   label TEXT NOT NULL,
   task_id TEXT,
@@ -460,6 +461,35 @@ CREATE TABLE IF NOT EXISTS execution_stream_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_exec_stream_source ON execution_stream_logs(source_type, source_id, seq);
+
+CREATE TABLE IF NOT EXISTS mailbox_items (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 2,
+  status TEXT NOT NULL DEFAULT 'queued',
+  payload TEXT NOT NULL DEFAULT '{}',
+  metadata TEXT DEFAULT '{}',
+  queued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at TEXT,
+  completed_at TEXT,
+  deferred_until TEXT,
+  merged_into TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
+
+CREATE TABLE IF NOT EXISTS agent_decisions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  decision_type TEXT NOT NULL,
+  mailbox_item_id TEXT NOT NULL,
+  context TEXT NOT NULL DEFAULT '{}',
+  reasoning TEXT NOT NULL DEFAULT '',
+  outcome TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -499,6 +529,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
     { table: 'organizations', column: 'manager_agent_id', sql: "ALTER TABLE organizations ADD COLUMN manager_agent_id TEXT" },
     { table: 'task_comments', column: 'mentions', sql: "ALTER TABLE task_comments ADD COLUMN mentions TEXT DEFAULT '[]'" },
+    { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -507,6 +538,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
       log.info(`Migration: added column ${m.column} to ${m.table}`);
     }
   }
+
+  // Indexes that depend on migrated columns (must run AFTER column migrations)
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
 
   migrateToExecutionStreamLogs(_db);
 
@@ -2829,6 +2863,7 @@ export class SqliteDeliverableRepo {
 export interface ActivityRecord {
   id: string;
   agentId: string;
+  mailboxItemId?: string;
   type: string;
   label: string;
   taskId?: string | null;
@@ -2859,13 +2894,14 @@ export class SqliteActivityRepo {
     type: string;
     label: string;
     taskId?: string;
+    mailboxItemId?: string;
     startedAt: string;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_activities (id, agent_id, type, label, task_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_activities (id, agent_id, mailbox_item_id, type, label, task_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(data.id, data.agentId, data.type, data.label, data.taskId ?? null, data.startedAt, now());
+      .run(data.id, data.agentId, data.mailboxItemId ?? null, data.type, data.label, data.taskId ?? null, data.startedAt, now());
   }
 
   updateActivity(
@@ -2944,10 +2980,16 @@ export class SqliteActivityRepo {
     return r ? this.mapActivity(r) : null;
   }
 
+  getByMailboxItemId(mailboxItemId: string): ActivityRecord | null {
+    const r = this.db.prepare('SELECT * FROM agent_activities WHERE mailbox_item_id = ? LIMIT 1').get(mailboxItemId) as Record<string, unknown> | undefined;
+    return r ? this.mapActivity(r) : null;
+  }
+
   private mapActivity(r: Record<string, unknown>): ActivityRecord {
     return {
       id: r['id'] as string,
       agentId: r['agent_id'] as string,
+      mailboxItemId: (r['mailbox_item_id'] as string | null) ?? undefined,
       type: r['type'] as string,
       label: r['label'] as string,
       taskId: r['task_id'] as string | null,
@@ -3039,6 +3081,170 @@ export class SqliteExecutionStreamRepo {
       content: r['content'] as string,
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
       executionRound: r['execution_round'] as number | null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── Mailbox persistence ──────────────────────────────────────────────────────
+
+export interface MailboxItemRow {
+  id: string;
+  agentId: string;
+  sourceType: string;
+  priority: number;
+  status: string;
+  payload: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  deferredUntil: string | null;
+  mergedInto: string | null;
+}
+
+export class SqliteMailboxRepo {
+  constructor(private db: DatabaseSync) {}
+
+  save(item: {
+    id: string;
+    agentId: string;
+    sourceType: string;
+    priority: number;
+    status: string;
+    payload: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+    queuedAt: string;
+  }): void {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        item.id, item.agentId, item.sourceType, item.priority,
+        item.status, toJson(item.payload), toJson(item.metadata ?? {}),
+        item.queuedAt,
+      );
+  }
+
+  updateStatus(itemId: string, status: string, extra?: Record<string, unknown>): void {
+    const parts = ['status = ?'];
+    const params: (string | number | null)[] = [status];
+    if (extra?.startedAt) { parts.push('started_at = ?'); params.push(extra.startedAt as string); }
+    if (extra?.completedAt) { parts.push('completed_at = ?'); params.push(extra.completedAt as string); }
+    if (extra?.deferredUntil !== undefined) { parts.push('deferred_until = ?'); params.push((extra.deferredUntil as string) ?? null); }
+    if (extra?.mergedInto !== undefined) { parts.push('merged_into = ?'); params.push((extra.mergedInto as string) ?? null); }
+    params.push(itemId);
+    this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
+    let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
+    const params: (string | number | null)[] = [agentId];
+    if (options?.status) { sql += ' AND status = ?'; params.push(options.status); }
+    sql += ' ORDER BY priority ASC, queued_at ASC';
+    if (options?.limit) { sql += ' LIMIT ?'; params.push(options.limit); }
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  getById(id: string): MailboxItemRow | undefined {
+    const row = this.db.prepare('SELECT * FROM mailbox_items WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  getHistory(agentId: string, opts?: { limit?: number; offset?: number; sourceTypes?: string[]; status?: string }): MailboxItemRow[] {
+    const conditions = ['agent_id = ?'];
+    const params: (string | number)[] = [agentId];
+    if (opts?.sourceTypes && opts.sourceTypes.length > 0) {
+      conditions.push(`source_type IN (${opts.sourceTypes.map(() => '?').join(',')})`);
+      params.push(...opts.sourceTypes);
+    }
+    if (opts?.status) {
+      conditions.push('status = ?');
+      params.push(opts.status);
+    }
+    const limit = opts?.limit ?? 50;
+    const offset = opts?.offset ?? 0;
+    params.push(limit, offset);
+    return (this.db
+      .prepare(`SELECT * FROM mailbox_items WHERE ${conditions.join(' AND ')} ORDER BY queued_at DESC LIMIT ? OFFSET ?`)
+      .all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  private mapRow(r: Record<string, unknown>): MailboxItemRow {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      sourceType: r['source_type'] as string,
+      priority: r['priority'] as number,
+      status: r['status'] as string,
+      payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
+      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
+      queuedAt: r['queued_at'] as string,
+      startedAt: r['started_at'] as string | null,
+      completedAt: r['completed_at'] as string | null,
+      deferredUntil: r['deferred_until'] as string | null,
+      mergedInto: r['merged_into'] as string | null,
+    };
+  }
+}
+
+export interface DecisionRow {
+  id: string;
+  agentId: string;
+  decisionType: string;
+  mailboxItemId: string;
+  context: Record<string, unknown>;
+  reasoning: string;
+  outcome: string | null;
+  createdAt: string;
+}
+
+export class SqliteDecisionRepo {
+  constructor(private db: DatabaseSync) {}
+
+  save(decision: {
+    id: string;
+    agentId: string;
+    decisionType: string;
+    mailboxItemId: string;
+    context: Record<string, unknown>;
+    reasoning: string;
+    outcome?: string;
+    createdAt: string;
+  }): void {
+    this.db
+      .prepare(
+        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(
+        decision.id, decision.agentId, decision.decisionType,
+        decision.mailboxItemId, toJson(decision.context), decision.reasoning,
+        decision.outcome ?? null, decision.createdAt,
+      );
+  }
+
+  getByAgent(agentId: string, limit = 50, offset = 0): DecisionRow[] {
+    return (this.db
+      .prepare('SELECT * FROM agent_decisions WHERE agent_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(agentId, limit, offset) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  getByMailboxItemId(mailboxItemId: string): DecisionRow[] {
+    return (this.db
+      .prepare('SELECT * FROM agent_decisions WHERE mailbox_item_id = ? ORDER BY created_at ASC')
+      .all(mailboxItemId) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  private mapRow(r: Record<string, unknown>): DecisionRow {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      decisionType: r['decision_type'] as string,
+      mailboxItemId: r['mailbox_item_id'] as string,
+      context: fromJson<Record<string, unknown>>(r['context'] as string) ?? {},
+      reasoning: r['reasoning'] as string,
+      outcome: r['outcome'] as string | null,
       createdAt: r['created_at'] as string,
     };
   }

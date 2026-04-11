@@ -328,6 +328,75 @@ export interface ActivityRecord {
   createdAt: string;
 }
 
+export interface AgentMindState {
+  attentionState: string;
+  currentFocus?: {
+    mailboxItemId: string;
+    type: string;
+    label: string;
+    startedAt: string;
+    taskId?: string;
+  };
+  mailboxDepth: number;
+  queuedItems: Array<{ id: string; sourceType: string; priority: number; summary: string; queuedAt: string }>;
+  deferredItems: Array<{ id: string; sourceType: string; summary: string; deferredUntil?: string }>;
+  recentDecisions: Array<{
+    id: string;
+    agentId: string;
+    decisionType: string;
+    mailboxItemId: string;
+    context: Record<string, unknown>;
+    reasoning: string;
+    createdAt: string;
+  }>;
+}
+
+export interface MailboxHistoryDecision {
+  id: string;
+  decisionType: string;
+  reasoning: string;
+  createdAt: string;
+}
+
+export interface MailboxHistoryActivity {
+  id: string;
+  type: string;
+  label: string;
+  startedAt: string;
+  endedAt?: string | null;
+  totalTokens: number;
+  totalTools: number;
+  success: boolean;
+}
+
+export interface EnrichedMailboxItem {
+  id: string;
+  agentId: string;
+  sourceType: string;
+  priority: number;
+  status: string;
+  payload: { summary?: string; content?: string; taskId?: string; [key: string]: unknown };
+  metadata: Record<string, unknown>;
+  queuedAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  deferredUntil?: string | null;
+  mergedInto?: string | null;
+  decisions?: MailboxHistoryDecision[];
+  activity?: MailboxHistoryActivity | null;
+}
+
+export interface AgentMailboxResponse {
+  queued: Array<{ id: string; sourceType: string; priority: number; status: string; summary: string; queuedAt: string }>;
+  queueDepth: number;
+  history: EnrichedMailboxItem[];
+}
+
+export interface AgentDecisionsResponse {
+  recent: Array<{ id: string; decisionType: string; mailboxItemId: string; reasoning: string; createdAt: string; context: Record<string, unknown> }>;
+  persisted: Array<Record<string, unknown>>;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -341,6 +410,8 @@ export interface AgentInfo {
   lastErrorAt?: string;
   currentTaskId?: string;
   currentActivity?: AgentActivityInfo;
+  mailboxDepth?: number;
+  attentionState?: string;
 }
 
 export interface HumanUserInfo {
@@ -710,6 +781,18 @@ export const api = {
       const qs = params.toString();
       return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
     },
+    getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string }) => {
+      const params = new URLSearchParams();
+      if (opts?.limit) params.set('limit', String(opts.limit));
+      if (opts?.offset) params.set('offset', String(opts.offset));
+      if (opts?.category) params.set('category', opts.category);
+      if (opts?.sourceType) params.set('sourceType', opts.sourceType);
+      const qs = params.toString();
+      return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
+    },
+    getDecisions: (id: string, limit = 50) =>
+      request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
     messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null): Promise<{ content: string; sessionId?: string }> => {

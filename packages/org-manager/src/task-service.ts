@@ -203,8 +203,13 @@ export class TaskService {
             ``,
             `Review and respond if needed. Use \`task_get\` and \`task_comment\` to investigate and reply.`,
           ].join('\n');
-          agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-            .catch(() => {});
+          agent.enqueueToMailbox('task_comment', {
+            summary: `Comment on task "${taskTitle}" from ${authorName}`,
+            content: notif,
+            taskId,
+          }, {
+            metadata: { senderName: authorName, senderRole: 'user', taskId },
+          });
         } catch { /* agent not found */ }
       };
 
@@ -276,8 +281,13 @@ export class TaskService {
             ``,
             `Review and respond if needed. Use \`requirement_list\` and \`requirement_comment\` to investigate and reply.`,
           ].join('\n');
-          agent.handleMessage(notif, undefined, { name: authorName, role: 'user' })
-            .catch(() => {});
+          agent.enqueueToMailbox('requirement_update', {
+            summary: `Comment on requirement "${reqTitle}" from ${authorName}`,
+            content: notif,
+            requirementId,
+          }, {
+            metadata: { senderName: authorName, senderRole: 'user' },
+          });
         } catch { /* agent not found */ }
       };
 
@@ -1035,9 +1045,9 @@ export class TaskService {
       }
     }
 
-    // Fire and forget — runs concurrently
+    // Fire and forget — routed through agent mailbox for single-threaded attention
     void agent
-      .executeTask(
+      .sendTaskExecution(
         taskId,
         taskDescription,
         async entry => {
@@ -1662,6 +1672,26 @@ export class TaskService {
         }
         this.requirementService.checkCompletion(task.requirementId, taskStatuses);
       }
+    }
+
+    // ── Mailbox notification: inform the assigned agent of every status transition ──
+    if (task.assignedAgentId && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(task.assignedAgentId);
+        if (agent) {
+          agent.enqueueToMailbox('task_status_update', {
+            summary: `Task "${task.title}" status: ${prevStatus} → ${status}`,
+            content: [
+              `[TASK STATUS UPDATE] Task "${task.title}" (ID: ${id})`,
+              `Status changed: ${prevStatus} → ${status}`,
+              updatedBy ? `Updated by: ${updatedBy}` : '',
+            ].filter(Boolean).join('\n'),
+            taskId: id,
+          }, {
+            metadata: { taskId: id },
+          });
+        }
+      } catch { /* agent not found — skip */ }
     }
 
     // ── Broadcast + events ──
@@ -2495,10 +2525,11 @@ export class TaskService {
 
       const reviewMessage = parts.join('\n');
       const reviewerAgent = this.agentManager.getAgent(reviewerAgentId);
-      reviewerAgent.handleMessage(
+      reviewerAgent.sendMessage(
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
+        { sourceType: 'review_request', taskId: task.id },
       ).then(() => {
         this.activeReviews.delete(task.id);
       }).catch(err => {
@@ -2709,7 +2740,8 @@ export class TaskService {
           'If nothing noteworthy stands out, it is fine to skip saving.',
         ].join('\n');
 
-    void agent.handleMessage(prompt, undefined, undefined, {
+    void agent.sendMessage(prompt, undefined, undefined, {
+      sourceType: 'system_event',
       ephemeral: true,
       maxHistory: 10,
     }).catch(err => {
@@ -3196,7 +3228,7 @@ export class TaskService {
     }
 
     void agent
-      .executeTask(
+      .sendTaskExecution(
         taskId,
         taskDescription,
         async entry => {
@@ -3354,7 +3386,7 @@ export class TaskService {
     try {
       log.info('Triggering post-task agent reply', { taskId, taskSessionId, agentId, authorName });
 
-      const reply = await agent.respondInSession(taskSessionId, prompt, entry => {
+      const reply = await agent.sendSessionReply(taskSessionId, prompt, entry => {
         if (!entry.persist) {
           const ts = new Date().toISOString();
           ws?.broadcast({ type: 'execution:log:delta', payload: { sourceType: 'task', sourceId: taskId, agentId, text: entry.content }, timestamp: ts });

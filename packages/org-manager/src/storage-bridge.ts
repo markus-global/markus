@@ -30,6 +30,8 @@ export interface StorageBridge {
   deliverableRepo?: any;
   activityRepo?: any;
   executionStreamRepo?: any;
+  mailboxRepo?: any;
+  decisionRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -72,6 +74,8 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       deliverableRepo: new storage.SqliteDeliverableRepo(db),
       activityRepo: new storage.SqliteActivityRepo(db),
       executionStreamRepo: new storage.SqliteExecutionStreamRepo(db),
+      mailboxRepo: new storage.SqliteMailboxRepo(db),
+      decisionRepo: new storage.SqliteDecisionRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });
     return bridge;

@@ -6,13 +6,13 @@ import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filter
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab }
 
-type ProfileTab = 'overview' | 'activity' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
+type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
 const TABS: Array<{ key: ProfileTab; label: string; icon: string }> = [
   { key: 'overview', label: 'Overview', icon: '▦' },
-  { key: 'activity', label: 'Activity', icon: '⏱' },
+  { key: 'mind', label: 'Mind', icon: '🔮' },
   { key: 'files', label: 'Files', icon: '📄' },
   { key: 'tools', label: 'Tools', icon: '⚒' },
   { key: 'skills', label: 'Skills', icon: '◆' },
@@ -31,15 +31,15 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab }: Props) {
   const [agent, setAgent] = useState<AgentDetail | null>(null);
-  const [tab, setTab] = useState<ProfileTab>('overview');
+  const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
 
   const reload = useCallback(() => { api.agents.get(agentId).then(setAgent).catch(() => {}); }, [agentId]);
 
   useEffect(() => {
-    setTab('overview');
+    setTab(defaultTab ?? 'overview');
     setExternalInfo(null);
     reload();
     api.externalAgents.list().then(d => {
@@ -97,7 +97,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
           </div>
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
-          {TABS.filter(t => !externalInfo || ['overview', 'activity'].includes(t.key)).map(t => (
+          {TABS.filter(t => !externalInfo || ['overview', 'mind'].includes(t.key)).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === t.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
@@ -108,7 +108,7 @@ export function AgentProfile({ agentId, onBack, inline }: Props) {
       </div>
       <div className="p-5">
         {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
-        {tab === 'activity' && <ActivityTab agentId={agentId} />}
+        {tab === 'mind' && <MindTab agentId={agentId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} />}
@@ -1432,7 +1432,44 @@ function fmtBytesLocal(bytes: number): string {
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
-// ─── Activity Tab ─────────────────────────────────────────────────────────────
+// ─── Mind Tab (Mailbox & Attention) ──────────────────────────────────────────
+
+const PRIORITY_LABELS: Record<number, string> = { 0: 'Critical', 1: 'High', 2: 'Normal', 3: 'Low', 4: 'Background' };
+const PRIORITY_COLORS: Record<number, string> = { 0: 'text-red-400', 1: 'text-amber-400', 2: 'text-fg-secondary', 3: 'text-fg-tertiary', 4: 'text-fg-tertiary/60' };
+const DECISION_COLORS: Record<string, string> = {
+  pick: 'bg-brand-500/20 text-brand-300',
+  continue: 'bg-gray-500/20 text-gray-300',
+  preempt: 'bg-amber-500/20 text-amber-300',
+  merge: 'bg-blue-500/20 text-blue-300',
+  defer: 'bg-purple-500/20 text-purple-300',
+  delegate: 'bg-green-500/20 text-green-300',
+  drop: 'bg-red-500/20 text-red-300',
+};
+const ATTENTION_COLORS: Record<string, string> = {
+  idle: 'bg-green-500/20 text-green-300',
+  focused: 'bg-brand-500/20 text-brand-300',
+  deciding: 'bg-amber-500/20 text-amber-300',
+};
+
+const MAILBOX_TYPE_ICONS: Record<string, string> = {
+  system_event: '⚙', human_chat: '💬', task_assignment: '☑', task_comment: '💬',
+  mention: '@', session_reply: '↩', task_status_update: '📋', a2a_message: '🔗',
+  review_request: '👀', requirement_update: '📝', daily_report: '📊',
+  heartbeat: '♡', memory_consolidation: '🧠',
+};
+
+const CATEGORY_FILTERS: Array<{ key: string; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'interaction', label: 'Interaction' },
+  { key: 'task', label: 'Task' },
+  { key: 'notification', label: 'Notification' },
+  { key: 'system', label: 'System' },
+];
+
+const STATUS_COLORS: Record<string, string> = {
+  completed: 'bg-green-500', processing: 'bg-brand-400 animate-pulse',
+  deferred: 'bg-purple-400', merged: 'bg-blue-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
+};
 
 const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }> = [
   { key: 'all', label: 'All' },
@@ -1448,121 +1485,222 @@ const ACTIVITY_ICONS: Record<string, string> = {
   task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
 };
 
-function ActivityTab({ agentId }: { agentId: string }) {
-  const [activities, setActivities] = useState<ActivityRecord[]>([]);
-  const [filter, setFilter] = useState<AgentActivityType | 'all'>('all');
+function MindTab({ agentId }: { agentId: string }) {
+  const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
+  const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [catFilter, setCatFilter] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const PAGE = 50;
 
-  const loadActivities = useCallback(async (before?: string) => {
-    setLoading(true);
+  const load = useCallback(async (reset = true) => {
+    if (reset) setLoading(true);
     try {
-      const typeParam = filter === 'all' ? undefined : filter;
-      const resp = await api.agents.getActivities(agentId, { type: typeParam, limit: 30, before });
-      if (before) {
-        setActivities(prev => [...prev, ...resp.activities]);
-      } else {
-        setActivities(resp.activities);
-      }
-      setHasMore(resp.activities.length >= 30);
+      const catParam = catFilter === 'all' ? undefined : catFilter;
+      const [m, mb] = await Promise.all([
+        api.agents.getMindState(agentId),
+        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam }),
+      ]);
+      setMind(m);
+      setMailbox(mb);
+      setHasMore((mb.history?.length ?? 0) >= PAGE);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [agentId, filter]);
+  }, [agentId, catFilter]);
+
+  const loadMore = useCallback(async () => {
+    if (!mailbox) return;
+    const catParam = catFilter === 'all' ? undefined : catFilter;
+    try {
+      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam });
+      setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
+      setHasMore((mb.history?.length ?? 0) >= PAGE);
+    } catch { /* ignore */ }
+  }, [agentId, mailbox, catFilter]);
 
   useEffect(() => {
-    setActivities([]);
     setExpandedId(null);
-    loadActivities();
-  }, [loadActivities]);
+    load();
+  }, [load]);
 
-  const loadMore = () => {
-    if (activities.length > 0) {
-      const last = activities[activities.length - 1]!;
-      loadActivities(last.startedAt);
-    }
-  };
+  useEffect(() => {
+    const unsub1 = wsClient.on('agent:mailbox', (evt) => {
+      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
+    });
+    const unsub2 = wsClient.on('agent:decision', (evt) => {
+      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
+    });
+    const unsub3 = wsClient.on('agent:attention', (evt) => {
+      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [agentId, load]);
+
+  if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">Loading agent mind state...</div>;
 
   return (
-    <div className="space-y-3">
-      <div className="flex gap-1.5 flex-wrap">
-        {ACTIVITY_FILTERS.map(f => (
-          <button
-            key={f.key}
-            onClick={() => setFilter(f.key)}
-            className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
-              filter === f.key
-                ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
+    <div className="space-y-4">
+      {/* ── Current State ── */}
+      <section>
+        <div className="flex items-center gap-3 mb-3">
+          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-300'}`}>
+            {(mind?.attentionState ?? 'idle').toUpperCase()}
+          </span>
+          {mind?.currentFocus ? (
+            <span className="text-sm text-fg-secondary">
+              {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'} <span className="text-fg-primary font-medium">{mind.currentFocus.label}</span>
+              <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
+            </span>
+          ) : (
+            <span className="text-sm text-fg-tertiary">Idle — waiting for new mail</span>
+          )}
+          <button onClick={() => load()} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary">↻ Refresh</button>
+        </div>
 
-      {loading && activities.length === 0 && (
-        <div className="text-xs text-fg-tertiary text-center py-8">Loading activities...</div>
-      )}
-
-      {!loading && activities.length === 0 && (
-        <div className="text-xs text-fg-tertiary text-center py-8">No activity history found.</div>
-      )}
-
-      <div className="space-y-1.5">
-        {activities.map(act => (
-          <div key={act.id} className="bg-surface-2 rounded-lg border border-border-subtle">
-            <button
-              className="w-full px-3 py-2.5 flex items-start gap-2.5 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
-              onClick={() => setExpandedId(expandedId === act.id ? null : act.id)}
-            >
-              <span className="text-sm mt-0.5">{expandedId === act.id ? '▾' : '▸'}</span>
-              <span className="text-sm">{ACTIVITY_ICONS[act.type] ?? '●'}</span>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-fg-primary truncate">{act.label}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                    act.success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'
-                  }`}>
-                    {act.success ? '✓' : '✗'}
-                  </span>
+        {(mind?.queuedItems?.length ?? 0) > 0 && (
+          <div className="mb-3">
+            <h4 className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-1.5">Queue ({mind!.queuedItems.length})</h4>
+            <div className="space-y-1">
+              {mind!.queuedItems.map((item, i) => (
+                <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/5 border border-amber-500/20 text-sm">
+                  <span className="text-fg-tertiary w-4 text-right text-xs">{i + 1}</span>
+                  <span className="text-sm">{MAILBOX_TYPE_ICONS[item.sourceType] ?? '●'}</span>
+                  <span className={`text-[10px] ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? `P${item.priority}`}</span>
+                  <span className="text-fg-secondary truncate flex-1 text-xs">{item.summary}</span>
+                  <span className="text-[10px] text-fg-tertiary">{new Date(item.queuedAt).toLocaleTimeString()}</span>
                 </div>
-                <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2">
-                  <span>{new Date(act.startedAt).toLocaleString()}</span>
-                  {act.endedAt && (
-                    <span>→ {new Date(act.endedAt).toLocaleTimeString()}</span>
-                  )}
-                  {act.totalTokens > 0 && <span>{fmtNum(act.totalTokens)} tokens</span>}
-                  {act.totalTools > 0 && <span>{act.totalTools} tools</span>}
-                </div>
-              </div>
-              <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{act.type}</span>
-            </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
 
-            {expandedId === act.id && (
-              <div className="border-t border-border-subtle">
-                {act.type === 'task' && act.taskId ? (
-                  <TaskLog taskId={act.taskId} isLive={!act.endedAt} />
-                ) : (
-                  <ActivityLog agentId={agentId} activityId={act.id} />
+      {/* ── Mailbox History ── */}
+      <section>
+        <div className="flex items-center gap-2 mb-2">
+          <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">Mailbox History</h3>
+          <div className="flex gap-1 ml-auto flex-wrap">
+            {CATEGORY_FILTERS.map(f => (
+              <button key={f.key} onClick={() => setCatFilter(f.key)}
+                className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
+                  catFilter === f.key
+                    ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                    : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+                }`}
+              >{f.label}</button>
+            ))}
+          </div>
+        </div>
+
+        {(!mailbox?.history || mailbox.history.length === 0) && !loading && (
+          <div className="text-center text-fg-tertiary text-sm py-8">No mailbox history yet</div>
+        )}
+
+        <div className="space-y-1">
+          {mailbox?.history?.map(item => {
+            const isExpanded = expandedId === item.id;
+            const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
+            const summary = item.payload?.summary ?? item.id;
+            const fullContent = item.payload?.content;
+            const senderName = item.metadata?.senderName as string | undefined;
+            const senderRole = item.metadata?.senderRole as string | undefined;
+            return (
+              <div key={item.id} className="bg-surface-2 rounded-lg border border-border-subtle">
+                <button
+                  className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
+                  onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                >
+                  <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
+                  <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${STATUS_COLORS[item.status] ?? 'bg-gray-400'}`} />
+                  <span className="text-sm">{icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{summary}</span>
+                      <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? ''}</span>
+                    </div>
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
+                      <span>{new Date(item.queuedAt).toLocaleString()}</span>
+                      {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
+                      {item.activity && (
+                        <>
+                          {item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
+                          {item.activity.totalTools > 0 && <span>{item.activity.totalTools} tools</span>}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-border-subtle px-3 py-3 space-y-3">
+                    {/* Full content & metadata */}
+                    {(fullContent || senderName) && (
+                      <div className="space-y-1.5">
+                        {senderName && (
+                          <div className="text-[10px] text-fg-tertiary">
+                            From: <span className="text-fg-secondary">{senderName}</span>
+                            {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
+                          </div>
+                        )}
+                        {fullContent && fullContent !== summary && (
+                          <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+                            {fullContent}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Decisions for this item */}
+                    {item.decisions && item.decisions.length > 0 && (
+                      <div>
+                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">Decisions</h5>
+                        <div className="space-y-1">
+                          {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
+                            <div key={d.id} className="flex items-start gap-2 text-xs">
+                              <span className={`px-1.5 py-0.5 rounded shrink-0 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-300'}`}>{d.decisionType}</span>
+                              <span className="text-fg-secondary flex-1">{d.reasoning}</span>
+                              <span className="text-fg-tertiary shrink-0">{new Date(d.createdAt).toLocaleTimeString()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Activity log */}
+                    {item.activity ? (
+                      <div>
+                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">
+                          Activity — {item.activity.label}
+                          <span className={`ml-2 inline-block px-1 py-0 rounded text-[9px] ${item.activity.success ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
+                            {item.activity.success ? '✓ Success' : '✗ Failed'}
+                          </span>
+                        </h5>
+                        {item.activity.type === 'task' && item.payload?.taskId ? (
+                          <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
+                        ) : (
+                          <ActivityLog agentId={agentId} activityId={item.activity.id} />
+                        )}
+                      </div>
+                    ) : item.status === 'processing' ? (
+                      <div className="text-xs text-fg-tertiary text-center py-2 animate-pulse">Processing...</div>
+                    ) : item.status === 'completed' ? (
+                      <div className="text-xs text-fg-tertiary text-center py-2">No activity log recorded</div>
+                    ) : null}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {hasMore && activities.length > 0 && (
-        <div className="text-center">
-          <button
-            onClick={loadMore}
-            disabled={loading}
-            className="text-xs text-brand-400 hover:text-brand-300 transition-colors disabled:opacity-50"
-          >
-            {loading ? 'Loading...' : 'Load Earlier...'}
-          </button>
+            );
+          })}
         </div>
-      )}
+
+        {hasMore && (mailbox?.history?.length ?? 0) > 0 && (
+          <div className="text-center mt-3">
+            <button onClick={loadMore} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">Load Earlier...</button>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

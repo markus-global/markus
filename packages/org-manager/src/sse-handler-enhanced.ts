@@ -136,7 +136,7 @@ export class SSEHandlerEnhanced {
       );
     }
 
-    const reply = await this.options.agent.handleMessageStream(
+    const reply = await this.options.agent.sendMessageStream(
       this.options.userText,
       (event) => this.handleStreamEvent(event),
       this.options.senderId,

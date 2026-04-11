@@ -422,11 +422,16 @@ export function ChatTeamSidebar({
               {subtitle || '\u00A0'}
             </div>
           </div>
-          <span
-            title={statusTitle}
-            onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}
-            className={`w-2 h-2 rounded-full shrink-0 cursor-pointer transition-transform duration-150 hover:scale-[2] ${statusColor}`}
-          />
+          <span className="flex items-center gap-1 shrink-0">
+            {a.mailboxDepth != null && a.mailboxDepth > 0 && (
+              <span className="text-[8px] text-fg-tertiary bg-surface-overlay rounded-full px-1 leading-relaxed">{a.mailboxDepth}</span>
+            )}
+            <span
+              title={statusTitle}
+              onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}
+              className={`w-2 h-2 rounded-full cursor-pointer transition-transform duration-150 hover:scale-[2] ${statusColor}`}
+            />
+          </span>
         </button>
       </div>
     );

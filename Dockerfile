@@ -46,4 +46,4 @@ EXPOSE 8056 8058 9000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:8056/api/health').then(r=>{if(!r.ok)throw r.status}).catch(()=>process.exit(1))"
 
-CMD ["node", "packages/cli/dist/index.js", "start"]
+CMD ["node", "packages/cli/markus.mjs", "start"]

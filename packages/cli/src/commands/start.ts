@@ -492,7 +492,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   }
   gateway.setMessageRouter(async (markusAgentId, message, _senderId) => {
     const agent = agentManager.getAgent(markusAgentId);
-    const reply = await agent.handleMessage(message);
+    const reply = await agent.sendMessage(message);
     return reply ?? 'No response';
   });
   gateway.setTasksFetcher((agentId) => {
@@ -627,6 +627,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             type: activity.type,
             label: activity.label,
             taskId: activity.taskId,
+            mailboxItemId: activity.mailboxItemId,
             startedAt: activity.startedAt,
           });
         } catch (err) {
@@ -665,6 +666,57 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   }
 
+  // Wire mailbox + decision persistence to SQLite
+  if (storage?.mailboxRepo && storage?.decisionRepo) {
+    const mbRepo = storage.mailboxRepo;
+    const decRepo = storage.decisionRepo;
+    const wireMailboxPersistence = (agentId: string) => {
+      try {
+        const agent = agentManager.getAgent(agentId);
+        agent.getMailbox().setPersistence({
+          save: (item) => {
+            try {
+              mbRepo.save({
+                id: item.id, agentId: item.agentId, sourceType: item.sourceType,
+                priority: item.priority, status: item.status,
+                payload: item.payload as unknown as Record<string, unknown>,
+                metadata: (item.metadata ?? {}) as unknown as Record<string, unknown>,
+                queuedAt: item.queuedAt,
+              });
+            } catch (e) { log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) }); }
+          },
+          updateStatus: (itemId: string, status: string, extra?: Partial<Record<string, unknown>>) => {
+            try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
+            catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
+          },
+        });
+        agent.getAttentionController().setDecisionPersistence({
+          save: (decision) => {
+            try {
+              decRepo.save({
+                id: decision.id, agentId: decision.agentId,
+                decisionType: decision.decisionType, mailboxItemId: decision.mailboxItemId,
+                context: decision.context as unknown as Record<string, unknown>,
+                reasoning: decision.reasoning ?? '',
+                outcome: decision.outcome,
+                createdAt: decision.createdAt,
+              });
+            } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
+          },
+        });
+      } catch { /* agent not found */ }
+    };
+
+    // Wire for existing agents
+    for (const a of agentManager.listAgents()) wireMailboxPersistence(a.id);
+
+    // Wire for future agents via event bus
+    agentManager.getEventBus().on('agent:registered', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      wireMailboxPersistence(agentId);
+    });
+  }
+
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
@@ -676,6 +728,25 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       seq: e.seq ?? 0, type: e.type ?? 'status', content: e.content ?? '',
       metadata: e.metadata, createdAt: e.createdAt ?? ts,
     });
+  });
+
+  // Wire mailbox & attention events to WS broadcast
+  const eventBus = agentManager.getEventBus();
+  eventBus.on('mailbox:new-item', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:mailbox', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('attention:decision', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:decision', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('attention:state-changed', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:attention', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:focus-changed', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:focus', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Daily token reset scheduler: runs at midnight to reset per-agent tokensUsedToday
@@ -707,7 +778,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     const startTs = Date.now();
     try {
       const agent = agentManager.getAgent(agentId);
-      const reply = await agent.handleMessage(message.content.text ?? '', message.senderId);
+      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId);
       auditService.record({
         orgId: 'default',
         agentId,
