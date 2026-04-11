@@ -753,7 +753,7 @@ export class Agent {
             return reply;
           }
           const defaults = item.sourceType === 'a2a_message'
-            ? { ephemeral: true, maxHistory: 15 }
+            ? { ephemeral: true }
             : {};
           const reply = await this.handleMessage(
             item.payload.content,
@@ -789,7 +789,7 @@ export class Agent {
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ ephemeral: true, maxHistory: 10 }),
+            buildHandleOpts({ ephemeral: true }),
           );
           resolveResponse(reply);
           return reply;
@@ -800,7 +800,7 @@ export class Agent {
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ ephemeral: true, maxHistory: 30, scenario: 'comment_response' }),
+            buildHandleOpts({ ephemeral: true, scenario: 'comment_response' }),
           );
           resolveResponse(reply);
           return reply;
@@ -817,7 +817,7 @@ export class Agent {
               item.payload.content,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ ephemeral: true, maxHistory: 30, scenario: 'comment_response' }),
+              buildHandleOpts({ ephemeral: true, scenario: 'comment_response' }),
             );
           }
           resolveResponse('');
@@ -853,7 +853,7 @@ export class Agent {
             item.payload.content,
             undefined,
             undefined,
-            buildHandleOpts({ ephemeral: true, maxHistory: 5, scenario: 'heartbeat' }),
+            buildHandleOpts({ ephemeral: true, scenario: 'heartbeat' }),
           );
           resolveResponse(reply);
           return reply;
@@ -1792,7 +1792,6 @@ export class Agent {
       const report = await this.sendMessage(prompt, undefined, undefined, {
         sourceType: 'daily_report',
         ephemeral: true,
-        maxHistory: 5,
         scenario: 'heartbeat',
       });
       this.memory.writeDailyLog(this.id, `## Daily Report\n\n${report}`);
@@ -4152,7 +4151,6 @@ export class Agent {
       try {
         const reply = await this.handleMessage(prompt, undefined, undefined, {
           ephemeral: true,
-          maxHistory: 30,
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
         });
@@ -4232,7 +4230,6 @@ export class Agent {
 
       await this.handleMessage(flushPrompt, undefined, undefined, {
         ephemeral: true,
-        maxHistory: 25,
         scenario: 'heartbeat',
       });
       log.info('Memory flush completed before compaction', { agentId: this.id, sessionId });
@@ -4334,7 +4331,6 @@ export class Agent {
       const response = await this.sendMessage(prompt, undefined, undefined, {
         sourceType: 'memory_consolidation',
         ephemeral: true,
-        maxHistory: 5,
         scenario: 'heartbeat',
       });
 

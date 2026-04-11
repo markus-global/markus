@@ -2782,7 +2782,6 @@ export class TaskService {
     void agent.sendMessage(prompt, undefined, undefined, {
       sourceType: 'system_event',
       ephemeral: true,
-      maxHistory: 10,
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
     });

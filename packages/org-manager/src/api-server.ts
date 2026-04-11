@@ -448,7 +448,6 @@ export class APIServer {
           {
             sourceType: 'task_assignment',
             ephemeral: true,
-            maxHistory: 15,
           }
         );
         return { reply, input };
@@ -600,7 +599,6 @@ export class APIServer {
         {
           sourceType: 'human_chat',
           ephemeral: true,
-          maxHistory: 20,
           channelContext,
           toolEventCollector: toolEvents,
         }
@@ -1038,7 +1036,6 @@ export class APIServer {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
           ephemeral: true,
-          maxHistory: 20,
           channelContext,
           toolEventCollector: toolEvents,
         });

@@ -810,7 +810,6 @@ export class AgentManager {
           {
             sourceType: 'a2a_message',
             ephemeral: true,
-            maxHistory: 15,
           }
         );
         return stripInternalBlocks(reply);
@@ -1404,7 +1403,6 @@ export class AgentManager {
           {
             sourceType: 'a2a_message',
             ephemeral: true,
-            maxHistory: 15,
           }
         );
       },
