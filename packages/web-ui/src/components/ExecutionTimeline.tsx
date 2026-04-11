@@ -624,8 +624,15 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
       statusIcon = '❌';
       statusLabel = 'Failed';
     } else {
-      statusIcon = '✅';
-      statusLabel = 'Completed';
+      const lastStatus = [...entries].reverse().find(e => e.type === 'status');
+      const statusContent = lastStatus?.content ?? '';
+      if (statusContent === 'completed' || statusContent === 'execution_finished') {
+        statusIcon = '✅';
+        statusLabel = 'Completed';
+      } else {
+        statusIcon = '●';
+        statusLabel = `${toolCount} tool${toolCount !== 1 ? 's' : ''} executed`;
+      }
     }
   } else if (streamingText) {
     statusIcon = '✍';

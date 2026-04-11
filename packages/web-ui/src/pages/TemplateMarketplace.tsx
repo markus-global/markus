@@ -227,9 +227,6 @@ export function TemplateMarketplace({ authUser: _authUser }: { authUser?: AuthUs
           <div className="p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg ${CATEGORY_COLORS[selected.category] ?? 'bg-surface-overlay text-fg-secondary'}`}>
-                  {CATEGORY_ICONS[selected.category] ?? '?'}
-                </div>
                 <div>
                   <h3 className="font-semibold text-fg-primary">{selected.name}</h3>
                   <p className="text-xs text-fg-tertiary mt-0.5">{selected.description}</p>
@@ -336,40 +333,43 @@ function HubAgentCard({ item, localInfo, onStatusChange }: { item: HubItem; loca
   };
 
   return (
-    <div className="p-4 bg-surface-secondary rounded-xl border border-border-default hover:border-brand-600/50 cursor-pointer transition-all">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-lg">{'\uD83E\uDD16'}</span>
-        <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
-        {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-500 rounded">v{item.version}</span>}
-        <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-600 rounded">Hub</span>
-      </div>
-      <p className="text-xs text-fg-tertiary line-clamp-2 mb-2">{item.description}</p>
-      <div className="flex items-center gap-3 text-xs text-fg-tertiary">
-        <span className="text-amber-600">{'\u2605'.repeat(Math.round(parseFloat(item.avgRating)))}{'\u2606'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
-        <span>{'\u2193'} {item.downloadCount}</span>
-        <span>{item.author?.displayName ?? item.author?.username}</span>
-      </div>
-      <div className="flex items-center gap-2 mt-3">
-        {canUpgrade ? (
-          <button
-            onClick={e => void handleInstall(e)}
-            disabled={installing}
-            className="px-3 py-1 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
-          </button>
-        ) : isInstalled ? (
-          <span className="px-3 py-1 text-xs bg-surface-overlay text-fg-secondary rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
-        ) : (
-          <button
-            onClick={e => void handleInstall(e)}
-            disabled={installing}
-            className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {installing ? 'Installing...' : 'Install'}
-          </button>
-        )}
-        {status && <span className={`text-[10px] ${status === 'Failed' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+    <div className="group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5">
+      <div className="absolute inset-0 rounded-xl border border-border-default group-hover:border-brand-500/30 transition-colors duration-300" />
+      <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      <div className="relative p-5">
+        <div className="flex items-center gap-2.5 mb-2.5">
+          <h3 className="text-sm font-semibold truncate flex-1 group-hover:text-brand-400 transition-colors">{item.name}</h3>
+          {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10">v{item.version}</span>}
+          <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-500 rounded-md border border-green-500/10">Hub</span>
+        </div>
+        <p className="text-xs text-fg-tertiary line-clamp-2 mb-3">{item.description}</p>
+        <div className="flex items-center gap-3 text-xs text-fg-tertiary">
+          <span className="text-amber-500">{'\u2605'.repeat(Math.round(parseFloat(item.avgRating)))}{'\u2606'.repeat(5 - Math.round(parseFloat(item.avgRating)))}</span>
+          <span>{'\u2193'} {item.downloadCount}</span>
+          <span>{item.author?.displayName ?? item.author?.username}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border-default/50">
+          {canUpgrade ? (
+            <button
+              onClick={e => void handleInstall(e)}
+              disabled={installing}
+              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {installing ? 'Upgrading...' : `Upgrade → v${item.version}`}
+            </button>
+          ) : isInstalled ? (
+            <span className="px-3 py-1.5 text-xs bg-surface-overlay text-fg-secondary rounded-lg">Installed{localInfo?.localVersion ? ` (v${localInfo.localVersion})` : ''}</span>
+          ) : (
+            <button
+              onClick={e => void handleInstall(e)}
+              disabled={installing}
+              className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {installing ? 'Installing...' : 'Install'}
+            </button>
+          )}
+          {status && <span className={`text-[10px] ${status === 'Failed' ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+        </div>
       </div>
     </div>
   );
@@ -379,45 +379,49 @@ function TemplateCard({ template: tpl, isSelected, onSelect }: { template: Templ
   return (
     <div
       onClick={onSelect}
-      className={`bg-surface-secondary border rounded-xl p-5 cursor-pointer transition-all hover:shadow-lg hover:shadow-black/20 ${
-        isSelected ? 'border-brand-500 ring-1 ring-brand-500/30' : 'border-border-default hover:border-gray-600'
+      className={`group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden ${
+        isSelected
+          ? 'ring-1 ring-brand-500/60 shadow-lg shadow-brand-500/10'
+          : 'hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5'
       }`}
     >
-      <div className="flex items-start gap-3">
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm shrink-0 border ${CATEGORY_COLORS[tpl.category] ?? 'bg-surface-overlay text-fg-secondary'}`}>
-          {CATEGORY_ICONS[tpl.category] ?? '?'}
+      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${
+        isSelected ? 'border-brand-500/50' : 'border-border-default group-hover:border-brand-500/30'
+      }`} />
+      <div className={`absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-brand-500/40 to-transparent transition-opacity duration-300 ${
+        isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+      }`} />
+
+      <div className="relative p-5">
+        <div className="flex items-center gap-2">
+          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{tpl.name}</div>
+          <span className="px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 bg-brand-500/15 text-brand-400 border border-brand-500/10">
+            v{tpl.version}
+          </span>
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <div className="font-semibold text-fg-primary truncate">{tpl.name}</div>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 bg-brand-500/20 text-brand-500">
-              v{tpl.version}
-            </span>
-          </div>
-          <div className="text-xs text-fg-tertiary mt-0.5">by {tpl.author}</div>
+        <div className="text-[11px] text-fg-tertiary mt-0.5">by {tpl.author}</div>
+
+        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
+
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {tpl.skills.slice(0, 4).map(s => (
+            <span key={s} className="px-2 py-0.5 text-[10px] bg-surface-elevated/80 text-fg-secondary rounded-md border border-border-default/50">{s}</span>
+          ))}
+          {tpl.skills.length > 4 && (
+            <span className="px-2 py-0.5 text-[10px] text-fg-muted">+{tpl.skills.length - 4}</span>
+          )}
         </div>
-      </div>
 
-      <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
-
-      <div className="flex flex-wrap gap-1.5 mt-3">
-        {tpl.skills.slice(0, 4).map(s => (
-          <span key={s} className="px-2 py-0.5 text-[10px] bg-brand-500/10 text-brand-500/80 rounded-full border border-brand-500/10">{s}</span>
-        ))}
-        {tpl.skills.length > 4 && (
-          <span className="px-2 py-0.5 text-[10px] text-fg-tertiary">+{tpl.skills.length - 4} more</span>
-        )}
-      </div>
-
-      <div className="mt-3 pt-3 border-t border-border-default flex items-center gap-2 text-xs text-fg-tertiary">
-        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium capitalize ${
-          ROLE_COLORS[tpl.agentRole] ?? 'bg-surface-overlay text-fg-secondary'
-        }`}>
-          {tpl.agentRole}
-        </span>
-        {tpl.tags.length > 0 && (
-          <span className="text-fg-tertiary">{tpl.tags.slice(0, 2).join(', ')}</span>
-        )}
+        <div className="mt-3 pt-3 border-t border-border-default/50 flex items-center gap-2 text-xs">
+          <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-medium capitalize ${
+            ROLE_COLORS[tpl.agentRole] ?? 'bg-surface-overlay text-fg-secondary'
+          }`}>
+            {tpl.agentRole}
+          </span>
+          {tpl.tags.length > 0 && (
+            <span className="text-fg-muted text-[10px]">{tpl.tags.slice(0, 2).join(' · ')}</span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -458,9 +462,6 @@ function HireFromTemplateModal({
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[440px] shadow-2xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-5">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm ${CATEGORY_COLORS[template.category] ?? 'bg-surface-overlay text-fg-secondary'}`}>
-            {CATEGORY_ICONS[template.category] ?? '?'}
-          </div>
           <div>
             <h3 className="text-base font-semibold">Hire Agent</h3>
             <p className="text-xs text-fg-tertiary">Creating agent from "{template.name}"</p>

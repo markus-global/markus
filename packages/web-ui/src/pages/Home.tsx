@@ -164,24 +164,22 @@ export function HomePage() {
                 <div className="space-y-4">
                   {teamSummaries.map(ts => (
                     <div key={ts.team.id} className="bg-surface-elevated/30 border border-border-default/30 rounded-lg p-4 hover:border-brand-500/20 transition-colors cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-lg bg-brand-600/30 flex items-center justify-center text-xs font-bold text-brand-500">{ts.team.name.charAt(0)}</div>
-                          <div>
-                            <div className="text-sm font-medium">{ts.team.name}</div>
-                            {ts.team.description && <div className="text-[11px] text-fg-tertiary truncate max-w-[200px]">{ts.team.description}</div>}
-                          </div>
+                      <div className="flex items-center gap-2 mb-3 flex-wrap">
+                        <div className="w-7 h-7 rounded-lg bg-brand-600/30 flex items-center justify-center text-xs font-bold text-brand-500 shrink-0">{ts.team.name.charAt(0)}</div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">{ts.team.name}</div>
+                          {ts.team.description && <div className="text-[11px] text-fg-tertiary truncate max-w-[260px]">{ts.team.description}</div>}
                         </div>
-                        <div className="flex items-center gap-3 text-[11px] text-fg-tertiary">
-                          <span>{ts.total} members</span>
-                          {ts.working > 0 && <span className="text-brand-500">{ts.working} working</span>}
-                          <span className={ts.active === ts.total ? 'text-green-600' : ''}>{ts.active} active</span>
+                        <div className="flex items-center gap-2 text-[11px] text-fg-tertiary ml-auto shrink-0">
+                          <span className="px-1.5 py-0.5 rounded bg-surface-overlay/50">{ts.total} members</span>
+                          {ts.working > 0 && <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500">{ts.working} working</span>}
+                          <span className={`px-1.5 py-0.5 rounded ${ts.active === ts.total ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay/50'}`}>{ts.active} active</span>
                         </div>
                       </div>
                       <div className="flex gap-2 flex-wrap">
                         {ts.agents.slice(0, 6).map(a => (
                           <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30" onClick={e => { e.stopPropagation(); navBus.navigate(PAGE.TEAM, { selectAgent: a.id }); }}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-brand-400 animate-pulse' : 'bg-gray-600'}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-blue-400 animate-pulse' : 'bg-gray-600'}`} />
                             <span className="text-[11px] text-fg-secondary">{a.name}</span>
                           </div>
                         ))}
@@ -203,7 +201,7 @@ export function HomePage() {
                         <div className="flex gap-2 flex-wrap">
                           {ungrouped.slice(0, 6).map(a => (
                             <div key={a.id} className="flex items-center gap-1.5 px-2 py-1 rounded bg-surface-overlay/30 cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: a.id })}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-brand-400 animate-pulse' : 'bg-gray-600'}`} />
+                              <span className={`w-1.5 h-1.5 rounded-full ${a.status === 'idle' ? 'bg-green-400' : a.status === 'working' ? 'bg-blue-400 animate-pulse' : 'bg-gray-600'}`} />
                               <span className="text-[11px] text-fg-secondary">{a.name}</span>
                             </div>
                           ))}
@@ -363,16 +361,16 @@ function TaskBar({ statusCounts, total }: { statusCounts: Record<string, number>
 function MetricTile({ label, value, total, color, onClick }: {
   label: string; value: number; total?: number; color: string; onClick: () => void;
 }) {
-  const accentMap: Record<string, { text: string; border: string }> = {
-    indigo: { text: 'text-brand-500', border: 'border-l-brand-500' },
-    blue: { text: 'text-blue-600', border: 'border-l-blue-500' },
-    amber: { text: 'text-amber-600', border: 'border-l-amber-500' },
-    green: { text: 'text-green-600', border: 'border-l-green-500' },
+  const accentMap: Record<string, { text: string; border: string; glow: string }> = {
+    indigo: { text: 'text-brand-400', border: 'border-l-brand-500', glow: 'hover:shadow-brand-500/10' },
+    blue: { text: 'text-blue-400', border: 'border-l-blue-500', glow: 'hover:shadow-blue-500/10' },
+    amber: { text: 'text-amber-400', border: 'border-l-amber-500', glow: 'hover:shadow-amber-500/10' },
+    green: { text: 'text-green-400', border: 'border-l-green-500', glow: 'hover:shadow-green-500/10' },
   };
   const c = accentMap[color] ?? accentMap['indigo']!;
 
   return (
-    <div onClick={onClick} className={`bg-surface-secondary border border-border-default ${c.border} border-l-2 rounded-xl p-5 cursor-pointer hover:bg-surface-elevated transition-all`}>
+    <div onClick={onClick} className={`bg-surface-secondary border border-border-default ${c.border} border-l-2 rounded-xl p-5 cursor-pointer hover:bg-surface-elevated/80 hover:shadow-lg ${c.glow} transition-all duration-200`}>
       <div className="text-xs text-fg-tertiary mb-2">{label}</div>
       <div className={`text-3xl font-bold ${c.text}`}>
         {value}

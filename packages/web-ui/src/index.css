@@ -52,7 +52,7 @@ html.light {
 }
 
 @media (prefers-color-scheme: light) {
-  html:not(.dark):not(.light) {
+  html:not(.dark):not(.light):not(.cyberpunk):not(.midnight) {
     color-scheme: light;
     --color-surface-primary: oklch(0.985 0.002 270);
     --color-surface-secondary: oklch(0.96 0.003 270);
@@ -68,6 +68,58 @@ html.light {
     --color-brand-300: oklch(0.50 0.22 270);
     --color-brand-400: oklch(0.45 0.22 270);
   }
+}
+
+html.cyberpunk {
+  color-scheme: dark;
+  --color-brand-50: oklch(0.97 0.04 330);
+  --color-brand-100: oklch(0.92 0.06 330);
+  --color-brand-200: oklch(0.84 0.12 330);
+  --color-brand-300: oklch(0.76 0.18 330);
+  --color-brand-400: oklch(0.68 0.24 330);
+  --color-brand-500: oklch(0.62 0.28 330);
+  --color-brand-600: oklch(0.55 0.28 330);
+  --color-brand-700: oklch(0.45 0.22 330);
+  --color-brand-800: oklch(0.35 0.16 330);
+  --color-brand-900: oklch(0.25 0.10 330);
+  --color-brand-950: oklch(0.18 0.06 330);
+  --color-surface-primary: oklch(0.10 0.015 300);
+  --color-surface-secondary: oklch(0.13 0.020 300);
+  --color-surface-elevated: oklch(0.17 0.025 300);
+  --color-surface-overlay: oklch(0.20 0.030 300);
+  --color-surface-chat-bubble: oklch(0.15 0.025 300);
+  --color-border-default: oklch(0.26 0.04 330);
+  --color-border-subtle: oklch(0.22 0.03 330);
+  --color-fg-primary: oklch(0.95 0.01 330);
+  --color-fg-secondary: oklch(0.75 0.02 330);
+  --color-fg-tertiary: oklch(0.56 0.03 330);
+  --color-fg-muted: oklch(0.40 0.02 330);
+}
+
+html.midnight {
+  color-scheme: dark;
+  --color-brand-50: oklch(0.97 0.02 200);
+  --color-brand-100: oklch(0.93 0.04 200);
+  --color-brand-200: oklch(0.85 0.08 200);
+  --color-brand-300: oklch(0.75 0.14 200);
+  --color-brand-400: oklch(0.65 0.18 200);
+  --color-brand-500: oklch(0.55 0.16 200);
+  --color-brand-600: oklch(0.48 0.14 200);
+  --color-brand-700: oklch(0.40 0.12 200);
+  --color-brand-800: oklch(0.32 0.08 200);
+  --color-brand-900: oklch(0.24 0.06 200);
+  --color-brand-950: oklch(0.16 0.04 200);
+  --color-surface-primary: oklch(0.08 0.01 240);
+  --color-surface-secondary: oklch(0.11 0.015 240);
+  --color-surface-elevated: oklch(0.15 0.02 240);
+  --color-surface-overlay: oklch(0.18 0.025 240);
+  --color-surface-chat-bubble: oklch(0.13 0.02 240);
+  --color-border-default: oklch(0.22 0.03 220);
+  --color-border-subtle: oklch(0.18 0.02 220);
+  --color-fg-primary: oklch(0.92 0.01 220);
+  --color-fg-secondary: oklch(0.68 0.02 220);
+  --color-fg-tertiary: oklch(0.50 0.02 220);
+  --color-fg-muted: oklch(0.38 0.015 220);
 }
 
 html, body, #root {
@@ -147,4 +199,29 @@ body {
 @keyframes pulse-subtle {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 8px -2px var(--color-brand-500); }
+  50% { box-shadow: 0 0 16px -2px var(--color-brand-500); }
+}
+
+.glow-brand {
+  box-shadow: 0 0 12px -3px var(--color-brand-500);
+}
+
+.card-shine {
+  position: relative;
+  overflow: hidden;
+}
+.card-shine::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%; width: 50%; height: 100%;
+  background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.03), transparent);
+  transition: left 0.6s ease;
+  pointer-events: none;
+}
+.card-shine:hover::before {
+  left: 100%;
 }

@@ -2252,13 +2252,13 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       <button
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking ? 'bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
+          isWorking ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
           : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
           : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
         }`}
       >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-amber-600' : 'text-green-600'}`}>{label}</span>
+        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
         {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
           <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
         )}

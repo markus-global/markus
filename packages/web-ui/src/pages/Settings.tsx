@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
-import type { ThemeMode } from '../hooks/useTheme.ts';
+import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
@@ -504,15 +504,15 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm font-medium">Theme</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Choose light, dark, or follow your system preference</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Choose a visual style for the interface</div>
               </div>
               <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-                {([['system', 'System'], ['light', 'Light'], ['dark', 'Dark']] as const).map(([val, label]) => (
+                {THEME_OPTIONS.map(({ value, label }) => (
                   <button
-                    key={val}
-                    onClick={() => onThemeChange?.(val)}
+                    key={value}
+                    onClick={() => onThemeChange?.(value)}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      theme === val ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
+                      theme === value ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {label}
@@ -642,113 +642,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        {/* ───── OAuth Login ───── */}
-        {oauthProviders.length > 0 && (
-          <Section title="OAuth Authentication">
-            <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
-              <div className="text-sm text-fg-secondary">
-                Connect to LLM providers using your existing subscription via OAuth. No API key required.
-              </div>
-
-              {/* OAuth provider buttons */}
-              <div className="space-y-3">
-                {oauthProviders.map(op => {
-                  const profile = authProfiles.find(p => p.provider === op.name && p.hasOAuth);
-                  const isPending = pendingOAuthProvider === op.name;
-                  return (
-                    <div key={op.name} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <span className={`w-2 h-2 rounded-full ${profile ? 'bg-green-400' : 'bg-gray-600'}`} />
-                        <div>
-                          <div className="text-sm font-medium text-fg-primary">{op.displayName}</div>
-                          {profile && (
-                            <div className="text-xs text-fg-tertiary mt-0.5">
-                              {profile.accountId && <span>Account: {profile.accountId}</span>}
-                              {profile.oauthExpired && <span className="text-amber-500 ml-2">Token expired</span>}
-                              {!profile.oauthExpired && <span className="text-green-600 ml-2">Connected</span>}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {profile && (
-                          <button
-                            onClick={() => void deleteAuthProfile(profile.id)}
-                            className="px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
-                            title="Disconnect"
-                          >
-                            Disconnect
-                          </button>
-                        )}
-                        <button
-                          onClick={() => void startOAuthLogin(op.name)}
-                          disabled={oauthLoading === op.name || isPending}
-                          className={`px-4 py-1.5 text-xs rounded-lg transition-colors ${
-                            profile
-                              ? 'border border-border-default text-fg-secondary hover:bg-surface-elevated'
-                              : 'bg-brand-600 hover:bg-brand-500 text-white'
-                          } disabled:opacity-40`}
-                        >
-                          {oauthLoading === op.name ? 'Starting...' : isPending ? 'Waiting...' : profile ? 'Reconnect' : 'Connect'}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Pending OAuth — manual callback input */}
-              {pendingOAuthProvider && (
-                <div className="border-t border-border-default pt-4 space-y-3">
-                  <div className="text-xs text-fg-tertiary">
-                    If the browser didn't open or you're on a remote machine, paste the redirect URL here:
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={manualCallbackUrl}
-                      onChange={e => setManualCallbackUrl(e.target.value)}
-                      placeholder="http://localhost:1455/auth/callback?code=...&state=..."
-                      className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none"
-                    />
-                    <button
-                      onClick={() => void handleManualCallback()}
-                      disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
-                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs rounded-lg transition-colors"
-                    >
-                      {oauthLoading === 'manual' ? 'Processing...' : 'Submit'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Existing auth profiles */}
-              {authProfiles.length > 0 && (
-                <div className="border-t border-border-default pt-4 space-y-2">
-                  <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Auth Profiles</div>
-                  {authProfiles.map(p => (
-                    <div key={p.id} className="flex items-center justify-between text-xs px-3 py-2 bg-surface-elevated/20 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-1.5 h-1.5 rounded-full ${p.hasOAuth && !p.oauthExpired ? 'bg-green-400' : p.oauthExpired ? 'bg-amber-400' : 'bg-gray-500'}`} />
-                        <span className="text-fg-secondary">{p.label ?? p.id}</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary">{p.authType}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {p.accountId && <span className="text-fg-tertiary">{p.accountId}</span>}
-                        <span className="text-fg-tertiary">{new Date(p.updatedAt).toLocaleDateString()}</span>
-                        <button onClick={() => void deleteAuthProfile(p.id)} className="text-red-400 hover:text-red-300 transition-colors" title="Delete">
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {oauthMsg && <Msg type={oauthMsg.type} text={oauthMsg.text} />}
-            </div>
-          </Section>
-        )}
+        {/* OAuth Authentication section removed */}
 
         {/* ───── Model Providers ───── */}
         <Section title="Model Providers & Pricing">

@@ -129,6 +129,8 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     { value: 'system', label: 'System', icon: '💻', desc: 'Follow your OS setting' },
     { value: 'light', label: 'Light', icon: '☀️', desc: 'Always light background' },
     { value: 'dark', label: 'Dark', icon: '🌙', desc: 'Always dark background' },
+    { value: 'cyberpunk', label: 'Cyberpunk', icon: '🔮', desc: 'Neon pink, dark violet' },
+    { value: 'midnight', label: 'Midnight', icon: '🌊', desc: 'Deep ocean, teal accents' },
   ];
 
   const steps = [

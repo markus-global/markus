@@ -160,7 +160,7 @@ export function AddExistingModal({
                   <div className="text-xs text-fg-tertiary">{m.role} · {m.type === 'agent' ? 'AI' : 'Human'}</div>
                 </div>
                 {m.status && (
-                  <span className={`w-2 h-2 rounded-full ${m.status === 'idle' ? 'bg-green-400' : m.status === 'working' ? 'bg-brand-400' : 'bg-gray-600'}`} />
+                  <span className={`w-2 h-2 rounded-full ${m.status === 'idle' ? 'bg-green-400' : m.status === 'working' ? 'bg-blue-400' : 'bg-gray-600'}`} />
                 )}
               </button>
             ))}

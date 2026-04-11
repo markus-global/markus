@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>Markus - AI Digital Employee Platform</title>
     <script>
-      (function(){var t=localStorage.getItem('markus-theme');if(t==='light')document.documentElement.classList.add('light');else if(t==='dark')document.documentElement.classList.add('dark')})();
+      (function(){var t=localStorage.getItem('markus-theme');if(t&&t!=='system')document.documentElement.classList.add(t)})();
     </script>
   </head>
   <body>

@@ -32,6 +32,25 @@ const TYPE_ICON: Record<string, string> = {
   system: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
 };
 
+const TYPE_COLOR: Record<string, string> = {
+  task_completed: 'text-green-500',
+  task_failed: 'text-red-500',
+  task_created: 'text-blue-500',
+  task_review: 'text-purple-500',
+  task_status_changed: 'text-blue-400',
+  requirement_created: 'text-amber-500',
+  requirement_decision: 'text-green-500',
+  approval_request: 'text-amber-500',
+  agent_alert: 'text-red-500',
+  agent_escalation: 'text-red-400',
+  agent_report: 'text-blue-500',
+  agent_chat_request: 'text-brand-500',
+  agent_notification: 'text-blue-400',
+  bounty_posted: 'text-amber-500',
+  mention: 'text-brand-500',
+  system: 'text-fg-tertiary',
+};
+
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
@@ -365,7 +384,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 <div className="p-6 text-center text-xs text-fg-tertiary">No notifications</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.slice(0, 50).map(n => (
+                  {displayNotifications.slice(0, 50).map(n => {
+                    const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
+                    return (
                     <button
                       key={n.id}
                       onClick={() => handleNotificationClick(n)}
@@ -374,7 +395,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                       }`}
                     >
                       <div className="shrink-0 mt-0.5">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={n.type === 'agent_chat_request' ? 'text-brand-500' : 'text-fg-tertiary'}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={typeColor}>
                           <path d={TYPE_ICON[n.type] ?? TYPE_ICON.system} />
                         </svg>
                       </div>
@@ -387,14 +408,15 @@ export function NotificationBell({ collapsed, userId }: Props) {
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt)}</span>
                           {actionHint(n) && (
-                            <span className={`text-[10px] font-medium ${n.type === 'agent_chat_request' ? 'text-brand-500' : 'text-fg-tertiary'}`}>
+                            <span className={`text-[10px] font-medium ${typeColor}`}>
                               {actionHint(n)}
                             </span>
                           )}
                         </div>
                       </div>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               )
             )}

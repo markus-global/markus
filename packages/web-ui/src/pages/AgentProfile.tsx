@@ -22,7 +22,7 @@ const TABS: Array<{ key: ProfileTab; label: string; icon: string }> = [
 ];
 
 const STATUS_DOT: Record<string, string> = {
-  idle: 'bg-green-400', working: 'bg-brand-400 animate-pulse',
+  idle: 'bg-green-400', working: 'bg-blue-400 animate-pulse',
   paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
 };
 
@@ -301,7 +301,7 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
 
       <Card title="Runtime Status">
         <div className="grid grid-cols-4 gap-4">
-          <StatBox label="Status" value={agent.state.status} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'indigo' : agent.state.status === 'error' ? 'red' : 'gray'} />
+          <StatBox label="Status" value={agent.state.status} color={agent.state.status === 'idle' ? 'green' : agent.state.status === 'working' ? 'blue' : agent.state.status === 'error' ? 'red' : 'gray'} />
           <StatBox label="Tokens Today" value={String(agent.state.tokensUsedToday)} />
           <StatBox label="Active Tasks" value={String(agent.state.activeTaskIds?.length ?? 0)} />
           <StatBox label="Last Heartbeat" value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : 'Never'} />
@@ -1417,7 +1417,7 @@ function KV({ label, mono, children }: { label: string; mono?: boolean; children
 }
 
 function StatBox({ label, value, color }: { label: string; value: string; color?: string }) {
-  const c = color === 'green' ? 'text-green-600' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-500' : 'text-fg-secondary';
+  const c = color === 'green' ? 'text-green-600' : color === 'blue' ? 'text-blue-500' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-500' : 'text-fg-secondary';
   return (<div className="text-center"><div className={`text-lg font-semibold ${c}`}>{value}</div><div className="text-[10px] text-fg-tertiary mt-0.5">{label}</div></div>);
 }
 

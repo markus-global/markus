@@ -310,10 +310,14 @@ const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
 const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
 const STATUS_DOT: Record<string, string> = {
+  idle: 'bg-green-400', working: 'bg-blue-400', error: 'bg-red-400', paused: 'bg-amber-400', offline: 'bg-gray-600',
   pending: 'bg-amber-400',
   in_progress: 'bg-brand-400', blocked: 'bg-amber-400',
   review: 'bg-brand-400', completed: 'bg-green-400',
   failed: 'bg-red-400', rejected: 'bg-red-400', cancelled: 'bg-gray-600', archived: 'bg-surface-overlay',
+};
+const AGENT_STATUS_TEXT: Record<string, string> = {
+  idle: 'text-green-500', working: 'text-blue-500', error: 'text-red-500', paused: 'text-amber-500', offline: 'text-fg-muted',
 };
 
 type ViewMode = 'all' | 'project';
@@ -2059,20 +2063,24 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           onSelect={val => void handlePriorityChange(row, val)}
         />
       </div>
-      <div className="w-[120px] shrink-0 text-[11px] text-fg-secondary truncate">
+      <div className="w-[120px] shrink-0 text-[11px] truncate">
         {assignee ? (
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1.5">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[assignee.status] ?? 'bg-gray-500'}`} />
-            {assignee.name}
+            <span className={`font-medium ${AGENT_STATUS_TEXT[assignee.status] ?? 'text-fg-secondary'}`}>{assignee.name}</span>
           </span>
         ) : (
-          <span className="text-fg-tertiary">—</span>
+          <span className="text-fg-muted">—</span>
         )}
       </div>
-      <div className="w-[120px] shrink-0 text-[11px] text-fg-tertiary truncate">
-        {proj?.name ?? <span className="text-fg-muted">—</span>}
+      <div className="w-[120px] shrink-0 text-[11px] truncate">
+        {proj?.name ? (
+          <span className="text-brand-400/70">{proj.name}</span>
+        ) : (
+          <span className="text-fg-muted">—</span>
+        )}
       </div>
-      <div className="w-[90px] shrink-0 text-[10px] text-fg-tertiary text-right">
+      <div className="w-[90px] shrink-0 text-[10px] text-fg-muted text-right">
         {relativeTime(row.data.updatedAt ?? '')}
       </div>
     </div>

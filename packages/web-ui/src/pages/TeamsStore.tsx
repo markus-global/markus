@@ -244,11 +244,6 @@ export function TeamsStore() {
           <div className="p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg border ${
-                  TEAM_CATEGORY_COLORS[selected.category ?? 'general'] ?? TEAM_CATEGORY_COLORS['general']
-                }`}>
-                  {TEAM_CATEGORY_ICONS[selected.category ?? 'general'] ?? '◎'}
-                </div>
                 <div>
                   <h3 className="font-semibold text-fg-primary">{selected.name}</h3>
                   <p className="text-xs text-fg-tertiary mt-0.5">{selected.description}</p>
@@ -375,7 +370,6 @@ function HubTeamCard({ item, localInfo, onStatusChange }: { item: HubItem; local
   return (
     <div className="p-4 bg-surface-secondary rounded-xl border border-border-default hover:border-brand-600/50 cursor-pointer transition-all">
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-lg">{'\uD83D\uDC65'}</span>
         <h3 className="text-sm font-semibold truncate flex-1">{item.name}</h3>
         {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-500 rounded">v{item.version}</span>}
         <span className="text-[10px] px-1.5 py-0.5 bg-green-500/15 text-green-600 rounded">Hub</span>
@@ -424,46 +418,48 @@ function TeamTemplateCard({ template: tpl, isSelected, onSelect }: {
   return (
     <div
       onClick={onSelect}
-      className={`bg-surface-secondary border rounded-xl p-5 cursor-pointer transition-all hover:shadow-lg hover:shadow-black/20 ${
-        isSelected ? 'border-brand-500 ring-1 ring-brand-500/30' : 'border-border-default hover:border-gray-600'
+      className={`group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden ${
+        isSelected
+          ? 'ring-1 ring-brand-500/60 shadow-lg shadow-brand-500/10'
+          : 'hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5'
       }`}
     >
-      <div className="flex items-start gap-3">
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm shrink-0 border ${
-          TEAM_CATEGORY_COLORS[cat] ?? TEAM_CATEGORY_COLORS['general']
-        }`}>
-          {TEAM_CATEGORY_ICONS[cat] ?? '◎'}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <div className="font-semibold text-fg-primary truncate">{tpl.name}</div>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 bg-brand-500/20 text-brand-500">
-              v{tpl.version}
-            </span>
-          </div>
-          <div className="text-xs text-fg-tertiary mt-0.5">by {tpl.author}</div>
-        </div>
-      </div>
+      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${
+        isSelected ? 'border-brand-500/50' : 'border-border-default group-hover:border-brand-500/30'
+      }`} />
+      <div className={`absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-brand-500/40 to-transparent transition-opacity duration-300 ${
+        isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+      }`} />
 
-      <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
-
-      <div className="flex flex-wrap gap-1.5 mt-3">
-        {tpl.members.map((m, i) => (
-          <span key={i} className={`px-2 py-0.5 text-[10px] rounded-full border ${
-            m.role === 'manager' ? 'bg-brand-500/10 text-brand-500 border-brand-500/15' : 'bg-blue-500/10 text-blue-600 border-blue-500/15'
-          }`}>
-            {m.name ?? m.roleName ?? m.templateId}
-            {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
+      <div className="relative p-5">
+        <div className="flex items-center gap-2">
+          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{tpl.name}</div>
+          <span className="px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 bg-brand-500/15 text-brand-400 border border-brand-500/10">
+            v{tpl.version}
           </span>
-        ))}
-      </div>
+        </div>
+        <div className="text-[11px] text-fg-tertiary mt-0.5">by {tpl.author}</div>
 
-      <div className="mt-3 pt-3 border-t border-border-default flex items-center gap-3 text-xs text-fg-tertiary">
-        <span>{totalAgents} agent{totalAgents !== 1 ? 's' : ''}</span>
-        {hasManager && <span className="text-brand-500/60">has manager</span>}
-        {tpl.tags && tpl.tags.length > 0 && (
-          <span className="text-fg-tertiary">{tpl.tags.slice(0, 3).join(', ')}</span>
-        )}
+        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{tpl.description}</p>
+
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {tpl.members.map((m, i) => (
+            <span key={i} className={`px-2 py-0.5 text-[10px] rounded-md border ${
+              m.role === 'manager' ? 'bg-brand-500/10 text-brand-400 border-brand-500/15' : 'bg-blue-500/10 text-blue-400 border-blue-500/15'
+            }`}>
+              {m.name ?? m.roleName ?? m.templateId}
+              {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
+            </span>
+          ))}
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-border-default/50 flex items-center gap-3 text-xs">
+          <span className="text-fg-muted">{totalAgents} agent{totalAgents !== 1 ? 's' : ''}</span>
+          {hasManager && <span className="text-brand-400/60">has manager</span>}
+          {tpl.tags && tpl.tags.length > 0 && (
+            <span className="text-fg-muted text-[10px]">{tpl.tags.slice(0, 3).join(' · ')}</span>
+          )}
+        </div>
       </div>
     </div>
   );
