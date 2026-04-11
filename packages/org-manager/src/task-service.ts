@@ -1480,7 +1480,7 @@ export class TaskService {
     if (this.hitlService && request.createdBy && request.createdBy !== 'default') {
       this.hitlService.notify({
         targetUserId: 'default',
-        type: 'task_created' as any,
+        type: 'task_created',
         title: `Task created: ${task.title}`,
         body: `Agent created task "${task.title}"`,
         actionType: 'navigate',
@@ -1721,16 +1721,19 @@ export class TaskService {
     });
 
     if (this.hitlService && (status === 'review' || status === 'completed' || status === 'failed')) {
-      const notifType = status === 'completed' ? 'task_completed' : 'task_status_changed';
-      const priority = status === 'failed' ? 'high' : 'normal';
+      const notifType = status === 'completed' ? 'task_completed' as const
+        : status === 'review' ? 'task_review' as const
+        : status === 'failed' ? 'task_failed' as const
+        : 'task_status_changed' as const;
+      const priority = status === 'failed' ? 'high' as const : 'normal' as const;
       this.hitlService.notify({
         targetUserId: 'default',
-        type: notifType as any,
+        type: notifType,
         title: status === 'review' ? `Task ready for review: ${task.title}` :
                status === 'completed' ? `Task completed: ${task.title}` :
                `Task failed: ${task.title}`,
         body: `Task "${task.title}" status changed to ${status}`,
-        priority: priority as any,
+        priority,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openTask=${id}` }),
         metadata: { taskId: id, status, agentId: task.assignedAgentId },

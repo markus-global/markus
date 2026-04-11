@@ -42,6 +42,31 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hrs / 24)}d`;
 }
 
+function actionHint(n: NotificationInfo): string | null {
+  const actionType = (n as any).actionType;
+  if (actionType === 'open_chat') return 'Open chat →';
+  if (actionType === 'navigate') return 'View details →';
+  const meta = n.metadata ?? {};
+  switch (n.type) {
+    case 'task_completed': case 'task_created': case 'task_review':
+    case 'task_failed': case 'task_status_changed':
+      return meta.taskId ? 'View task →' : null;
+    case 'requirement_created': case 'requirement_decision':
+      return meta.requirementId ? 'View requirement →' : null;
+    case 'agent_chat_request':
+      return 'Open chat →';
+    case 'agent_alert': case 'agent_escalation': case 'agent_notification':
+      return meta.agentId ? 'View agent →' : null;
+    case 'approval_request':
+      return 'View approval →';
+    default:
+      if (meta.taskId) return 'View task →';
+      if (meta.requirementId) return 'View requirement →';
+      if (meta.agentId) return 'View agent →';
+      return null;
+  }
+}
+
 export function NotificationBell({ collapsed, userId }: Props) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
@@ -118,7 +143,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
       try {
         const target = typeof actionTarget === 'string' ? JSON.parse(actionTarget) : actionTarget;
         if (target.agentId) {
-          navBus.navigate(PAGE.TEAM, { selectAgent: target.agentId, sessionId: target.sessionId });
+          const params: Record<string, string> = { agentId: target.agentId };
+          if (target.sessionId) params.sessionId = target.sessionId;
+          navBus.navigate(PAGE.TEAM, params);
           return;
         }
       } catch { /* fallthrough */ }
@@ -150,6 +177,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
       }
       case 'task_completed':
       case 'task_created':
+      case 'task_review':
+      case 'task_failed':
       case 'task_status_changed':
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else navBus.navigate(PAGE.WORK);
@@ -159,10 +188,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
         if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
         else navBus.navigate(PAGE.WORK);
         break;
-      case 'agent_chat_request':
-        if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
-        else navBus.navigate(PAGE.TEAM);
+      case 'agent_chat_request': {
+        const params: Record<string, string> = {};
+        if (meta.agentId) params.agentId = meta.agentId as string;
+        if (meta.sessionId) params.sessionId = meta.sessionId as string;
+        navBus.navigate(PAGE.TEAM, Object.keys(params).length > 0 ? params : undefined);
         break;
+      }
+      case 'agent_notification':
       case 'agent_alert':
       case 'agent_escalation':
         if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
@@ -173,6 +206,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         break;
       default:
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
+        else if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
         else if (meta.projectId) navBus.navigate(PAGE.WORK, { projectId: meta.projectId as string });
         else if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
         break;
@@ -343,11 +377,15 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
                         </div>
                         <p className="text-[11px] text-fg-tertiary line-clamp-2 mt-0.5">{n.body}</p>
-                        <span className="text-[10px] text-fg-muted mt-0.5">{timeAgo(n.createdAt)}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt)}</span>
+                          {actionHint(n) && (
+                            <span className={`text-[10px] font-medium ${n.type === 'agent_chat_request' ? 'text-brand-500' : 'text-fg-tertiary'}`}>
+                              {actionHint(n)}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      {n.type === 'agent_chat_request' && (
-                        <span className="text-[9px] text-brand-500 shrink-0 mt-1 font-medium">CHAT</span>
-                      )}
                     </button>
                   ))}
                 </div>

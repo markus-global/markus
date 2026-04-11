@@ -2459,9 +2459,11 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
   }, [refreshBoard, refreshAgents, refreshRequirements, selectedTask]);
 
-  // Board ref for event handlers that need current board without re-registering
+  // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
   boardRef.current = board;
+  const allRequirementsRef = useRef(allRequirements);
+  allRequirementsRef.current = allRequirements;
 
   // Ensure a navigated-to item's project is visible in the current filters
   const ensureProjectVisible = useCallback((projectId: string | undefined) => {
@@ -2523,8 +2525,15 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             localStorage.removeItem('markus_nav_openTask');
           }
         }
+        if (detail.params?.openRequirement) {
+          const req = allRequirementsRef.current.find(r => r.id === detail.params!.openRequirement);
+          if (req) {
+            ensureProjectVisible(req.projectId);
+            handleSelectReq(req);
+          }
+        }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
-        if (!detail.params?.projectId && !detail.params?.openTask) {
+        if (!detail.params?.projectId && !detail.params?.openTask && !detail.params?.openRequirement) {
           selectAllTasks();
         }
       }

@@ -9,17 +9,20 @@ export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 export type NotificationType =
   | 'approval_request'
   | 'bounty_posted'
+  | 'task_created'
   | 'task_completed'
+  | 'task_review'
+  | 'task_failed'
+  | 'task_status_changed'
+  | 'requirement_created'
+  | 'requirement_decision'
   | 'agent_alert'
-  | 'system'
   | 'agent_report'
   | 'agent_chat_request'
-  | 'task_status_changed'
-  | 'requirement_decision'
+  | 'agent_notification'
   | 'agent_escalation'
   | 'mention'
-  | 'task_created'
-  | 'requirement_created';
+  | 'system';
 
 export type NotificationActionType = 'none' | 'navigate' | 'open_chat';
 

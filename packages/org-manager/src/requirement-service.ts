@@ -118,10 +118,10 @@ export class RequirementService {
     if (this.hitlService && req.source === 'agent') {
       this.hitlService.notify({
         targetUserId: 'default',
-        type: 'requirement_created' as any,
+        type: 'requirement_created',
         title: `Requirement proposed: ${req.title}`,
         body: `Agent proposed requirement "${req.title}" — needs approval`,
-        priority: 'high' as any,
+        priority: 'high',
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
         metadata: { requirementId: req.id, createdBy: req.createdBy },
@@ -598,9 +598,11 @@ export class RequirementService {
 
       this.hitlService.notify({
         targetUserId: 'default',
-        type: 'system',
+        type: 'requirement_decision',
         title,
         body,
+        actionType: 'navigate',
+        actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
         metadata: { requirementId: req.id, decision, createdBy: creatorId },
       });
     }

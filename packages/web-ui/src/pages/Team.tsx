@@ -687,6 +687,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
+            if (detail.params.sessionId) {
+              const targetSessionId = detail.params.sessionId;
+              setTimeout(async () => {
+                try {
+                  const { sessions: s } = await api.sessions.listByAgent(detail.params!.agentId, 20);
+                  const target = s.find((ss: ChatSessionInfo) => ss.id === targetSessionId);
+                  if (target) void switchSession(target);
+                } catch { /* session will load normally */ }
+              }, 300);
+            }
           }
         }
         if (detail.params?.selectAgent) {
