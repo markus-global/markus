@@ -379,6 +379,7 @@ function AgentMessageBody({
   const isStopped = msg.isStopped;
   const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
   const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
+  const { t } = useTranslation();
 
   // Messages with segment data: render compact card / full log + final text
   if (segments !== undefined) {
@@ -2298,6 +2299,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (!open) return;
