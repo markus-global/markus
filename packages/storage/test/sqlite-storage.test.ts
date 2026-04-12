@@ -85,9 +85,12 @@ describe('SQLite Storage Backend', () => {
     it('should create, update, and query tasks', () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      const agentRepo = new SqliteAgentRepo(db);
+      agentRepo.create({ id: 'agent-1', orgId: 'org-1', name: 'Agent 1', roleId: 'r1', roleName: 'worker' });
+      agentRepo.create({ id: 'agent-2', orgId: 'org-1', name: 'Agent 2', roleId: 'r2', roleName: 'reviewer' });
 
       const repo = new SqliteTaskRepo(db);
-      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high' });
+      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high', assignedAgentId: 'agent-1', reviewerAgentId: 'agent-2' });
       repo.updateStatus('task-1', 'in_progress');
 
       const task = repo.findById('task-1');
@@ -241,6 +244,8 @@ describe('SQLite Storage Backend', () => {
     it('should append and retrieve task logs', () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      const agentRepo = new SqliteAgentRepo(db);
+      agentRepo.create({ id: 'a1', orgId: 'org-1', name: 'Agent 1', roleId: 'r1', roleName: 'developer', status: 'active' });
       const taskRepo = new SqliteTaskRepo(db);
       taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task' });
 
