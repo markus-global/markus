@@ -1,5 +1,42 @@
 # Release Log
 
+## v0.4.16
+
+WorkspaceManager 完全移除，API Server 状态检查增强，deny-only 跨代理隔离策略替代白名单模式。
+
+### Refactoring
+
+- **WorkspaceManager 完全移除** — 删除 `packages/core/src/workspace-manager.ts`，相关代码迁移至 agent 端本地管理，`TaskWorkspace` 替换为 `TaskProjectContext`，支持多仓库场景
+- **deny-only 跨代理隔离策略** — 白名单工作区策略重构为拒绝式隔离，agents 默认可以访问所有工作区，除非明确禁止，降低配置复杂度
+
+### Bug Fixes
+
+- **API Server 状态检查增强** — `/run` 端点新增任务状态验证（仅 `in_progress` 状态可运行），`/resume` 端点修复状态判断（仅 `blocked` 状态可恢复），`/retry` 端点新增状态限制（`rejected`/`archived` 状态不可重试）
+
+### Breaking Changes
+
+- `TaskWorkspace` 接口已移除，请使用 `TaskProjectContext`：
+  ```typescript
+  // Before (已移除)
+  interface TaskWorkspace {
+    worktreePath: string;
+    branch: string;
+    baseBranch: string;
+  }
+  
+  // After
+  interface TaskProjectContext {
+    project: { id: string; name: string; description: string; status: string };
+    repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
+  }
+  ```
+
+### Stats
+
+- 24 files changed, +137 / −536 lines
+
+---
+
 ## v0.4.15
 
 Secretary 统一建设者角色，新增分级 Git 审批机制；Task FSM 重构为声明式状态机；移除 worktree 耦合，prompt 工程全面清理；修复 dream cycle 幻觉与 UI 问题。
