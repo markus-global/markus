@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type TeamInfo, type TeamMemberInfo } from '../api.ts';
 
 // ─── UI Primitives ────────────────────────────────────────────────────────────
@@ -26,24 +27,25 @@ export function Field({ label, children }: { label: string; children: React.Reac
 // ─── NewTeamModal ─────────────────────────────────────────────────────────────
 
 export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, description?: string) => void }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   return (
-    <Modal onClose={onClose} title="Create a New Team">
+    <Modal onClose={onClose} title={t('modal.new_team')}>
       <div className="space-y-4">
-        <Field label="Team Name">
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Engineering, Marketing, Support" className="input" autoFocus
+        <Field label={t('modal.team_name')}>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder={t('modal.team_name_placeholder')} className="input" autoFocus
             onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim(), description.trim() || undefined); }}
           />
         </Field>
-        <Field label="Description (optional)">
-          <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="What does this team work on?" className="input" rows={2} />
+        <Field label={t('modal.description_optional')}>
+          <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder={t('modal.team_description_placeholder')} className="input" rows={2} />
         </Field>
         <div className="text-xs text-fg-tertiary">
-          You can add human and AI members to this team after creating it.
+          {t('modal.team_member_hint')}
         </div>
         <div className="flex justify-end gap-3 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
           <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white">
             Create Team
           </button>
@@ -56,6 +58,7 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
 // ─── AddHumanModal ────────────────────────────────────────────────────────────
 
 export function AddHumanModal({
+  const { t } = useTranslation();
   teamId, teams, onClose, onAdd,
 }: {
   teamId?: string;
@@ -79,40 +82,40 @@ export function AddHumanModal({
   };
 
   return (
-    <Modal onClose={onClose} title="Add Human Team Member" width="w-[460px]">
+    <Modal onClose={onClose} title={t('modal.add_human_member')} width="w-[460px]">
       <div className="space-y-4">
-        <Field label="Name *">
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" className="input" autoFocus />
+        <Field label={t('modal.name_required')}>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder={t('modal.full_name')} className="input" autoFocus />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Role">
+          <Field label={t('modal.role')}>
             <select value={role} onChange={e => setRole(e.target.value)} className="input">
-              <option value="owner">Owner</option>
-              <option value="admin">Admin</option>
-              <option value="member">Member</option>
-              <option value="guest">Guest</option>
+              <option value="owner">{t('role.owner')}</option>
+              <option value="admin">{t('role.admin')}</option>
+              <option value="member">{t('role.member')}</option>
+              <option value="guest">{t('role.guest')}</option>
             </select>
           </Field>
-          <Field label="Assign to Team">
+          <Field label={t('modal.assign_to_team')}>
             <select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)} className="input">
-              <option value="">No team</option>
+              <option value="">{t('modal.no_team')}</option>
               {teams.map(t => (
                 <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
           </Field>
         </div>
-        <Field label="Email">
+        <Field label={t('modal.email')}>
           <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Optional (required for login)" className="input" />
         </Field>
         <div className="border-t border-border-default pt-3">
           <div className="text-xs text-fg-tertiary mb-3">Set a password to allow this person to log in.</div>
-          <Field label="Password">
+          <Field label={t('modal.password')}>
             <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Leave blank for no login access" className="input" />
           </Field>
           {password && (
             <div className="mt-3">
-              <Field label="Confirm Password">
+              <Field label={t('modal.confirm_password')}>
                 <input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" placeholder="Repeat password" className="input" />
               </Field>
             </div>
@@ -120,7 +123,7 @@ export function AddHumanModal({
         </div>
         {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex justify-end gap-3 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
           <button onClick={submit} className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 rounded-lg text-white">Add Member</button>
         </div>
       </div>
@@ -131,6 +134,7 @@ export function AddHumanModal({
 // ─── AddExistingModal ─────────────────────────────────────────────────────────
 
 export function AddExistingModal({
+  const { t } = useTranslation();
   teamId, ungrouped, onClose, onAdd,
 }: {
   teamId: string;
@@ -139,11 +143,11 @@ export function AddExistingModal({
   onAdd: (memberId: string, memberType: 'human' | 'agent') => void;
 }) {
   return (
-    <Modal onClose={onClose} title="Add Existing Member to Team">
+    <Modal onClose={onClose} title={t('team.invite_member')}>
       <div className="space-y-3">
-        <div className="text-xs text-fg-tertiary">Select an ungrouped member to add to this team.</div>
+        <div className="text-xs text-fg-tertiary">{t('modal.select_ungrouped_member')}</div>
         {ungrouped.length === 0 ? (
-          <div className="text-center py-8 text-sm text-fg-tertiary">All members are already in a team.</div>
+          <div className="text-center py-8 text-sm text-fg-tertiary">{t('modal.all_members_grouped')}</div>
         ) : (
           <div className="space-y-2 max-h-72 overflow-y-auto">
             {ungrouped.map(m => (
@@ -176,7 +180,8 @@ export function AddExistingModal({
 
 // ─── OpenClaw Import Panel ────────────────────────────────────────────────────
 
-export function OpenClawImportModal({ onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
+export function OpenClawImportModal({
+  const { t } = useTranslation(); onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
   const [agentName, setAgentName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -267,9 +272,9 @@ Step 3: Accept and execute tasks, report progress, and communicate with teammate
             </Field>
             {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-3 pt-2">
-              <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
+              <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
               <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white disabled:opacity-50">
-                {loading ? 'Connecting...' : 'Import Agent'}
+                {loading ? t('modal.connecting') : t('modal.import')}
               </button>
             </div>
           </div>
