@@ -64,7 +64,10 @@
     "members": "成员",
     "manager": "管理者",
     "description": "描述",
-    "introMessage": "介绍一下你自己"
+    "introMessage": "介绍一下你自己",
+    "errorDetails": "错误详情",
+    "currentActivity": "当前活动",
+    "workingOnTask": "正在执行任务"
   },
   "project": {
     "title": "项目",
@@ -272,6 +275,14 @@
       "offline": "离线"
     },
     "viewProfile": "查看资料 →",
+    "boardColumns": {
+      "failed": "失败",
+      "todo": "待办",
+      "in_progress": "进行中",
+      "review": "审核中",
+      "done": "已完成",
+      "closed": "已关闭"
+    },
     "projectStatuses": {
       "active": "进行中",
       "paused": "已暂停",

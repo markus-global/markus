@@ -64,7 +64,10 @@
     "members": "Members",
     "manager": "Manager",
     "description": "Description",
-    "introMessage": "Introduce yourself"
+    "introMessage": "Introduce yourself",
+    "errorDetails": "Error Details",
+    "currentActivity": "Current Activity",
+    "workingOnTask": "Working on task"
   },
   "project": {
     "title": "Projects",
@@ -272,6 +275,14 @@
       "offline": "Offline"
     },
     "viewProfile": "View Profile →",
+    "boardColumns": {
+      "failed": "Failed",
+      "todo": "To Do",
+      "in_progress": "In Progress",
+      "review": "In Review",
+      "done": "Done",
+      "closed": "Closed"
+    },
     "projectStatuses": {
       "active": "Active",
       "paused": "Paused",
