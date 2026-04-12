@@ -1535,11 +1535,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     }
     const retryText = userMsg?.text ?? '';
     if (!retryText) return;
-    // Remove the agent bubble and (if immediately preceding) the user message so it re-appears cleanly
+
+    const hasFollowingMsgs = retryIdx < currentMsgs.length - 1;
+    if (hasFollowingMsgs) {
+      const followCount = currentMsgs.length - 1 - retryIdx;
+      if (!window.confirm(`This will discard ${followCount} message${followCount > 1 ? 's' : ''} after this point and re-generate. Continue?`)) return;
+    }
+
+    // Remove the agent bubble, all messages after it, and (if immediately preceding) the user message
     const removeUserToo = userMsg && retryIdx > 0 && currentMsgs[retryIdx - 1]?.id === userMsg.id;
-    updateConvMsgs(convKey, prev => prev.filter(m =>
-      m.id !== retryMsg.id && (removeUserToo ? m.id !== userMsg!.id : true)
-    ));
+    updateConvMsgs(convKey, prev => {
+      const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
     void send(retryText);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
