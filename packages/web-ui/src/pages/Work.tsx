@@ -2608,9 +2608,6 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
           }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
-        if (!detail.params?.projectId && !detail.params?.openTask && !detail.params?.openRequirement) {
-          selectAllTasks();
-        }
       }
     };
     window.addEventListener('markus:navigate', handler);

@@ -59,7 +59,9 @@ export function App() {
     // Use pushState (silent, no events) for all URL changes, then dispatch
     // hashchange synchronously so external stores (e.g. Chat's hash store)
     // update in the same React render batch as setPage — eliminates flash.
-    const savedHash = _savedPageHashes[normalized];
+    // Work page manages its own project/filter state in React; don't restore
+    // a saved project-specific hash (e.g. work/proj_xxx) when clicking "Work".
+    const savedHash = normalized !== PAGE.WORK ? _savedPageHashes[normalized] : undefined;
     if (savedHash && savedHash !== normalized) {
       history.pushState(null, '', '#' + normalized);
       history.pushState(null, '', '#' + savedHash);

@@ -155,7 +155,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, onLogout, collapsed
                   {/* Work nav item */}
                   <div className="flex items-center mb-0.5">
                     <button
-                      onClick={() => { setSelectedProjectId(null); window.location.hash = PAGE.WORK; onNavigate(PAGE.WORK); }}
+                      onClick={() => { setSelectedProjectId(null); onNavigate(PAGE.WORK); }}
                       className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                         currentPage === PAGE.WORK && !selectedProjectId
                           ? 'bg-brand-600 text-white'
