@@ -870,13 +870,14 @@ export class OrganizationService {
         this.addMemberToTeam(team.id, ownerUserId, 'human');
       }
 
-      // Hire a Secretary agent as manager of this team
+      // Hire a Secretary agent as manager of this team, with all building skills
       const secretary = await this.hireAgent({
         name: 'Secretary',
         roleName: 'secretary',
         orgId,
         teamId: team.id,
         agentRole: 'manager',
+        skills: ['agent-building', 'team-building', 'skill-building'],
       });
 
       // Set the secretary as the team manager
@@ -894,64 +895,20 @@ export class OrganizationService {
     }
   }
 
-  /**
-   * Ensure the three built-in builder agents exist (Agent Father, Team Factory, Skill Architect).
-   * Safe to call on every startup — skips agents that already exist.
-   * Also registers dynamic context providers so builder agents can see available skills/roles at runtime.
-   */
-  static readonly BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building']);
-
-  async seedBuilderAgents(orgId: string, skillRegistry?: SkillRegistry): Promise<void> {
-    const builderConfigs = [
-      { name: 'Agent Father', roleName: 'agent-father', skills: ['agent-building'] },
-      { name: 'Team Factory', roleName: 'team-factory', skills: ['team-building'] },
-      { name: 'Skill Architect', roleName: 'skill-architect', skills: ['skill-building'] },
-    ] as const;
-
-    const teams = this.listTeams(orgId);
-    if (teams.length === 0) return;
-    const defaultTeamId = teams[0]!.id;
-
-    const existingAgents = this.agentManager.listAgents();
-    for (const cfg of builderConfigs) {
-      const alreadyExists = existingAgents.some(
-        a => a.name === cfg.name || a.role === cfg.name
-      );
-      if (alreadyExists) continue;
-
-      try {
-        await this.hireAgent({
-          name: cfg.name,
-          roleName: cfg.roleName,
-          orgId,
-          teamId: defaultTeamId,
-          agentRole: 'worker',
-          heartbeatIntervalMs: 0,
-          skills: [...cfg.skills],
-        });
-        log.info(`Seeded builder agent: ${cfg.name}`);
-      } catch (err) {
-        log.warn(`Failed to seed builder agent: ${cfg.name}`, { error: String(err) });
-      }
-    }
-
-    this.registerBuilderContextProviders(skillRegistry);
-  }
+  private static readonly BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building']);
 
   /**
-   * Register dynamic context providers on all builder agents (and any agent
-   * with a building skill) so they see the live list of available skills/roles.
+   * Register dynamic context providers on any agent with a building skill
+   * so they see the live list of available skills/roles at runtime.
    */
   registerBuilderContextProviders(skillRegistry?: SkillRegistry): void {
-    const builderNames = new Set(['Agent Father', 'Team Factory', 'Skill Architect']);
     const allAgents = this.agentManager.listAgents();
 
     for (const info of allAgents) {
       try {
         const agent = this.agentManager.getAgent(info.id);
-        const isBuilder = builderNames.has(info.name) ||
-          agent.config.skills.some(s => OrganizationService.BUILDING_SKILLS.has(s));
-        if (!isBuilder) continue;
+        const hasBuilderSkill = agent.config.skills.some(s => OrganizationService.BUILDING_SKILLS.has(s));
+        if (!hasBuilderSkill) continue;
         agent.addDynamicContextProvider(() => this.buildBuilderDynamicContext(skillRegistry), 'builder-context');
       } catch {
         log.warn(`Could not register dynamic context for builder: ${info.name}`);

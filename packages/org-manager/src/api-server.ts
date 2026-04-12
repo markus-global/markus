@@ -1,9 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join, resolve, dirname } from 'node:path';
-import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, readManifest, manifestFilename, validateManifest, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -11,7 +11,6 @@ import {
   createDefaultTemplateRegistry,
   generateHandbook,
   GatewaySyncHandler,
-  readSkillInstructions,
   type TeamTemplateRegistry,
   type AgentToolHandler,
   type ExternalAgentGateway,
@@ -27,10 +26,10 @@ import {
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
   type AgentManager,
-  type SkillCategory,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
-import { OrganizationService } from './org-service.js';
+import type { OrganizationService } from './org-service.js';
+import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import type { BillingService } from './billing-service.js';
@@ -188,6 +187,7 @@ export class APIServer {
   private reviewService?: ReviewService;
   private registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
+  private builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
   private teamTemplateRegistry: TeamTemplateRegistry;
   private customGroupChats: Array<{
@@ -290,6 +290,85 @@ export class APIServer {
 
   setSkillRegistry(registry: SkillRegistry): void {
     this.skillRegistry = registry;
+    this.builderService = new BuilderService(
+      this.orgService,
+      registry,
+      (msg) => this.ws?.broadcast(msg as Parameters<WSBroadcaster['broadcast']>[0]),
+    );
+  }
+
+  getBuilderService(): BuilderService | undefined {
+    return this.builderService;
+  }
+
+  /**
+   * Returns a hub client that agents can use to search and install from Markus Hub.
+   * Reads the hub token from ~/.markus/hub-token on each call.
+   */
+  getHubClient(): {
+    search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>;
+    downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }>;
+  } | undefined {
+    if (!this.builderService) return undefined;
+    const self = this;
+    return {
+      search: async (opts) => {
+        const hubUrl = self.hubUrl;
+        const token = self.readHubToken();
+        const params = new URLSearchParams();
+        if (opts?.type) params.set('type', opts.type);
+        if (opts?.query) params.set('q', opts.query);
+        const qs = params.toString();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch(`${hubUrl}/api/items${qs ? `?${qs}` : ''}`, { headers });
+        if (!res.ok) throw new Error(`Hub search failed: ${res.status}`);
+        const data = await res.json() as { items?: Array<Record<string, unknown>> };
+        return (data.items ?? []).map((item: Record<string, unknown>) => ({
+          id: item.id as string,
+          name: item.name as string,
+          type: (item.itemType ?? item.type ?? 'agent') as string,
+          description: (item.description ?? '') as string,
+          author: ((item.author as Record<string, unknown>)?.displayName ?? (item.author as Record<string, unknown>)?.username ?? '') as string,
+          version: item.version as string | undefined,
+          downloads: item.downloadCount as number | undefined,
+        }));
+      },
+      downloadAndInstall: async (itemId) => {
+        const hubUrl = self.hubUrl;
+        const token = self.readHubToken();
+        if (!token) throw new Error('Hub token not configured. Please login to Markus Hub first.');
+        const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+        const res = await fetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
+        if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
+        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string };
+        const name = data.name;
+        const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
+        const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
+        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
+        mkdirSync(artDir, { recursive: true });
+        if (data.files && Object.keys(data.files).length > 0) {
+          for (const [fname, content] of Object.entries(data.files)) {
+            const filePath = join(artDir, fname);
+            mkdirSync(dirname(filePath), { recursive: true });
+            writeFileSync(filePath, content, 'utf-8');
+          }
+        } else if (data.config) {
+          writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(data.config, null, 2), 'utf-8');
+        }
+        return self.builderService!.installArtifact(mode, slug);
+      },
+    };
+  }
+
+  private readHubToken(): string | undefined {
+    try {
+      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      return existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   setBillingService(service: BillingService): void {
@@ -2717,7 +2796,7 @@ export class APIServer {
           }
           // When a building skill is added, register builder dynamic context so the
           // agent can see available skills/roles, just like the seeded builder agents.
-          if (OrganizationService.BUILDING_SKILLS.has(skillName)) {
+          if (['agent-building', 'team-building', 'skill-building'].includes(skillName)) {
             agent.addDynamicContextProvider(
               () => this.orgService.buildBuilderDynamicContext(this.skillRegistry),
               'builder-context'
@@ -3786,27 +3865,9 @@ export class APIServer {
     // GET /api/builder/artifacts — scan all builder artifacts
     if (path === '/api/builder/artifacts' && req.method === 'GET') {
       try {
-        const baseDir = join(homedir(), '.markus', 'builder-artifacts');
-        const types = ['agents', 'teams', 'skills'] as const;
-        const artifacts: Array<{ type: string; name: string; meta: Record<string, unknown>; path: string; updatedAt: string }> = [];
-        const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
-
-        for (const typeDir of types) {
-          const dir = join(baseDir, typeDir);
-          if (!existsSync(dir)) continue;
-          for (const entry of readdirSync(dir, { withFileTypes: true })) {
-            if (!entry.isDirectory()) continue;
-            const artDir = join(dir, entry.name);
-            const type = (typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill') as PackageType;
-            const manifest = readManifest(artDir, type, fsHelper);
-            const meta: Record<string, unknown> = manifest ? { ...manifest } : { name: entry.name };
-            let updatedAt = new Date().toISOString();
-            try { updatedAt = statSync(artDir).mtime.toISOString(); } catch { /* ignore */ }
-            artifacts.push({ type, name: entry.name, meta, path: artDir, updatedAt });
-          }
-        }
-
-        artifacts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const artifacts = this.builderService
+          ? this.builderService.listArtifacts()
+          : [];
         this.json(res, 200, { artifacts });
       } catch (err) {
         this.json(res, 500, { error: `Scan failed: ${String(err)}` });
@@ -4067,165 +4128,20 @@ export class APIServer {
         const rawType = installMatch[1]!;
         const name = decodeURIComponent(installMatch[2]!);
         const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
+        const type = (typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill') as 'agent' | 'team' | 'skill';
 
-        if (!existsSync(artDir)) {
-          this.json(res, 404, { error: 'Artifact not found' });
+        if (!this.builderService) {
+          this.json(res, 500, { error: 'BuilderService not initialized' });
           return;
         }
 
         try {
-          const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
-          const installType = type as PackageType;
-          const manifest = readManifest(artDir, installType, fsHelper);
-          if (!manifest) {
-            this.json(res, 400, { error: `No ${manifestFilename(installType)} found in artifact package` });
-            return;
-          }
-
-          const validationErrors = validateManifest(manifest);
-          if (validationErrors.length > 0) {
-            this.json(res, 400, { error: `Invalid manifest: ${validationErrors.join('; ')}` });
-            return;
-          }
-
-          const mfName = manifestFilename(installType);
-
-          if (type === 'agent') {
-            const agentManager = this.orgService.getAgentManager();
-            const agentName = manifest.displayName ?? manifest.name ?? name;
-            const knownRoles = this.orgService.listAvailableRoles();
-            const requestedRole = manifest.agent?.roleName ?? 'developer';
-            const roleName = knownRoles.includes(requestedRole) ? requestedRole : 'developer';
-            const skills = manifest.dependencies?.skills ?? [];
-            const agentRole = manifest.agent?.agentRole ?? 'worker';
-
-            const agent = await this.orgService.hireAgent({
-              name: agentName,
-              roleName,
-              orgId: 'default',
-              agentRole,
-              skills,
-            });
-
-            const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
-            mkdirSync(agentRoleDir, { recursive: true });
-            for (const fname of readdirSync(artDir)) {
-              if (fname === mfName) continue;
-              const srcFile = join(artDir, fname);
-              if (statSync(srcFile).isFile()) {
-                copyFileSync(srcFile, join(agentRoleDir, fname));
-              }
-            }
-            writeFileSync(join(agentRoleDir, '.role-origin.json'), JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: name, artifactType: 'agent' }));
-            agent.reloadRole();
-            await agentManager.startAgent(agent.id);
-
-            this.json(res, 201, { type: 'agent', agent: { id: agent.id, name: agent.config.name, role: agent.role.name, status: agent.getState().status } });
-
-          } else if (type === 'team') {
-            const agentManager = this.orgService.getAgentManager();
-            const teamName = manifest.displayName ?? manifest.name ?? name;
-            const team = await this.orgService.createTeam('default', teamName, manifest.description ?? '');
-            this.ws?.broadcast({
-              type: 'chat:group_created',
-              payload: { chatId: `group:${team.id}`, name: teamName, creatorId: '', creatorName: '' },
-              timestamp: new Date().toISOString(),
-            });
-
-            const announcementPath = join(artDir, 'ANNOUNCEMENT.md');
-            const normsPath = join(artDir, 'NORMS.md');
-            const announcements = existsSync(announcementPath) ? readFileSync(announcementPath, 'utf-8') : '';
-            const norms = existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : '';
-            this.orgService.ensureTeamDataDir(team.id, announcements, norms);
-
-            const members = manifest.team?.members ?? [];
-            const knownRoles = this.orgService.listAvailableRoles();
-            const createdAgents: Array<{ id: string; name: string; role: string }> = [];
-
-            for (const member of members) {
-              const count = member.count ?? 1;
-              const memberRole = member.role ?? 'worker';
-              const memberName = member.name ?? 'Agent';
-              const roleName = knownRoles.includes(member.roleName) ? member.roleName : 'developer';
-              const memberSkills = member.skills ?? [];
-              const memberSlug = memberName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-              const memberFilesDir = join(artDir, 'members', memberSlug);
-
-              for (let i = 0; i < count; i++) {
-                const displayName = count > 1 ? `${memberName} ${i + 1}` : memberName;
-                const agent = await this.orgService.hireAgent({
-                  name: displayName,
-                  roleName,
-                  orgId: 'default',
-                  teamId: team.id,
-                  agentRole: memberRole,
-                  skills: memberSkills.length > 0 ? memberSkills : undefined,
-                });
-
-                const agentRoleDir = join(agentManager.getDataDir(), agent.id, 'role');
-                mkdirSync(agentRoleDir, { recursive: true });
-                if (existsSync(memberFilesDir)) {
-                  for (const fname of readdirSync(memberFilesDir)) {
-                    const srcFile = join(memberFilesDir, fname);
-                    if (statSync(srcFile).isFile()) {
-                      copyFileSync(srcFile, join(agentRoleDir, fname));
-                    }
-                  }
-                  agent.reloadRole();
-                }
-                writeFileSync(join(agentRoleDir, '.role-origin.json'), JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: name, artifactType: 'team' }));
-
-                if (memberRole === 'manager') {
-                  await this.orgService.updateTeam(team.id, { managerId: agent.id, managerType: 'agent' });
-                }
-                await agentManager.startAgent(agent.id);
-                createdAgents.push({ id: agent.id, name: agent.config.name, role: agent.role.name });
-              }
-            }
-
-            this.json(res, 201, { type: 'team', team: { id: team.id, name: teamName }, agents: createdAgents });
-
-          } else if (type === 'skill') {
-            const skillDir = join(homedir(), '.markus', 'skills', name);
-            mkdirSync(skillDir, { recursive: true });
-            for (const fname of readdirSync(artDir)) {
-              const srcFile = join(artDir, fname);
-              if (statSync(srcFile).isFile()) {
-                copyFileSync(srcFile, join(skillDir, fname));
-              }
-            }
-
-            if (this.skillRegistry) {
-              try {
-                const skillFile = manifest.skill?.skillFile ?? 'SKILL.md';
-                const instrPath = join(skillDir, skillFile);
-                const instructions = existsSync(instrPath) ? readFileSync(instrPath, 'utf-8').replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim() : undefined;
-                this.skillRegistry.register({
-                  manifest: {
-                    name: manifest.name,
-                    version: manifest.version,
-                    description: manifest.description,
-                    author: manifest.author ?? '',
-                    category: (manifest.category ?? 'custom') as SkillCategory,
-                    tags: manifest.tags,
-                    instructions,
-                    requiredPermissions: manifest.skill?.requiredPermissions,
-                    mcpServers: manifest.skill?.mcpServers,
-                    sourcePath: skillDir,
-                    source: 'builder',
-                  },
-                });
-              } catch (regErr) {
-                log.warn('Failed to register skill into runtime registry', { error: String(regErr) });
-              }
-            }
-
-            this.json(res, 201, { type: 'skill', skill: { name, path: skillDir, status: 'registered' } });
-          }
+          const result = await this.builderService.installArtifact(type, name);
+          this.json(res, 201, result);
         } catch (err) {
-          this.json(res, 500, { error: `Install failed: ${String(err)}` });
+          const msg = String(err instanceof Error ? err.message : err);
+          const status = msg.includes('not found') ? 404 : msg.includes('Invalid manifest') || msg.includes('No ') ? 400 : 500;
+          this.json(res, status, { error: msg });
         }
         return;
       }
