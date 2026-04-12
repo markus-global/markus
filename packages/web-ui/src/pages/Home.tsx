@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -6,6 +7,7 @@ import { NotificationBell } from '../components/NotificationBell.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
@@ -70,32 +72,32 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
       <div className="flex items-center justify-between px-6 h-14 border-b border-border-default bg-surface-secondary">
         <div className="flex items-center gap-3">
           {isMobile && <NotificationBell collapsed userId={authUser?.id} />}
-          <h2 className="text-lg font-semibold">Overview</h2>
+          <h2 className="text-lg font-semibold">{t('home.overview')}</h2>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
+          <button onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">+ {t('home.hireAgent').replace('+ ', '')}</button>
         </div>
       </div>
 
       <div className="p-7 space-y-6">
         {/* Hero Metrics */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricTile label="Active Agents" value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate(PAGE.TEAM)} />
-          <MetricTile label="Tasks In Progress" value={inProgress} color="blue" onClick={() => navBus.navigate(PAGE.WORK)} />
-          <MetricTile label="Pending Queue" value={pending} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
-          <MetricTile label="Completed" value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate(PAGE.WORK)} />
+          <MetricTile label={t('home.metrics.activeAgents')} value={activeAgents} total={agents.length} color="indigo" onClick={() => navBus.navigate(PAGE.TEAM)} />
+          <MetricTile label={t('home.metrics.tasksInProgress')} value={inProgress} color="blue" onClick={() => navBus.navigate(PAGE.WORK)} />
+          <MetricTile label={t('home.metrics.pendingQueue')} value={pending} color="amber" onClick={() => navBus.navigate(PAGE.WORK)} />
+          <MetricTile label={t('home.metrics.completed')} value={completed} total={totalRootTasks > 0 ? totalRootTasks : undefined} color="green" onClick={() => navBus.navigate(PAGE.WORK)} />
         </div>
 
         {/* Getting Started — shown when no tasks exist yet */}
         {totalRootTasks === 0 && (!ops || ops.taskKPI.recentActivity.length === 0) && (
           <div className="bg-surface-secondary border border-brand-500/20 rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-fg-primary mb-1">Your AI workforce is ready</h3>
-            <p className="text-xs text-fg-secondary mb-4">Get started in under a minute — describe what you need and let your team take it from here.</p>
+            <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('home.aiWorkforce.title')}</h3>
+            <p className="text-xs text-fg-secondary mb-4">{t('home.aiWorkforce.desc')}</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { label: 'Describe Your Goal', desc: 'Chat with the Secretary — it will assemble a team and break down tasks', page: PAGE.TEAM },
-                { label: 'Hire Agents', desc: 'Browse templates: developers, researchers, writers, analysts, and more', page: PAGE.STORE },
-                { label: 'Create a Project', desc: 'Set up requirements and let agents plan, execute, and deliver', page: PAGE.WORK },
+                { label: t('home.quickActions.describeGoal'), desc: t('home.quickActions.describeGoalDesc'), page: PAGE.TEAM },
+                { label: t('home.quickActions.hireAgents'), desc: t('home.quickActions.hireAgentsDesc'), page: PAGE.STORE },
+                { label: t('home.quickActions.createProject'), desc: t('home.quickActions.createProjectDesc'), page: PAGE.WORK },
               ].map(item => (
                 <button key={item.label} onClick={() => navBus.navigate(item.page)} className="text-left bg-surface-elevated/50 hover:bg-surface-elevated border border-border-default/50 hover:border-brand-500/30 rounded-lg p-4 transition-colors">
                   <div className="text-xs font-medium text-fg-primary">{item.label}</div>
@@ -110,8 +112,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
         {workingAgents > 0 && (
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Agent Focus</h3>
-              {totalMailboxDepth > 0 && <span className="text-xs text-fg-tertiary">{totalMailboxDepth} total queued</span>}
+              <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('home.agentFocus.title')}</h3>
+              {totalMailboxDepth > 0 && <span className="text-xs text-fg-tertiary">{t('home.agentFocus.totalQueued', { count: totalMailboxDepth })}</span>}
             </div>
             <div className="space-y-1.5">
               {agents.filter(a => a.status === 'working').map(a => (
@@ -124,7 +126,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                   </div>
                   <span className="text-xs font-medium text-fg-primary truncate">{a.name}</span>
                   <span className="text-[10px] text-fg-tertiary truncate flex-1">
-                    {a.currentActivity?.label ?? 'Working...'}
+                    {a.currentActivity?.label ?? t('home.agentFocus.working')}
                   </span>
                   {(a.mailboxDepth ?? 0) > 0 && (
                     <span className="text-[9px] bg-amber-500/20 text-amber-400 rounded-full px-1.5 shrink-0">{a.mailboxDepth} queued</span>
@@ -147,12 +149,12 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             {/* Task Distribution Bar Chart */}
             {totalRootTasks > 0 && (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-gray-600 transition-colors" onClick={() => navBus.navigate(PAGE.WORK)}>
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">Task Distribution</h3>
+                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">{t('home.taskDistribution.title')}</h3>
                 <TaskBar statusCounts={rootStatusCounts} total={totalRootTasks} />
                 {(rootStatusCounts['blocked'] ?? 0) > 0 && (
                   <div className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
-                    {rootStatusCounts['blocked']} blocked — needs attention
+                    {rootStatusCounts['blocked']} {t('home.taskDistribution.blocked')}
                   </div>
                 )}
               </div>
