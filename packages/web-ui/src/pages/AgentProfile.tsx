@@ -1466,7 +1466,7 @@ const ATTENTION_COLORS: Record<string, string> = {
 };
 
 const MAILBOX_TYPE_ICONS: Record<string, string> = {
-  system_event: '⚙', human_chat: '💬', task_assignment: '☑', task_comment: '💬',
+  system_event: '⚙', human_chat: '💬', task_comment: '💬',
   mention: '@', session_reply: '↩', task_status_update: '📋', a2a_message: '🔗',
   review_request: '👀', requirement_update: '📝', daily_report: '📊',
   heartbeat: '♡', memory_consolidation: '🧠',

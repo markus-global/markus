@@ -446,7 +446,7 @@ export class APIServer {
           'workflow-engine',
           { name: 'workflow', role: 'system' },
           {
-            sourceType: 'task_assignment',
+            sourceType: 'system_event',
             sessionId: `sys_${agentId}_${Date.now()}`,
           }
         );

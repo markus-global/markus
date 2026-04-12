@@ -91,6 +91,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 4. **Retry = fresh start**: Retry increments `executionRound`, creates a new LLM session, discards previous execution context. Only the task description and notes carry over.
 5. **Pause = blocked**: Pausing a running task sets it to `blocked` and cancels execution. Resume calls `runTask` with full previous context.
 6. **Rejected ≠ Cancelled**: `rejectTask()` sets `rejected` (proposal denied before work). `cancelTask()` sets `cancelled` (work stopped after starting). `rejected` is a terminal state — the proposal was not approved.
+7. **Preemption ≠ blocked**: When the attention controller preempts a task for a higher-priority item, the task stays `in_progress` (not `blocked`). `TaskService` automatically re-queues execution via `runTask()` after the preempting work completes. The same execution round and session context are preserved.
 
 ---
 
@@ -314,14 +315,16 @@ Every status transition in both task and requirement FSMs generates an automatic
 
 ### Task Status Changes
 
-`updateTaskStatus()` automatically enqueues a `task_status_update` item to the assigned agent's mailbox for every transition:
+`updateTaskStatus()` enqueues a `task_status_update` item to the assigned agent's mailbox for non-execution status transitions. When a transition triggers execution (→ `in_progress`), the notification is **skipped** because `runTask()` sends its own `task_status_update` with execution context via `sendTaskExecution()`:
 
 ```
-task status change → agent.enqueueToMailbox('task_status_update', {
+non-execution status change → agent.enqueueToMailbox('task_status_update', {
   summary: "Task 'X' status: old → new",
-  content: transition details,
-  taskId, fromStatus, toStatus
+  content: transition details + action guidance,
+  taskId
 })
+
+execution trigger (→ in_progress) → runTask() → agent.sendTaskExecution() → enqueues task_status_update with extra.triggerExecution
 ```
 
 ### Requirement Status Changes

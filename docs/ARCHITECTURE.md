@@ -96,7 +96,7 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 Each agent has a **single-threaded attention model** — it processes one item at a time. **Every LLM invocation** flows through a per-agent **Mailbox** (priority queue), and an **AttentionController** manages which item the agent focuses on.
 
 Key components:
-- **AgentMailbox** — Priority queue accepting 13 item types: `human_chat`, `a2a_message`, `task_assignment`, `task_comment`, `task_status_update`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
+- **AgentMailbox** — Priority queue accepting 12 item types: `human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `merge`, `defer`, `drop`
@@ -104,7 +104,7 @@ Key components:
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
 - `agent.sendMessageStream()` — Streaming chat (SSE)
-- `agent.sendTaskExecution()` — Task execution (fire-and-forget)
+- `agent.sendTaskExecution()` — Task execution via `task_status_update` (fire-and-forget)
 - `agent.sendSessionReply()` — Post-task session reply
 - `agent.enqueueToMailbox()` — Fire-and-forget notification
 

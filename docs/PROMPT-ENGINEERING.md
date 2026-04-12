@@ -108,7 +108,7 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 - **Recent decisions**: Last 3-5 attention decisions (continue/preempt/merge/defer) with reasoning.
 - **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
 
-All 13 mailbox item types (`human_chat`, `task_assignment`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
+All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
 #### Scenario Section (§24)
 Source: `buildScenarioSection()`.  

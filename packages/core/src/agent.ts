@@ -568,6 +568,10 @@ export class Agent {
    * Route a task execution through the mailbox.  Fire-and-forget: the returned
    * promise resolves when the agent finishes (or errors out), but the caller
    * does not need to await it.
+   *
+   * Internally enqueues a `task_status_update` with `extra.triggerExecution`
+   * so the attention controller triggers `executeTask()` instead of a
+   * lightweight notification.
    */
   sendTaskExecution(
     taskId: string,
@@ -582,6 +586,7 @@ export class Agent {
       content: taskDescription,
       taskId,
       extra: {
+        triggerExecution: true,
         onLog,
         cancelToken,
         taskWorkspace,
@@ -590,7 +595,8 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue('task_assignment', payload, {
+      this.mailbox.enqueue('task_status_update', payload, {
+        priority: 1,
         metadata: {
           taskId,
           responsePromise: { resolve, reject },
@@ -761,8 +767,8 @@ export class Agent {
           return reply;
         }
 
-        case 'task_assignment': {
-          if (item.payload.taskId) {
+        case 'task_status_update': {
+          if (extra.triggerExecution && item.payload.taskId) {
             const taskId = item.payload.taskId;
             const description = item.payload.content;
             const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
@@ -774,12 +780,19 @@ export class Agent {
               extra.taskWorkspace as TaskWorkspace | undefined,
               extra.executionRound as number | undefined,
             );
+            resolveResponse('');
+            return;
           }
-          resolveResponse('');
-          return;
+          const statusReply = await this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            senderInfo,
+            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
+          );
+          resolveResponse(statusReply);
+          return statusReply;
         }
 
-        case 'task_status_update':
         case 'mention': {
           const reply = await this.handleMessage(
             item.payload.content,

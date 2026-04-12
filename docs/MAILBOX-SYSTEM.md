@@ -63,11 +63,10 @@ All mailbox item types, their metadata, and their processing behaviour are defin
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   system_event:         { label: 'System Event',        defaultPriority: 0, category: 'system',       icon: '⚙', createsActivity: true,  invokesLLM: true  },
   human_chat:           { label: 'Chat',                defaultPriority: 0, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
-  task_assignment:      { label: 'Task',                defaultPriority: 1, category: 'task',          icon: '☑', createsActivity: true,  invokesLLM: true  },
   task_comment:         { label: 'Task Comment',        defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
   mention:              { label: 'Mention',             defaultPriority: 1, category: 'interaction',   icon: '@', createsActivity: true,  invokesLLM: true  },
   session_reply:        { label: 'Session Reply',       defaultPriority: 1, category: 'task',          icon: '↩', createsActivity: true,  invokesLLM: true  },
-  task_status_update:   { label: 'Task Status',         defaultPriority: 2, category: 'notification',  icon: '📋', createsActivity: true,  invokesLLM: true  },
+  task_status_update:   { label: 'Task Status',         defaultPriority: 2, category: 'task',          icon: '📋', createsActivity: true,  invokesLLM: true  },
   a2a_message:          { label: 'Agent Message',       defaultPriority: 2, category: 'interaction',   icon: '🔗', createsActivity: true,  invokesLLM: true  },
   review_request:       { label: 'Review Request',      defaultPriority: 2, category: 'task',          icon: '👀', createsActivity: true,  invokesLLM: true  },
   requirement_update:   { label: 'Requirement Update',  defaultPriority: 2, category: 'notification',  icon: '📝', createsActivity: true,  invokesLLM: true  },
@@ -99,11 +98,23 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 | Category | Types | Description |
 |----------|-------|-------------|
 | `interaction` | `human_chat`, `a2a_message`, `mention` | Direct conversations with humans or agents |
-| `task` | `task_assignment`, `task_comment`, `review_request`, `session_reply` | Task lifecycle events |
-| `notification` | `task_status_update`, `requirement_update` | Status change notifications |
+| `task` | `task_status_update`, `task_comment`, `review_request`, `session_reply` | Task lifecycle events (including execution triggers) |
+| `notification` | `requirement_update` | Status change notifications |
 | `system` | `system_event`, `heartbeat`, `daily_report`, `memory_consolidation` | Internal agent processes |
 
 ### 3.4 Special Processing Rules
+
+**`task_status_update` — Dual-Mode Processing**
+
+`task_status_update` serves as the **unified trigger for all task lifecycle events**. It operates in two modes:
+
+1. **Execution mode** (`extra.triggerExecution = true`): When a task transitions to `in_progress` and needs execution, `TaskService.runTask()` sends a `task_status_update` with execution context (onLog, cancelToken, workspace, executionRound) via `agent.sendTaskExecution()`. The agent processes this by calling `executeTask()` — the full task execution loop. Priority is set to 1 (high).
+
+2. **Notification mode** (default): For non-execution status changes (e.g., cancelled, blocked, completed), the item is processed via `handleMessage()` as a lightweight LLM call. The notification includes action guidance (e.g., "Task cancelled. Stop any related work.").
+
+When `updateTaskStatus()` triggers auto-start execution, the separate notification is **skipped** to avoid redundant LLM calls. The execution-mode `task_status_update` serves as both trigger and notification.
+
+**`task_comment` — Live Session Injection**
 
 `task_comment` has a unique behaviour: when the referenced task is **actively being executed**, the comment is **injected into the running LLM session** (`injectUserMessage`) rather than creating a new activity. This means:
 - `createsActivity: false` — it does not always create an activity (but the merge decision IS recorded)
@@ -175,7 +186,7 @@ User chat (`human_chat`) and task comments (`task_comment`) are assigned **prior
 
 Yield points are inserted at natural pauses in the agent's processing pipeline:
 
-- **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. If preempted, the task session state is fully saved and can be resumed.
+- **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. If preempted, the task session state is fully saved and execution is **automatically re-queued** via `TaskService.runTask()` — the task stays `in_progress` and a new `task_status_update` (execution mode) is enqueued to the mailbox. The re-queued item sits behind any higher-priority items and resumes with full session context when the agent is available.
 - **Chat/message handling** (`handleMessage`): After tool results are recorded. Only merge decisions are honoured here (no preemption, since the caller is awaiting a response).
 
 ---
@@ -216,7 +227,7 @@ const reply = await agent.sendMessageStream(
 ```
 
 #### `agent.sendTaskExecution(taskId, description, onLog, ...)` — Task execution
-Used to run a task through the mailbox. Fire-and-forget with streaming log callback:
+Used to run a task through the mailbox. Internally enqueues a `task_status_update` with `extra.triggerExecution = true`. Fire-and-forget with streaming log callback:
 ```typescript
 void agent.sendTaskExecution(
   taskId, taskDescription, onLog, cancelToken, taskWorkspace, executionRound
@@ -241,7 +252,7 @@ This is a critical design invariant. The following internal methods invoke the L
 |----------------|----------------|--------------|
 | `handleMessage()` | `sendMessage()` | `human_chat`, `a2a_message`, `system_event`, etc. |
 | `handleMessageStream()` | `sendMessageStream()` | `human_chat` (with `extra.stream`) |
-| `executeTask()` | `sendTaskExecution()` | `task_assignment` |
+| `executeTask()` | `sendTaskExecution()` | `task_status_update` (with `extra.triggerExecution`) |
 | `respondInSession()` | `sendSessionReply()` | `session_reply` |
 | `handleHeartbeat()` | heartbeat:trigger → `mailbox.enqueue('heartbeat')` | `heartbeat` |
 | `generateDailyReport()` | internally calls `sendMessage()` | `daily_report` |
@@ -391,10 +402,9 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 |-----------------------------|------------------------|-------|
 | `human_chat` | `chat` | |
 | `a2a_message` | `a2a` | |
-| `task_assignment` | `task` | Has `task_id` |
 | `task_comment` | *(none or `chat`)* | Active task → inject only (no activity); inactive → `chat` |
-| `task_status_update` | `notification` | Lightweight LLM call (scenario: `a2a`) |
-| `requirement_update` | `notification` | Lightweight LLM call (scenario: `comment_response`) |
+| `task_status_update` | `task` or `internal` | Execution mode (`extra.triggerExecution`) → `task`; notification mode → `internal` |
+| `requirement_update` | `internal` | Lightweight LLM call (scenario: `comment_response`) |
 | `mention` | `chat` | |
 | `review_request` | `chat` | |
 | `session_reply` | `respond_in_session` | Has `task_id` |
@@ -403,7 +413,7 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `daily_report` | `internal` | |
 | `memory_consolidation` | `internal` | |
 
-This mapping is defined as `MAILBOX_TO_ACTIVITY_TYPE` in `@markus/shared` and used by `Agent.startActivity()`. The existing `AgentActivityType` union will be kept for backward compatibility but derived, never independently assigned.
+The `activityType` is set to `null` in the registry for `task_status_update` because it depends on the processing mode. `Agent.startActivity()` sets the type explicitly: `executeTask()` creates a `task` activity, while `handleMessage()` creates the appropriate type based on scenario.
 
 ### 6.4 Migration Plan
 
@@ -475,7 +485,7 @@ The Agent Mind tab provides a unified view of the agent's cognitive state and hi
 │    └─ Activity: Chat with Owner  1.2k tokens  3 tools│
 │       └─ (click to load activity logs)               │
 │                                                      │
-│  ● task_assignment  "Implement feature X"  completed │
+│  ● task_status_update  "Implement feature X"  completed │
 │  ● heartbeat  "Heartbeat check-in"        completed │
 │  ● task_comment  "Comment on task..."       merged   │
 │    └─ [merge] Comment on active task — merged        │
@@ -677,5 +687,5 @@ The system prompt includes scenario-specific guidance on which tool to use:
 ## 14. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
-- **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met (e.g., blocked task unblocked).
+- **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.

@@ -3,7 +3,6 @@
 export type MailboxItemType =
   | 'human_chat'
   | 'a2a_message'
-  | 'task_assignment'
   | 'task_status_update'
   | 'task_comment'
   | 'heartbeat'
@@ -54,11 +53,10 @@ export interface MailboxTypeDescriptor {
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   system_event:         { label: 'System Event',         defaultPriority: 0, category: 'system',       icon: '⚙',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
-  task_assignment:      { label: 'Task',                 defaultPriority: 1, category: 'task',          icon: '☑',  activityType: 'task',               createsActivity: true,  invokesLLM: true  },
   task_comment:         { label: 'Task Comment',         defaultPriority: 0, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
   mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
   session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true  },
-  task_status_update:   { label: 'Task Status',          defaultPriority: 2, category: 'notification',  icon: '📋', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  task_status_update:   { label: 'Task Status',          defaultPriority: 2, category: 'task',          icon: '📋', activityType: null,                 createsActivity: true,  invokesLLM: true  },
   a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', activityType: 'a2a',                createsActivity: true,  invokesLLM: true  },
   review_request:       { label: 'Review Request',       defaultPriority: 2, category: 'task',          icon: '👀', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
   requirement_update:   { label: 'Requirement Update',   defaultPriority: 2, category: 'notification',  icon: '📝', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
@@ -69,8 +67,8 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
-  task:         { label: 'Task',         types: ['task_assignment', 'task_comment', 'review_request', 'session_reply'] },
-  notification: { label: 'Notification', types: ['task_status_update', 'requirement_update'] },
+  task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'review_request', 'session_reply'] },
+  notification: { label: 'Notification', types: ['requirement_update'] },
   system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation'] },
 };
 
@@ -100,7 +98,7 @@ export interface MailboxItem {
 export interface MailboxPayload {
   summary: string;
   content: string;
-  /** For task_assignment / task_status_update */
+  /** For task_status_update */
   taskId?: string;
   /** For requirement_update */
   requirementId?: string;

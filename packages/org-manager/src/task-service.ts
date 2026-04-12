@@ -373,6 +373,16 @@ export class TaskService {
   private static readonly MAX_TASK_RETRIES = 3;
   private static readonly MAX_IN_PROGRESS_RETRIES = 8;
   private static readonly RETRY_DELAYS_MS = [10_000, 30_000, 60_000, 120_000, 300_000];
+
+  private static readonly STATUS_ACTION_GUIDANCE: Record<string, string> = {
+    blocked:   'Task is paused. Stop any active work on this task.',
+    cancelled: 'Task cancelled. Stop any related work and clean up.',
+    failed:    'Task failed. Review error details for next steps.',
+    completed: 'Task completed and accepted.',
+    review:    'Task submitted for review. Await reviewer decision.',
+    rejected:  'Task proposal rejected.',
+    archived:  'Task archived. No further action needed.',
+  };
   private taskRetryErrors = new Map<string, { lastError: string; consecutiveCount: number }>();
 
   private static isNetworkError(errorContent: string): boolean {
@@ -1186,6 +1196,22 @@ export class TaskService {
                 },
                 timestamp: new Date().toISOString(),
               });
+            } else if (entry.content === 'preempted') {
+              const preemptedBy = (entry.metadata as Record<string, unknown> | undefined)?.preemptedBy ?? 'unknown';
+              this.addTaskNote(taskId,
+                `[System] Task preempted by higher-priority item (${preemptedBy}). Will auto-resume.`,
+                'system'
+              );
+              setImmediate(() => {
+                const current = this.tasks.get(taskId);
+                if (!current || current.status !== 'in_progress') return;
+                const activeToken = this.taskCancelTokens.get(taskId);
+                if (activeToken && !activeToken.cancelled) return;
+                log.info('Re-queuing preempted task', { taskId });
+                this.runTask(taskId).catch(err =>
+                  log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
+                );
+              });
             }
           } else if (entry.type === 'error') {
             const nextAttempt = _retryAttempt + 1;
@@ -1656,6 +1682,9 @@ export class TaskService {
     }
 
     // ── Side effect: auto-start execution when entering in_progress ──
+    // When auto-start triggers runTask, skip the separate mailbox notification
+    // because runTask sends its own task_status_update with execution context.
+    let executionTriggered = false;
     if (
       !_skipAutoStart &&
       status === 'in_progress' &&
@@ -1665,6 +1694,7 @@ export class TaskService {
     ) {
       const activeToken = this.taskCancelTokens.get(id);
       if (!activeToken || activeToken.cancelled) {
+        executionTriggered = true;
         log.info(`Auto-starting task execution`, { taskId: id });
         setImmediate(() => {
           this.runTask(id).catch(err =>
@@ -1693,17 +1723,20 @@ export class TaskService {
       }
     }
 
-    // ── Mailbox notification: inform the assigned agent of every status transition ──
-    if (task.assignedAgentId && this.agentManager) {
+    // ── Mailbox notification: inform the assigned agent of non-execution status transitions ──
+    // Skip when execution is triggered — runTask sends its own enriched task_status_update.
+    if (!executionTriggered && task.assignedAgentId && this.agentManager) {
       try {
         const agent = this.agentManager.getAgent(task.assignedAgentId);
         if (agent) {
+          const guidance = TaskService.STATUS_ACTION_GUIDANCE[status] ?? '';
           agent.enqueueToMailbox('task_status_update', {
             summary: `Task "${task.title}" status: ${prevStatus} → ${status}`,
             content: [
               `[TASK STATUS UPDATE] Task "${task.title}" (ID: ${id})`,
               `Status changed: ${prevStatus} → ${status}`,
               updatedBy ? `Updated by: ${updatedBy}` : '',
+              guidance ? `\nAction: ${guidance}` : '',
             ].filter(Boolean).join('\n'),
             taskId: id,
           }, {
@@ -3313,6 +3346,22 @@ export class TaskService {
                 );
               }, delayMs);
             }
+          } else if (entry.type === 'status' && entry.content === 'preempted') {
+            const preemptedBy = (entry.metadata as Record<string, unknown> | undefined)?.preemptedBy ?? 'unknown';
+            this.addTaskNote(taskId,
+              `[System] Task preempted by higher-priority item (${preemptedBy}). Will auto-resume.`,
+              'system'
+            );
+            setImmediate(() => {
+              const current = this.tasks.get(taskId);
+              if (!current || current.status !== 'in_progress') return;
+              const activeToken = this.taskCancelTokens.get(taskId);
+              if (activeToken && !activeToken.cancelled) return;
+              log.info('Re-queuing preempted task (fresh)', { taskId });
+              this.runTask(taskId).catch(err =>
+                log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
+              );
+            });
           } else if (entry.type === 'error') {
             const retryDecision = this.shouldRetryTask(taskId, entry.content, 0, cancelToken.cancelled);
             if (!retryDecision.shouldRetry && !cancelToken.cancelled) {

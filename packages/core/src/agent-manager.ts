@@ -502,7 +502,7 @@ export class AgentManager {
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'task_assignment', sessionId: `sys_${envelope.from}_${Date.now()}` }
+          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}` }
         );
       }
     });
