@@ -1,0 +1,71 @@
+{
+  "nav": {
+    "agents": "Agents",
+    "teams": "Teams",
+    "projects": "Projects",
+    "reports": "Reports",
+    "settings": "Settings"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "search": "Search",
+    "filter": "Filter",
+    "refresh": "Refresh",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "close": "Close"
+  },
+  "agent": {
+    "title": "Agents",
+    "create": "Create Agent",
+    "name": "Name",
+    "role": "Role",
+    "status": "Status",
+    "skills": "Skills",
+    "actions": "Actions",
+    "idle": "Idle",
+    "busy": "Busy",
+    "offline": "Offline",
+    "online": "Online"
+  },
+  "team": {
+    "title": "Teams",
+    "create": "Create Team",
+    "name": "Team Name",
+    "members": "Members",
+    "manager": "Manager",
+    "description": "Description"
+  },
+  "project": {
+    "title": "Projects",
+    "create": "Create Project",
+    "name": "Project Name",
+    "description": "Description",
+    "status": "Status"
+  },
+  "task": {
+    "title": "Tasks",
+    "create": "Create Task",
+    "status": {
+      "pending": "Pending",
+      "in_progress": "In Progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "theme": "Theme",
+    "notifications": "Notifications"
+  }
+}

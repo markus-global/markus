@@ -1,0 +1,71 @@
+{
+  "nav": {
+    "agents": "智能体",
+    "teams": "团队",
+    "projects": "项目",
+    "reports": "报告",
+    "settings": "设置"
+  },
+  "common": {
+    "loading": "加载中...",
+    "error": "发生错误",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "create": "创建",
+    "search": "搜索",
+    "filter": "筛选",
+    "refresh": "刷新",
+    "confirm": "确认",
+    "back": "返回",
+    "next": "下一步",
+    "submit": "提交",
+    "close": "关闭"
+  },
+  "agent": {
+    "title": "智能体",
+    "create": "创建智能体",
+    "name": "名称",
+    "role": "角色",
+    "status": "状态",
+    "skills": "技能",
+    "actions": "操作",
+    "idle": "空闲",
+    "busy": "忙碌",
+    "offline": "离线",
+    "online": "在线"
+  },
+  "team": {
+    "title": "团队",
+    "create": "创建团队",
+    "name": "团队名称",
+    "members": "成员",
+    "manager": "管理者",
+    "description": "描述"
+  },
+  "project": {
+    "title": "项目",
+    "create": "创建项目",
+    "name": "项目名称",
+    "description": "描述",
+    "status": "状态"
+  },
+  "task": {
+    "title": "任务",
+    "create": "创建任务",
+    "status": {
+      "pending": "待处理",
+      "in_progress": "进行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "language": "语言",
+    "theme": "主题",
+    "notifications": "通知"
+  }
+}
