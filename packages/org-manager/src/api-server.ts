@@ -28,7 +28,7 @@ import {
   type AgentManager,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
-import { OrganizationService } from './org-service.js';
+import type { OrganizationService } from './org-service.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
