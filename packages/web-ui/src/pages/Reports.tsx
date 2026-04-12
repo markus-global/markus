@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type ReportInfo, type ReportFeedbackInfo, type AgentUsageInfo, type AuthUser } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -34,6 +35,7 @@ function formatBytes(b: number): string {
 }
 
 export function ReportsPage({ authUser }: ReportsPageProps) {
+  const { t } = useTranslation();
   const [period, setPeriod] = useState<Period>('weekly');
   const [report, setReport] = useState<ReportInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,11 +115,11 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {/* Header with tabs */}
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 flex-wrap">
-            <h1 className="text-xl font-semibold text-fg-primary">Reports</h1>
+            <h1 className="text-xl font-semibold text-fg-primary">{t('reports.title')}</h1>
             <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
-              <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Generate</button>
+              <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('reports.generate')}</button>
               <button onClick={() => setTab('history')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'history' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-                History{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
+                {t('reports.history')}{historyReports.length > 0 ? ` (${historyReports.length})` : ''}
               </button>
             </div>
           </div>
@@ -137,7 +139,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'history' && !selectedReport && (
           <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
             {historyReports.length === 0 ? (
-              <div className="p-8 text-center text-fg-tertiary text-sm">No reports generated yet. Use the Generate tab to create one.</div>
+              <div className="p-8 text-center text-fg-tertiary text-sm">{t('reports.noReportsYet')}</div>
             ) : (
               <div className="divide-y divide-border-default/50">
                 {historyReports.map(r => (
@@ -167,7 +169,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'history' && selectedReport && (
           <>
             <div className="flex items-center gap-3">
-              <button onClick={() => { setSelectedReport(null); setFeedback([]); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">&larr; Back to list</button>
+              <button onClick={() => { setSelectedReport(null); setFeedback([]); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">&larr; {t('reports.backToList')}</button>
               <span className="text-sm font-medium text-fg-primary">{selectedReport.type} Report</span>
               <span className="text-xs text-fg-tertiary">
                 {new Date(selectedReport.periodStart).toLocaleDateString()} — {new Date(selectedReport.periodEnd).toLocaleDateString()}
@@ -177,13 +179,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Metrics Overview — always shown */}
             {selectedReport.metrics && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Metrics</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.taskMetrics')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label="Completed" value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
-                  <MetricCard label="In Progress" value={selectedReport.metrics.tasksInProgress} color="text-brand-500" />
-                  <MetricCard label="Created" value={selectedReport.metrics.tasksCreated} color="text-blue-600" />
-                  <MetricCard label="Blocked" value={selectedReport.metrics.tasksBlocked} color="text-amber-600" />
-                  <MetricCard label="Failed" value={selectedReport.metrics.tasksFailed} color="text-red-500" />
+                  <MetricCard label={t('reports.completed')} value={selectedReport.metrics.tasksCompleted} color="text-green-600" />
+                  <MetricCard label={t('reports.inProgress')} value={selectedReport.metrics.tasksInProgress} color="text-brand-500" />
+                  <MetricCard label={t('reports.created')} value={selectedReport.metrics.tasksCreated} color="text-blue-600" />
+                  <MetricCard label={t('reports.blocked')} value={selectedReport.metrics.tasksBlocked} color="text-amber-600" />
+                  <MetricCard label={t('reports.failed')} value={selectedReport.metrics.tasksFailed} color="text-red-500" />
                 </div>
               </section>
             )}
@@ -191,21 +193,21 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Cost Summary */}
             {selectedReport.costSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Cost Overview</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.costOverview')}</h3>
                 <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
                     <div className="text-2xl font-bold text-fg-primary">{selectedReport.costSummary.totalTokens.toLocaleString()}</div>
-                    <div className="text-xs text-fg-tertiary">Total Tokens</div>
+                    <div className="text-xs text-fg-tertiary">{t('reports.totalTokens')}</div>
                   </div>
                   <div>
                     <div className="text-2xl font-bold text-fg-primary">{formatCost(selectedReport.costSummary.totalEstimatedCost)}</div>
-                    <div className="text-xs text-fg-tertiary">Estimated Cost</div>
+                    <div className="text-xs text-fg-tertiary">{t('reports.estimatedCost')}</div>
                   </div>
                   <div>
                     <div className={`text-2xl font-bold ${selectedReport.costSummary.trend === 'decreasing' ? 'text-green-600' : selectedReport.costSummary.trend === 'increasing' ? 'text-red-500' : 'text-fg-primary'}`}>
                       {selectedReport.costSummary.trend === 'decreasing' ? '↓' : selectedReport.costSummary.trend === 'increasing' ? '↑' : '→'} {selectedReport.costSummary.trend}
                     </div>
-                    <div className="text-xs text-fg-tertiary">Trend</div>
+                    <div className="text-xs text-fg-tertiary">{t('reports.trend')}</div>
                   </div>
                 </div>
                 {selectedReport.costSummary.byAgent && selectedReport.costSummary.byAgent.length > 0 && (
@@ -224,19 +226,19 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Summary */}
             {selectedReport.taskSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5 overflow-hidden">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.taskSummary')}</h3>
                 <div className="space-y-4 min-w-0">
                   {selectedReport.taskSummary.completed.length > 0 && (
-                    <TaskSection title={`Completed (${selectedReport.taskSummary.completed.length})`} color="emerald" items={selectedReport.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={`${t('reports.completedWithCount', { count: selectedReport.taskSummary.completed.length })}`} color="emerald" items={selectedReport.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
                   )}
                   {selectedReport.taskSummary.inProgress.length > 0 && (
-                    <TaskSection title={`In Progress (${selectedReport.taskSummary.inProgress.length})`} color="indigo" items={selectedReport.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={`${t('reports.inProgressWithCount', { count: selectedReport.taskSummary.inProgress.length })}`} color="indigo" items={selectedReport.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
                   )}
                   {selectedReport.taskSummary.blocked.length > 0 && (
-                    <TaskSection title={`Blocked (${selectedReport.taskSummary.blocked.length})`} color="amber" items={selectedReport.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
+                    <TaskSection title={`${t('reports.blockedWithCount', { count: selectedReport.taskSummary.blocked.length })}`} color="amber" items={selectedReport.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
                   )}
                   {selectedReport.taskSummary.completed.length === 0 && selectedReport.taskSummary.inProgress.length === 0 && selectedReport.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-fg-tertiary">No tasks in this period.</p>
+                    <p className="text-sm text-fg-tertiary">{t('reports.noTasksInPeriod')}</p>
                   )}
                 </div>
               </section>
@@ -245,7 +247,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Highlights */}
             {selectedReport.highlights && selectedReport.highlights.length > 0 && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-2">Highlights</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-2">{t('reports.highlights')}</h3>
                 <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
                   {selectedReport.highlights.map((h, i) => <li key={i}>{h}</li>)}
                 </ul>
@@ -255,7 +257,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Blockers */}
             {selectedReport.blockers && selectedReport.blockers.length > 0 && (
               <section className="bg-surface-secondary border border-amber-500/20 rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-amber-600 mb-2">Blockers</h3>
+                <h3 className="text-xs font-semibold text-amber-600 mb-2">{t('reports.blockers')}</h3>
                 <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary">
                   {selectedReport.blockers.map((b, i) => <li key={i}>{b}</li>)}
                 </ul>
@@ -324,13 +326,13 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* No data fallback */}
             {!selectedReport.metrics && !selectedReport.taskSummary && !selectedReport.costSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-8 text-center">
-                <p className="text-sm text-fg-tertiary">This report does not contain detailed metrics data.</p>
+                <p className="text-sm text-fg-tertiary">{t('reports.reportDetailNoData')}</p>
               </section>
             )}
 
             {/* Feedback */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-fg-secondary mb-3">Feedback ({feedback.length})</h3>
+              <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.feedbackTitle', { count: feedback.length })}</h3>
               {feedback.length > 0 && (
                 <div className="space-y-2 mb-4">
                   {feedback.map(fb => (
@@ -349,7 +351,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
                 <input
                   value={feedbackContent}
                   onChange={e => setFeedbackContent(e.target.value)}
-                  placeholder="Add feedback or instructions…"
+                  placeholder={t('reports.feedbackPlaceholder')}
                   className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
                   onKeyDown={e => {
                     if (e.key === 'Enter' && feedbackContent.trim()) {
@@ -377,10 +379,10 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {/* Generate Tab Content */}
         {tab === 'generate' && usageSummary && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <UsageCard label="LLM Tokens (this month)" value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
-            <UsageCard label="Tool Calls (today)" value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
-            <UsageCard label="Messages (today)" value={formatNumber(usageSummary.messages)} color="text-green-600" />
-            <UsageCard label="Storage" value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
+            <UsageCard label={t('reports.usage.llmTokensMonth')} value={formatNumber(usageSummary.llmTokens)} color="text-brand-500" />
+            <UsageCard label={t('reports.usage.toolCallsToday')} value={formatNumber(usageSummary.toolCalls)} color="text-blue-600" />
+            <UsageCard label={t('reports.usage.messagesToday')} value={formatNumber(usageSummary.messages)} color="text-green-600" />
+            <UsageCard label={t('reports.usage.storage')} value={formatBytes(usageSummary.storageBytes)} color="text-amber-600" />
           </div>
         )}
 
@@ -398,38 +400,38 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Metrics */}
             {report.metrics && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Metrics</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.taskMetrics')}</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                  <MetricCard label="Completed" value={report.metrics.tasksCompleted} color="text-green-600" />
-                  <MetricCard label="In Progress" value={report.metrics.tasksInProgress} color="text-brand-500" />
-                  <MetricCard label="Created" value={report.metrics.tasksCreated} color="text-blue-600" />
-                  <MetricCard label="Blocked" value={report.metrics.tasksBlocked} color="text-amber-600" />
-                  <MetricCard label="Failed" value={report.metrics.tasksFailed} color="text-red-500" />
+                  <MetricCard label={t('reports.completed')} value={report.metrics.tasksCompleted} color="text-green-600" />
+                  <MetricCard label={t('reports.inProgress')} value={report.metrics.tasksInProgress} color="text-brand-500" />
+                  <MetricCard label={t('reports.created')} value={report.metrics.tasksCreated} color="text-blue-600" />
+                  <MetricCard label={t('reports.blocked')} value={report.metrics.tasksBlocked} color="text-amber-600" />
+                  <MetricCard label={t('reports.failed')} value={report.metrics.tasksFailed} color="text-red-500" />
                 </div>
               </section>
             )}
 
             {/* Cost Summary */}
             <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-              <h3 className="text-xs font-semibold text-fg-secondary mb-3">Cost Overview</h3>
+              <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.costOverview')}</h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatCost(totalCost)}</div>
-                  <div className="text-xs text-fg-tertiary">Est. Cost (all time)</div>
+                  <div className="text-xs text-fg-tertiary">{t('reports.estCostAllTime')}</div>
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-fg-primary">{formatNumber(totalTokensToday)}</div>
-                  <div className="text-xs text-fg-tertiary">Tokens Today</div>
+                  <div className="text-xs text-fg-tertiary">{t('reports.tokensToday')}</div>
                 </div>
                 {report.costSummary && (
                   <>
                     <div>
                       <div className="text-2xl font-bold text-fg-primary">{report.costSummary.totalTokens.toLocaleString()}</div>
-                      <div className="text-xs text-fg-tertiary">Tokens ({periodLabel[period]})</div>
+                      <div className="text-xs text-fg-tertiary">{t('reports.tokensPeriod', { period: periodLabel[period] })}</div>
                     </div>
                     <div>
                       <div className="text-2xl font-bold text-fg-primary">{formatCost(report.costSummary.totalEstimatedCost)}</div>
-                      <div className="text-xs text-fg-tertiary">Cost ({periodLabel[period]})</div>
+                      <div className="text-xs text-fg-tertiary">{t('reports.costPeriod', { period: periodLabel[period] })}</div>
                     </div>
                   </>
                 )}
@@ -439,19 +441,19 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
             {/* Task Summary */}
             {report.taskSummary && (
               <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
+                <h3 className="text-xs font-semibold text-fg-secondary mb-3">{t('reports.taskSummary')}</h3>
                 <div className="space-y-4">
                   {report.taskSummary.completed.length > 0 && (
-                    <TaskSection title={`Completed (${report.taskSummary.completed.length})`} color="emerald" items={report.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={`${t('reports.completedWithCount', { count: report.taskSummary.completed.length })}`} color="emerald" items={report.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
                   )}
                   {report.taskSummary.inProgress.length > 0 && (
-                    <TaskSection title={`In Progress (${report.taskSummary.inProgress.length})`} color="indigo" items={report.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
+                    <TaskSection title={`${t('reports.inProgressWithCount', { count: report.taskSummary.inProgress.length })}`} color="indigo" items={report.taskSummary.inProgress.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
                   )}
                   {report.taskSummary.blocked.length > 0 && (
-                    <TaskSection title={`Blocked (${report.taskSummary.blocked.length})`} color="amber" items={report.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
+                    <TaskSection title={`${t('reports.blockedWithCount', { count: report.taskSummary.blocked.length })}`} color="amber" items={report.taskSummary.blocked.map(t => ({ id: t.id, label: t.title, sub: t.reason || t.agent }))} />
                   )}
                   {report.taskSummary.completed.length === 0 && report.taskSummary.inProgress.length === 0 && report.taskSummary.blocked.length === 0 && (
-                    <p className="text-sm text-fg-tertiary">No tasks in this period.</p>
+                    <p className="text-sm text-fg-tertiary">{t('reports.noTasksInPeriod')}</p>
                   )}
                 </div>
               </section>
@@ -463,21 +465,21 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
         {tab === 'generate' && (
         <section className="bg-surface-secondary border border-border-default rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border-default">
-            <h3 className="text-sm font-semibold text-fg-secondary">Per-Agent Usage</h3>
+            <h3 className="text-sm font-semibold text-fg-secondary">{t('reports.usage.title')}</h3>
           </div>
           {agents.length === 0 ? (
-            <div className="p-8 text-center text-fg-tertiary text-sm">No agent usage data yet.</div>
+            <div className="p-8 text-center text-fg-tertiary text-sm">{t('reports.usage.noData')}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border-default text-xs text-fg-tertiary uppercase tracking-wider">
-                    <th className="px-4 py-3 text-left font-medium">Agent</th>
-                    <SortHeader label="Total Tokens" col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Today" col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Requests" col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Tool Calls" col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
-                    <SortHeader label="Est. Cost" col="estimatedCost" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
+                    <th className="px-4 py-3 text-left font-medium">{t('reports.agentTable.agent')}</th>
+                    <SortHeader label={t('reports.agentTable.totalTokens')} col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('reports.agentTable.today')} col="tokensUsedToday" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('reports.agentTable.requests')} col="requestCount" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('reports.agentTable.toolCalls')} col="toolCalls" current={sortBy} desc={sortDesc} onSort={handleSort} />
+                    <SortHeader label={t('reports.agentTable.estCost')} col="estimatedCost" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
                   </tr>
                 </thead>
                 <tbody>

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { navBus } from '../navBus.ts';
@@ -27,6 +28,7 @@ interface EnvModelDetected {
 interface EnvModelsResponse { detected: EnvModelDetected[]; timeoutMs?: number }
 
 export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void } = {}) {
+  const { t } = useTranslation();
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [selectedProvider, setSelectedProvider] = useState('');
@@ -494,18 +496,18 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-6 h-14 flex items-center border-b border-border-default bg-surface-secondary">
-        <h2 className="text-lg font-semibold">Settings</h2>
+        <h2 className="text-lg font-semibold">{t('settings.title')}</h2>
       </div>
 
       <div className="p-7 space-y-10 max-w-4xl">
 
         {/* ───── Appearance ───── */}
-        <Section title="Appearance">
+        <Section title={t('settings.appearance')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-medium">Theme</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Choose a visual style for the interface</div>
+                <div className="text-sm font-medium">{t('settings.theme')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings.themeDesc')}</div>
               </div>
               <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
                 {THEME_OPTIONS.map(({ value, label }) => (
@@ -525,12 +527,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         </Section>
 
         {/* ───── Language ───── */}
-        <Section title="Language">
+        <Section title={t('settings.language')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-medium">Interface Language</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Choose your preferred language for the interface</div>
+                <div className="text-sm font-medium">{t('settings.interfaceLanguage')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings.interfaceLanguageDesc')}</div>
               </div>
               <LanguageSelector />
             </div>
@@ -541,20 +543,20 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         {showSetupGuide && (
           <div className="relative bg-gradient-to-br from-brand-500/10 to-surface-secondary border border-brand-500/20 rounded-2xl p-6 space-y-5">
             <button onClick={() => setSetupDismissed(true)}
-              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">Skip</button>
+              className="absolute top-4 right-4 text-fg-tertiary hover:text-fg-secondary text-xs">{t('settings.setupGuide.skip')}</button>
             <div>
-              <h3 className="text-base font-semibold text-fg-primary">Welcome — Configure Your LLM</h3>
-              <p className="text-sm text-fg-secondary mt-1">Markus needs at least one LLM provider to work. Choose a way to get started:</p>
+              <h3 className="text-base font-semibold text-fg-primary">{t('settings.setupGuide.welcome')}</h3>
+              <p className="text-sm text-fg-secondary mt-1">{t('settings.setupGuide.welcomeDesc')}</p>
             </div>
 
             {/* Option 1: Environment variables (auto-detected) */}
             <SetupCard
               step="1"
-              title="From Environment Variables"
-              description="Automatically detected API keys from .env or system environment."
+              title={t('settings.setupGuide.fromEnvVars')}
+              description={t('settings.setupGuide.fromEnvVarsDesc')}
               active={!!(envModels && envModels.detected.length > 0)}
             >
-              {envLoading && <div className="text-xs text-fg-tertiary">Detecting...</div>}
+              {envLoading && <div className="text-xs text-fg-tertiary">{t('settings.detecting')}</div>}
               {envModels && envModels.detected.length > 0 && (
                 <div className="space-y-2">
                   {envModels.detected.map(d => (
@@ -571,12 +573,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   ))}
                   <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
                     className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {envApplying ? 'Applying...' : `Apply ${Object.values(envSelected).filter(Boolean).length} Provider(s)`}
+                    {envApplying ? t('settings.applying') : t('settings.applyProviderCount', { count: Object.values(envSelected).filter(Boolean).length })}
                   </button>
                 </div>
               )}
               {envModels && envModels.detected.length === 0 && (
-                <div className="text-xs text-fg-tertiary">No API keys found. Set environment variables like <code className="text-fg-secondary">ANTHROPIC_API_KEY</code> or <code className="text-fg-secondary">OPENAI_API_KEY</code> and restart the server.</div>
+                <div className="text-xs text-fg-tertiary">{t('settings.noApiKeysFound')}</div>
               )}
               {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
             </SetupCard>
@@ -584,27 +586,27 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             {/* Option 2: OpenClaw */}
             <SetupCard
               step="2"
-              title="From OpenClaw Config"
-              description="Import model configs from an existing OpenClaw installation."
+              title={t('settings.setupGuide.fromOpenClawConfig')}
+              description={t('settings.setupGuide.fromOpenClawConfigDesc')}
             >
               {!openclawPreview ? (
                 <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                   className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Detecting...' : 'Detect OpenClaw'}
+                  {openclawLoading ? t('settings.detecting') : t('settings.detectOpenClaw')}
                 </button>
               ) : openclawPreview.found ? (
                 <div className="space-y-2">
-                  <div className="text-xs text-green-600">Found: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
+                  <div className="text-xs text-green-600">{t('settings.openClawDetected')}: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                   {openclawPreview.summary.models && (
                     <div className="text-xs text-fg-secondary">{openclawPreview.summary.models.providerCount} providers, {openclawPreview.summary.models.providers.reduce((s, p) => s + p.modelCount, 0)} models</div>
                   )}
                   <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                     className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                    {openclawLoading ? t('settings.importing') : t('settings.importModelConfigs')}
                   </button>
                 </div>
               ) : (
-                <div className="text-xs text-fg-tertiary">No OpenClaw config found.</div>
+                <div className="text-xs text-fg-tertiary">{t('settings.openClawNotDetected')}</div>
               )}
               {openclawMsg && <Msg type={openclawMsg.type} text={openclawMsg.text} />}
             </SetupCard>
@@ -612,42 +614,42 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             {/* Option 3: Manual hint */}
             <SetupCard
               step="3"
-              title="Manual Configuration"
-              description={<>Edit <code className="text-fg-secondary">~/.markus/markus.json</code> directly, then restart the server.</>}
+              title={t('settings.setupGuide.manualConfig')}
+              description={<>{t('settings.setupGuide.manualConfigDesc')}</>}
             />
           </div>
         )}
 
         {/* ───── System Status ───── */}
-        <Section title="System Status">
+        <Section title={t('settings.systemStatus')}>
           {health ? (
             <div className="grid grid-cols-3 gap-4">
               <InfoCard label="Status" value={health.status === 'ok' ? 'Healthy' : health.status} color="green" />
               <InfoCard label="Version" value={health.version} color="indigo" />
               <InfoCard label="Active Agents" value={String(health.agents)} color="purple" />
             </div>
-          ) : <div className="text-sm text-fg-tertiary">Loading...</div>}
+          ) : <div className="text-sm text-fg-tertiary">{t('settings.loading')}</div>}
         </Section>
 
         {/* ───── Default Provider ───── */}
-        <Section title="Default LLM Provider">
+        <Section title={t('settings.defaultLlmProvider')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium">Primary Provider</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Used for all agent interactions unless overridden</div>
+                <div className="text-sm font-medium">{t('settings.primaryProvider')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings.primaryProviderDesc')}</div>
               </div>
               <div className="flex items-center gap-3">
                 {llm ? (
                   <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
                     className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
-                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">No providers configured</option>}
+                    {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('settings.noProvidersConfigured')}</option>}
                   </select>
-                ) : <div className="text-xs text-fg-tertiary">Loading...</div>}
+                ) : <div className="text-xs text-fg-tertiary">{t('settings.loading')}</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
                     className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                    {saving ? 'Saving...' : 'Save'}
+                    {saving ? t('settings.saving') : t('settings.save')}
                   </button>
                 )}
               </div>
@@ -659,7 +661,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         {/* OAuth Authentication section removed */}
 
         {/* ───── Model Providers ───── */}
-        <Section title="Model Providers & Pricing">
+        <Section title={t('settings.modelProvidersAndPricing')}>
           <div className="space-y-3">
             {llm && Object.entries(llm.providers).map(([name, info]) => (
               <div key={name} className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 opacity-60'}`}>
@@ -671,7 +673,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                         <span className="text-sm font-medium">{info.displayName ?? name}</span>
                         {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">default</span>}
                         {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">disabled</span>}
-                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">OAuth</span>}
+                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('settings.oauth')}</span>}
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">{info.model || 'Not configured'}</div>
                     </div>
@@ -707,24 +709,24 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                         {/* Edit / Delete provider actions */}
                         {editingProvider === name ? (
                           <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
-                            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Edit Provider</div>
+                            <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('settings.editProvider')}</div>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.apiKey')}</label>
                                 <input type="password" value={editProviderForm.apiKey}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, apiKey: e.target.value })}
                                   placeholder="Leave blank to keep current"
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.baseUrl')}</label>
                                 <input type="text" value={editProviderForm.baseUrl}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, baseUrl: e.target.value })}
                                   placeholder="Default"
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Model</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.model')}</label>
                                 <input type="text" value={editProviderForm.model}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, model: e.target.value })}
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none" />
@@ -732,14 +734,14 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                             </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.contextWindow')}</label>
                                 <input type="number" value={editProviderForm.contextWindow || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, contextWindow: Number(e.target.value) })}
                                   placeholder="e.g. 128000"
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                               <div>
-                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                                <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.maxOutputTokens')}</label>
                                 <input type="number" value={editProviderForm.maxOutputTokens || ''}
                                   onChange={e => setEditProviderForm({ ...editProviderForm, maxOutputTokens: Number(e.target.value) })}
                                   placeholder="e.g. 16384"
@@ -802,7 +804,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     {/* Available Models */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">Available Models</div>
+                        <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('settings.availableModels')}</div>
                         {info.configured && addingModelProvider !== name && (
                           <button onClick={() => { setAddingModelProvider(name); setAddModelForm({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false }); }}
                             className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">
@@ -830,13 +832,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex items-center gap-1">
-                              <span className="text-[10px] text-fg-tertiary">$/1M in:</span>
+                              <span className="text-[10px] text-fg-tertiary">{t('settings.costPerMillionTokens')} {t('settings.inputCost')}:</span>
                               <input type="number" step="0.01" value={addModelForm.costInput}
                                 onChange={e => setAddModelForm({ ...addModelForm, costInput: Number(e.target.value) })}
                                 className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
                             </div>
                             <div className="flex items-center gap-1">
-                              <span className="text-[10px] text-fg-tertiary">out:</span>
+                              <span className="text-[10px] text-fg-tertiary">{t('settings.outputCost')}:</span>
                               <input type="number" step="0.01" value={addModelForm.costOutput}
                                 onChange={e => setAddModelForm({ ...addModelForm, costOutput: Number(e.target.value) })}
                                 className="w-16 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
@@ -854,7 +856,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                             <div className="flex-1" />
                             <button onClick={() => void addCustomModel(name)} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
                               className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors">
-                              {addModelSaving ? 'Adding...' : 'Add'}
+                              {addModelSaving ? t('settings.adding') : 'Add'}
                             </button>
                             <button onClick={() => setAddingModelProvider(null)}
                               className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors">
@@ -910,7 +912,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                                   )}
                                   {isCustom && !isActive && (
                                     <button onClick={e => { e.stopPropagation(); void deleteCustomModel(name, m.id); }}
-                                      className="text-red-400 hover:text-red-300 transition-colors" title="Delete custom model">
+                                      className="text-red-400 hover:text-red-300 transition-colors" title={t('settings.deleteCustomModel')}>
                                       <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                                     </button>
                                   )}
@@ -941,10 +943,10 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
             </button>
           ) : (
             <div className="mt-3 bg-surface-secondary border border-brand-500/30 rounded-xl p-5 space-y-4">
-              <div className="text-sm font-medium text-fg-primary">Add New Provider</div>
+              <div className="text-sm font-medium text-fg-primary">{t('settings.addNewProvider')}</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Provider Name</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.providerName')}</label>
                   <input type="text" value={addProviderForm.name}
                     onChange={e => setAddProviderForm({ ...addProviderForm, name: e.target.value })}
                     placeholder="e.g. deepseek, openrouter, my-provider"
@@ -952,21 +954,21 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   <div className="text-[10px] text-fg-tertiary mt-1">Use anthropic, openai, google, ollama for first-party; any other name uses OpenAI-compatible API</div>
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">API Key</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.apiKey')}</label>
                   <input type="password" value={addProviderForm.apiKey}
                     onChange={e => setAddProviderForm({ ...addProviderForm, apiKey: e.target.value })}
                     placeholder="sk-..."
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Base URL (optional)</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.baseUrlOptional')}</label>
                   <input type="text" value={addProviderForm.baseUrl}
                     onChange={e => setAddProviderForm({ ...addProviderForm, baseUrl: e.target.value })}
                     placeholder="https://api.example.com/v1"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Default Model</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.defaultModel')}</label>
                   <input type="text" value={addProviderForm.model}
                     onChange={e => setAddProviderForm({ ...addProviderForm, model: e.target.value })}
                     placeholder="e.g. deepseek-chat, gpt-4o"
@@ -975,14 +977,14 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Context Window</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.contextWindow')}</label>
                   <input type="number" value={addProviderForm.contextWindow}
                     onChange={e => setAddProviderForm({ ...addProviderForm, contextWindow: Number(e.target.value) })}
                     placeholder="128000"
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">Max Output Tokens</label>
+                  <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('settings.maxOutputTokens')}</label>
                   <input type="number" value={addProviderForm.maxOutputTokens}
                     onChange={e => setAddProviderForm({ ...addProviderForm, maxOutputTokens: Number(e.target.value) })}
                     placeholder="16384"
@@ -1006,7 +1008,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               <div className="flex gap-2">
                 <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || !addProviderForm.model}
                   className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
-                  {addProviderSaving ? 'Adding...' : 'Add Provider'}
+                  {addProviderSaving ? t('settings.adding') : t('settings.addProvider')}
                 </button>
                 <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); }}
                   className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
@@ -1021,18 +1023,18 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         <div className="border-t border-border-default" />
 
         {/* ───── Environment Variable Config ───── */}
-        <Section title="Environment Variable Configuration">
+        <Section title={t('settings.environmentVariableConfiguration')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">Detect model API keys from environment variables and write them to the config file.</div>
+            <div className="text-sm text-fg-secondary">{t('settings.envVarConfigDesc')}</div>
             <button onClick={() => void detectEnvModels()} disabled={envLoading}
               className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors flex items-center gap-2">
               <svg className={`w-4 h-4 ${envLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-              {envLoading ? 'Detecting...' : 'Refresh Environment Variables'}
+              {envLoading ? t('settings.detecting') : t('settings.refreshEnvironmentVariables')}
             </button>
 
             {envModels && envModels.detected.length > 0 && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-fg-tertiary uppercase tracking-wider">Detected Providers — select to apply:</div>
+                <div className="text-xs text-fg-tertiary uppercase tracking-wider">{t('settings.detectedProvidersSelect')}</div>
                 {envModels.detected.map(d => (
                   <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
                     <div className="flex items-center gap-3">
@@ -1060,7 +1062,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 )}
                 <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
                   className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {envApplying ? 'Applying...' : `Apply ${Object.values(envSelected).filter(Boolean).length} Provider(s) to Config`}
+                  {envApplying ? t('settings.applying') : t('settings.applyProviderCount', { count: Object.values(envSelected).filter(Boolean).length })}
                 </button>
               </div>
             )}
@@ -1069,19 +1071,19 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         </Section>
 
         {/* ───── Import from OpenClaw ───── */}
-        <Section title="Import from OpenClaw">
+        <Section title={t('settings.importFromOpenClaw')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
-            <div className="text-sm text-fg-secondary">Detect and import LLM configurations from an existing OpenClaw installation.</div>
+            <div className="text-sm text-fg-secondary">{t('settings.openClawConfigDesc')}</div>
             <div className="flex gap-3">
               <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                 className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors">
-                {openclawLoading ? 'Detecting...' : 'Detect OpenClaw Config'}
+                {openclawLoading ? t('settings.detecting') : t('settings.detectOpenClawConfig')}
               </button>
             </div>
 
             {openclawPreview && openclawPreview.found && (
               <div className="border-t border-border-default pt-4 space-y-3">
-                <div className="text-xs text-green-600">Found OpenClaw config at: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
+                <div className="text-xs text-green-600">{t('settings.foundOpenClawConfig')}: <code className="text-fg-secondary">{openclawPreview.summary.configPath}</code></div>
                 {openclawPreview.summary.models && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
                     <div className="text-xs text-fg-tertiary mb-2">{openclawPreview.summary.models.providerCount} model providers found:</div>
@@ -1097,12 +1099,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 )}
                 {openclawPreview.summary.channels && openclawPreview.summary.channels.length > 0 && (
                   <div className="bg-surface-elevated/30 rounded-lg p-3">
-                    <div className="text-xs text-fg-tertiary mb-1">Channels: {openclawPreview.summary.channels.join(', ')}</div>
+                    <div className="text-xs text-fg-tertiary mb-1">{t('settings.channels')}: {openclawPreview.summary.channels.join(', ')}</div>
                   </div>
                 )}
                 <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                   className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                  {openclawLoading ? t('settings.importing') : t('settings.importModelConfigs')}
                 </button>
               </div>
             )}
@@ -1110,12 +1112,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        <Section title="Agent Execution">
+        <Section title={t('settings.agentExecution')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium text-fg-primary">Max Tool Iterations</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">Safety cap on tool call loops per agent turn (0 = unlimited, applies to all agents and subagents)</div>
+                <div className="text-sm font-medium text-fg-primary">{t('settings.maxToolIterations')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('settings.safetyCapToolLoopsDesc')}</div>
               </div>
               <div className="flex items-center gap-2">
                 <input
@@ -1132,8 +1134,8 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                     try {
                       const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
                       setAgentMaxIter(d.maxToolIterations);
-                      setAgentMsg({ type: 'ok', text: 'Saved' });
-                    } catch { setAgentMsg({ type: 'err', text: 'Failed to save' }); }
+                      setAgentMsg({ type: 'ok', text: t('settings.saved') });
+                    } catch { setAgentMsg({ type: 'err', text: t('settings.failedToSave') }); }
                     setAgentSaving(false);
                   }}
                   className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
@@ -1146,9 +1148,9 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
           </div>
         </Section>
 
-        <Section title="Data & Storage">
+        <Section title={t('settings.dataAndStorage')}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
-            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">Scanning storage...</div>}
+            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('settings.scanningStorage')}</div>}
             {storageInfo && (
               <>
                 {/* Summary bar */}
@@ -1171,7 +1173,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
 
                 {/* Breakdown table */}
                 <div className="border-t border-border-default pt-4">
-                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">Storage Breakdown</h4>
+                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('settings.storageBreakdown')}</h4>
                   <div className="space-y-1.5">
                     {storageInfo.breakdown.filter(b => b.size > 0).map(item => (
                       <div key={item.name} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-surface-elevated/40">
@@ -1188,7 +1190,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                 {/* Per-agent storage */}
                 {storageInfo.agents.length > 0 && (
                   <div className="border-t border-border-default pt-4">
-                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">Agent Storage ({storageInfo.agents.length})</h4>
+                    <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('settings.agentStorage')} ({storageInfo.agents.length})</h4>
                     <div className="space-y-1">
                       {storageInfo.agents.map(ag => {
                         const expanded = expandedAgents.has(ag.id);
@@ -1216,7 +1218,7 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                                 ))}
                                 <div className="pl-5 pt-1">
                                   <button onClick={() => void api.system.openPath(storageInfo.dataDir + '/agents/' + ag.id)}
-                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">Open folder</button>
+                                    className="text-[10px] text-fg-tertiary hover:text-fg-secondary underline">{t('settings.openFolder')}</button>
                                 </div>
                               </div>
                             )}
@@ -1340,7 +1342,7 @@ function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanIn
 
   return (
     <div className="border-t border-border-default pt-4">
-      <h4 className="text-xs font-semibold text-amber-500 mb-2">Orphaned Directories</h4>
+      <h4 className="text-xs font-semibold text-amber-500 mb-2">{t('settings.orphanedDirectories')}</h4>
       <p className="text-xs text-fg-tertiary mb-3">
         These directories have no matching database record and were likely left behind when agents or teams were deleted.
         Total: {formatBytes(orphanInfo.totalOrphanSize)} across {allItems.length} director{allItems.length === 1 ? 'y' : 'ies'}.
@@ -1378,12 +1380,12 @@ function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanIn
         {selected.size > 0 && (
           <button disabled={purging} onClick={() => void doPurge([...selected])}
             className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-            {purging ? 'Cleaning...' : `Clean Selected (${formatBytes(selectedSize)})`}
+            {purging ? t('settings.cleaning') : t('settings.cleanSelected', { size: formatBytes(selectedSize) })}
           </button>
         )}
         <button disabled={purging} onClick={() => void doPurge()}
           className="px-3 py-1.5 text-xs border border-amber-600/50 hover:bg-amber-600/10 text-amber-500 rounded-lg transition-colors disabled:opacity-50">
-          {purging ? 'Cleaning...' : `Clean All (${formatBytes(orphanInfo.totalOrphanSize)})`}
+          {purging ? t('settings.cleaning') : t('settings.cleanAll', { size: formatBytes(orphanInfo.totalOrphanSize) })}
         </button>
       </div>
       {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}

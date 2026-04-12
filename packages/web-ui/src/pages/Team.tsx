@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type RefObject } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
@@ -438,7 +439,7 @@ function AgentMessageBody({
         {isStopped && (
           <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
             <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-            <span>Stopped</span>
+            <span>{t('team.stopped')}</span>
           </div>
         )}
       </div>
@@ -460,7 +461,7 @@ function AgentMessageBody({
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-          <span>Stopped</span>
+          <span>{t("team.stopped")}</span>
         </div>
       )}
     </>
@@ -483,6 +484,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [humans, setHumans] = useState<HumanUserInfo[]>([]);
   const isMobile = useIsMobile();
+  const { t } = useTranslation();
 
   // Mobile: URL hash is the single source of truth (#chat = list, #chat/d = detail)
   const hash = useSyncExternalStore(_subHash, _getHash);
@@ -1844,7 +1846,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   ref={historyBtnRef}
                   onClick={() => setShowSessions(!showSessions)}
                   className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                  title="History"
+                  title={t('team.history')}
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -1897,12 +1899,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
             >
               <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
-                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">History</span>
+                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('team.history')}</span>
                 <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {sessions.length === 0 && (
-                  <div className="text-xs text-fg-tertiary text-center py-6">No conversations yet</div>
+                  <div className="text-xs text-fg-tertiary text-center py-6">{t("team.noConversationsYet")}</div>
                 )}
                 {(() => {
                   const now = new Date();
@@ -1995,8 +1997,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 </svg>
               </div>
               {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
-              {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
-              {chatMode === 'direct' && selectedAgent && <div>Start a new conversation with {currentAgent?.name}.</div>}
+              {chatMode === 'direct' && !selectedAgent && <div>{t('team.selectAgentToStart')}</div>}
+              {chatMode === 'direct' && selectedAgent && <div>{t('team.startNewConversation', { name: currentAgent?.name })}</div>}
             </div>
           )}
 
@@ -2135,7 +2137,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               })
           }
           {chatMode === 'channel' && sending && (
-            <div className="text-xs text-fg-tertiary animate-pulse ml-11">Agent is thinking…</div>
+            <div className="text-xs text-fg-tertiary animate-pulse ml-11">{t("team.agentThinking")}</div>
           )}
           <div ref={messagesEnd} />
         </div>
@@ -2331,7 +2333,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
 
       {open && isError && (
         <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-red-500 uppercase font-semibold">Error Details</p>
+          <p className="text-[10px] text-red-500 uppercase font-semibold">{t("team.errorDetails")}</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
               {agent.lastError || 'Agent encountered an error. Check profile for details.'}
@@ -2349,7 +2351,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
 
       {open && isWorking && (
         <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">Current Activity</p>
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t("team.currentActivity")}</p>
           {currentTask ? (
             <div
               className="flex items-center gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/30 cursor-pointer hover:bg-brand-500/10 transition-colors"
@@ -2358,7 +2360,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
               <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-brand-500 truncate">{currentTask.title}</div>
-                <div className="text-[10px] text-fg-tertiary">Working on task · Click to view</div>
+                <div className="text-[10px] text-fg-tertiary">{t("team.workingOnTask")}</div>
               </div>
               <span className="text-[10px] text-fg-tertiary">→</span>
             </div>

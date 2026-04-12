@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -24,6 +25,7 @@ function resolveActorName(id: string | undefined, agents: AgentInfo[], users: Hu
 }
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agents.find(a => a.id === agentId);
@@ -57,7 +59,7 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             onClick={() => { setOpen(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
-            View Profile →
+            {t('work.viewProfile')}
           </button>
         </div>
       )}
@@ -267,49 +269,45 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
-  { id: 'failed',      label: 'Failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
-  { id: 'todo',        label: 'To Do',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
-  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
-  { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
-  { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled'],   accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
+  { id: 'failed',      label: 'failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
+  { id: 'todo',        label: 'todo',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
+  { id: 'in_progress', label: 'in_progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
+  { id: 'review',      label: 'review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'closed',      statuses: ['rejected', 'cancelled'],   accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
-const COLUMN_LABELS: Record<string, string> = {
-  pending: 'Pending',
-  in_progress: 'In Progress', blocked: 'Blocked',
-  review: 'In Review', completed: 'Completed',
-  failed: 'Failed', rejected: 'Rejected', cancelled: 'Cancelled', archived: 'Archived',
+// COLUMN_LABELS translated via t('work.columnLabels.xxx')
+const SUB_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
+  pending:  { key: 'pending',  cls: 'bg-amber-500/15 text-amber-600' },
+  blocked:  { key: 'blocked',  cls: 'bg-amber-500/15 text-amber-600' },
+  failed:   { key: 'failed',   cls: 'bg-red-500/15 text-red-500' },
+  rejected: { key: 'rejected', cls: 'bg-red-500/15 text-red-500' },
 };
-const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:  { label: 'Pending',  cls: 'bg-amber-500/15 text-amber-600' },
-  blocked:  { label: 'Blocked',  cls: 'bg-amber-500/15 text-amber-600' },
-  failed:   { label: 'Failed',   cls: 'bg-red-500/15 text-red-500' },
-  rejected: { label: 'Rejected', cls: 'bg-red-500/15 text-red-500' },
-};
-const TASK_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:     { label: 'Pending',     cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { label: 'In Progress', cls: 'bg-blue-500/15 text-blue-500' },
-  blocked:     { label: 'Blocked',     cls: 'bg-orange-500/15 text-orange-500' },
-  review:      { label: 'In Review',   cls: 'bg-purple-500/15 text-purple-500' },
-  completed:   { label: 'Completed',   cls: 'bg-green-500/15 text-green-600' },
-  failed:      { label: 'Failed',      cls: 'bg-red-500/15 text-red-500' },
-  rejected:    { label: 'Rejected',    cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { label: 'Cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
-  archived:    { label: 'Archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+const TASK_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
+  pending:     { key: 'pending',     cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { key: 'in_progress', cls: 'bg-blue-500/15 text-blue-500' },
+  blocked:     { key: 'blocked',     cls: 'bg-orange-500/15 text-orange-500' },
+  review:      { key: 'review',   cls: 'bg-purple-500/15 text-purple-500' },
+  completed:   { key: 'completed',   cls: 'bg-green-500/15 text-green-600' },
+  failed:      { key: 'failed',      cls: 'bg-red-500/15 text-red-500' },
+  rejected:    { key: 'rejected',    cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { key: 'cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
+  archived:    { key: 'archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
-const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
-  low:    { label: 'Low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
-  medium: { label: 'Medium', cls: 'bg-blue-500/15 text-blue-500' },
-  high:   { label: 'High',   cls: 'bg-amber-500/15 text-amber-600' },
-  urgent: { label: 'Urgent', cls: 'bg-red-500/15 text-red-500' },
+const PRIORITY_BADGE: Record<string, { key: string; cls: string }> = {
+  low:    { key: 'low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+  medium: { key: 'medium', cls: 'bg-blue-500/15 text-blue-500' },
+  high:   { key: 'high',   cls: 'bg-amber-500/15 text-amber-600' },
+  urgent: { key: 'urgent', cls: 'bg-red-500/15 text-red-500' },
 };
 const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
 const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400', error: 'bg-red-400', paused: 'bg-amber-400', offline: 'bg-gray-600',
   pending: 'bg-amber-400',
@@ -330,6 +328,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   anchorRect: { top: number; left: number };
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -340,7 +339,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
+  const statusLabel = t(`work.agentStatus.${agent.status === 'idle' ? 'online' : agent.status}` as const);
 
   return (
     <div
@@ -365,7 +364,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
         onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
         className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
       >
-        View Profile →
+        {t('work.viewProfile')}
       </button>
     </div>
   );
@@ -1115,7 +1114,7 @@ function TaskDetailPanel({
             {(() => {
               const badge = TASK_STATUS_BADGE[task.status];
               return badge ? (
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
               ) : (
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
               );
@@ -1698,10 +1697,10 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   const [newRepoBranch, setNewRepoBranch] = useState('main');
   const [statusUpdating, setStatusUpdating] = useState(false);
 
-  const PROJECT_STATUSES: Array<{ value: string; label: string; desc: string }> = [
-    { value: 'active', label: 'Active', desc: 'Work is ongoing' },
-    { value: 'paused', label: 'Paused', desc: 'Temporarily on hold' },
-    { value: 'archived', label: 'Archived', desc: 'No longer active' },
+  const PROJECT_STATUSES: Array<{ value: string; labelKey: string; descKey: string }> = [
+    { value: 'active', labelKey: 'work.projectStatuses.active', descKey: 'work.projectStatuses.activeDesc' },
+    { value: 'paused', labelKey: 'work.projectStatuses.paused', descKey: 'work.projectStatuses.pausedDesc' },
+    { value: 'archived', labelKey: 'work.projectStatuses.archived', descKey: 'work.projectStatuses.archivedDesc' },
   ];
 
   const handleStatusChange = async (newStatus: string) => {
@@ -1763,8 +1762,8 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
                   : 'bg-surface-elevated text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'
               } ${statusUpdating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
-              <div>{s.label}</div>
-              <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
+              <div>{t(s.labelKey)}</div>
+              <div className="text-[10px] opacity-70 mt-0.5">{t(s.descKey)}</div>
             </button>
           ))}
         </div>
@@ -1894,12 +1893,12 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 
 // ─── Requirement → Board Column Mapping ──────────────────────────────────────
 
-const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  pending:     { label: 'Pending',   cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { label: 'Active',    cls: 'bg-brand-500/15 text-brand-500' },
-  completed:   { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
-  rejected:    { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
+const REQ_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
+  pending:     { key: 'pending',   cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { key: 'in_progress', cls: 'bg-brand-500/15 text-brand-500' },
+  completed:   { key: 'completed', cls: 'bg-green-500/15 text-green-600' },
+  rejected:    { key: 'rejected',  cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { key: 'cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
 };
 
 const REQ_COLUMN_MAP: Record<string, string> = {
@@ -2052,8 +2051,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
               value={status}
               options={
                 row.kind === 'task'
-                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.columnLabels.${s}` as const), cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.reqStatus.${s}` as const), cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
               }
               onSelect={val => void handleStatusChange(row, val)}
             />
@@ -2061,7 +2060,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           <div onClick={e => e.stopPropagation()}>
             <TagPicker
               value={priority}
-              options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+              options={PRIORITY_CYCLE.map(p => ({ value: p, label: t(`work.priority.${p}` as const), cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
               onSelect={val => void handlePriorityChange(row, val)}
             />
           </div>
@@ -2093,8 +2092,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           value={status}
           options={
             row.kind === 'task'
-              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.columnLabels.${s}` as const), cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.reqStatus.${s}` as const), cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
           }
           onSelect={val => void handleStatusChange(row, val)}
         />
@@ -2102,7 +2101,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="w-[100px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={priority}
-          options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+          options={PRIORITY_CYCLE.map(p => ({ value: p, label: t(`work.priority.${p}` as const), cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
           onSelect={val => void handlePriorityChange(row, val)}
         />
       </div>
@@ -2300,7 +2299,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   onDragLeave={() => setDragOverGroup(null)}
                   onDrop={e => void onGroupDrop(e, groupId)}
                 >
-                  <span className="text-[11px] font-semibold uppercase tracking-wider">{col?.label ?? groupId}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider">{col ? t(`work.tabs.${col.label}` as const) : groupId}</span>
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
@@ -2326,6 +2325,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function WorkPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -2924,7 +2924,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                 {(['backlog', 'kanban', 'dag'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
                     className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
-                  >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
+                  >t(`work.boardType.${v}` as const)</button>
                 ))}
               </div>
               {archivedCount > 0 && (
@@ -2982,7 +2982,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             {(['backlog', 'kanban', 'dag'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
                 className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-              >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
+              >t(`work.boardType.${v}` as const)</button>
             ))}
           </div>
 
@@ -3116,7 +3116,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                     <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30`}>
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${col.accent.replace('border-t-', 'bg-')}`} />
-                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{col.label}</span>
+                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{_getBoardColLabel(col)}</span>
                       </div>
                       <span className="text-[11px] text-fg-tertiary font-medium tabular-nums">{itemCount}</span>
                     </div>
@@ -3147,7 +3147,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <span className="w-1 h-1 rounded-full bg-purple-500 shrink-0" />
                                   <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">REQ</span>
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{badge.label}</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{req.title}</div>
                                 {req.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{req.description}</div>}
@@ -3198,7 +3198,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
-                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
@@ -3645,7 +3645,7 @@ function RequirementDetailPanel({
           <div className="flex-1 min-w-0 pb-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">REQ</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
               {req.priority === 'high' || req.priority === 'urgent' ? (
                 <span className={`text-[10px] font-medium ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
               ) : (
@@ -3753,7 +3753,7 @@ function RequirementDetailPanel({
                     <div key={t.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
-                      {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
+                      {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{t(`work.subStatus.${sb.key}` as const)}</span>}
                     </div>
                   );
                 })}
@@ -3781,7 +3781,7 @@ function RequirementDetailPanel({
             >
               {ALL_REQ_STATUSES.map(s => {
                 const b = REQ_STATUS_BADGE[s];
-                return <option key={s} value={s}>{b?.label ?? s}</option>;
+                return <option key={s} value={s}>{t(`work.reqStatus.${s}` as const)}</option>;
               })}
             </select>
           )}
