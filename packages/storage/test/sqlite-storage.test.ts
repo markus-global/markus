@@ -86,8 +86,19 @@ describe('SQLite Storage Backend', () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
 
+      // Create agent first to satisfy foreign key constraints
+      const agentRepo = new SqliteAgentRepo(db);
+      agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Developer' });
+
       const repo = new SqliteTaskRepo(db);
-      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high' });
+      repo.create({ 
+        id: 'task-1', 
+        orgId: 'org-1', 
+        title: 'Build feature', 
+        priority: 'high',
+        assignedAgentId: 'a1',
+        reviewerAgentId: 'a1'
+      });
       repo.updateStatus('task-1', 'in_progress');
 
       const task = repo.findById('task-1');
@@ -241,8 +252,19 @@ describe('SQLite Storage Backend', () => {
     it('should append and retrieve task logs', () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      
+      // Create agent first to satisfy foreign key constraints
+      const agentRepo = new SqliteAgentRepo(db);
+      agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Developer' });
+      
       const taskRepo = new SqliteTaskRepo(db);
-      taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task' });
+      taskRepo.create({ 
+        id: 't1', 
+        orgId: 'org-1', 
+        title: 'Task',
+        assignedAgentId: 'a1',
+        reviewerAgentId: 'a1'
+      });
 
       const repo = new SqliteTaskLogRepo(db);
       repo.append({ taskId: 't1', agentId: 'a1', seq: 0, type: 'status', content: 'started' });
