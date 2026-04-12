@@ -80,6 +80,7 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -126,6 +127,7 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -220,6 +222,7 @@ function authorColor(name: string) {
 }
 
 function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
+  const { t } = useTranslation();
   const parsed = parseNote(note);
   const c = authorColor(parsed.author || 'System');
   const initials = parsed.author
@@ -375,6 +378,7 @@ function CommentBubble({ comment, agents, onReply }: {
   agents: AgentInfo[];
   onReply?: (comment: TaskComment | RequirementComment) => void;
 }) {
+  const { t } = useTranslation();
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -463,6 +467,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   users: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
+  const { t } = useTranslation();
   const [comments, setComments] = useState<TaskComment[]>([]);
 
   useEffect(() => {
@@ -533,6 +538,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
 function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+  const { t } = useTranslation();
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
   const [loadingRounds, setLoadingRounds] = useState<Set<number>>(new Set());
@@ -867,6 +873,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const { t } = useTranslation();
   const [data, setData] = useState<{ type: string; name: string; content: string; mimeType?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -930,6 +937,7 @@ function TaskDetailPanel({
   onRefresh: () => void;
   authUser?: { id: string; name: string; role: string; orgId: string };
 }) {
+  const { t } = useTranslation();
   const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
@@ -1674,6 +1682,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   onUpdateProject: (data: Partial<ProjectInfo>) => Promise<void>;
   onRefresh: () => void;
 }) {
+  const { t } = useTranslation();
   const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id), [tasks, project.id]);
   const projReqs = useMemo(() => requirements.filter(r => r.projectId === project.id), [requirements, project.id]);
   const stats = useMemo(() => {
@@ -1883,6 +1892,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 }
 
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
+  const { t } = useTranslation();
   return (
     <div className="text-center py-2">
       <div className={`text-xl font-bold ${color}`}>{value}</div>
@@ -1967,6 +1977,7 @@ function TagPicker({ value, options, onSelect }: {
   options: Array<{ value: string; label: string; cls: string }>;
   onSelect: (val: string) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -2022,6 +2033,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   selected?: boolean;
   isMobile?: boolean;
 }) {
+  const { t } = useTranslation();
   const status = row.data.status;
   const priority = row.data.priority;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
@@ -2140,6 +2152,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
 }) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -3116,7 +3129,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                     <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30`}>
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${col.accent.replace('border-t-', 'bg-')}`} />
-                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{_getBoardColLabel(col)}</span>
+                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t(`work.boardColumns.${col.id}` as const)}</span>
                       </div>
                       <span className="text-[11px] text-fg-tertiary font-medium tabular-nums">{itemCount}</span>
                     </div>
@@ -3546,6 +3559,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
   agents: AgentInfo[];
   authUser?: { id: string; name: string };
 }) {
+  const { t } = useTranslation();
   const [comments, setComments] = useState<RequirementComment[]>([]);
 
   useEffect(() => {
@@ -3617,6 +3631,7 @@ function RequirementDetailPanel({
   onRefresh?: () => void;
   authUser?: { id: string; name: string };
 }) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
@@ -3747,12 +3762,12 @@ function RequirementDetailPanel({
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">Linked Tasks ({linkedTasks.length})</label>
               <div className="space-y-1.5">
-                {linkedTasks.map(t => {
-                  const sb = SUB_STATUS_BADGE[t.status];
+                {linkedTasks.map(task => {
+                  const sb = SUB_STATUS_BADGE[task.status];
                   return (
-                    <div key={t.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
-                      <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
+                    <div key={task.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[task.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
+                      <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{t(`work.subStatus.${sb.key}` as const)}</span>}
                     </div>
                   );
@@ -3800,6 +3815,7 @@ function RequirementDetailPanel({
 // ─── Shared mini-components ─────────────────────────────────────────────────────
 
 function StatusPill({ status }: { status: string }) {
+  const { t } = useTranslation();
   const colors: Record<string, string> = {
     active: 'bg-green-500/10 text-green-600', planning: 'bg-blue-500/10 text-blue-600',
     review: 'bg-amber-500/10 text-amber-600', completed: 'bg-surface-overlay text-fg-secondary',

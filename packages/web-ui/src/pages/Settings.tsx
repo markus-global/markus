@@ -1312,6 +1312,7 @@ function formatBytes(bytes: number): string {
 }
 
 function OrphanSection({ orphanInfo, dataDir, onPurged }: { orphanInfo: OrphanInfo; dataDir: string; onPurged: () => void }) {
+  const { t } = useTranslation();
   const allItems = [
     ...orphanInfo.orphanAgents.map(o => ({ ...o, kind: 'agent' as const })),
     ...orphanInfo.orphanTeams.map(o => ({ ...o, kind: 'team' as const })),
