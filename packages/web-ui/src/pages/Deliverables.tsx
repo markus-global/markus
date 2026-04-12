@@ -6,6 +6,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
   file:      { icon: '\u{1F4C4}', color: 'bg-green-500/10 text-green-600' },
@@ -65,6 +66,9 @@ export function DeliverablesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'agent' as const }, { id: 'type' as const }], []);
+  const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'type') => { setGroupBy(g); setCollapsedGroups(new Set()); }, []);
+  const groupSwipe = useSwipeTabs(groupTabs, groupBy, handleGroupSwipe);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Create form
@@ -486,7 +490,7 @@ export function DeliverablesPage() {
           <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>{flash.text}</div>
         )}
 
-        <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1" onTouchStart={isMobile ? groupSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? groupSwipe.onTouchEnd : undefined}>
           {loading ? (
             <div className="p-4 space-y-3">
               {[1, 2, 3].map(i => (

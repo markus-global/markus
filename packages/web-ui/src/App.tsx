@@ -120,7 +120,7 @@ export function App() {
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
     if (isMobile) {
       return {
-        [PAGE.HOME]: <HomePage />,
+        [PAGE.HOME]: <HomePage authUser={currentUser} />,
         [PAGE.TEAM]: <TeamPage authUser={currentUser} />,
         [PAGE.BUILDER]: <MobileBuilderTabs authUser={currentUser} />,
         [PAGE.SETTINGS]: <MobileSettingsTabs theme={theme.mode} onThemeChange={theme.setMode} />,

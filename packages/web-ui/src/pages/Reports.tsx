@@ -111,8 +111,8 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-5xl p-6 space-y-6">
         {/* Header with tabs */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-4 flex-wrap">
             <h1 className="text-xl font-semibold text-fg-primary">Reports</h1>
             <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
               <button onClick={() => setTab('generate')} className={`px-3 py-1.5 text-xs rounded-md transition-colors ${tab === 'generate' ? 'bg-surface-overlay text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Generate</button>
@@ -121,7 +121,7 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
               </button>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             {flash && <span className="px-2.5 py-1 bg-green-500/10 text-green-600 text-xs rounded-lg">{flash}</span>}
             {tab === 'generate' && (
               <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
@@ -223,9 +223,9 @@ export function ReportsPage({ authUser }: ReportsPageProps) {
 
             {/* Task Summary */}
             {selectedReport.taskSummary && (
-              <section className="bg-surface-secondary border border-border-default rounded-xl p-5">
+              <section className="bg-surface-secondary border border-border-default rounded-xl p-5 overflow-hidden">
                 <h3 className="text-xs font-semibold text-fg-secondary mb-3">Task Summary</h3>
-                <div className="space-y-4">
+                <div className="space-y-4 min-w-0">
                   {selectedReport.taskSummary.completed.length > 0 && (
                     <TaskSection title={`Completed (${selectedReport.taskSummary.completed.length})`} color="emerald" items={selectedReport.taskSummary.completed.map(t => ({ id: t.id, label: t.title, sub: t.agent }))} />
                   )}
@@ -519,18 +519,22 @@ function MetricCard({ label, value, color }: { label: string; value: string | nu
 
 function TaskSection({ title, color, items }: { title: string; color: string; items: Array<{ id?: string; label: string; sub: string }> }) {
   return (
-    <div>
+    <div className="min-w-0 overflow-hidden">
       <div className={`text-xs font-medium text-${color}-400 mb-1.5`}>{title}</div>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {items.map((item, i) => (
           <div
             key={item.id ?? i}
-            className={`text-sm text-fg-secondary flex items-center gap-2 ${item.id ? 'cursor-pointer hover:text-fg-primary group' : ''}`}
+            className={`text-sm text-fg-secondary min-w-0 ${item.id ? 'cursor-pointer hover:text-fg-primary group' : ''}`}
             onClick={item.id ? () => navBus.navigate(PAGE.WORK, { openTask: item.id! }) : undefined}
           >
-            <span className={`w-1.5 h-1.5 rounded-full bg-${color}-500 shrink-0`} />
-            <span className={`truncate ${item.id ? 'group-hover:text-brand-500 transition-colors' : ''}`}>{item.label}</span>
-            {item.sub && item.sub !== 'unassigned' && <span className="text-[10px] text-fg-tertiary shrink-0">{item.sub}</span>}
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`w-1.5 h-1.5 rounded-full bg-${color}-500 shrink-0`} />
+              <span className={`truncate min-w-0 ${item.id ? 'group-hover:text-brand-500 transition-colors' : ''}`}>{item.label}</span>
+            </div>
+            {item.sub && item.sub !== 'unassigned' && (
+              <div className="text-[10px] text-fg-tertiary ml-3.5 mt-0.5 break-all line-clamp-2">{item.sub}</div>
+            )}
           </div>
         ))}
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { api, wsClient, hubApi } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
@@ -6,8 +6,10 @@ import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void }
 
 type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
@@ -32,10 +34,21 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack }: Props) {
+  const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
+  const profileTabsList = useMemo(() => TABS.map(t => ({ id: t.key })), []);
+  const swipeOpts = useMemo(() => ({ onSwipeOutLeft: onSwipeBack }), [onSwipeBack]);
+  const profileSwipe = useSwipeTabs(profileTabsList, tab, setTab, swipeOpts);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const bar = tabBarRef.current;
+    if (!bar) return;
+    const active = bar.querySelector('[data-active="true"]') as HTMLElement | null;
+    active?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }, [tab]);
 
   const reload = useCallback(() => { api.agents.get(agentId).then(setAgent).catch(() => {}); }, [agentId]);
 
@@ -97,9 +110,9 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab }: Props) {
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
-        <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
+        <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
           {TABS.filter(t => !externalInfo || ['overview', 'mind'].includes(t.key)).map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
+            <button key={t.key} onClick={() => setTab(t.key)} data-active={tab === t.key}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === t.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
               }`}
@@ -107,7 +120,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab }: Props) {
           ))}
         </div>
       </div>
-      <div className="p-5">
+      <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
         {tab === 'mind' && <MindTab agentId={agentId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}

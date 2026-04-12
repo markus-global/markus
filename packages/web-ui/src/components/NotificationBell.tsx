@@ -234,6 +234,17 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const handleNotificationClick = async (n: NotificationInfo) => {
     if (!n.read) handleMarkRead(n.id);
+    const meta = n.metadata ?? {};
+    const targetTaskId = meta.taskId as string | undefined;
+    const targetReqId = meta.requirementId as string | undefined;
+    if (targetTaskId || targetReqId) {
+      const related = notifications.filter(other =>
+        other.id !== n.id && !other.read &&
+        ((targetTaskId && (other.metadata?.taskId === targetTaskId)) ||
+         (targetReqId && (other.metadata?.requirementId === targetReqId)))
+      );
+      for (const r of related) handleMarkRead(r.id);
+    }
     navigateForNotification(n);
   };
 

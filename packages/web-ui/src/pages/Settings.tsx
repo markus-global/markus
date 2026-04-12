@@ -501,12 +501,12 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
         {/* ───── Appearance ───── */}
         <Section title="Appearance">
           <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium">Theme</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">Choose a visual style for the interface</div>
               </div>
-              <div className="flex gap-1 bg-surface-elevated rounded-lg p-0.5">
+              <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
                 {THEME_OPTIONS.map(({ value, label }) => (
                   <button
                     key={value}

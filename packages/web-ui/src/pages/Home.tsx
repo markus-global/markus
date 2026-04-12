@@ -2,8 +2,11 @@ import { useEffect, useState, useMemo } from 'react';
 import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type StorageInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { NotificationBell } from '../components/NotificationBell.tsx';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
-export function HomePage() {
+export function HomePage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } } = {}) {
+  const isMobile = useIsMobile();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>({});
@@ -65,7 +68,10 @@ export function HomePage() {
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between px-6 h-14 border-b border-border-default bg-surface-secondary">
-        <h2 className="text-lg font-semibold">Overview</h2>
+        <div className="flex items-center gap-3">
+          {isMobile && <NotificationBell collapsed userId={authUser?.id} />}
+          <h2 className="text-lg font-semibold">Overview</h2>
+        </div>
         <div className="flex gap-2">
           <button onClick={() => navBus.navigate(PAGE.STORE, { storeTab: 'agents' })} className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">+ Hire Agent</button>
         </div>

@@ -11,6 +11,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 function resolveActorName(id: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string | null {
   if (!id) return null;
@@ -946,6 +947,8 @@ function TaskDetailPanel({
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }], []);
+  const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -1137,7 +1140,7 @@ function TaskDetailPanel({
 
         {/* Scrollable content area */}
         <div className="flex-1 min-h-0 relative">
-        <div ref={scrollContainerRef} className="h-full overflow-y-auto">
+        <div ref={scrollContainerRef} className="h-full overflow-y-auto" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
           {activeTab === 'logs' && (
             <div className="overflow-x-hidden min-w-0">
@@ -1485,28 +1488,24 @@ function TaskDetailPanel({
             </div>
           )}
         </div>
-        {/* Floating scroll buttons */}
-        {scrollState !== 'none' && (
-          <div className="absolute bottom-3 right-3 flex flex-col gap-1.5 z-10">
-            {scrollState !== 'top' && (
-              <button
-                onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="w-8 h-8 rounded-full bg-surface-overlay/90 border border-border-default shadow-lg flex items-center justify-center text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated transition-colors backdrop-blur-sm"
-                title="Scroll to top"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
-              </button>
-            )}
-            {scrollState !== 'bottom' && (
-              <button
-                onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
-                className="w-8 h-8 rounded-full bg-surface-overlay/90 border border-border-default shadow-lg flex items-center justify-center text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated transition-colors backdrop-blur-sm"
-                title="Scroll to bottom"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
-              </button>
-            )}
-          </div>
+        {/* Floating scroll buttons — both bottom-right, fixed positions */}
+        {scrollState !== 'none' && scrollState !== 'top' && (
+          <button
+            onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title="Scroll to top"
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
+          </button>
+        )}
+        {scrollState !== 'none' && scrollState !== 'bottom' && (
+          <button
+            onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
+            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            title="Scroll to bottom"
+          >
+            <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+          </button>
         )}
         </div>
 
@@ -2014,7 +2013,7 @@ function TagPicker({ value, options, onSelect }: {
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
@@ -2022,11 +2021,63 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
   selected?: boolean;
+  isMobile?: boolean;
 }) {
   const status = row.data.status;
   const priority = row.data.priority;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
+
+  const typeBadge = row.kind === 'req' ? (
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
+  ) : row.data.taskType === 'scheduled' ? (
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-blue-500/15 text-blue-600">SCHED</span>
+  ) : (
+    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-fg-secondary">TASK</span>
+  );
+
+  if (isMobile) {
+    return (
+      <div
+        onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
+        className={`px-3 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${selected ? 'bg-brand-500/10 border-l-brand-500' : 'active:bg-surface-elevated/50'}`}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {typeBadge}
+          <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div onClick={e => e.stopPropagation()}>
+            <TagPicker
+              value={status}
+              options={
+                row.kind === 'task'
+                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              }
+              onSelect={val => void handleStatusChange(row, val)}
+            />
+          </div>
+          <div onClick={e => e.stopPropagation()}>
+            <TagPicker
+              value={priority}
+              options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+              onSelect={val => void handlePriorityChange(row, val)}
+            />
+          </div>
+          {assignee && (
+            <span className="flex items-center gap-1 text-[10px]">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[assignee.status] ?? 'bg-gray-500'}`} />
+              <span className={`${AGENT_STATUS_TEXT[assignee.status] ?? 'text-fg-secondary'}`}>{assignee.name}</span>
+            </span>
+          )}
+          {proj?.name && <span className="text-[10px] text-brand-400/70 truncate max-w-[80px]">{proj.name}</span>}
+          <span className="text-[9px] text-fg-muted ml-auto">{relativeTime(row.data.updatedAt ?? '')}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       draggable
@@ -2035,15 +2086,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
       className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''} ${selected ? 'bg-brand-500/10 border-l-brand-500 hover:bg-brand-500/15' : 'hover:bg-surface-elevated/50'}`}
     >
-      <div className="w-12 shrink-0">
-        {row.kind === 'req' ? (
-          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-600">REQ</span>
-        ) : row.data.taskType === 'scheduled' ? (
-          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-blue-500/15 text-blue-600 inline-flex items-center gap-0.5" title="Scheduled task">SCHED</span>
-        ) : (
-          <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-gray-500/15 text-fg-secondary">TASK</span>
-        )}
-      </div>
+      <div className="w-12 shrink-0">{typeBadge}</div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate">{row.data.title}</div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
@@ -2098,6 +2141,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
 }) {
+  const isMobile = useIsMobile();
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
@@ -2223,9 +2267,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows, sortMode]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto bg-surface-secondary">
-      <div className="w-fit min-w-full">
+    <div className={`flex-1 min-h-0 overflow-auto bg-surface-secondary ${isMobile ? 'overflow-x-hidden w-full' : ''}`}>
+      <div className={isMobile ? 'w-full' : 'w-fit min-w-full'}>
       {/* Table header with integrated sort */}
+      {!isMobile && (
       <div className="flex items-center gap-2 px-6 py-2 border-b border-border-default text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider sticky top-0 z-20 bg-surface-secondary">
         <div className="w-12 shrink-0 text-fg-muted normal-case font-normal">{rows.length}</div>
         <div className="flex-1 min-w-[200px]">Title</div>
@@ -2239,6 +2284,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
         <div className="w-[120px] shrink-0">Project</div>
         <div className="w-[90px] shrink-0 text-right">Updated</div>
       </div>
+      )}
 
       {/* Table body */}
       <div>
@@ -2258,14 +2304,14 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} />
                 ))}
               </div>
             );
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} />
           ))
         )}
         {rows.length === 0 && (
@@ -2324,6 +2370,11 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
   const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag'>('backlog');
+  const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }], []);
+  const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
+  const kanbanScrollRef = useRef<HTMLDivElement>(null);
+  const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
+  const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
   const [showArchived, setShowArchived] = useState(false);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
   const dragTaskRef = useRef<TaskInfo | null>(null);
@@ -2482,6 +2533,17 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     }
   }, []);
 
+  const forceOpenTask = useCallback((task: TaskInfo) => {
+    setSelectedTask(task);
+    setSelectedReq(null);
+    if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+  }, [isMobile]);
+  const forceOpenReq = useCallback((req: RequirementInfo) => {
+    setSelectedReq(req);
+    setSelectedTask(null);
+    if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
+  }, [isMobile]);
+
   // Try to open a task from localStorage (set by other pages)
   useEffect(() => {
     const navTaskId = localStorage.getItem('markus_nav_openTask');
@@ -2490,10 +2552,10 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     const task = allTasks.find(t => t.id === navTaskId);
     if (task) {
       ensureProjectVisible(task.projectId);
-      handleSelectTask(task);
+      forceOpenTask(task);
       localStorage.removeItem('markus_nav_openTask');
     }
-  }, [board, handleSelectTask, ensureProjectVisible]);
+  }, [board, forceOpenTask, ensureProjectVisible]);
 
   // Initial project selection from hash / localStorage (runs once on mount)
   useEffect(() => {
@@ -2511,12 +2573,17 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
   }, []);
 
   // Hash change & custom navigation events
+  const prevHashPageRef = useRef(resolvePageId(window.location.hash.slice(1).split('/')[0]));
   useEffect(() => {
     const onHashChange = () => {
       const parts = window.location.hash.slice(1).split('/');
-      if (resolvePageId(parts[0]) === PAGE.WORK && parts[1]) {
+      const newPage = resolvePageId(parts[0]);
+      const wasOnWork = prevHashPageRef.current === PAGE.WORK;
+      prevHashPageRef.current = newPage;
+      if (newPage !== PAGE.WORK) return;
+      if (newPage === PAGE.WORK && parts[1]) {
         selectProject(parts[1]);
-      } else if (resolvePageId(parts[0]) === PAGE.WORK) {
+      } else if (wasOnWork) {
         selectAllTasks();
       }
     };
@@ -2529,7 +2596,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
           const task = allTasks.find(t => t.id === detail.params!.openTask);
           if (task) {
             ensureProjectVisible(task.projectId);
-            handleSelectTask(task);
+            forceOpenTask(task);
             localStorage.removeItem('markus_nav_openTask');
           }
         }
@@ -2537,7 +2604,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
           const req = allRequirementsRef.current.find(r => r.id === detail.params!.openRequirement);
           if (req) {
             ensureProjectVisible(req.projectId);
-            handleSelectReq(req);
+            forceOpenReq(req);
           }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
@@ -3001,6 +3068,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             </div>
           </div>
         ) : boardType === 'backlog' ? (
+          <div className="flex-1 min-h-0 flex flex-col" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <BacklogTable
             tasks={filterTasks(Object.values(board).flat())}
             requirements={filteredReqs}
@@ -3012,7 +3080,9 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
           />
+          </div>
         ) : boardType === 'dag' ? (
+          <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <TaskDAG
             tasks={filterTasks(Object.values(board).flat(), true)}
             requirements={filteredReqs}
@@ -3025,8 +3095,14 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
           />
+          {isMobile && (
+            <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title="Back to Kanban">
+              <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" /></svg>
+            </button>
+          )}
+          </div>
         ) : (
-          <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-4 py-5">
+          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden px-4 py-5" onTouchStart={isMobile ? kanbanSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? kanbanSwipe.onTouchEnd : undefined}>
             <div className="flex gap-3 h-full">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);

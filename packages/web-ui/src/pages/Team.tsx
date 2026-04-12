@@ -24,6 +24,7 @@ import { AgentProfile } from './AgentProfile.tsx';
 import { TeamProfile } from './TeamProfile.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -298,11 +299,22 @@ function MessageActions({
           Re-ask
         </button>
       )}
-      {/* Retry — only for error messages */}
+      {/* Retry — for error messages */}
       {isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
+          title="Retry"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
+          Retry
+        </button>
+      )}
+      {/* Retry — for normal agent messages (re-generate response) */}
+      {!isError && !isStopped && msg.sender === 'agent' && onRetry && (
+        <button
+          onClick={() => onRetry(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
           title="Retry"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
@@ -514,6 +526,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setMainTab('profile');
     if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
   }, [isMobile]);
+
+  const mainTabsList = [{ id: 'chat' as const }, { id: 'profile' as const }];
+  const handleMainTabSwipe = useCallback((tab: MainTab) => {
+    if (tab === 'profile') switchToProfile();
+    else { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }
+  }, [switchToProfile]);
+  const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
   const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind' }) => {
     setChatMode('direct');
@@ -760,6 +779,40 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     if (!userAtBottomRef.current) return;
     messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
   }, [messages, activities]);
+
+  const savedScrollTopRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (mainTab === 'chat') {
+      requestAnimationFrame(() => {
+        const el = chatScrollRef.current;
+        if (!el) return;
+        if (savedScrollTopRef.current != null) {
+          el.scrollTop = savedScrollTopRef.current;
+          savedScrollTopRef.current = null;
+        } else if (userAtBottomRef.current) {
+          messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+        }
+      });
+    } else {
+      savedScrollTopRef.current = chatScrollRef.current?.scrollTop ?? null;
+    }
+  }, [mainTab]);
+
+  useEffect(() => {
+    const scrollToLatest = () => {
+      if (resolvePageId(window.location.hash.slice(1).split('/')[0]) !== PAGE.TEAM) return;
+      if (mainTabRef.current !== 'chat') return;
+      requestAnimationFrame(() => {
+        messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+      });
+    };
+    window.addEventListener('hashchange', scrollToLatest);
+    window.addEventListener('markus:navigate', scrollToLatest);
+    return () => {
+      window.removeEventListener('hashchange', scrollToLatest);
+      window.removeEventListener('markus:navigate', scrollToLatest);
+    };
+  }, []);
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string) => {
@@ -1470,19 +1523,22 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setTimeout(() => setCopiedMsgId(prev => prev === msg.id ? null : prev), 2000);
   }, []);
 
-  const handleRetry = useCallback((errorMsg: ChatMsg) => {
+  const handleRetry = useCallback((retryMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
     const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
-    const errIdx = currentMsgs.findIndex(m => m.id === errorMsg.id);
-    if (errIdx < 0) return;
-    // Find the user message immediately before the error/stopped bubble
-    const userMsg = errIdx > 0 && currentMsgs[errIdx - 1]?.sender === 'user'
-      ? currentMsgs[errIdx - 1]! : null;
+    const retryIdx = currentMsgs.findIndex(m => m.id === retryMsg.id);
+    if (retryIdx < 0) return;
+    // Search backwards for the nearest user message
+    let userMsg: ChatMsg | null = null;
+    for (let i = retryIdx - 1; i >= 0; i--) {
+      if (currentMsgs[i]?.sender === 'user') { userMsg = currentMsgs[i]!; break; }
+    }
     const retryText = userMsg?.text ?? '';
     if (!retryText) return;
-    // Remove the error/stopped agent bubble (and the preceding user message so it re-appears cleanly)
+    // Remove the agent bubble and (if immediately preceding) the user message so it re-appears cleanly
+    const removeUserToo = userMsg && retryIdx > 0 && currentMsgs[retryIdx - 1]?.id === userMsg.id;
     updateConvMsgs(convKey, prev => prev.filter(m =>
-      m.id !== errorMsg.id && (userMsg ? m.id !== userMsg.id : true)
+      m.id !== retryMsg.id && (removeUserToo ? m.id !== userMsg!.id : true)
     ));
     void send(retryText);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1892,11 +1948,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onBack={() => setMainTab('chat')}
               inline
               defaultTab={profileDefaultTab}
+              onSwipeBack={() => { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }}
             />
           </div>
         )}
         {mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto" onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
             <TeamProfile
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
@@ -1906,7 +1963,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         )}
 
         {/* Chat Tab: Messages */}
-        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'} ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'} ${mainTab !== 'chat' ? 'hidden' : ''}`} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
           {hasMore && (
             <div className="flex justify-center py-2">
               <button
