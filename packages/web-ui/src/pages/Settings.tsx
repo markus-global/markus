@@ -3,6 +3,7 @@ import { api, type StorageInfo, type OrphanInfo } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { LanguageSelector } from '../components/LanguageSelector';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[] }
@@ -519,6 +520,19 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* ───── Language ───── */}
+        <Section title="Language">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-medium">Interface Language</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">Choose your preferred language for the interface</div>
+              </div>
+              <LanguageSelector />
             </div>
           </div>
         </Section>
