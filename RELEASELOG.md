@@ -1,5 +1,38 @@
 # Release Log
 
+## v0.4.15
+
+Secretary 统一建设者角色，新增分级 Git 审批机制；Task FSM 重构为声明式状态机；移除 worktree 耦合，prompt 工程全面清理；修复 dream cycle 幻觉与 UI 问题。
+
+### New Features
+
+- **Secretary 统一建设者角色** — 合并原 builder agents 为 Secretary，集成 hiring / install / hub-tools 能力，新增 `builder-service` 和 hub 工具集 (#10)
+- **分级 Git 命令审批** — 实现 tiered git command approval 机制，shell_execute 支持 HITL 审批回调，`ApprovalCallback` 返回 `{ approved, comment }`
+
+### Refactoring
+
+- **Task FSM 声明式状态机** — 用声明式 transition matrix 替代散落的状态判断，引入 phased side-effect pipeline，统一任务生命周期管理
+- **合并 task_assignment 到 task_status_update** — 消除独立的 `task_assignment` 消息类型，通过 `triggerExecution` 标志复用 `task_status_update`，修复被抢占任务的自动恢复
+- **移除 worktree 耦合** — 核心 prompt 工程与 worktree 概念解耦，`TaskWorkspace.worktreePath` 重命名为 `repoPath`
+- **Prompt 工程全面审查** — 清理冗余 prompt、统一术语、优化上下文注入策略
+
+### Bug Fixes
+
+- 修复 dream cycle（memory_consolidation）幻觉 — 新增独立 `memory_consolidation` scenario，避免 sleep 周期误触 task 工具
+- 改进审批通知面板 UI
+- 修复 Work 页面切换后筛选条件丢失
+
+### Enhancements
+
+- 移动端 UI 优化
+- Reports / AgentBuilder / AgentProfile 页面细节改进
+
+### Stats
+
+- 43 files changed, +1,865 / −1,013 lines
+
+---
+
 ## v0.4.14
 
 前端全面 UI 优化：统一状态颜色体系、新增 Cyberpunk/Midnight 主题、通知着色、卡片视觉重设计；修复执行日志误显 Completed 问题；清理 CLI 与仓库垃圾文件。
