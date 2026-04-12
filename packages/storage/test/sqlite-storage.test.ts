@@ -90,7 +90,7 @@ describe('SQLite Storage Backend', () => {
       agentRepo.create({ id: 'agent-2', orgId: 'org-1', name: 'Agent 2', roleId: 'r2', roleName: 'reviewer' });
 
       const repo = new SqliteTaskRepo(db);
-      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high', assignedAgentId: 'agent-1', reviewerAgentId: 'agent-2' });
+      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high', assignedAgentId: 'agent-1', reviewerAgentId: 'agent-1' });
       repo.updateStatus('task-1', 'in_progress');
 
       const task = repo.findById('task-1');
@@ -245,13 +245,15 @@ describe('SQLite Storage Backend', () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
-      agentRepo.create({ id: 'a1', orgId: 'org-1', name: 'Agent 1', roleId: 'r1', roleName: 'developer', status: 'active' });
+      agentRepo.create({ id: 'a1', orgId: 'org-1', name: 'Agent 1', roleId: 'r1', roleName: 'developer' });
+
       const taskRepo = new SqliteTaskRepo(db);
-      taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task' });
+      taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task', assignedAgentId: 'a1', reviewerAgentId: 'a1' });
 
       const repo = new SqliteTaskLogRepo(db);
       repo.append({ taskId: 't1', agentId: 'a1', seq: 0, type: 'status', content: 'started' });
       repo.append({ taskId: 't1', agentId: 'a1', seq: 1, type: 'text', content: 'working on it' });
+
 
       const logs = repo.getByTask('t1');
       expect(logs.length).toBe(2);
