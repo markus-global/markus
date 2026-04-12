@@ -966,7 +966,7 @@ export class TaskService {
       const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
       if (repo?.localPath) {
         taskWorkspace = {
-          workingDirectory: repo.localPath,
+          repoPath: repo.localPath,
           branch: `task/${task.id}`,
           baseBranch: repo.defaultBranch,
           projectContext: project ? {
@@ -2387,7 +2387,7 @@ export class TaskService {
           taskId: task.id,
           agentId: task.assignedAgentId,
           description: deliverables.map(d => d.summary ?? '').join('\n'),
-          workingDirectory: repoPath,
+          workingDirectory: repoPath,  // ReviewContext field
           baseBranch,
         });
 

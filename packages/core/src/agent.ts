@@ -100,7 +100,7 @@ export type ApprovalCallback = (request: {
 }) => Promise<boolean>;
 
 export interface TaskWorkspace {
-  workingDirectory: string;
+  repoPath: string;
   branch: string;
   baseBranch: string;
   projectContext?: {
@@ -2709,55 +2709,27 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
-    // Create an isolated git worktree for task workspace when a project repo is provided.
-    // The task-service passes workingDirectory=repoRoot — we upgrade it to an isolated
-    // .worktrees/task-<id> directory so concurrent tasks don't clobber each other.
-    let createdWorktreePath: string | undefined;
-    if (taskWorkspace && taskWorkspace.branch) {
-      const repoRoot = taskWorkspace.workingDirectory;
-      const isolatedPath = join(repoRoot, '.worktrees', `task-${taskId}`);
-      try {
-        const { exec: execCb } = await import('node:child_process');
-        const { promisify } = await import('node:util');
-        const execAsync = promisify(execCb);
-        await execAsync(
-          `git worktree add "${isolatedPath}" -b "${taskWorkspace.branch}" "${taskWorkspace.baseBranch}"`,
-          { cwd: repoRoot },
-        );
-        taskWorkspace = { ...taskWorkspace, workingDirectory: isolatedPath };
-        createdWorktreePath = isolatedPath;
-        emit('status', `workspace initialized: ${isolatedPath}`, { branch: taskWorkspace.branch });
-        log.info('Task workspace created', { taskId, path: isolatedPath, branch: taskWorkspace.branch });
-      } catch (wtErr: unknown) {
-        const msg = String((wtErr as Record<string, string>).message ?? wtErr);
-        if (msg.includes('already exists')) {
-          taskWorkspace = { ...taskWorkspace, workingDirectory: isolatedPath };
-          createdWorktreePath = isolatedPath;
-          log.warn('Task workspace already exists, reusing', { taskId, path: isolatedPath });
-        } else {
-          log.warn('Failed to create task workspace, falling back to repo root', { taskId, error: msg });
-        }
-      }
-    }
-
-    // Rebind tools to task workspace for project-bound tasks.
-    // Use task-local tools (stored in AsyncLocalStorage) instead of mutating
-    // the shared this.tools — prevents concurrent task workspaces from
-    // overwriting each other's tool bindings.
+    // Rebind tools to project repository for project-bound tasks.
+    // The agent manages its own branching/workspace strategy via shell commands.
+    // We only set the file access policy so file_read/file_write/file_edit
+    // operate within the project repo. Use task-local tools (AsyncLocalStorage)
+    // to avoid cross-contamination between concurrent tasks.
     if (taskWorkspace) {
       const taskPolicy: PathAccessPolicy = {
-        primaryWorkspace: taskWorkspace.workingDirectory,
+        primaryWorkspace: taskWorkspace.repoPath,
         sharedWorkspace: this.pathPolicy?.sharedWorkspace,
         readOnlyPaths: [
           ...(this.pathPolicy?.readOnlyPaths ?? []),
-          ...(taskWorkspace.projectContext?.repositories?.map(r => r.localPath) ?? []),
+          ...(taskWorkspace.projectContext?.repositories
+            ?.filter(r => r.localPath !== taskWorkspace!.repoPath)
+            .map(r => r.localPath) ?? []),
         ].filter(Boolean),
       };
       if (!taskPolicy.readOnlyPaths?.length) taskPolicy.readOnlyPaths = undefined;
 
       const taskTools = createBuiltinTools({
         agentId: this.id,
-        workspacePath: taskWorkspace.workingDirectory,
+        workspacePath: taskWorkspace.repoPath,
         pathPolicy: taskPolicy,
       });
       const taskLocalTools = new Map(this.tools);
@@ -2768,8 +2740,8 @@ export class Agent {
       if (ctx) {
         ctx.tools = taskLocalTools;
       }
-      log.info('Tools rebound to task workspace (task-local)', {
-        taskId, agentId: this.id, workingDirectory: taskWorkspace.workingDirectory,
+      log.info('Tools rebound to project repo (task-local)', {
+        taskId, agentId: this.id, repoPath: taskWorkspace.repoPath,
       });
     }
 
@@ -2870,12 +2842,9 @@ export class Agent {
       environment: this.environmentProfile,
       scenario: 'task_execution',
       ...(taskWorkspace ? {
-        currentWorkspace: {
-          branch: taskWorkspace.branch,
-          workingDirectory: taskWorkspace.workingDirectory,
-          baseBranch: taskWorkspace.baseBranch,
-        },
         projectContext: taskWorkspace.projectContext,
+        taskBranch: taskWorkspace.branch,
+        taskBaseBranch: taskWorkspace.baseBranch,
       } : {}),
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,

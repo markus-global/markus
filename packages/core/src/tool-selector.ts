@@ -54,11 +54,6 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['team_list', 'team_status', 'delegate_message'],
   },
   {
-    name: 'todo',
-    keywords: ['todo', 'plan', 'checklist', '待办', '计划', '清单'],
-    toolNames: ['todo_write', 'todo_read'],
-  },
-  {
     name: 'deliverables',
     keywords: ['deliverable', 'deliverables', 'output', 'artifact', 'convention', 'architecture decision',
       'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern', 'report', 'document',

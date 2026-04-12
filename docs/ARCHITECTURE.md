@@ -292,20 +292,11 @@ LLMRouter
 
 ### 4.2 Workspace Isolation
 
-When a task is bound to a project with a repository, the agent receives an isolated workspace (implemented via Git worktrees). This is an **infrastructure-level mechanism** — the workflow details (branching strategy, merge process, review workflow) are defined by **role templates and team norms**, not hardcoded in the core system.
+When a task is bound to a project with a repository, the agent's file tools are rebound to the project repo. The agent manages its own workspace setup (branching, isolation strategy) via `shell_execute`. Workflow details like branching strategy, merge process, and review workflow are defined by **role templates and team norms**, not by the core system.
 
-```
-project-repo/
-├── .worktrees/
-│   ├── task-abc123/    <- Agent A workspace
-│   └── task-def456/    <- Agent B workspace
-├── src/                <- Main branch (no direct edits)
-└── ...
-```
-
-- Branch naming: `task/<taskId>`
-- Agent shell/file tools are restricted to the task working directory
-- Workspace cleaned after merge on task acceptance
+- The system provides: tool access to the project repo, branch/base-branch info in context
+- The agent decides: branching strategy, workspace isolation, merge workflow
+- File access control ensures agents only write within their assigned project repo
 
 ### 4.3 Formal Delivery and Review
 

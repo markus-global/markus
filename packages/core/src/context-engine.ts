@@ -118,11 +118,8 @@ export class ContextEngine {
       governanceRules?: string;
       teamRole?: string;
     };
-    currentWorkspace?: {
-      branch: string;
-      workingDirectory: string;
-      baseBranch: string;
-    };
+    taskBranch?: string;
+    taskBaseBranch?: string;
     announcements?: Array<{
       type: string;
       priority: string;
@@ -202,45 +199,34 @@ export class ContextEngine {
       if (repositories?.length) {
         for (const repo of repositories) {
           parts.push(
-            `- Repository: ${repo.localPath} (${repo.role}, branch: ${repo.defaultBranch})`
+            `- Repository: \`${repo.localPath}\` (${repo.role}, default branch: \`${repo.defaultBranch}\`)`
           );
         }
+      }
+      if (opts.taskBranch) {
+        parts.push(`- Task branch: \`${opts.taskBranch}\``);
+        parts.push(`- Base branch: \`${opts.taskBaseBranch ?? 'main'}\``);
       }
       if (teamRole) parts.push(`- Your role: ${teamRole}`);
       if (governanceRules) parts.push(`- Governance: ${governanceRules}`);
     }
 
-    // ── Governance: Workspace Info (P0 priority) ─────────────────────────
-    if (opts.currentWorkspace) {
-      parts.push('\n## Your Workspace');
-      parts.push(`- Branch: \`${opts.currentWorkspace.branch}\``);
-      parts.push(`- Working directory: \`${opts.currentWorkspace.workingDirectory}\``);
-      parts.push(`- Base branch: ${opts.currentWorkspace.baseBranch}`);
-      if (opts.agentWorkspace?.sharedWorkspace) {
-        parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
-      }
-      parts.push('- Builder artifacts directory: `~/.markus/builder-artifacts/`');
-      parts.push('  **CRITICAL**: When creating agents, teams, or skills, you MUST place them in the correct subdirectory:');
-      parts.push('  - Agents → `~/.markus/builder-artifacts/agents/{agent-name}/`');
-      parts.push('  - Teams → `~/.markus/builder-artifacts/teams/{team-name}/`');
-      parts.push('  - Skills → `~/.markus/builder-artifacts/skills/{skill-name}/`');
-      parts.push('  The Builder page and install system ONLY recognize these paths. Writing artifacts anywhere else will make them invisible.');
-      if (opts.agentDataDir) {
-        parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
-      }
-      parts.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
-    } else if (opts.agentWorkspace) {
+    // ── Workspace Info ──────────────────────────────────────────────────
+    if (opts.agentWorkspace) {
       parts.push('\n## Your Workspace');
       parts.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
       if (opts.agentWorkspace.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
       }
-      parts.push('- Builder artifacts directory: `~/.markus/builder-artifacts/`');
-      parts.push('  **CRITICAL**: When creating agents, teams, or skills, you MUST place them in the correct subdirectory:');
-      parts.push('  - Agents → `~/.markus/builder-artifacts/agents/{agent-name}/`');
-      parts.push('  - Teams → `~/.markus/builder-artifacts/teams/{team-name}/`');
-      parts.push('  - Skills → `~/.markus/builder-artifacts/skills/{skill-name}/`');
-      parts.push('  The Builder page and install system ONLY recognize these paths. Writing artifacts anywhere else will make them invisible.');
+      const artifactsDir = opts.agentWorkspace.builderArtifactsDir ?? '~/.markus/builder-artifacts';
+      if (opts.agentWorkspace.builderArtifactsDir) {
+        parts.push(`- Builder artifacts directory: \`${artifactsDir}/\``);
+        parts.push('  When creating agents, teams, or skills, place them in the correct subdirectory:');
+        parts.push(`  - Agents → \`${artifactsDir}/agents/{agent-name}/\``);
+        parts.push(`  - Teams → \`${artifactsDir}/teams/{team-name}/\``);
+        parts.push(`  - Skills → \`${artifactsDir}/skills/{skill-name}/\``);
+        parts.push('  The Builder page and install system ONLY recognize these paths.');
+      }
       if (opts.agentDataDir) {
         parts.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
       }
@@ -427,14 +413,28 @@ export class ContextEngine {
     }
 
     parts.push('');
-    parts.push('### Task Workflow');
-    parts.push('- **Create**: `task_create` (with `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
-    parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` (MANDATORY). System auto-fills task_id/reviewer/branch.');
-    parts.push('- **Review**: Reviewer approves `task_update(status:"completed")` or rejects `task_update(note:"...")` (auto-restarts). Workers MUST NOT set status=completed.');
-    parts.push('- **CRITICAL — `blocked_by` dependencies**: When creating multiple tasks, you **MUST** use `blocked_by` to express ALL dependency relationships. If task B needs output or deliverables from task A, then B **MUST** include A\'s task ID in its `blocked_by` array. Without `blocked_by`, tasks execute in parallel and downstream tasks will NOT have upstream deliverables. Think about the dependency graph BEFORE creating any tasks.');
-    parts.push('- **DAG decomposition**: For complex goals, create multiple tasks forming a directed acyclic graph (DAG). Assign each task to the most appropriate team member based on their role and skills. Use `team_list` to identify the right agent. Independent tasks (no dependency) will run in parallel; dependent tasks will wait for predecessors to complete.');
-    parts.push('- **Manager coordination**: If the goal requires synthesized output from multiple tasks, create a final summarization task assigned to a manager or senior agent, `blocked_by` ALL prerequisite tasks. The manager task reviews deliverables from dependencies and produces the consolidated output.');
-    parts.push('- **Work Discovery**: `list_projects`→`requirement_list`→`task_list`. Use memory tools for personal notes; deliverable tools for shared outputs.');
+    parts.push('### Task & Requirement Workflow');
+    parts.push('');
+    parts.push('**Requirements** (governance gate):');
+    parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
+    parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
+    parts.push('');
+    parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
+    parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
+    parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
+    parts.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
+    parts.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
+    parts.push('');
+    parts.push('**Dependencies & DAG decomposition**:');
+    parts.push('- **CRITICAL**: Use `blocked_by` to express ALL dependency relationships. If task B needs output from task A, B **MUST** include A\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks lack upstream deliverables.');
+    parts.push('- For complex goals, create a DAG of tasks. Assign each to the best team member (`team_list`). Independent tasks run in parallel; dependent tasks wait for predecessors.');
+    parts.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
+    parts.push('');
+    parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
+    parts.push('');
+    parts.push('**Communicating with the user**:');
+    parts.push('- `notify_user` — one-way status updates, progress reports, findings (no response expected)');
+    parts.push('- `request_user_chat` — ONLY when genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints). Do NOT use for routine updates.');
 
     if (opts.environment) {
       parts.push(this.buildEnvironmentSection(opts.environment));
@@ -460,9 +460,11 @@ export class ContextEngine {
       }
     }
 
-    parts.push('\n## Working Strategy');
-    parts.push('For multi-step tasks: (1) Plan first — outline approach, use `todo.md` for long tasks. (2) Update progress after each step. (3) Restate objectives before each action. (4) On errors, analyze before retrying — try a different approach. (5) Offload large tool output to files. (6) For heavy subtasks that need many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your own context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
-    parts.push('**CRITICAL — Large file writing**: NEVER attempt to write a large document (>200 lines or >4000 characters) in a single `file_write` call. This causes LLM output truncation, token limit errors, and tool call timeouts. Instead: (a) Write the file **section by section** — first call `file_write` with the initial section, then use `file_edit` to append subsequent sections, or (b) Split the deliverable into multiple smaller files. Plan the document structure first, then write each section in a separate tool call.');
+    parts.push('\n## Tool Usage Rules');
+    parts.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
+    parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
+    parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
+    parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
 
     // --- Mailbox & attention context ---
     if (opts.mailboxContext) {
@@ -541,107 +543,42 @@ export class ContextEngine {
 
     switch (scenario) {
       case 'chat':
-        lines.push('You are in a **human chat session**. This context is for CONVERSATION ONLY — not for executing complex work.');
+        lines.push('You are in a **human chat session**.');
         lines.push('');
-        lines.push('**What to do inline** (directly in this conversation):');
-        lines.push('- Answer questions, explain concepts, provide status updates');
-        lines.push('- Quick lookups: check task status, read a file, simple searches (≤3 tool calls)');
-        lines.push('- If your **role instructions** define a specific chat-mode workflow (e.g. builder agents creating artifacts), follow that workflow');
+        lines.push('**Do inline**: answer questions, status updates, searches, file lookups, and any work the user needs an immediate answer for. Follow role-specific chat workflows if defined.');
+        lines.push('**Create tasks for**: sustained implementation work, multi-file code changes, or work that benefits from subtask decomposition, review, and team collaboration. Follow the Task Workflow above.');
         lines.push('');
-        lines.push('**What MUST become a task** (NEVER do these inline):');
-        lines.push('- Any work requiring research, code changes, file modifications, or >3 tool calls');
-        lines.push('- Any request the user describes as a "task", "project", or multi-step work');
-        lines.push('- Any work that would benefit from subtask decomposition or team collaboration');
+        lines.push('**After creating tasks, STOP.** Do NOT execute the task work yourself. The task runs in its own isolated context after user approval. Reply with a summary of created tasks, assignees, and dependency structure. Tell the user to review and approve.');
         lines.push('');
-        lines.push('**How to create tasks from chat:**');
-        lines.push('1. Analyze the user\'s request and identify the work needed');
-        lines.push('2. If the work is complex, decompose into multiple tasks. **Plan the dependency graph first** — identify which tasks produce outputs that other tasks consume');
-        lines.push('3. Create tasks in dependency order (create upstream tasks first so you have their IDs for `blocked_by`). **CRITICAL**: Every task that depends on another task\'s output MUST include that task\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks will fail due to missing inputs.');
-        lines.push('4. Assign each task to the most appropriate team member (use `team_list` to find agents by role/skills)');
-        lines.push('5. If the goal requires consolidated output, create a final summarization task assigned to a manager agent, `blocked_by` ALL prerequisite tasks');
-        lines.push('6. Create the tasks via `task_create`. Then STOP — do NOT start executing the work yourself.');
-        lines.push('7. Reply to the user with a summary: what tasks were created, who they are assigned to, and their **dependency structure** (which tasks block which)');
-        lines.push('8. Tell the user: "Please review and approve the tasks. Once approved, they will execute automatically in the task execution context."');
-        lines.push('');
-        lines.push('**CRITICAL — STOP AFTER CREATING TASKS:**');
-        lines.push('After calling `task_create`, your job in this chat is DONE for that request. Do NOT:');
-        lines.push('- Call tools to start executing the task work (no file_read, file_write, web_search, etc. for the task itself)');
-        lines.push('- Try to "help" by doing part of the task inline');
-        lines.push('- Continue with research or implementation related to the created task');
-        lines.push('The task will execute in its own isolated context AFTER the user approves it. The user will see execution progress in the task execution view, NOT here.');
-        lines.push('');
-        lines.push('**IMPORTANT**: The user sees this chat context. They should NOT see raw tool calls, long research outputs, or complex agent operations here. Keep chat responses concise and human-friendly.');
+        lines.push('Keep responses concise and human-friendly. The user should not see raw tool outputs or complex operations.');
         break;
 
       case 'task_execution':
-        lines.push('You are in **task execution mode**. This is your dedicated workspace for focused, thorough work.');
+        lines.push('You are in **task execution mode** — an isolated session for focused, thorough work.');
         lines.push('');
         lines.push('**Context awareness:**');
-        lines.push('- This session is ISOLATED from chat — the user monitors your progress through task logs and the execution view');
-        lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach accordingly');
-        lines.push('- If there are dependency tasks, review ALL their deliverables before starting (use `file_read` + `task_get`)');
+        lines.push('- This session is ISOLATED from chat — the user monitors progress through task logs');
+        lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach');
+        lines.push('- If there are dependency tasks, review ALL their deliverables before starting (`file_read` + `task_get`)');
         lines.push('');
-        lines.push('**Execution protocol:**');
-        lines.push('1. **Decompose first**: Use `subtask_create` to break the task into concrete steps BEFORE starting work. Each subtask should be a verifiable unit of work.');
-        lines.push('2. **Work systematically**: Execute subtasks in order. Mark each done with `subtask_complete`. Record progress via `task_note` after significant steps.');
-        lines.push('3. **Stay focused**: Do NOT wander into unrelated work. Do NOT create new top-level tasks — only subtasks within your assigned task.');
-        lines.push('4. **Handle blockers**: If you cannot proceed, set status to `blocked` with a clear explanation.');
-        lines.push('5. **Submit for review**: When ALL subtasks are complete, call `task_submit_review` with summary + deliverables (MANDATORY — the task does NOT complete without this).');
-        lines.push('');
-        lines.push('**Delegating subtasks to subagents (`spawn_subagent` / `spawn_subagents`):**');
-        lines.push('');
-        lines.push('Subagents are lightweight child loops with independent context windows. They inherit your tools but do NOT pollute your conversation history. Use them strategically:');
-        lines.push('');
-        lines.push('*DELEGATE to a subagent when the subtask is:*');
-        lines.push('- **Deep exploration / analysis**: reading and cross-referencing many files (>5), codebase-wide searches, architecture analysis — a subagent keeps your own context clean');
-        lines.push('- **Independent code modifications**: editing files in separate modules that don\'t depend on each other — perfect for `spawn_subagents` (parallel)');
-        lines.push('- **Research & information gathering**: web searches, reading long documents, comparing alternatives — heavy context that you don\'t need to retain');
-        lines.push('- **Test generation**: writing tests for already-implemented code — self-contained work with clear inputs/outputs');
-        lines.push('- **Documentation / content generation**: producing docs, READMEs, changelogs from existing code — doesn\'t need your live reasoning context');
-        lines.push('- **Repetitive multi-file refactoring**: renaming, format migrations, pattern replacements across many files — especially in parallel');
-        lines.push('');
-        lines.push('*Do NOT delegate when:*');
-        lines.push('- The subtask is quick (≤3 tool calls) — overhead of spawning a subagent is not worth it');
-        lines.push('- The next subtask depends on detailed intermediate reasoning from this one — keep it in your own context');
-        lines.push('- The subtask requires back-and-forth decisions that depend on your overall plan');
-        lines.push('');
-        lines.push('*Parallel execution pattern (`spawn_subagents`):*');
-        lines.push('When you have N independent subtasks, use `spawn_subagents` with an array of tasks to run them all concurrently. Example: implementing separate API endpoints, writing tests for different modules, analyzing different components.');
-        lines.push('');
-        lines.push('*Workflow:* `subtask_create` (track) → `spawn_subagent`/`spawn_subagents` (execute) → verify result → `subtask_complete` (mark done).');
-        lines.push('');
-        lines.push('**Quality standards:**');
-        lines.push('- Use all available tools to produce thorough, high-quality output');
-        lines.push('- If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action');
-        lines.push('- Large outputs should be saved to files and referenced by path in deliverables');
-        lines.push('- **NEVER write a large file in one shot.** If the output is >200 lines or >4000 chars, write it section by section: `file_write` the first section (with a heading/skeleton), then `file_edit` to append each subsequent section. This prevents LLM output truncation and tool call timeouts.');
-        lines.push('');
-        lines.push('**Communicating with the user:**');
-        lines.push('- Use `notify_user` for status updates and progress reports (one-way, no response expected)');
-        lines.push('- Use `request_user_chat` ONLY when you are genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints, access issues)');
-        lines.push('- Do NOT use `request_user_chat` for routine updates — use `notify_user` instead');
+        lines.push('**Execution protocol** (follow the Task Workflow above):');
+        lines.push('1. **Decompose**: `subtask_create` to break the task into concrete, verifiable steps');
+        lines.push('2. **Execute**: Work through subtasks in order. `subtask_complete` each. `task_note` after significant steps.');
+        lines.push('3. **Stay focused**: No unrelated work. No new top-level tasks — only subtasks within your assigned task.');
+        lines.push('4. **Delegate**: Use `spawn_subagent`/`spawn_subagents` for heavy or independent subtasks (see Tool Usage Rules). Workflow: `subtask_create` → `spawn_subagent` → verify → `subtask_complete`.');
+        lines.push('5. **Submit**: When done, `task_submit_review` with summary + deliverables (MANDATORY).');
         break;
 
       case 'heartbeat':
-        lines.push('You are in **heartbeat mode** — a brief periodic check-in. This is NOT a work session.');
+        lines.push('You are in **heartbeat mode** — a brief periodic check-in. NOT a work session.');
         lines.push('');
         lines.push('**Priority actions (in order):**');
-        lines.push('1. **Review duty**: Check `task_list` for tasks in `review` status where you are the reviewer. For each:');
-        lines.push('   - `task_get` → inspect deliverables/notes → `file_read` on artifacts');
-        lines.push('   - Approve: `task_update(status:"completed")` with review note');
-        lines.push('   - Reject: `task_update(status:"in_progress", note:"what needs to change")` — sends the task back for revision with a new execution round');
-        lines.push('   - Unreviewed tasks block the team — review is your #1 responsibility');
+        lines.push('1. **Review duty**: Check `task_list` for tasks in `review` status where you are the reviewer. Approve/reject per the Task Workflow above. Unreviewed tasks block the team.');
         lines.push('2. **Status check**: Compare current state against last heartbeat. Report only changes.');
-        lines.push('3. **Failed task recovery**: If any task assigned to you is in `failed` status, retry it via `task_update(status:"in_progress")` with a note — this auto-restarts execution.');
-        lines.push('4. **Daily report (managers, after 20:00)**: If the prompt includes a "Daily Report Required" section, produce the report as your top priority after reviews.');
-        lines.push('5. **Self-evolution**: Reflect briefly — record specific, actionable lessons learned since last heartbeat.');
-        lines.push('6. **Do NOT**: Create new tasks, start work, or do research during heartbeat (exception: daily report creation and failed task retry).');
-        lines.push('');
-        lines.push('');
-        lines.push('**Communicating with the user:**');
-        lines.push('- Use `notify_user` for findings and reports (e.g., "Daily report: completed 3 tasks today")');
-        lines.push('- Use `request_user_chat` ONLY if you need the user to make a decision or provide input');
-        lines.push('- Do NOT use `request_user_chat` for routine status updates');
+        lines.push('3. **Failed task recovery**: Retry `failed` tasks via `task_update(status:"in_progress", note:"...")` — auto-restarts execution.');
+        lines.push('4. **Daily report (managers, after 20:00)**: If prompted, produce the report as top priority after reviews.');
+        lines.push('5. **Self-evolution**: Record specific, actionable lessons learned since last heartbeat.');
+        lines.push('6. **Do NOT** create new tasks, start work, or do research (exception: daily report and failed task retry).');
         lines.push('');
         lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
@@ -682,6 +619,13 @@ export class ContextEngine {
         lines.push('- Reply immediately without calling `task_get`/`requirement_list` first');
         lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
         lines.push('- Ignore prior comments that provide important context for the current discussion');
+        lines.push('');
+        lines.push('**Conversation termination — when NOT to reply:**');
+        lines.push('- The comment is just an acknowledgment ("Got it", "Will do", "Thanks", "Agreed") — do NOT reply');
+        lines.push('- Both parties have reached agreement or the discussion is resolved — do NOT reply');
+        lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
+        lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
+        lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
         break;
     }
 
@@ -1463,7 +1407,6 @@ export class ContextEngine {
     const lines: string[] = ['\n## Your Environment'];
     lines.push(`- OS: ${env.os.platform} ${env.os.release} (${env.os.arch})`);
     lines.push(`- Shell: ${env.shell}`);
-    lines.push(`- Working Directory: ${env.workdir}`);
 
     if (env.tools.length > 0) {
       const toolList = env.tools.map(t => `${t.name} ${t.version}`).join(', ');

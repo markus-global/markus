@@ -31,10 +31,10 @@ External Events                    Agent Internals
 ─────────────                      ───────────────
   human_chat ──┐
   a2a_message ──┤                  ┌──────────────┐
-  task_assign ──┤  enqueue()       │  AgentMailbox │ priority queue
+  task_status ──┤  enqueue()       │  AgentMailbox │ priority queue
   task_comment ──┼────────────────►│  (per agent)  │ sorted by priority + FIFO
   review_req ──┤                   └──────┬───────┘
-  status_update──┤                        │ dequeueAsync()
+  system_event──┤                        │ dequeueAsync()
   heartbeat ────┤                         ▼
   system_event ──┤               ┌──────────────────┐
   session_reply──┤               │ AttentionController│ event-driven loop

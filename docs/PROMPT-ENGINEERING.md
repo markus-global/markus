@@ -57,12 +57,13 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │ 17. Relevant Memories (semantic search)     │
 │ 18. Recent Activity Summary (daily-logs)    │
 │ 19. Task Board (capped)                     │
-│ 20. Task Workflow Instructions              │
+│ 20. Task & Requirement Workflow             │
 │ 21. Environment Profile                     │
-│ 22. Mailbox & Attention Context             │
-│ 23. Current Conversation (sender info)      │
-│ 24. Scenario Section (mode-specific)        │  ← Volatile: changes per call
-│ 25. Timestamp                               │
+│ 22. Current Conversation (sender info)      │
+│ 23. Tool Usage Rules                        │
+│ 24. Mailbox & Attention Context             │
+│ 25. Scenario Section (mode-specific)        │  ← Volatile: changes per call
+│ 26. Timestamp                               │
 └─────────────────────────────────────────────┘
 ```
 
@@ -110,17 +111,17 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
-#### Scenario Section (§24)
+#### Scenario Section (§25)
 Source: `buildScenarioSection()`.  
-Five distinct instruction sets depending on `scenario` parameter:
+Five distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow (§20) and Tool Usage Rules (§23) rather than re-explaining them:
 
 | Scenario | Key Instructions |
 |----------|-----------------|
-| `chat` | Inline only simple queries (≤3 tool calls). Complex work → `task_create`. **Stop after creating tasks.** |
-| `task_execution` | Decompose into subtasks. Work systematically. Call `task_submit_review` when done (mandatory). |
-| `heartbeat` | Patrol mode: observe, triage, take lightweight actions. Can check status, send messages, create tasks, retry failed tasks, do quick reviews, save insights. No complex implementation — heavy work goes into tasks. |
+| `chat` | Inline immediate-answer work (questions, searches, lookups). Sustained implementation → `task_create` per Task Workflow. **Stop after creating tasks.** |
+| `task_execution` | Isolated session. Decompose → execute subtasks → delegate to subagents → `task_submit_review`. References Task Workflow. |
+| `heartbeat` | Brief check-in: review tasks, retry failures, daily report, self-evolution. No complex work. |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. |
-| `comment_response` | **Context-first protocol**: MUST call `task_get`/`requirement_list` and read ALL previous comments before replying. Never reply based solely on the incoming comment text. |
+| `comment_response` | **Context-first protocol**: fetch full item + read ALL prior comments before replying. **Conversation termination**: do NOT reply to acknowledgments or when the discussion is resolved — only comment when adding new information or requesting a decision. |
 
 ### 2.3 Skill Filtering
 
@@ -275,7 +276,7 @@ Session management:
 ```
 ┌─ System Prompt (full: identity + memory + tasks + scenario=task_execution)
 │   + projectContext (governance rules, repositories)
-│   + currentWorkspace (branch, workingDirectory, baseBranch)
+│   + projectContext (repositories, task branch, base branch)
 ├─ Task Prompt (injected as first user message):
 │   [TASK EXECUTION — Task ID: xxx]
 │   {description}
@@ -287,7 +288,7 @@ Session management:
 
 Key differences from chat:
 - **Deterministic session ID**: `task_{taskId}_r{round}`. Retries within the same round reuse session history (preserving tool call results). New rounds get fresh sessions.
-- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the task working directory with a new `PathAccessPolicy`.
+- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the project repository path with a new `PathAccessPolicy`. The agent manages its own workspace setup (branching, isolation) via shell commands.
 - **Retry with history**: If the session has prior assistant work (from interrupted attempts), a `[SYSTEM: Your previous execution attempt was interrupted...]` message is appended instead of the full task prompt.
 - **AbortController**: Linked to `cancelToken` for external cancellation.
 
@@ -324,6 +325,16 @@ Retry: 3 retries with exponential backoff (3s base).
 Uses `handleMessage(message, fromAgentId, senderInfo, { sessionId: 'a2a_<agentId>_<ts>', scenario: 'a2a' })`.
 
 The sender's identity is injected via `senderIdentity` in `buildSystemPrompt`. Channel-based A2A (via group chats) passes `channelContext` — recent channel messages are prepended to the session for multi-party conversation context.
+
+### 5.4.1 Group Chat
+
+Group chat messages (to `group:<teamId>` channels) are broadcast to ALL team members simultaneously via `processGroupChatReply()` in `api-server.ts`. Each agent processes the message independently with `scenario: 'chat'`. A group chat prefix is injected before the user message with rules:
+- Only respond if your role/expertise is specifically relevant
+- Check channel history — do not repeat what another agent already said
+- Prefer `[NO_RESPONSE]` when in doubt — silence is better than noise
+- Be concise — multi-party conversation, short actionable responses only
+
+Empty or `[NO_RESPONSE]` replies are silently discarded (not persisted or broadcast).
 
 ### 5.5 Respond-in-Session
 

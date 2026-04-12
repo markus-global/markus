@@ -583,10 +583,16 @@ export class APIServer {
       const agentName = agent.config.name;
 
       const groupChatPrefix = [
-        `[GROUP CHAT — ${teamSize} team members]`,
-        'You are in a group chat with your team. Every member receives this message independently.',
-        'Only respond if the message is relevant to your role or expertise.',
-        'If you have nothing meaningful to contribute, respond with exactly: [NO_RESPONSE]',
+        `[GROUP CHAT — ${teamSize} team members receiving this independently]`,
+        '',
+        'You are ONE of several agents in a group chat. Rules:',
+        '1. **Check channel history first** — if another agent already answered the question or addressed the topic, do NOT repeat their answer. Add only if you have a *different* perspective or expertise.',
+        '2. **Only respond if your role/expertise is specifically relevant.** Generic offers like "Let me know if you need help" add no value.',
+        '3. **Be concise** — this is a multi-party conversation. Short, actionable responses only.',
+        '4. **Do NOT create tasks** unless the user explicitly asks you to and you are the manager/coordinator.',
+        '5. **Prefer [NO_RESPONSE]** — when in doubt, say nothing. It is better to stay silent than to add noise.',
+        '',
+        'If you have nothing uniquely valuable to contribute, respond with exactly: [NO_RESPONSE]',
         '---',
         '',
       ].join('\n');

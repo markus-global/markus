@@ -18,7 +18,7 @@ let _lastMsgCache: Map<string, string> = new Map();
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ChatMode = 'channel' | 'smart' | 'direct' | 'dm';
+type ChatMode = 'channel' | 'direct' | 'dm';
 
 interface ChatTeamSidebarProps {
   authUser?: AuthUser;
