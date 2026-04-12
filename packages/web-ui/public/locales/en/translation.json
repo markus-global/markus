@@ -9,6 +9,7 @@
   "common": {
     "loading": "Loading...",
     "error": "An error occurred",
+    "success": "Success",
     "save": "Save",
     "cancel": "Cancel",
     "delete": "Delete",
@@ -23,7 +24,14 @@
     "submit": "Submit",
     "close": "Close",
     "signOut": "Sign out",
-    "version": "Version"
+    "version": "Version",
+    "thinkingProcess": "Thinking Process",
+    "noData": "No data",
+    "retry": "Retry",
+    "previous": "Previous",
+    "next2": "Next",
+    "page": "Page",
+    "total": "Total"
   },
   "auth": {
     "signIn": "Sign in",
@@ -55,7 +63,8 @@
     "name": "Team Name",
     "members": "Members",
     "manager": "Manager",
-    "description": "Description"
+    "description": "Description",
+    "introMessage": "Introduce yourself"
   },
   "project": {
     "title": "Projects",
@@ -80,5 +89,32 @@
     "language": "Language",
     "theme": "Theme",
     "notifications": "Notifications"
+  },
+  "skillStore": {
+    "title": "Skill Store",
+    "searchPlaceholder": "Search SkillHub skills...",
+    "loading": "Loading SkillHub skills...",
+    "noResults": "No matching skills found",
+    "totalSkills": "{{count}} skills",
+    "downloads": "{{count}}K downloads",
+    "allCategories": "All Categories",
+    "relevance": "Relevance",
+    "downloads2": "Downloads",
+    "stars": "Stars",
+    "installs": "Installs",
+    "pagination": {
+      "prevPage": "Previous",
+      "nextPage": "Next",
+      "pageIndicator": "Page {{current}} / {{total}}"
+    },
+    "categories": {
+      "ai": "AI Smart",
+      "devTools": "Development Tools",
+      "productivity": "Productivity",
+      "dataAnalysis": "Data Analysis",
+      "contentCreation": "Content Creation",
+      "security": "Security & Compliance",
+      "communication": "Communication"
+    }
   }
 }

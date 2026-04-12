@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, hubApi, type HubItem } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
@@ -80,13 +81,13 @@ const CATEGORY_COLORS: Record<string, string> = {
   browser: 'bg-brand-500/15 text-brand-500',
   communication: 'bg-green-500/15 text-green-600',
   data: 'bg-brand-500/15 text-brand-500',
-  'AI 智能': 'bg-brand-500/15 text-brand-500',
-  '开发工具': 'bg-blue-500/15 text-blue-600',
-  '效率提升': 'bg-green-500/15 text-green-600',
-  '数据分析': 'bg-brand-500/15 text-brand-500',
-  '内容创作': 'bg-brand-500/15 text-brand-500',
-  '安全合规': 'bg-red-500/15 text-red-500',
-  '通讯协作': 'bg-green-500/15 text-green-600',
+  ai: 'bg-brand-500/15 text-brand-500',
+  devTools: 'bg-blue-500/15 text-blue-600',
+  productivity2: 'bg-green-500/15 text-green-600',
+  dataAnalysis: 'bg-brand-500/15 text-brand-500',
+  contentCreation: 'bg-brand-500/15 text-brand-500',
+  security: 'bg-red-500/15 text-red-500',
+  communication2: 'bg-green-500/15 text-green-600',
 };
 
 const TABS: Array<{ id: TabId; label: string }> = [
@@ -171,6 +172,7 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function SkillStore() {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [tab, setTab] = useState<TabId>('installed');
   const [flash, setFlash] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -553,7 +555,7 @@ export function SkillStore() {
               onChange={e => { setSkillhubCategory(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: e.target.value || undefined, page: 1 }); }}
               className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-secondary outline-none"
             >
-              <option value="">全部分类</option>
+              <option value="">{t('skillStore.allCategories')}</option>
               {skillhubCategories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
             <select
@@ -561,10 +563,10 @@ export function SkillStore() {
               onChange={e => { setSkillhubSort(e.target.value); setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1, sort: e.target.value }); }}
               className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-secondary outline-none"
             >
-              <option value="score">综合排序</option>
-              <option value="downloads">下载量</option>
-              <option value="stars">收藏数</option>
-              <option value="installs">安装量</option>
+              <option value="score">{t('skillStore.relevance')}</option>
+              <option value="downloads">{t('skillStore.downloads2')}</option>
+              <option value="stars">{t('skillStore.stars')}</option>
+              <option value="installs">{t('skillStore.installs')}</option>
             </select>
             {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">
               <a href="https://skillhub.tencent.com" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">Visit site →</a>
@@ -575,7 +577,7 @@ export function SkillStore() {
               value={skillhubSearch}
               onChange={e => setSkillhubSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); } }}
-              placeholder="搜索 SkillHub 技能..."
+              placeholder={t('skillStore.searchPlaceholder')}
               className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none flex-1 min-w-0"
             />
             <button
@@ -587,15 +589,15 @@ export function SkillStore() {
           </div>
 
           {loadingSkillhub ? (
-            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">正在加载 SkillHub 技能...</div></div>
+            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">{t('skillStore.loading')}</div></div>
           ) : skillhubSkills.length === 0 ? (
             <div className="text-center text-fg-tertiary py-20">
               <div className="text-4xl mb-3 opacity-30">◎</div>
-              <div>未找到匹配的技能</div>
+              <div>{t('skillStore.noResults')}</div>
             </div>
           ) : (
             <>
-              <div className="text-xs text-fg-tertiary mb-3">共 {skillhubTotal.toLocaleString()} 个技能</div>
+              <div className="text-xs text-fg-tertiary mb-3">{t('skillStore.totalSkills', { count: skillhubTotal.toLocaleString() })}</div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {skillhubSkills.map(skill => {
                   const isInstalled = installed.some(s => s.name === skill.name || s.name === skill.slug);
@@ -614,7 +616,7 @@ export function SkillStore() {
                       <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {skill.stars > 0 && <span className="text-[10px] text-amber-600">★ {skill.stars.toLocaleString()}</span>}
-                          {skill.downloads > 0 && <span className="text-[10px] text-fg-tertiary">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} 下载</span>}
+                          {skill.downloads > 0 && <span className="text-[10px] text-fg-tertiary">{t('skillStore.downloads', { count: Math.round(skill.downloads / 10000 * 10) / 10 })}</span>}
                         </div>
                         <div className="flex items-center gap-2">
                           <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-500">View →</a>
@@ -641,14 +643,14 @@ export function SkillStore() {
                     disabled={skillhubPage <= 1}
                     onClick={() => { const p = skillhubPage - 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
                     className="px-3 py-1.5 text-xs bg-surface-elevated text-fg-secondary rounded-lg hover:bg-surface-overlay disabled:opacity-30">
-                    ← 上一页
+                    {t('common.previous')}
                   </button>
-                  <span className="text-xs text-fg-tertiary">第 {skillhubPage} / {Math.ceil(skillhubTotal / 24)} 页</span>
+                  <span className="text-xs text-fg-tertiary">{t('common.page')} {skillhubPage} / {Math.ceil(skillhubTotal / 24)}</span>
                   <button
                     disabled={skillhubPage >= Math.ceil(skillhubTotal / 24)}
                     onClick={() => { const p = skillhubPage + 1; setSkillhubPage(p); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: p }); }}
                     className="px-3 py-1.5 text-xs bg-surface-elevated text-fg-secondary rounded-lg hover:bg-surface-overlay disabled:opacity-30">
-                    下一页 →
+                    {t('common.next2')}
                   </button>
                 </div>
               )}

@@ -9,6 +9,7 @@
   "common": {
     "loading": "加载中...",
     "error": "发生错误",
+    "success": "成功",
     "save": "保存",
     "cancel": "取消",
     "delete": "删除",
@@ -23,7 +24,14 @@
     "submit": "提交",
     "close": "关闭",
     "signOut": "退出登录",
-    "version": "版本"
+    "version": "版本",
+    "thinkingProcess": "思考过程",
+    "noData": "暂无数据",
+    "retry": "重试",
+    "previous": "上一页",
+    "next2": "下一页",
+    "page": "第",
+    "total": "共"
   },
   "auth": {
     "signIn": "登录",
@@ -55,7 +63,8 @@
     "name": "团队名称",
     "members": "成员",
     "manager": "管理者",
-    "description": "描述"
+    "description": "描述",
+    "introMessage": "介绍一下你自己"
   },
   "project": {
     "title": "项目",
@@ -80,5 +89,32 @@
     "language": "语言",
     "theme": "主题",
     "notifications": "通知"
+  },
+  "skillStore": {
+    "title": "技能商店",
+    "searchPlaceholder": "搜索 SkillHub 技能...",
+    "loading": "正在加载 SkillHub 技能...",
+    "noResults": "未找到匹配的技能",
+    "totalSkills": "共 {{count}} 个技能",
+    "downloads": "{{count}}万 下载",
+    "allCategories": "全部分类",
+    "relevance": "综合排序",
+    "downloads2": "下载量",
+    "stars": "收藏数",
+    "installs": "安装量",
+    "pagination": {
+      "prevPage": "上一页",
+      "nextPage": "下一页",
+      "pageIndicator": "第 {{current}} / {{total}} 页"
+    },
+    "categories": {
+      "ai": "AI 智能",
+      "devTools": "开发工具",
+      "productivity": "效率提升",
+      "dataAnalysis": "数据分析",
+      "contentCreation": "内容创作",
+      "security": "安全合规",
+      "communication": "通讯协作"
+    }
   }
 }
