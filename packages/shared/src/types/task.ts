@@ -13,6 +13,33 @@ export type ItemStatus =
 
 export type TaskStatus = ItemStatus;
 
+/**
+ * Declarative task state transition matrix — single source of truth.
+ * Must match docs/STATE-MACHINES.md §2.
+ *
+ * Maps each status to the set of statuses it may legally transition TO.
+ * `updateTaskStatus()` rejects any transition not present here.
+ */
+export const TASK_TRANSITIONS: Readonly<Record<ItemStatus, ReadonlySet<ItemStatus>>> = {
+  pending:     new Set<ItemStatus>(['in_progress', 'blocked', 'rejected', 'cancelled']),
+  in_progress: new Set<ItemStatus>(['review', 'blocked', 'failed', 'cancelled']),
+  blocked:     new Set<ItemStatus>(['in_progress', 'cancelled']),
+  review:      new Set<ItemStatus>(['completed', 'in_progress', 'cancelled']),
+  completed:   new Set<ItemStatus>(['archived', 'in_progress']),
+  failed:      new Set<ItemStatus>(['in_progress', 'archived']),
+  rejected:    new Set<ItemStatus>(['archived']),
+  cancelled:   new Set<ItemStatus>(['archived']),
+  archived:    new Set<ItemStatus>([]),
+};
+
+export const TERMINAL_STATUSES: ReadonlySet<ItemStatus> =
+  new Set<ItemStatus>(['completed', 'failed', 'rejected', 'cancelled', 'archived']);
+
+/** Check whether a task status transition is structurally valid per the FSM. */
+export function isValidTaskTransition(from: ItemStatus, to: ItemStatus): boolean {
+  return TASK_TRANSITIONS[from]?.has(to) ?? false;
+}
+
 /** @deprecated Use ItemStatus. Kept for backward compat during migration. */
 export type LegacyTaskStatus = 'pending_approval' | TaskStatus;
 export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';

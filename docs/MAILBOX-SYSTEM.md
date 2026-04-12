@@ -114,6 +114,8 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 
 When `updateTaskStatus()` triggers auto-start execution, the separate notification is **skipped** to avoid redundant LLM calls. The execution-mode `task_status_update` serves as both trigger and notification.
 
+Similarly, when a task transitions from `in_progress` to `review` (via `task_submit_review`), the assignee notification is skipped — the assignee itself initiated the submission and already knows the state change. Only the reviewer receives a `review_request` notification.
+
 **`task_comment` — Live Session Injection**
 
 `task_comment` has a unique behaviour: when the referenced task is **actively being executed**, the comment is **injected into the running LLM session** (`injectUserMessage`) rather than creating a new activity. This means:

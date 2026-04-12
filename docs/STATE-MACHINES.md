@@ -51,7 +51,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 
 ### Transition Table
 
-**All state transitions go through `updateTaskStatus()`** — no direct status mutation.
+**All state transitions go through `updateTaskStatus()`**, which validates every transition against the declarative `TASK_TRANSITIONS` matrix defined in `@markus/shared`. Transitions not in the matrix are rejected with an error. No direct status mutation.
 
 | From | To | Trigger | Method |
 |------|----|---------|--------|
@@ -81,7 +81,11 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `in_progress` → anything else | Cancel running execution (cancel token) |
 | → `completed` / `failed` / `cancelled` / `rejected` / `archived` | Set `completedAt`; check dependent tasks for unblocking |
 | → `review` | Notify reviewer agent automatically |
-| **Any status change** | Enqueue `task_status_update` to assigned agent's mailbox (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)) |
+| **Most status changes** | Enqueue `task_status_update` to assigned agent's mailbox (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)). Skipped when: (a) auto-start triggers execution (the execution-mode item serves as both trigger and notification), or (b) `in_progress → review` (assignee self-initiated via `task_submit_review`) |
+
+### FSM Enforcement
+
+The legal transition set is defined as a declarative matrix `TASK_TRANSITIONS` in `@markus/shared/types/task.ts`. `updateTaskStatus()` validates every transition against this matrix and rejects any transition not present. This is the single source of truth — when adding a new status or transition, update the matrix first, then update this document.
 
 ### Key Rules
 

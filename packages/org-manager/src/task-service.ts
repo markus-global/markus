@@ -17,6 +17,8 @@ import {
   type TaskQueryOptions,
   type TaskQueryResult,
   type TaskSortField,
+  isValidTaskTransition,
+  TERMINAL_STATUSES,
 } from '@markus/shared';
 import type { AgentManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -791,6 +793,17 @@ export class TaskService {
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
     if (!this.agentManager) throw new Error('AgentManager not set');
 
+    // Precondition: all callers (auto-start, preempt re-queue, retry,
+    // resumeInProgressTasks) guarantee the task is already in_progress.
+    // A stale setImmediate/setTimeout callback may arrive after the task
+    // has moved on (e.g. to review) — silently skip.
+    if (task.status !== 'in_progress') {
+      log.warn('runTask called but task not in in_progress state, skipping', {
+        taskId, currentStatus: task.status,
+      });
+      return;
+    }
+
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
     // Cancel any currently running execution for this task before starting a new one
@@ -799,8 +812,6 @@ export class TaskService {
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
-
-    this.updateTaskStatus(taskId, 'in_progress');
 
     // Load previous execution history + comments so the agent can resume
     let prevContext = '';
@@ -1603,8 +1614,10 @@ export class TaskService {
 
   /**
    * THE single entry point for all task status transitions.
-   * All side effects (auto-start, cancel execution, notify reviewer,
-   * check dependents, broadcast) are centralized here.
+   *
+   * Structured as two phases:
+   *   Phase 1 — validate the transition against the FSM matrix and mutate state (pure logic).
+   *   Phase 2 — execute ordered side effects (cleanup, persist, auto-start, notify, broadcast).
    *
    * @param _internal - bypass the pending guard (used by approve/reject)
    * @param _skipAutoStart - suppress auto-start when entering in_progress
@@ -1615,174 +1628,229 @@ export class TaskService {
   ]);
 
   updateTaskStatus(id: string, status: TaskStatus, updatedBy?: string, _internal = false, _skipAutoStart = false): Task {
+    // Phase 1: Validate + Mutate
+    const result = this.validateAndApplyTransition(id, status, updatedBy, _internal);
+    if (!result) return this.tasks.get(id)!; // no-op (same status)
+
+    // Phase 2: Side effects
+    this.handleTransitionSideEffects(result.task, result.prevStatus, status, updatedBy, _skipAutoStart);
+
+    log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
+    return result.task;
+  }
+
+  // ─── Phase 1: Pure validation + state mutation ───────────────────────────────
+
+  private validateAndApplyTransition(
+    id: string, status: TaskStatus, updatedBy?: string, _internal = false,
+  ): { task: Task; prevStatus: TaskStatus } | null {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
 
-    // Guard: reject invalid status values (e.g. LLM hallucinated "accepted")
     if (!TaskService.VALID_STATUSES.has(status)) {
       throw new Error(`Invalid task status "${status}". Valid values: ${[...TaskService.VALID_STATUSES].join(', ')}`);
     }
 
-    // Guard: pending can only be changed via approveTask/rejectTask
-    if (!_internal && task.status === 'pending' && status !== 'pending') {
+    const prevStatus = task.status;
+    if (prevStatus === status) return null;
+
+    // FSM matrix guard — single source of truth for legal transitions
+    if (!isValidTaskTransition(prevStatus, status)) {
+      log.warn('Rejected illegal task state transition', { taskId: id, from: prevStatus, to: status, updatedBy });
+      throw new Error(
+        `Illegal task state transition: ${prevStatus} → ${status} (task "${task.title}", id: ${id})`,
+      );
+    }
+
+    // Semantic guards
+    if (!_internal && prevStatus === 'pending' && status !== 'pending') {
       throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint.`);
     }
-
-    // Guard: completed only from review
-    if (status === 'completed' && task.status !== 'review') {
-      throw new Error(`Task ${id} cannot be completed from "${task.status}". Must go through review first.`);
-    }
-
-    // Guard: blocked → in_progress requires all blockers satisfied
-    if (status === 'in_progress' && task.status === 'blocked') {
+    if (status === 'in_progress' && prevStatus === 'blocked') {
       if (!this.areBlockersSatisfied(task)) {
         throw new Error(`Task ${id} is blocked by unfinished dependencies`);
       }
     }
 
-    const prevStatus = task.status;
-    if (prevStatus === status) return task;
-
+    // Mutate
     const now = new Date().toISOString();
     task.status = status;
     task.updatedAt = now;
     if (updatedBy) task.updatedBy = updatedBy;
+    if (status === 'in_progress' && !task.startedAt) task.startedAt = now;
+    if (TERMINAL_STATUSES.has(status) && !task.completedAt) task.completedAt = now;
 
-    // ── Entering in_progress ──
-    if (status === 'in_progress' && !task.startedAt) {
-      task.startedAt = now;
-    }
+    return { task, prevStatus };
+  }
 
-    // ── Entering terminal state ──
-    if (status === 'completed' || status === 'failed' || status === 'rejected' || status === 'cancelled' || status === 'archived') {
-      if (!task.completedAt) task.completedAt = now;
-    }
+  // ─── Phase 2: Ordered side-effect pipeline ───────────────────────────────────
 
-    // ── Leaving in_progress: cancel running execution ──
-    if (prevStatus === 'in_progress' && status !== 'in_progress') {
-      this.taskRetryErrors.delete(id);
-      const token = this.taskCancelTokens.get(id);
+  private handleTransitionSideEffects(
+    task: Task, from: TaskStatus, to: TaskStatus,
+    updatedBy?: string, skipAutoStart = false,
+  ): void {
+    const id = task.id;
+
+    // Stage 1: Execution lifecycle cleanup
+    this.cleanupOnLeaveStatus(id, from, to);
+
+    // Stage 2: Persistence
+    this.persistStatusChange(id, to, updatedBy);
+
+    // Stage 3: Execution trigger (returns whether auto-start was scheduled)
+    const executionTriggered = this.maybeAutoStartExecution(task, from, to, skipAutoStart);
+
+    // Stage 4: Agent notifications
+    this.maybeNotifyReviewer(task, from, to);
+    this.maybeNotifyAssignee(task, from, to, executionTriggered, updatedBy);
+
+    // Stage 5: Downstream propagation
+    this.maybeCheckDependents(task, to);
+
+    // Stage 6: External broadcast
+    this.broadcastStatusChange(task, from, to);
+  }
+
+  // ─── Stage 1: Cleanup on leaving a status ────────────────────────────────────
+
+  private cleanupOnLeaveStatus(taskId: string, from: TaskStatus, to: TaskStatus): void {
+    if (from === 'in_progress' && to !== 'in_progress') {
+      this.taskRetryErrors.delete(taskId);
+      const token = this.taskCancelTokens.get(taskId);
       if (token) {
         token.cancelled = true;
-        this.taskCancelTokens.delete(id);
-        log.info(`Cancelled running execution for task ${id} (status → ${status})`);
+        this.taskCancelTokens.delete(taskId);
+        log.info(`Cancelled running execution for task ${taskId} (status → ${to})`);
       }
     }
-
-    // ── Leaving review: clear active review guard ──
-    if (prevStatus === 'review' && status !== 'review') {
-      this.activeReviews.delete(id);
+    if (from === 'review' && to !== 'review') {
+      this.activeReviews.delete(taskId);
     }
+  }
 
-    // ── Persist to DB ──
+  // ─── Stage 2: DB persistence ─────────────────────────────────────────────────
+
+  private persistStatusChange(id: string, status: TaskStatus, updatedBy?: string): void {
     if (this.taskRepo) {
       this.taskRepo
         .updateStatus(id, status, updatedBy)
         .catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
     }
+  }
 
-    // ── Side effect: auto-start execution when entering in_progress ──
-    // When auto-start triggers runTask, skip the separate mailbox notification
-    // because runTask sends its own task_status_update with execution context.
-    let executionTriggered = false;
-    if (
-      !_skipAutoStart &&
-      status === 'in_progress' &&
-      prevStatus !== 'in_progress' &&
-      task.assignedAgentId &&
-      this.agentManager
-    ) {
-      const activeToken = this.taskCancelTokens.get(id);
-      if (!activeToken || activeToken.cancelled) {
-        executionTriggered = true;
-        log.info(`Auto-starting task execution`, { taskId: id });
-        setImmediate(() => {
-          this.runTask(id).catch(err =>
-            log.warn('Auto-start runTask failed', { taskId: id, error: String(err) })
-          );
-        });
-      }
-    }
+  // ─── Stage 3: Auto-start execution ───────────────────────────────────────────
 
-    // ── Side effect: notify reviewer when entering review ──
-    if (status === 'review' && prevStatus !== 'review' && task.reviewerAgentId) {
+  private maybeAutoStartExecution(
+    task: Task, from: TaskStatus, to: TaskStatus, skipAutoStart: boolean,
+  ): boolean {
+    if (skipAutoStart || to !== 'in_progress' || from === 'in_progress') return false;
+    if (!task.assignedAgentId || !this.agentManager) return false;
+
+    const activeToken = this.taskCancelTokens.get(task.id);
+    if (activeToken && !activeToken.cancelled) return false;
+
+    log.info('Auto-starting task execution', { taskId: task.id });
+    setImmediate(() => {
+      this.runTask(task.id).catch(err =>
+        log.warn('Auto-start runTask failed', { taskId: task.id, error: String(err) }),
+      );
+    });
+    return true;
+  }
+
+  // ─── Stage 4a: Reviewer notification ─────────────────────────────────────────
+
+  private maybeNotifyReviewer(task: Task, from: TaskStatus, to: TaskStatus): void {
+    if (to === 'review' && from !== 'review' && task.reviewerAgentId) {
       this.notifyReviewer(task, task.reviewerAgentId);
     }
+  }
 
-    // ── Side effect: check dependent tasks on terminal ──
-    if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'archived') {
-      this.checkDependentTasks(task);
+  // ─── Stage 4b: Assignee mailbox notification ─────────────────────────────────
 
-      // Check if the linked requirement is now fully completed
-      if (task.requirementId && this.requirementService) {
-        const taskStatuses = new Map<string, string>();
-        for (const [tid, t] of this.tasks) {
-          taskStatuses.set(tid, t.status);
-        }
-        this.requirementService.checkCompletion(task.requirementId, taskStatuses);
+  private maybeNotifyAssignee(
+    task: Task, from: TaskStatus, to: TaskStatus,
+    executionTriggered: boolean, updatedBy?: string,
+  ): void {
+    // Skip when auto-start fires — runTask sends its own execution-mode item.
+    if (executionTriggered) return;
+    // Skip self-initiated review submission — assignee already knows.
+    if (from === 'in_progress' && to === 'review') return;
+
+    if (!task.assignedAgentId || !this.agentManager) return;
+    try {
+      const agent = this.agentManager.getAgent(task.assignedAgentId);
+      if (agent) {
+        const guidance = TaskService.STATUS_ACTION_GUIDANCE[to] ?? '';
+        agent.enqueueToMailbox('task_status_update', {
+          summary: `Task "${task.title}" status: ${from} → ${to}`,
+          content: [
+            `[TASK STATUS UPDATE] Task "${task.title}" (ID: ${task.id})`,
+            `Status changed: ${from} → ${to}`,
+            updatedBy ? `Updated by: ${updatedBy}` : '',
+            guidance ? `\nAction: ${guidance}` : '',
+          ].filter(Boolean).join('\n'),
+          taskId: task.id,
+        }, {
+          metadata: { taskId: task.id },
+        });
       }
-    }
+    } catch { /* agent not found — skip */ }
+  }
 
-    // ── Mailbox notification: inform the assigned agent of non-execution status transitions ──
-    // Skip when execution is triggered — runTask sends its own enriched task_status_update.
-    if (!executionTriggered && task.assignedAgentId && this.agentManager) {
-      try {
-        const agent = this.agentManager.getAgent(task.assignedAgentId);
-        if (agent) {
-          const guidance = TaskService.STATUS_ACTION_GUIDANCE[status] ?? '';
-          agent.enqueueToMailbox('task_status_update', {
-            summary: `Task "${task.title}" status: ${prevStatus} → ${status}`,
-            content: [
-              `[TASK STATUS UPDATE] Task "${task.title}" (ID: ${id})`,
-              `Status changed: ${prevStatus} → ${status}`,
-              updatedBy ? `Updated by: ${updatedBy}` : '',
-              guidance ? `\nAction: ${guidance}` : '',
-            ].filter(Boolean).join('\n'),
-            taskId: id,
-          }, {
-            metadata: { taskId: id },
-          });
-        }
-      } catch { /* agent not found — skip */ }
-    }
+  // ─── Stage 5: Downstream propagation ─────────────────────────────────────────
 
-    // ── Broadcast + events ──
-    this.ws?.broadcastTaskUpdate(id, status, { title: task.title });
+  private maybeCheckDependents(task: Task, to: TaskStatus): void {
+    if (to !== 'completed' && to !== 'failed' && to !== 'cancelled' && to !== 'archived') return;
+
+    this.checkDependentTasks(task);
+
+    if (task.requirementId && this.requirementService) {
+      const taskStatuses = new Map<string, string>();
+      for (const [tid, t] of this.tasks) {
+        taskStatuses.set(tid, t.status);
+      }
+      this.requirementService.checkCompletion(task.requirementId, taskStatuses);
+    }
+  }
+
+  // ─── Stage 6: External broadcast ─────────────────────────────────────────────
+
+  private broadcastStatusChange(task: Task, from: TaskStatus, to: TaskStatus): void {
+    this.ws?.broadcastTaskUpdate(task.id, to, { title: task.title });
+
     const eventType: TaskEventType =
-      status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'status_changed';
+      to === 'completed' ? 'completed' : to === 'failed' ? 'failed' : 'status_changed';
     this.emitTaskEvent({
       type: eventType,
-      taskId: id,
+      taskId: task.id,
       taskTitle: task.title,
       orgId: task.orgId,
-      status,
-      previousStatus: prevStatus,
+      status: to,
+      previousStatus: from,
       agentId: task.assignedAgentId,
       timestamp: task.updatedAt,
     });
 
-    if (this.hitlService && (status === 'review' || status === 'completed' || status === 'failed')) {
-      const notifType = status === 'completed' ? 'task_completed' as const
-        : status === 'review' ? 'task_review' as const
-        : status === 'failed' ? 'task_failed' as const
+    if (this.hitlService && (to === 'review' || to === 'completed' || to === 'failed')) {
+      const notifType = to === 'completed' ? 'task_completed' as const
+        : to === 'review' ? 'task_review' as const
+        : to === 'failed' ? 'task_failed' as const
         : 'task_status_changed' as const;
-      const priority = status === 'failed' ? 'high' as const : 'normal' as const;
+      const priority = to === 'failed' ? 'high' as const : 'normal' as const;
       this.hitlService.notify({
         targetUserId: 'default',
         type: notifType,
-        title: status === 'review' ? `Task ready for review: ${task.title}` :
-               status === 'completed' ? `Task completed: ${task.title}` :
+        title: to === 'review' ? `Task ready for review: ${task.title}` :
+               to === 'completed' ? `Task completed: ${task.title}` :
                `Task failed: ${task.title}`,
-        body: `Task "${task.title}" status changed to ${status}`,
+        body: `Task "${task.title}" status changed to ${to}`,
         priority,
         actionType: 'navigate',
-        actionTarget: JSON.stringify({ path: `/work?openTask=${id}` }),
-        metadata: { taskId: id, status, agentId: task.assignedAgentId },
+        actionTarget: JSON.stringify({ path: `/work?openTask=${task.id}` }),
+        metadata: { taskId: task.id, status: to, agentId: task.assignedAgentId },
       });
     }
-
-    log.info(`Task status updated: ${task.title}`, { id, status, prevStatus });
-    return task;
   }
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string): Task {
@@ -2589,7 +2657,7 @@ export class TaskService {
       parts.push('');
       parts.push(`Please review immediately. Use \`task_get\` with task_id "${task.id}" to inspect deliverable files, then either:`);
       parts.push(`- **Approve**: Review the code, merge the branch (via \`git merge\` or \`gh pr create\` + \`gh pr merge\`), then \`task_update\` with status "completed" and a review note`);
-      parts.push(`- **Reject**: \`task_update\` with status "in_progress" and a note explaining what needs to change — this sends the task back for revision with a new execution round`);
+      parts.push(`- **Request revision**: \`task_update\` with status "in_progress" and a note explaining what needs to change — this triggers a formal revision round with your feedback`);
       parts.push('');
       parts.push(`CRITICAL: You MUST ONLY review this specific task (ID: ${task.id}). Do NOT change the status of any other task.`);
 
@@ -3151,6 +3219,13 @@ export class TaskService {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
     if (!this.agentManager) throw new Error('AgentManager not set');
+
+    if (task.status !== 'in_progress') {
+      log.warn('runTaskFresh called but task not in in_progress state, skipping', {
+        taskId, currentStatus: task.status,
+      });
+      return;
+    }
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
     const executionRound = task.executionRound ?? 1;
