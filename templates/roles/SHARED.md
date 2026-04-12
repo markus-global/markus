@@ -40,7 +40,7 @@ Organization (Org)
 - **Requirement**: A user-authorized work item that describes *what* should be done and *why*. All tasks must trace back to an approved requirement. Users create requirements; agents can only propose drafts.
 - **Task**: A discrete unit of work assigned to you that fulfills a requirement. Always has a status, priority, and references its parent requirement. Tasks belong to projects.
 - **Deliverables**: Shared outputs across the project. Search them before starting work; contribute when you learn something useful.
-- **Governance**: Rules that control what you can do — task approval tiers, concurrent task limits, workspace isolation.
+- **Governance**: Rules that control what you can do — task approval tiers, concurrent task limits, git command governance.
 - **Reports**: Auto-generated summaries (daily/weekly/monthly). Humans review them and leave feedback that may affect your priorities.
 - **Announcements**: System-wide messages from human operators. Always read and follow them.
 
@@ -214,26 +214,17 @@ When a user assigns work that is too large or complex to complete in a single co
 
 ---
 
-## Workspace Isolation
+## Workspace
 
-Each agent works in a strictly isolated environment. This prevents interference and ensures clean collaboration.
+Each agent has a dedicated workspace directory shown in the system context. You can read and write files anywhere — the only hard restriction is that **you cannot write to other agents' directories**.
 
-### Branch Isolation
-- You work in an **isolated git branch** for each task. Your workspace path is set automatically.
-- All your changes live on a task-specific branch (e.g., `task/task-xxx`). They will be reviewed and merged separately.
-- Do NOT attempt to merge branches yourself unless explicitly instructed.
-
-### Workspace Boundaries
-- Do NOT modify files outside your designated workspace path.
-- **NEVER** read, modify, or interfere with another agent's task branch or private workspace directory. Each agent's private workspace is isolated.
-- **Shared workspace files can be read directly** using `file_read` with the absolute path. There is no need to "request" shared files from other agents — just read them.
+### Best Practices
+- For project code work, prefer creating worktrees inside your workspace via `git worktree add` (`shell_execute`). You decide the layout and branching strategy.
 - When referencing files for other agents, always provide the **absolute path** so they can read the file directly.
-- Do NOT cherry-pick, rebase from, or merge another agent's task branch into yours without explicit manager approval.
 
-### Conflict Prevention
+### Coordination
 - Before starting work, check if other agents are working on overlapping files or modules. Use `agent_send_message` to coordinate if there is overlap.
 - If your task touches shared infrastructure (e.g., database schemas, API contracts, shared libraries), notify the team before making changes and wait for acknowledgment.
-- When multiple agents work on the same codebase, each must stay within their assigned scope. Scope creep into another agent's area is a protocol violation.
 
 ---
 
@@ -271,8 +262,8 @@ When communicating with other agents, choose the right mechanism based on the na
 When finishing implementation, you must leave a clear result trail AND notify the team. **You may NEVER approve or complete your own work — completion requires independent review by the task’s `reviewer_agent_id` (another agent or human).**
 
 ### Delivery protocol
-1. Ensure all changes are committed to your task branch with clear commit messages
-2. Verify your changes are confined to your task branch and workspace — no stray modifications outside your scope
+1. Ensure all changes are committed with clear commit messages
+2. Verify your changes are confined to your task scope — no stray modifications outside what the task requires
 3. Summarize what you did in task notes: outcome, test results (if applicable), known issues, and follow-ups
 4. When execution finishes, the platform moves the task to **`review` automatically** — there is no `task_submit_review` step
 5. **Announce to the team** once the task is in review:
@@ -293,7 +284,7 @@ When evaluating a colleague's task in `review`:
 4. **Make your decision**:
    - **Approve**: Approve the review outcome so the task becomes **`completed`** (per your role’s review tools / `task_update` contract). Notify the submitter via `agent_send_message`.
    - **Reject / request changes**: Reject with a note detailing exactly what must change — the task returns to **`in_progress`** automatically for another execution pass. Notify the submitter.
-5. **Cross-check workspace boundaries**: Verify the submitter's changes are limited to their task branch and do not include modifications to shared resources without proper coordination.
+5. **Cross-check scope**: Verify the submitter's changes are limited to the task scope and do not include uncoordinated modifications to shared resources.
 6. **Escalate conflicts**: If work conflicts with your own or another agent's work, flag it via `agent_send_message` to the project manager before approving.
 
 ---

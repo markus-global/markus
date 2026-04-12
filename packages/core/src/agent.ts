@@ -100,14 +100,9 @@ export type ApprovalCallback = (request: {
   taskId?: string;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
-export interface TaskWorkspace {
-  repoPath: string;
-  branch: string;
-  baseBranch: string;
-  projectContext?: {
-    project: { id: string; name: string; description: string; status: string };
-    repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
-  };
+export interface TaskProjectContext {
+  project: { id: string; name: string; description: string; status: string };
+  repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
 }
 
 export interface AgentOptions {
@@ -579,7 +574,7 @@ export class Agent {
     taskDescription: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     cancelToken?: { cancelled: boolean },
-    taskWorkspace?: TaskWorkspace,
+    taskProjectContext?: TaskProjectContext,
     executionRound?: number,
   ): Promise<string> {
     const payload: MailboxPayload = {
@@ -590,7 +585,7 @@ export class Agent {
         triggerExecution: true,
         onLog,
         cancelToken,
-        taskWorkspace,
+        taskProjectContext,
         executionRound,
       },
     };
@@ -778,7 +773,7 @@ export class Agent {
               description,
               onLog,
               extra.cancelToken as { cancelled: boolean } | undefined,
-              extra.taskWorkspace as TaskWorkspace | undefined,
+              extra.taskProjectContext as TaskProjectContext | undefined,
               extra.executionRound as number | undefined,
             );
             resolveResponse('');
@@ -2628,10 +2623,10 @@ export class Agent {
       persist: boolean;
     }) => void,
     cancelToken?: { cancelled: boolean },
-    taskWorkspace?: TaskWorkspace,
+    taskProjectContext?: TaskProjectContext,
     executionRound?: number
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskWorkspace, executionRound);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound);
   }
 
   /**
@@ -2649,7 +2644,7 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     priority: TaskPriority = TaskPriority.MEDIUM,
-    taskWorkspace?: TaskWorkspace,
+    taskProjectContext?: TaskProjectContext,
     executionRound?: number
   ): Promise<void> {
     if (!this.taskExecutor) {
@@ -2662,7 +2657,7 @@ export class Agent {
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
       () => taskAsyncContext.run({ taskId }, () =>
-        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskWorkspace, executionRound)
+        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound)
       ),
       {
         priority,
@@ -2699,7 +2694,7 @@ export class Agent {
       persist: boolean;
     }) => void,
     cancelToken?: { cancelled: boolean },
-    taskWorkspace?: TaskWorkspace,
+    taskProjectContext?: TaskProjectContext,
     executionRound?: number
   ): Promise<void> {
     this.currentTaskId = taskId;
@@ -2744,40 +2739,10 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
-    // Rebind tools to project repository for project-bound tasks.
-    // The agent manages its own branching/workspace strategy via shell commands.
-    // We only set the file access policy so file_read/file_write/file_edit
-    // operate within the project repo. Use task-local tools (AsyncLocalStorage)
-    // to avoid cross-contamination between concurrent tasks.
-    if (taskWorkspace) {
-      const taskPolicy: PathAccessPolicy = {
-        primaryWorkspace: taskWorkspace.repoPath,
-        sharedWorkspace: this.pathPolicy?.sharedWorkspace,
-        readOnlyPaths: [
-          ...(this.pathPolicy?.readOnlyPaths ?? []),
-          ...(taskWorkspace.projectContext?.repositories
-            ?.filter(r => r.localPath !== taskWorkspace!.repoPath)
-            .map(r => r.localPath) ?? []),
-        ].filter(Boolean),
-      };
-      if (!taskPolicy.readOnlyPaths?.length) taskPolicy.readOnlyPaths = undefined;
-
-      const taskTools = createBuiltinTools({
-        agentId: this.id,
-        workspacePath: taskWorkspace.repoPath,
-        pathPolicy: taskPolicy,
-        onCommandApproval: this.getCommandApprovalCallback(),
-      });
-      const taskLocalTools = new Map(this.tools);
-      for (const tool of taskTools) {
-        taskLocalTools.set(tool.name, tool);
-      }
-      const ctx = taskAsyncContext.getStore();
-      if (ctx) {
-        ctx.tools = taskLocalTools;
-      }
-      log.info('Tools rebound to project repo (task-local)', {
-        taskId, agentId: this.id, repoPath: taskWorkspace.repoPath,
+    if (taskProjectContext) {
+      log.info('Task execution with project context', {
+        taskId, agentId: this.id,
+        repos: taskProjectContext.repositories.map(r => r.localPath),
       });
     }
 
@@ -2877,11 +2842,7 @@ export class Agent {
       deliverableContext: this.getDeliverableContext(taskPrompt),
       environment: this.environmentProfile,
       scenario: 'task_execution',
-      ...(taskWorkspace ? {
-        projectContext: taskWorkspace.projectContext,
-        taskBranch: taskWorkspace.branch,
-        taskBaseBranch: taskWorkspace.baseBranch,
-      } : {}),
+      ...(taskProjectContext ? { projectContext: taskProjectContext } : {}),
       agentWorkspace: this.pathPolicy ? {
         primaryWorkspace: this.pathPolicy.primaryWorkspace,
         sharedWorkspace: this.pathPolicy.sharedWorkspace,
@@ -3399,52 +3360,6 @@ export class Agent {
     }
   }
 
-  /**
-   * Dynamically add a read-only path to this agent's access policy and rebuild tools.
-   * Used when assigning review tasks so the reviewer can read the worker's workspace.
-   */
-  grantReadOnlyAccess(path: string): void {
-    if (!this.pathPolicy) return;
-    const existing = this.pathPolicy.readOnlyPaths ?? [];
-    if (existing.includes(path)) return;
-    this.pathPolicy = {
-      ...this.pathPolicy,
-      readOnlyPaths: [...existing, path],
-    };
-    // Rebuild file/search tools with updated policy
-    const updatedTools = createBuiltinTools({
-      agentId: this.id,
-      workspacePath: this.pathPolicy.primaryWorkspace,
-      pathPolicy: this.pathPolicy,
-      onCommandApproval: this.getCommandApprovalCallback(),
-    });
-    for (const tool of updatedTools) {
-      this.tools.set(tool.name, tool);
-    }
-    log.info('Granted read-only access', { agentId: this.id, path });
-  }
-
-  /**
-   * Remove a previously granted read-only path and rebuild tools.
-   */
-  revokeReadOnlyAccess(path: string): void {
-    if (!this.pathPolicy?.readOnlyPaths) return;
-    const filtered = this.pathPolicy.readOnlyPaths.filter(p => p !== path);
-    this.pathPolicy = {
-      ...this.pathPolicy,
-      readOnlyPaths: filtered.length ? filtered : undefined,
-    };
-    const updatedTools = createBuiltinTools({
-      agentId: this.id,
-      workspacePath: this.pathPolicy.primaryWorkspace,
-      pathPolicy: this.pathPolicy,
-      onCommandApproval: this.getCommandApprovalCallback(),
-    });
-    for (const tool of updatedTools) {
-      this.tools.set(tool.name, tool);
-    }
-    log.info('Revoked read-only access', { agentId: this.id, path });
-  }
 
   getState(): AgentState {
     const state = { ...this.state };

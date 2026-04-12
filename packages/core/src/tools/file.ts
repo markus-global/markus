@@ -7,11 +7,11 @@ import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 type AccessLevel = 'readwrite' | 'readonly' | 'denied';
 
 /**
- * Resolve a raw path against the primary workspace, then check multi-tier access.
- * Returns { resolved, access } where access is 'readwrite' | 'readonly'.
+ * Resolve a raw path against the primary workspace, then check access.
  *
- * Read access is always granted — agents can read any file.
- * Write access is limited to the agent's own workspace and shared workspace.
+ * Write access is allowed everywhere EXCEPT paths in `denyWritePaths`
+ * (other agents' directories). This prevents cross-agent interference
+ * while allowing agents to modify any files the user asks them to.
  */
 function resolveAndCheckAccess(
   rawPath: string,
@@ -20,47 +20,19 @@ function resolveAndCheckAccess(
 ): { resolved: string; access: AccessLevel } {
   const resolved = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
 
-  if (!policy && !workspacePath) {
-    return { resolved, access: 'readwrite' };
+  if (policy?.denyWritePaths) {
+    for (const denied of policy.denyWritePaths) {
+      if (resolved.startsWith(resolve(denied))) {
+        return { resolved, access: 'denied' };
+      }
+    }
   }
 
-  if (policy) {
-    if (resolved.startsWith(resolve(policy.primaryWorkspace))) {
-      return { resolved, access: 'readwrite' };
-    }
-    if (policy.sharedWorkspace && resolved.startsWith(resolve(policy.sharedWorkspace))) {
-      return { resolved, access: 'readwrite' };
-    }
-    if (policy.roleDir && resolved.startsWith(resolve(policy.roleDir))) {
-      return { resolved, access: 'readwrite' };
-    }
-    if (policy.teamDataDir && resolved.startsWith(resolve(policy.teamDataDir))) {
-      return { resolved, access: 'readwrite' };
-    }
-    if (policy.builderArtifactsDir && resolved.startsWith(resolve(policy.builderArtifactsDir))) {
-      return { resolved, access: 'readwrite' };
-    }
-    return { resolved, access: 'readonly' };
-  }
-
-  // Legacy single-workspace mode
-  if (workspacePath && !resolved.startsWith(resolve(workspacePath))) {
-    return { resolved, access: 'readonly' };
-  }
   return { resolved, access: 'readwrite' };
 }
 
-function denyMessage(resolved: string, workspacePath?: string, policy?: PathAccessPolicy): string {
-  if (policy) {
-    const zones = [policy.primaryWorkspace];
-    if (policy.sharedWorkspace) zones.push(policy.sharedWorkspace);
-    if (policy.roleDir) zones.push(policy.roleDir);
-    if (policy.teamDataDir) zones.push(policy.teamDataDir);
-    if (policy.builderArtifactsDir) zones.push(policy.builderArtifactsDir);
-    if (policy.readOnlyPaths) zones.push(...policy.readOnlyPaths);
-    return `File path must be within allowed zones: ${zones.join(', ')}`;
-  }
-  return `File path must be within workspace: ${workspacePath}`;
+function denyMessage(_resolved: string, _workspacePath?: string, _policy?: PathAccessPolicy): string {
+  return 'Write denied: this path belongs to another agent\'s workspace.';
 }
 
 export function createFileReadTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
@@ -173,8 +145,8 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
       const rawPath = args['path'] as string;
       const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      if (access !== 'readwrite') {
-        return JSON.stringify({ status: 'denied', error: 'Write operations are only allowed in your own workspace or the shared workspace.' });
+      if (access === 'denied') {
+        return JSON.stringify({ status: 'denied', error: 'Write denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
       }
 
       const content = args['content'] as string;
@@ -215,8 +187,8 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
       const rawPath = args['path'] as string;
       const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
-      if (access !== 'readwrite') {
-        return JSON.stringify({ status: 'denied', error: 'Edit operations are only allowed in your own workspace or the shared workspace.' });
+      if (access === 'denied') {
+        return JSON.stringify({ status: 'denied', error: 'Edit denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
       }
 
       const oldStr = args['old_string'] as string;

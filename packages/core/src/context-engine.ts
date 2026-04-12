@@ -118,8 +118,6 @@ export class ContextEngine {
       governanceRules?: string;
       teamRole?: string;
     };
-    taskBranch?: string;
-    taskBaseBranch?: string;
     announcements?: Array<{
       type: string;
       priority: string;
@@ -203,14 +201,8 @@ export class ContextEngine {
           );
         }
       }
-      if (opts.taskBranch) {
-        parts.push(`- Task branch: \`${opts.taskBranch}\``);
-        parts.push(`- Base branch: \`${opts.taskBaseBranch ?? 'main'}\``);
-        parts.push('');
-        parts.push('**Workspace isolation**: You are responsible for setting up your own isolated workspace before modifying code.');
-        parts.push('Use `git worktree add` or `git checkout -b` via `shell_execute` to create an isolated working area on your task branch.');
-        parts.push('Some git operations (switching to existing branches, pushing to protected branches, merge, rebase) require human approval — the system will pause and ask the reviewer. If denied, you will receive a reason; read it and adjust your approach.');
-      }
+      parts.push('');
+      parts.push('Some git operations (switching to existing branches, pushing to protected branches, merge, rebase) require human approval — the system will pause and ask the reviewer. If denied, you will receive a reason; read it and adjust your approach.');
       if (teamRole) parts.push(`- Your role: ${teamRole}`);
       if (governanceRules) parts.push(`- Governance: ${governanceRules}`);
     }
@@ -575,7 +567,7 @@ export class ContextEngine {
         lines.push('- If there is `⚠ USER FEEDBACK` above, READ IT FIRST and adjust your approach');
         lines.push('- If there are dependency tasks, review ALL their deliverables before starting (`file_read` + `task_get`)');
         lines.push('');
-        lines.push('**Workspace setup**: Before modifying code, ensure you are working on the correct branch in an isolated workspace (e.g., `git worktree add ../task-<id> <task-branch>` or `git checkout -b <task-branch>`). Some git operations require human approval — if denied, read the reason and adjust.');
+        lines.push('**Workspace setup**: Before modifying project code, set up an isolated workspace (e.g., `git worktree add` into your workspace directory). Some git operations require human approval — if denied, read the reason and adjust.');
         lines.push('');
         lines.push('**Execution protocol** (follow the Task Workflow above):');
         lines.push('1. **Decompose**: `subtask_create` to break the task into concrete, verifiable steps');

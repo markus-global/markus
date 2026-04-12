@@ -577,10 +577,22 @@ export class AgentManager {
    */
   private static readonly BUILDER_ROLES = new Set(['agent-father', 'team-factory', 'skill-architect']);
 
-  buildPathPolicy(workspacePath: string, extraReadOnlyPaths?: string[], roleDir?: string, teamDataDir?: string, builderArtifactsDir?: string): PathAccessPolicy {
+  buildPathPolicy(agentId: string, workspacePath: string, roleDir?: string, teamDataDir?: string, builderArtifactsDir?: string): PathAccessPolicy {
+    // Block writes to other agents' directories only.
+    // The agent's own directory is excluded from the deny list.
+    const agentOwnDir = join(this.dataDir, agentId);
+    const denyWritePaths: string[] = [];
+    if (existsSync(this.dataDir)) {
+      for (const entry of readdirSync(this.dataDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name !== agentId) {
+          denyWritePaths.push(join(this.dataDir, entry.name));
+        }
+      }
+    }
+
     const policy: PathAccessPolicy = {
       primaryWorkspace: workspacePath,
-      readOnlyPaths: extraReadOnlyPaths?.length ? [...extraReadOnlyPaths] : undefined,
+      denyWritePaths: denyWritePaths.length ? denyWritePaths : undefined,
     };
     if (this.sharedDataDir) {
       policy.sharedWorkspace = this.sharedDataDir;
@@ -642,20 +654,13 @@ export class AgentManager {
       ? join(homedir(), '.markus', 'teams', request.teamId)
       : undefined;
 
-    // All agents get write access to builder-artifacts (building skills are builtin)
     const builderArtifactsDir = join(homedir(), '.markus', 'builder-artifacts');
 
-    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
-    const securityAllowlist = [workspacePath, agentRoleDir];
-    if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
-    if (pathPolicy.teamDataDir) securityAllowlist.push(pathPolicy.teamDataDir);
-    if (pathPolicy.builderArtifactsDir) securityAllowlist.push(pathPolicy.builderArtifactsDir);
-    if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
+    const pathPolicy = this.buildPathPolicy(id, workspacePath, agentRoleDir, teamDataDir, builderArtifactsDir);
 
     const basePolicy = request.securityPolicy ?? this.globalSecurityPolicy;
     const security = new SecurityGuard({
       ...basePolicy,
-      pathAllowlist: [...(basePolicy?.pathAllowlist ?? []), ...securityAllowlist],
     });
     const agentMeta = {
       agentId: id,
@@ -1273,20 +1278,13 @@ export class AgentManager {
       ? join(homedir(), '.markus', 'teams', config.teamId)
       : undefined;
 
-    // All agents get write access to builder-artifacts (building skills are builtin)
     const builderArtifactsDir = join(homedir(), '.markus', 'builder-artifacts');
 
-    const pathPolicy = this.buildPathPolicy(workspacePath, undefined, agentRoleDir, teamDataDir, builderArtifactsDir);
-    const securityAllowlist = [workspacePath, agentRoleDir];
-    if (pathPolicy.sharedWorkspace) securityAllowlist.push(pathPolicy.sharedWorkspace);
-    if (pathPolicy.teamDataDir) securityAllowlist.push(pathPolicy.teamDataDir);
-    if (pathPolicy.builderArtifactsDir) securityAllowlist.push(pathPolicy.builderArtifactsDir);
-    if (pathPolicy.readOnlyPaths) securityAllowlist.push(...pathPolicy.readOnlyPaths);
+    const pathPolicy = this.buildPathPolicy(id, workspacePath, agentRoleDir, teamDataDir, builderArtifactsDir);
 
     const basePolicy = this.globalSecurityPolicy;
     const security = new SecurityGuard({
       ...basePolicy,
-      pathAllowlist: [...(basePolicy?.pathAllowlist ?? []), ...securityAllowlist],
     });
     const agentMeta = {
       agentId: id,
@@ -1854,27 +1852,6 @@ export class AgentManager {
     return this.agents.has(agentId);
   }
 
-  /**
-   * Grant a reviewer agent read-only access to a task's workspace.
-   * Called when a task enters review and a reviewer is assigned.
-   */
-  grantReviewAccess(reviewerAgentId: string, workspacePath: string): void {
-    if (!this.agents.has(reviewerAgentId)) return;
-    const reviewer = this.getAgent(reviewerAgentId);
-    reviewer.grantReadOnlyAccess(workspacePath);
-    log.info('Granted reviewer access to task workspace', { reviewerAgentId, workspacePath });
-  }
-
-  /**
-   * Revoke a reviewer agent's read-only access to a task's workspace.
-   * Called when a review is complete or the reviewer changes.
-   */
-  revokeReviewAccess(reviewerAgentId: string, workspacePath: string): void {
-    if (!this.agents.has(reviewerAgentId)) return;
-    const reviewer = this.getAgent(reviewerAgentId);
-    reviewer.revokeReadOnlyAccess(workspacePath);
-    log.info('Revoked reviewer access to task workspace', { reviewerAgentId, workspacePath });
-  }
 
   setAuditCallback(
     cb: (

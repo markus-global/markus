@@ -45,11 +45,11 @@
 - **On approval**: Merge each task branch via `shell_execute`:
   - Local: `cd <repo> && git checkout <base_branch> && git merge <task_branch> --no-ff`
   - Or via GitHub: `gh pr create` then `gh pr merge`
-- **On merge conflict**: Reject the task with conflict details — the engineer resolves in their worktree and re-submits.
+- **On merge conflict**: Reject the task with conflict details — the engineer resolves conflicts and re-submits.
 - Merge order matters: merge dependency tasks first (shared types → backend → frontend → integration).
 
 ### Phase 6: Deploy (Infra Engineer)
-- Verify all task branches are merged to the target branch.
+- Verify all task branches are merged to the target branch before deploying.
 - Run deployment pipeline via `background_exec`.
 - Verify deployment health via smoke tests.
 

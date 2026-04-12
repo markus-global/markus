@@ -76,7 +76,7 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - Who this agent is (identity, personality, expertise)
    - Core responsibilities and capabilities
    - **Workflow with platform capabilities** — when and how to use `spawn_subagent` (focused subtasks), `background_exec` (long-running commands with auto-notifications), `shell_execute` (git/gh operations), `web_search`/`web_fetch` (research), `deliverable_create` (artifacts), `memory_save` (persistent knowledge)
-   - For code-writing agents: worktree isolation (`task/<id>` branches), TDD, submit-for-review flow, file ownership rules
+   - For code-writing agents: workspace setup (git worktree for isolation), TDD, submit-for-review flow, file ownership rules
    - For review agents: review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`
    - Output standards and quality criteria
    - Domain-specific knowledge and context

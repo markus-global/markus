@@ -232,7 +232,7 @@ const reply = await agent.sendMessageStream(
 Used to run a task through the mailbox. Internally enqueues a `task_status_update` with `extra.triggerExecution = true`. Fire-and-forget with streaming log callback:
 ```typescript
 void agent.sendTaskExecution(
-  taskId, taskDescription, onLog, cancelToken, taskWorkspace, executionRound
+  taskId, taskDescription, onLog, cancelToken, taskProjectContext, executionRound
 );
 ```
 

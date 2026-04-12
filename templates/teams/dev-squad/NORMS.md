@@ -10,7 +10,7 @@
 - Target **5–6 tasks per developer** per sprint cycle. Too few = idle time. Too many = context switching overhead.
 
 ### 2. Implement (Developers)
-- Each developer works in an **isolated worktree** — the system creates `task/<id>` branches automatically.
+- Each developer sets up an **isolated worktree** in their workspace before starting work.
 - Write tests first (TDD) for new features. For bug fixes, write a failing test that reproduces the issue before fixing.
 - Use `spawn_subagent` for focused subtasks: generating boilerplate, analyzing a complex function, researching an API. This keeps your main context clean.
 - Run `background_exec` for test suites and builds — you'll be notified when they complete.
@@ -23,7 +23,7 @@
 - Use `spawn_subagent` to deeply analyze complex changes without polluting your review context.
 - Leave structured notes via `task_note` — every review produces a trail.
 - **On approval**: Merge the task branch via `shell_execute` (`git merge` or `gh pr create` + `gh pr merge`), then complete the task.
-- **On merge conflict**: Reject the task with conflict details. The developer resolves conflicts in their worktree and re-submits for review.
+- **On merge conflict**: Reject the task with conflict details. The developer resolves conflicts and re-submits for review.
 - **On rejection**: Task returns to `in_progress` with specific change requests.
 
 ### 4. Validate (QA Engineer)

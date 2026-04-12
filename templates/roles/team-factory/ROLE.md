@@ -51,10 +51,10 @@ You will receive the **live list** of available role templates, skills, and plat
 
 The ROLE.md you write for each member determines how well they leverage the platform. Reference the **Platform Capabilities** section in your dynamic context and include workflow guidance for each role:
 
-- **Developers**: Explain worktree isolation (they work on `task/<id>` branches, reviewer merges), when to use `spawn_subagent` (research, boilerplate, analysis), `background_exec` for tests/builds, and the submit-for-review flow.
+- **Developers**: Explain workspace setup (git worktree for isolation, reviewer merges), when to use `spawn_subagent` (research, boilerplate, analysis), `background_exec` for tests/builds, and the submit-for-review flow.
 - **Reviewers**: Explain the review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`, and how to reject with conflict details.
 - **Managers/PMs**: Explain file/module ownership for parallel work, `spawn_subagent` for pre-planning analysis, and dependency graph design with `blockedBy`.
-- **QA Engineers**: Explain `background_exec` for test suites, how to access worktree code, and structured bug reporting.
+- **QA Engineers**: Explain `background_exec` for test suites, how to access project code, and structured bug reporting.
 - **Research roles**: Explain `spawn_subagent` for parallel investigation tracks, `web_search`/`web_fetch` for evidence gathering.
 - **DevOps**: Explain `background_exec` for deployment pipelines, `shell_execute` for `git`/`gh` operations, and pre-deploy merge verification.
 

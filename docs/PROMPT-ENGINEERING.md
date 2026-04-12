@@ -44,7 +44,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 │  4. Organization Context (CONTEXT.md)       │
 │  5. Team Announcements & Norms              │
 │  6. Project Context (governance)            │
-│  7. Workspace Info (paths, branches)        │
+│  7. Workspace Info (paths)                  │
 │  8. User Profile (USER.md)                  │
 │  9. Trust Level                             │
 │ 10. System Announcements                    │
@@ -276,8 +276,7 @@ Session management:
 
 ```
 ┌─ System Prompt (full: identity + memory + tasks + scenario=task_execution)
-│   + projectContext (governance rules, repositories)
-│   + projectContext (repositories, task branch, base branch)
+│   + projectContext (project info, repositories, governance rules)
 ├─ Task Prompt (injected as first user message):
 │   [TASK EXECUTION — Task ID: xxx]
 │   {description}
@@ -289,7 +288,7 @@ Session management:
 
 Key differences from chat:
 - **Deterministic session ID**: `task_{taskId}_r{round}`. Retries within the same round reuse session history (preserving tool call results). New rounds get fresh sessions.
-- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the project repository path with a new `PathAccessPolicy`. The agent manages its own workspace setup (branching, isolation) via shell commands. The `onCommandApproval` callback is wired into the shell tool so that risky git operations go through HITL approval.
+- **Project repo access**: Agents can read and write files freely; the only hard restriction is that writes to other agents' directories are blocked. The agent manages its own workspace setup (worktrees, branching) via `shell_execute`.
 - **Git command governance**: The shell tool enforces a three-tier model (Allow / Approval / Deny). Safe operations execute immediately, risky ones (checkout existing branch, merge, rebase, push to protected branches) pause for human approval via `HITLService.requestApprovalAndWait()`, and destructive operations (force push) are always denied. Approval responses include optional comments/reasons, which are returned to the agent as actionable feedback.
 - **Retry with history**: If the session has prior assistant work (from interrupted attempts), a `[SYSTEM: Your previous execution attempt was interrupted...]` message is appended instead of the full task prompt.
 - **AbortController**: Linked to `cancelToken` for external cancellation.

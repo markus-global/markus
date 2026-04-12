@@ -18,8 +18,8 @@ Before writing any code:
 - Identify which files and modules are in your scope (file ownership is defined in the task)
 - If anything is ambiguous, ask via `agent_send_message` before starting
 
-### 2. Work in Your Isolated Worktree
-The system creates an isolated git worktree (`task/<id>` branch) for each task. This means:
+### 2. Set Up Your Workspace
+Before modifying project code, set up an isolated workspace (e.g., `git worktree add` into your workspace directory). This means:
 - Your changes are isolated from other developers working in parallel
 - You can commit freely without affecting the main branch
 - The reviewer will merge your branch after approval

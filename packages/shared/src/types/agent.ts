@@ -109,20 +109,24 @@ export interface AgentProfile {
 }
 
 /**
- * Multi-tier file access policy for agent tools.
- * Replaces the single `workspacePath` with differentiated read/write zones.
+ * File access policy for agent tools.
+ *
+ * Philosophy: the platform provides the environment, not rigid constraints.
+ * Agents can write anywhere except other agents' directories.
+ * The `primaryWorkspace` is the default working directory and prompt context,
+ * not a hard write boundary.
  */
 export interface PathAccessPolicy {
-  /** Agent's own workspace — full read/write access */
+  /** Agent's own workspace — used as default cwd for shell and path resolution */
   primaryWorkspace: string;
-  /** Shared deliverables area — read/write for publishing artifacts */
+  /** Shared deliverables area — used in prompt context */
   sharedWorkspace?: string;
-  /** Agent's own role files directory — read/write for self-evolution */
+  /** Agent's own role files directory */
   roleDir?: string;
-  /** Team shared data directory — read/write for team managers to update announcements/norms */
+  /** Team shared data directory */
   teamDataDir?: string;
-  /** Builder artifacts directory — read/write for builder agents to write packages */
+  /** Builder artifacts directory */
   builderArtifactsDir?: string;
-  /** Paths the agent can read but not write (project repos, peer workspaces) */
-  readOnlyPaths?: string[];
+  /** Paths where writes are hard-blocked (other agents' directories) */
+  denyWritePaths?: string[];
 }

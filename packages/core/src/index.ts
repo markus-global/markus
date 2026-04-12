@@ -1,5 +1,5 @@
 export { Agent } from './agent.js';
-export type { AgentToolHandler, ApprovalCallback, TaskWorkspace } from './agent.js';
+export type { AgentToolHandler, ApprovalCallback, TaskProjectContext } from './agent.js';
 export { ToolHookRegistry, auditLogHook, generateIdempotencyKey } from './tool-hooks.js';
 export type { ToolHook, ToolHookContext, BeforeToolResult, AfterToolResult } from './tool-hooks.js';
 export { startSpan, trace, setTracingProvider } from './tracing.js';
@@ -97,13 +97,6 @@ export type {
   ReviewChecker,
   ReviewContext,
 } from './review-service.js';
-export {
-  WorkspaceManager,
-  type WorktreeInfo,
-  type ProjectRepositoryRef,
-  type MergeResult,
-  type DiffStats,
-} from './workspace-manager.js';
 export { EventBus } from './events.js';
 export { AgentMailbox, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
 export {

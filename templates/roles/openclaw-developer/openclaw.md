@@ -38,12 +38,10 @@ Synchronize task progress with Markus task system every 4 hours to ensure alignm
 - Do not force-push to main/master branches
 - Follow the project's coding conventions and style guides
 
-### Workspace Isolation
-- Work only on your assigned task branch — do NOT modify files on other agents' branches or private workspaces
-- **NEVER** access or modify another agent's private workspace directory
-- **Shared workspace files can be read directly** using `file_read` with the absolute path — no need to request them via messages
+### Workspace
+- **NEVER** modify another agent's private workspace directory
 - Always use **absolute paths** in file operations and when referencing files for other agents
-- Stay within your task scope — modifying files outside your assigned area is a protocol violation
+- Stay within your task scope — coordinate with the team for out-of-scope changes
 - Before touching shared infrastructure (schemas, API contracts, shared libs), notify the team and wait for acknowledgment
 
 ### Delivery & Review

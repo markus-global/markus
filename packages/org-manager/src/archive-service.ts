@@ -1,14 +1,11 @@
 import { createLogger, type ArchivePolicy } from '@markus/shared';
 import type { TaskService } from './task-service.js';
 import type { ProjectService } from './project-service.js';
-import type { WorkspaceManager } from '@markus/core';
 
 const log = createLogger('archive-service');
 
 const DEFAULT_POLICY: ArchivePolicy = {
   autoArchiveAfterDays: 30,
-  deleteWorktreeOnAcceptance: true,
-  deleteBranchOnArchive: true,
   retainTaskLogsForDays: 90,
   retainAuditLogsForDays: 365,
 };
@@ -19,7 +16,6 @@ export class ArchiveService {
   constructor(
     private taskService: TaskService,
     private projectService: ProjectService,
-    private workspaceManager?: WorkspaceManager
   ) {}
 
   start(intervalMs = 86400000): void {
@@ -36,14 +32,8 @@ export class ArchiveService {
     }
   }
 
-  async runArchiveScan(): Promise<{
-    archived: number;
-    worktreesRemoved: number;
-    branchesDeleted: number;
-  }> {
+  async runArchiveScan(): Promise<{ archived: number }> {
     let archived = 0;
-    let worktreesRemoved = 0;
-    let branchesDeleted = 0;
 
     const allTasks = this.taskService.listTasks({});
     const now = Date.now();
@@ -58,40 +48,13 @@ export class ArchiveService {
       if (ageInDays >= policy.autoArchiveAfterDays) {
         this.taskService.archiveTask(task.id);
         archived++;
-
-        if (policy.deleteBranchOnArchive && task.projectId && this.workspaceManager) {
-          const project = this.projectService.getProject(task.projectId);
-          if (project?.repositories?.[0]) {
-            await this.workspaceManager
-              .deleteBranch(project.repositories[0].localPath, task.id)
-              .catch(() => {});
-            branchesDeleted++;
-          }
-        }
       }
     }
 
-    if (this.workspaceManager) {
-      for (const project of this.projectService.listProjects()) {
-        if (!project.repositories?.[0]) continue;
-        const repoPath = project.repositories[0].localPath;
-        const worktrees = await this.workspaceManager.listWorktrees(repoPath);
-
-        for (const wt of worktrees) {
-          if (!wt.taskId) continue;
-          const task = this.taskService.getTask(wt.taskId);
-          if (!task || ['completed', 'failed', 'cancelled', 'archived'].includes(task.status)) {
-            await this.workspaceManager.removeWorktree(repoPath, wt.taskId).catch(() => {});
-            worktreesRemoved++;
-          }
-        }
-      }
+    if (archived > 0) {
+      log.info('Archive scan complete', { archived });
     }
-
-    if (archived > 0 || worktreesRemoved > 0 || branchesDeleted > 0) {
-      log.info('Archive scan complete', { archived, worktreesRemoved, branchesDeleted });
-    }
-    return { archived, worktreesRemoved, branchesDeleted };
+    return { archived };
   }
 
   private getArchivePolicy(projectId?: string): ArchivePolicy {

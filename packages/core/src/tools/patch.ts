@@ -83,8 +83,8 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
       for (const patch of patches) {
         const { resolved: filePath, access } = resolveAndCheckAccess(patch.file, workspacePath, policy);
 
-        if (access !== 'readwrite') {
-          return JSON.stringify({ status: 'denied', error: `Write operations are only allowed in your own workspace or the shared workspace. Cannot ${patch.action}: ${patch.file}` });
+        if (access === 'denied') {
+          return JSON.stringify({ status: 'denied', error: `Write denied: this path belongs to another agent's workspace. Cannot ${patch.action}: ${patch.file}` });
         }
 
         const check = guard.validateFilePath(filePath);

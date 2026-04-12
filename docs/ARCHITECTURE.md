@@ -29,7 +29,7 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
 │                Agent Runtime (@markus/core)                   │
 │  Agent · Mailbox · AttentionController · ContextEngine        │
-│  LLMRouter · Memory · WorkspaceManager · HeartbeatScheduler   │
+│  LLMRouter · Memory · HeartbeatScheduler                      │
 │  Tools · MCP Client · ReviewService                           │
 └──────────────────────────┬──────────────────────────────────┘
                            │
@@ -48,7 +48,7 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ```
 packages/
 ├── shared/       # Shared types, constants, utils (governance/project/knowledge types)
-├── core/         # Agent runtime (core engine) + WorkspaceManager + ReviewService
+├── core/         # Agent runtime (core engine) + ReviewService
 ├── storage/      # Database schema + Repository layer
 ├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
 ├── comms/        # Communication adapters (Feishu, etc.)
@@ -161,7 +161,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | Tool | Description |
 |------|-------------|
 | `shell_execute` | Run shell commands (auto-injects Agent identity into git commit) |
-| `file_read` / `file_write` / `file_edit` | File read/write/edit (restricted to task working directory) |
+| `file_read` / `file_write` / `file_edit` | File read/write/edit (writes blocked only to other agents' directories) |
 | `file_list` | List directory contents |
 | `web_fetch` / `web_search` | HTTP requests / web search |
 | `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
@@ -253,7 +253,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 2. Shared behavior norms (SHARED.md: workflow overview, governance rules, knowledge sharing, etc.)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
-5. **Current workspace** (branch name, working directory, base branch)
+5. **Current workspace** (agent workspace path, shared workspace)
 6. **Agent trust level** (current level and permission description)
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
@@ -292,11 +292,12 @@ LLMRouter
 
 ### 4.2 Workspace Isolation
 
-When a task is bound to a project with a repository, the agent's file tools are rebound to the project repo. The agent manages its own workspace setup (branching, isolation strategy) via `shell_execute` — including `git worktree add`, `git checkout -b`, etc. Workflow details like branching strategy, merge process, and review workflow are defined by **role templates and team norms**, not by the core system.
+Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The only hard enforcement is that agents **cannot write to other agents' directories** — this prevents cross-agent interference. All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.
 
-- The system provides: tool access to the project repo, branch/base-branch info in context
-- The agent decides: branching strategy, workspace isolation, merge workflow
-- File access control ensures agents only write within their assigned project repo
+- The platform enforces: cross-agent write isolation (deny writes to other agents' directories)
+- The platform provides via prompt: workspace path, project context, best-practice guidance
+- The agent decides: branching strategy, worktree layout, merge workflow
+- Workflow details like branching conventions and review process are defined by **role templates and team norms**, not by the platform
 
 **Git command governance** (three-tier model):
 
@@ -339,9 +340,8 @@ Agent completes work
 
 ### 4.5 Archival and Lifecycle
 
-- Completed tasks auto-archive after configurable days
-- Accepted tasks auto-clean workspace after merge
-- Archived tasks delete branch after configurable days
+- Completed tasks auto-archive after configurable days (`autoArchiveAfterDays`)
+- Task logs and audit logs retained for configurable periods
 
 ### 4.6 Stall Detection
 
@@ -497,7 +497,7 @@ Agents understand the workflow and governance rules through three layers:
 |-------|------|------|
 | **SHARED.md (static norms)** | `templates/roles/SHARED.md` | Shared behavior for all Agents: workflow map, task governance, workspace discipline, formal delivery, knowledge management, trust mechanism, Git commit norms, reports and feedback |
 | **ContextEngine (dynamic injection)** | `packages/core/src/context-engine.ts` | Injected per interaction: current project context, workspace info, system announcements, human feedback, trust level, project knowledge highlights |
-| **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, shell/file tools restricted to task workspace, git commit auto-injects metadata |
+| **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, file writes blocked to other agents' directories, git commit auto-injects metadata |
 
 **Design principles:**
 - Things Agents need for **decisions** -> put in Context (project goals, governance rules, requirement context)

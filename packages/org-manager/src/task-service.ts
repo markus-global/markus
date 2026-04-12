@@ -20,7 +20,7 @@ import {
   isValidTaskTransition,
   TERMINAL_STATUSES,
 } from '@markus/shared';
-import type { AgentManager, TaskWorkspace, ReviewService, ReviewReport } from '@markus/core';
+import type { AgentManager, TaskProjectContext, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
@@ -968,31 +968,25 @@ export class TaskService {
       ? `${retryNotice}${prevContext}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`
       : `${scheduleSection}${notesSection}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
-    // Workspace management is delegated to the agent — the agent creates and
-    // manages its own workspace/branch during execution. Task-service only
-    // passes project context so the agent knows which repo to work in.
-    let taskWorkspace: TaskWorkspace | undefined;
+    // Pass project context so the agent knows which repos exist and can
+    // create worktrees in its own workspace (workspace/worktrees/task-<id>/<repo>/).
+    let taskProjectContext: TaskProjectContext | undefined;
     if (task.projectId) {
       const project = this.projectService?.getProject(task.projectId);
-      const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
-      if (repo?.localPath) {
-        taskWorkspace = {
-          repoPath: repo.localPath,
-          branch: `task/${task.id}`,
-          baseBranch: repo.defaultBranch,
-          projectContext: project ? {
-            project: {
-              id: project.id,
-              name: project.name,
-              description: project.description,
-              status: project.status,
-            },
-            repositories: project.repositories?.map(r => ({
-              localPath: r.localPath,
-              defaultBranch: r.defaultBranch,
-              role: r.role,
-            })),
-          } : undefined,
+      const repos = project?.repositories?.filter(r => r.localPath) ?? [];
+      if (repos.length > 0 && project) {
+        taskProjectContext = {
+          project: {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            status: project.status,
+          },
+          repositories: repos.map(r => ({
+            localPath: r.localPath,
+            defaultBranch: r.defaultBranch,
+            role: r.role,
+          })),
         };
       }
     }
@@ -1282,7 +1276,7 @@ export class TaskService {
           }
         },
         cancelToken,
-        taskWorkspace,
+        taskProjectContext,
         executionRound
       )
       .catch(err => {

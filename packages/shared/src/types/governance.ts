@@ -100,8 +100,6 @@ export interface AgentTrustLevel {
 
 export interface ArchivePolicy {
   autoArchiveAfterDays: number;
-  deleteWorktreeOnAcceptance: boolean;
-  deleteBranchOnArchive: boolean;
   retainTaskLogsForDays: number;
   retainAuditLogsForDays: number;
 }
