@@ -80,5 +80,89 @@
     "language": "語言",
     "theme": "主題",
     "notifications": "通知"
+  },
+  "onboarding": {
+    "steps": {
+      "welcome": {
+        "title": "歡迎使用 Markus",
+        "subtitle": "您的 AI 工作團隊，幾分鐘內即可就緒",
+        "featureAnyLlm": {
+          "label": "支援任意 LLM",
+          "desc": "Anthropic、OpenAI、Google、Ollama 等"
+        },
+        "featureCompleteTeams": {
+          "label": "完整的 AI 團隊",
+          "desc": "開發者、研究員、作家、分析師自主工作，協作配合，全天候交付成果"
+        }
+      },
+      "theme": {
+        "title": "選擇您的主題",
+        "subtitle": "您隨時可以在設定中更改"
+      },
+      "llm": {
+        "title": "設定 LLM",
+        "subtitle": "智能體需要 LLM 來思考和行動",
+        "configured": "LLM 提供者已設定",
+        "configuredDesc": "您隨時可以在設定中管理提供者。",
+        "fromEnvVars": "從環境變數",
+        "detecting": "正在偵測 API 金鑰...",
+        "noApiKeysFound": "未找到 API 金鑰。請設定環境變數（如 ANTHROPIC_API_KEY 或 OPENAI_API_KEY）後重啟伺服器。",
+        "or": "或",
+        "fromOpenClaw": "從 OpenClaw",
+        "detectOpenClaw": "偵測 OpenClaw 設定",
+        "detectingOpenClaw": "偵測中...",
+        "importModelConfigs": "匯入模型設定",
+        "importing": "匯入中...",
+        "noOpenClawFound": "未找到 OpenClaw 設定。",
+        "openClawDesc": "從現有的 OpenClaw 安裝中匯入 LLM 設定。",
+        "featureSettings": {
+          "label": "設定",
+          "desc": "管理 LLM 提供者、整合和治理"
+        },
+        "failedToApply": "套用失敗"
+      },
+      "complete": {
+        "title": "一切就緒！",
+        "subtitle": "開始建構您的 AI 工作團隊"
+      }
+    },
+    "nav": {
+      "skip": "略過",
+      "skipForNow": "暫時略過",
+      "getStarted": "開始使用",
+      "next": "下一步",
+      "back": "返回"
+    }
+  },
+  "home": {
+    "overview": "概覽",
+    "hireAgent": "+ 雇用智能體",
+    "metrics": {
+      "activeAgents": "活躍智能體",
+      "tasksInProgress": "進行中任務",
+      "pendingQueue": "待處理佇列",
+      "completed": "已完成"
+    },
+    "aiWorkforce": {
+      "title": "您的 AI 工作團隊已就緒",
+      "desc": "不到一分鐘即可開始 — 描述您的需求，讓團隊接手處理。"
+    },
+    "quickActions": {
+      "describeGoal": "描述您的目標",
+      "describeGoalDesc": "與秘書對話 — 它將組建團隊並分解任務",
+      "hireAgents": "雇用智能體",
+      "hireAgentsDesc": "瀏覽範本：開發者、研究員、作家、分析師等",
+      "createProject": "建立專案",
+      "createProjectDesc": "設定需求，讓智能體規劃、執行和交付"
+    },
+    "agentFocus": {
+      "title": "智能體焦點",
+      "totalQueued": "共 {{count}} 個排隊中",
+      "working": "工作中..."
+    },
+    "taskDistribution": {
+      "title": "任務分布",
+      "blocked": "受阻 — 需要關注"
+    }
   }
 }

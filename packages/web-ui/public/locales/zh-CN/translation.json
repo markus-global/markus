@@ -287,5 +287,89 @@
       "rejected": "已拒绝",
       "cancelled": "已取消"
     }
+  },
+  "onboarding": {
+    "steps": {
+      "welcome": {
+        "title": "欢迎使用 Markus",
+        "subtitle": "您的 AI 工作团队，几分钟内即可就绪",
+        "featureAnyLlm": {
+          "label": "支持任意 LLM",
+          "desc": "Anthropic、OpenAI、Google、Ollama 等"
+        },
+        "featureCompleteTeams": {
+          "label": "完整的 AI 团队",
+          "desc": "开发者、研究员、作家、分析师自主工作，协作配合，全天候交付成果"
+        }
+      },
+      "theme": {
+        "title": "选择您的主题",
+        "subtitle": "您随时可以在设置中更改"
+      },
+      "llm": {
+        "title": "配置 LLM",
+        "subtitle": "智能体需要 LLM 来思考和行动",
+        "configured": "LLM 提供商已配置",
+        "configuredDesc": "您随时可以在设置中管理提供商。",
+        "fromEnvVars": "从环境变量",
+        "detecting": "正在检测 API 密钥...",
+        "noApiKeysFound": "未找到 API 密钥。请设置环境变量（如 ANTHROPIC_API_KEY 或 OPENAI_API_KEY）后重启服务器。",
+        "or": "或",
+        "fromOpenClaw": "从 OpenClaw",
+        "detectOpenClaw": "检测 OpenClaw 配置",
+        "detectingOpenClaw": "检测中...",
+        "importModelConfigs": "导入模型配置",
+        "importing": "导入中...",
+        "noOpenClawFound": "未找到 OpenClaw 配置。",
+        "openClawDesc": "从现有的 OpenClaw 安装中导入 LLM 配置。",
+        "featureSettings": {
+          "label": "设置",
+          "desc": "管理 LLM 提供商、集成和治理"
+        },
+        "failedToApply": "应用失败"
+      },
+      "complete": {
+        "title": "一切就绪！",
+        "subtitle": "开始构建您的 AI 工作团队"
+      }
+    },
+    "nav": {
+      "skip": "跳过",
+      "skipForNow": "暂时跳过",
+      "getStarted": "开始使用",
+      "next": "下一步",
+      "back": "返回"
+    }
+  },
+  "home": {
+    "overview": "概览",
+    "hireAgent": "+ 雇用智能体",
+    "metrics": {
+      "activeAgents": "活跃智能体",
+      "tasksInProgress": "进行中任务",
+      "pendingQueue": "待处理队列",
+      "completed": "已完成"
+    },
+    "aiWorkforce": {
+      "title": "您的 AI 工作团队已就绪",
+      "desc": "不到一分钟即可开始 — 描述您的需求，让团队接手处理。"
+    },
+    "quickActions": {
+      "describeGoal": "描述您的目标",
+      "describeGoalDesc": "与秘书对话 — 它将组建团队并分解任务",
+      "hireAgents": "雇用智能体",
+      "hireAgentsDesc": "浏览模板：开发者、研究员、作家、分析师等",
+      "createProject": "创建项目",
+      "createProjectDesc": "设置需求，让智能体规划、执行和交付"
+    },
+    "agentFocus": {
+      "title": "智能体焦点",
+      "totalQueued": "共 {{count}} 个排队中",
+      "working": "工作中..."
+    },
+    "taskDistribution": {
+      "title": "任务分布",
+      "blocked": "受阻 — 需要关注"
+    }
   }
 }

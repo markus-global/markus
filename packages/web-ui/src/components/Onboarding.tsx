@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
 
 interface Props {
@@ -17,6 +18,7 @@ interface OpenClawPreview { found: boolean; summary: { configPath: string; model
 const LLM_STEP = 2;
 
 export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
+  const { t } = useTranslation();
   const [step, setStep] = useState(0);
 
   // LLM setup state
@@ -88,7 +90,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
         setSetupMsg({ type: 'ok', text: data.message });
         setLlmConfigured(true);
       } else {
-        setSetupMsg({ type: 'err', text: 'Failed to apply' });
+        setSetupMsg({ type: 'err', text: t('onboarding.steps.llm.failedToApply') });
       }
     } catch { setSetupMsg({ type: 'err', text: 'Network error' }); }
     finally { setEnvApplying(false); }
@@ -136,8 +138,8 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
   const steps = [
     // Step 0: Welcome
     {
-      title: 'Welcome to Markus',
-      subtitle: 'Your AI workforce, ready in minutes',
+      title: t('onboarding.steps.welcome.title'),
+      subtitle: t('onboarding.steps.welcome.subtitle'),
       content: (
         <div className="space-y-4 text-fg-secondary text-sm leading-relaxed">
           <p>Markus runs <strong className="text-fg-primary">complete AI teams</strong> — developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock.</p>
@@ -146,7 +148,7 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
               ['24/7 Operation', 'Agents work while you sleep via heartbeat'],
               ['Team Collaboration', 'Agents delegate, review, and coordinate'],
               ['Persistent Memory', 'Five memory layers survive restarts'],
-              ['Any LLM Provider', 'Anthropic, OpenAI, Google, Ollama & more'],
+              [t('onboarding.steps.welcome.featureAnyLlm.label'), t('onboarding.steps.welcome.featureAnyLlm.desc')],
             ].map(([title, desc]) => (
               <div key={title} className="bg-surface-elevated/50 rounded-lg p-3">
                 <div className="font-medium text-fg-primary text-xs">{title}</div>
@@ -159,8 +161,8 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 1: Appearance
     {
-      title: 'Choose Your Theme',
-      subtitle: 'You can change this anytime in Settings',
+      title: t('onboarding.steps.theme.title'),
+      subtitle: t('onboarding.steps.theme.subtitle'),
       content: (
         <div className="grid grid-cols-3 gap-3">
           {themeOptions.map(opt => (
@@ -183,21 +185,21 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     },
     // Step 2: LLM Setup
     {
-      title: 'Configure LLM',
-      subtitle: 'Agents need an LLM to think and act',
+      title: t('onboarding.steps.llm.title'),
+      subtitle: t('onboarding.steps.llm.subtitle'),
       content: llmConfigured ? (
         <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl p-4">
           <span className="text-green-600 text-lg">&#10003;</span>
           <div>
-            <div className="text-sm font-medium text-green-600">LLM provider configured</div>
-            <div className="text-xs text-fg-secondary mt-0.5">You can manage providers anytime in Settings.</div>
+            <div className="text-sm font-medium text-green-600">{t('onboarding.steps.llm.configured')}</div>
+            <div className="text-xs text-fg-secondary mt-0.5">{t('onboarding.steps.llm.configuredDesc')}</div>
           </div>
         </div>
       ) : (
         <div className="space-y-4">
           <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">From Environment Variables</div>
-            {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">Detecting API keys...</div>}
+            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('onboarding.steps.llm.fromEnvVars')}</div>
+            {envLoading && <div className="text-xs text-fg-tertiary animate-pulse">{t('onboarding.steps.llm.detecting')}</div>}
             {envModels && envModels.detected.length > 0 && (
               <div className="space-y-2">
                 {envModels.detected.map(d => (
@@ -228,16 +230,16 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
 
           <div className="flex items-center gap-3">
             <div className="flex-1 h-px bg-border-default" />
-            <span className="text-xs text-fg-tertiary">or</span>
+            <span className="text-xs text-fg-tertiary">{t('onboarding.steps.llm.or')}</span>
             <div className="flex-1 h-px bg-border-default" />
           </div>
 
           <div className="space-y-2">
-            <div className="text-xs text-fg-secondary uppercase tracking-wider">From OpenClaw</div>
+            <div className="text-xs text-fg-secondary uppercase tracking-wider">{t('onboarding.steps.llm.fromOpenClaw')}</div>
             {!openclawPreview ? (
               <button onClick={() => void detectOpenclaw()} disabled={openclawLoading}
                 className="px-4 py-2 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-secondary text-sm rounded-lg transition-colors w-full">
-                {openclawLoading ? 'Detecting...' : 'Detect OpenClaw Config'}
+                {openclawLoading ? t('onboarding.steps.llm.detectingOpenClaw') : t('onboarding.steps.llm.detectOpenClaw')}
               </button>
             ) : openclawPreview.found ? (
               <div className="space-y-2">
@@ -246,11 +248,11 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
                 </div>
                 <button onClick={() => void importOpenclaw()} disabled={openclawLoading}
                   className="w-full px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                  {openclawLoading ? 'Importing...' : 'Import Model Configs'}
+                  {openclawLoading ? t('onboarding.steps.llm.importing') : t('onboarding.steps.llm.importModelConfigs')}
                 </button>
               </div>
             ) : (
-              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">No OpenClaw config found.</div>
+              <div className="text-xs text-fg-tertiary bg-surface-elevated/30 rounded-lg p-3">{t('onboarding.steps.llm.noOpenClawFound')}</div>
             )}
           </div>
 
@@ -265,14 +267,14 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
     // Step 3: Done
     {
       title: 'You\'re All Set',
-      subtitle: 'Start building your AI workforce',
+      subtitle: t('onboarding.steps.complete.subtitle'),
       content: (
         <div className="space-y-2 text-fg-secondary text-sm">
           {[
             ['Chat', 'Talk to agents or use Smart Route to auto-delegate tasks'],
             ['Projects', 'Create projects with requirements, tasks, and deliverables'],
             ['Builder', 'Hire new agents from templates or build custom roles'],
-            ['Settings', 'Manage LLM providers, integrations, and governance'],
+            [t('onboarding.steps.llm.featureSettings.label'), t('onboarding.steps.llm.featureSettings.desc')],
           ].map(([title, desc]) => (
             <div key={title} className="flex gap-3 bg-surface-elevated/50 rounded-lg p-3">
               <div className="text-brand-500 mt-0.5 shrink-0">&#x2192;</div>
@@ -315,24 +317,24 @@ export function Onboarding({ onComplete, theme, onThemeChange }: Props) {
           <div className="flex justify-between mt-8">
             {step > 0 ? (
               <button onClick={() => setStep(step - 1)} className="px-4 py-2 text-sm text-fg-secondary hover:text-fg-primary transition-colors">
-                Back
+                {t('onboarding.nav.back')}
               </button>
             ) : (
               <button onClick={onComplete} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                Skip
+                {t('onboarding.nav.skip')}
               </button>
             )}
             <div className="flex items-center gap-3">
               {step === LLM_STEP && !llmConfigured && (
                 <button onClick={handleNext} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  Skip for now
+                  {t('onboarding.nav.skipForNow')}
                 </button>
               )}
               <button
                 onClick={handleNext}
                 className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-xl transition-colors"
               >
-                {step === steps.length - 1 ? 'Get Started' : 'Next'}
+                {step === steps.length - 1 ? t('onboarding.nav.getStarted') : t('onboarding.nav.next')}
               </button>
             </div>
           </div>

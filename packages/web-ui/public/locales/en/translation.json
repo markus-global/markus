@@ -287,5 +287,89 @@
       "rejected": "Rejected",
       "cancelled": "Cancelled"
     }
+  },
+  "onboarding": {
+    "steps": {
+      "welcome": {
+        "title": "Welcome to Markus",
+        "subtitle": "Your AI workforce, ready in minutes",
+        "featureAnyLlm": {
+          "label": "Any LLM Provider",
+          "desc": "Anthropic, OpenAI, Google, Ollama & more"
+        },
+        "featureCompleteTeams": {
+          "label": "Complete AI Teams",
+          "desc": "Developers, researchers, writers, analysts that work autonomously, collaborate with each other, and deliver results around the clock"
+        }
+      },
+      "theme": {
+        "title": "Choose Your Theme",
+        "subtitle": "You can change this anytime in Settings"
+      },
+      "llm": {
+        "title": "Configure LLM",
+        "subtitle": "Agents need an LLM to think and act",
+        "configured": "LLM provider configured",
+        "configuredDesc": "You can manage providers anytime in Settings.",
+        "fromEnvVars": "From Environment Variables",
+        "detecting": "Detecting API keys...",
+        "noApiKeysFound": "No API keys found. Set environment variables like ANTHROPIC_API_KEY or OPENAI_API_KEY and restart the server.",
+        "or": "or",
+        "fromOpenClaw": "From OpenClaw",
+        "detectOpenClaw": "Detect OpenClaw Config",
+        "detectingOpenClaw": "Detecting...",
+        "importModelConfigs": "Import Model Configs",
+        "importing": "Importing...",
+        "noOpenClawFound": "No OpenClaw config found.",
+        "openClawDesc": "Import model configs from an existing OpenClaw installation.",
+        "featureSettings": {
+          "label": "Settings",
+          "desc": "Manage LLM providers, integrations, and governance"
+        },
+        "failedToApply": "Failed to apply"
+      },
+      "complete": {
+        "title": "You're All Set",
+        "subtitle": "Start building your AI workforce"
+      }
+    },
+    "nav": {
+      "skip": "Skip",
+      "skipForNow": "Skip for now",
+      "getStarted": "Get Started",
+      "next": "Next",
+      "back": "Back"
+    }
+  },
+  "home": {
+    "overview": "Overview",
+    "hireAgent": "+ Hire Agent",
+    "metrics": {
+      "activeAgents": "Active Agents",
+      "tasksInProgress": "Tasks In Progress",
+      "pendingQueue": "Pending Queue",
+      "completed": "Completed"
+    },
+    "aiWorkforce": {
+      "title": "Your AI workforce is ready",
+      "desc": "Get started in under a minute — describe what you need and let your team take it from here."
+    },
+    "quickActions": {
+      "describeGoal": "Describe Your Goal",
+      "describeGoalDesc": "Chat with the Secretary — it will assemble a team and break down tasks",
+      "hireAgents": "Hire Agents",
+      "hireAgentsDesc": "Browse templates: developers, researchers, writers, analysts, and more",
+      "createProject": "Create a Project",
+      "createProjectDesc": "Set up requirements and let agents plan, execute, and deliver"
+    },
+    "agentFocus": {
+      "title": "Agent Focus",
+      "totalQueued": "{{count}} total queued",
+      "working": "Working..."
+    },
+    "taskDistribution": {
+      "title": "Task Distribution",
+      "blocked": "blocked — needs attention"
+    }
   }
 }
