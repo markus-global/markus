@@ -138,7 +138,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -336,115 +336,123 @@ export class ContextEngine {
       }
     }
 
-    if (opts.deliverableContext || opts.knowledgeContext) {
+    const isDream = opts.scenario === 'memory_consolidation';
+
+    if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
       parts.push('\n## Shared Deliverables');
       parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, 3000));
     }
 
-    const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
-    if (relevantMemories.length > 0) {
-      parts.push('\n## Relevant Memories');
-      for (const mem of relevantMemories) {
-        const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-        parts.push(`- [${ts}] ${mem.content}`);
+    if (!isDream) {
+      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
+      if (relevantMemories.length > 0) {
+        parts.push('\n## Relevant Memories');
+        for (const mem of relevantMemories) {
+          const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
+          parts.push(`- [${ts}] ${mem.content}`);
+        }
       }
     }
 
-    const dailyLog = opts.memory.getRecentDailyLogs(1);
-    if (dailyLog) {
-      parts.push('\n## Recent Activity Summary');
-      parts.push(dailyLog.slice(0, 1500));
+    if (!isDream) {
+      const dailyLog = opts.memory.getRecentDailyLogs(1);
+      if (dailyLog) {
+        parts.push('\n## Recent Activity Summary');
+        parts.push(dailyLog.slice(0, 1500));
+      }
     }
 
-    if (opts.assignedTasks && opts.assignedTasks.length > 0) {
-      const priorityOrder = ['critical', 'high', 'medium', 'low'];
-      const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
-        (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
+    if (!isDream) {
+      if (opts.assignedTasks && opts.assignedTasks.length > 0) {
+        const priorityOrder = ['critical', 'high', 'medium', 'low'];
+        const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
+          (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
-      const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
-      const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
+        const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
+        const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-      const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-      const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+        const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
+        const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
 
-      const MY_TASK_LIMIT = 15;
-      const TEAM_TASK_LIMIT = 10;
+        const MY_TASK_LIMIT = 15;
+        const TEAM_TASK_LIMIT = 10;
 
-      parts.push('\n## Task Board');
+        parts.push('\n## Task Board');
 
-      parts.push('### My Tasks (assigned to you):');
-      if (myActive.length > 0) {
-        const shown = myActive.slice(0, MY_TASK_LIMIT);
-        for (const t of shown) {
-          parts.push(
-            `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
-          );
-          if (t.description) parts.push(`  ${t.description.slice(0, 150)}`);
+        parts.push('### My Tasks (assigned to you):');
+        if (myActive.length > 0) {
+          const shown = myActive.slice(0, MY_TASK_LIMIT);
+          for (const t of shown) {
+            parts.push(
+              `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
+            );
+            if (t.description) parts.push(`  ${t.description.slice(0, 150)}`);
+          }
+          if (myActive.length > MY_TASK_LIMIT) {
+            parts.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+          }
+        } else {
+          parts.push('No active tasks assigned to you.');
         }
-        if (myActive.length > MY_TASK_LIMIT) {
-          parts.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+        if (myDone.length > 0) {
+          parts.push(`_(${myDone.length} completed/closed tasks)_`);
+        }
+
+        if (otherTasks.length > 0) {
+          const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
+          const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
+          if (otherActive.length > 0) {
+            parts.push('### Team Tasks (assigned to others):');
+            const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
+            for (const t of shown) {
+              const owner = t.assignedAgentName ?? t.assignedAgentId ?? 'unassigned';
+              parts.push(
+                `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, assignee: ${owner}, priority: ${t.priority})`
+              );
+            }
+            if (otherActive.length > TEAM_TASK_LIMIT) {
+              parts.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
+            }
+          }
+          if (otherDone.length > 0) {
+            parts.push(`_(${otherDone.length} other completed/closed tasks)_`);
+          }
         }
       } else {
-        parts.push('No active tasks assigned to you.');
-      }
-      if (myDone.length > 0) {
-        parts.push(`_(${myDone.length} completed/closed tasks)_`);
+        parts.push('\n## Task Board');
+        parts.push('No tasks on the board.');
       }
 
-      if (otherTasks.length > 0) {
-        const otherActive = otherTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
-        const otherDone = otherTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
-        if (otherActive.length > 0) {
-          parts.push('### Team Tasks (assigned to others):');
-          const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
-          for (const t of shown) {
-            const owner = t.assignedAgentName ?? t.assignedAgentId ?? 'unassigned';
-            parts.push(
-              `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, assignee: ${owner}, priority: ${t.priority})`
-            );
-          }
-          if (otherActive.length > TEAM_TASK_LIMIT) {
-            parts.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
-          }
-        }
-        if (otherDone.length > 0) {
-          parts.push(`_(${otherDone.length} other completed/closed tasks)_`);
-        }
-      }
-    } else {
-      parts.push('\n## Task Board');
-      parts.push('No tasks on the board.');
+      parts.push('');
+      parts.push('### Task & Requirement Workflow');
+      parts.push('');
+      parts.push('**Requirements** (governance gate):');
+      parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
+      parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
+      parts.push('');
+      parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
+      parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
+      parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
+      parts.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
+      parts.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
+      parts.push('');
+      parts.push('**Dependencies & DAG decomposition**:');
+      parts.push('- **CRITICAL**: Use `blocked_by` to express ALL dependency relationships. If task B needs output from task A, B **MUST** include A\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks lack upstream deliverables.');
+      parts.push('- For complex goals, create a DAG of tasks. Assign each to the best team member (`team_list`). Independent tasks run in parallel; dependent tasks wait for predecessors.');
+      parts.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
+      parts.push('');
+      parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
+      parts.push('');
+      parts.push('**Communicating with the user**:');
+      parts.push('- `notify_user` — one-way status updates, progress reports, findings (no response expected)');
+      parts.push('- `request_user_chat` — ONLY when genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints). Do NOT use for routine updates.');
     }
-
-    parts.push('');
-    parts.push('### Task & Requirement Workflow');
-    parts.push('');
-    parts.push('**Requirements** (governance gate):');
-    parts.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
-    parts.push('- When governance requires it, every task MUST reference an approved `requirement_id`.');
-    parts.push('');
-    parts.push('**Task lifecycle** — Create → Execute → Review → Complete:');
-    parts.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_agent_id`). Check `task_list` first to avoid duplicates.');
-    parts.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY). System auto-fills `task_id` and `reviewer`.');
-    parts.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"what needs to change")` (auto-restarts execution). Workers MUST NOT set status=completed on their own tasks.');
-    parts.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
-    parts.push('');
-    parts.push('**Dependencies & DAG decomposition**:');
-    parts.push('- **CRITICAL**: Use `blocked_by` to express ALL dependency relationships. If task B needs output from task A, B **MUST** include A\'s ID in `blocked_by`. Without this, tasks run in parallel and downstream tasks lack upstream deliverables.');
-    parts.push('- For complex goals, create a DAG of tasks. Assign each to the best team member (`team_list`). Independent tasks run in parallel; dependent tasks wait for predecessors.');
-    parts.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
-    parts.push('');
-    parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
-    parts.push('');
-    parts.push('**Communicating with the user**:');
-    parts.push('- `notify_user` — one-way status updates, progress reports, findings (no response expected)');
-    parts.push('- `request_user_chat` — ONLY when genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints). Do NOT use for routine updates.');
 
     if (opts.environment) {
       parts.push(this.buildEnvironmentSection(opts.environment));
     }
 
-    if (opts.senderIdentity) {
+    if (!isDream && opts.senderIdentity) {
       parts.push(`\n## Current Conversation`);
       parts.push(
         `You are now talking to **${opts.senderIdentity.name}** (${opts.senderIdentity.role}).`
@@ -464,19 +472,21 @@ export class ContextEngine {
       }
     }
 
-    parts.push('\n## Tool Usage Rules');
-    parts.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
-    parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-    parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
-    parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+    if (!isDream) {
+      parts.push('\n## Tool Usage Rules');
+      parts.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
+      parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
+      parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
+      parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+    }
 
     // --- Mailbox & attention context ---
-    if (opts.mailboxContext) {
+    if (!isDream && opts.mailboxContext) {
       parts.push(this.buildMailboxSection(opts.mailboxContext));
     }
 
     // --- Chat session context for session-aware user communication ---
-    if (opts.chatSessions && opts.chatSessions.length > 0) {
+    if (!isDream && opts.chatSessions && opts.chatSessions.length > 0) {
       const sessionLines = ['\n## Your Chat Sessions with the User'];
       for (const s of opts.chatSessions.slice(0, 5)) {
         const preview = s.lastMessagePreview ? `: "${s.lastMessagePreview}"` : '';
@@ -542,7 +552,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation'): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -632,6 +642,15 @@ export class ContextEngine {
         lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
         lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
         lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        break;
+
+      case 'memory_consolidation':
+        lines.push('You are in **memory consolidation mode** (dream cycle) — a background introspective process.');
+        lines.push('You are NOT executing tasks, NOT chatting with users, NOT in a heartbeat check-in.');
+        lines.push('');
+        lines.push('Your ONLY job is to review the memory entries provided in the user message and output a JSON consolidation plan.');
+        lines.push('Do NOT call any tools. Do NOT take any actions. Do NOT discuss tasks or projects.');
+        lines.push('Respond with ONLY the JSON object as specified in the user message.');
         break;
     }
 

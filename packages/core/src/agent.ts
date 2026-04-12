@@ -483,7 +483,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -859,13 +859,23 @@ export class Agent {
         }
 
         case 'system_event':
-        case 'daily_report':
-        case 'memory_consolidation': {
+        case 'daily_report': {
           const reply = await this.handleMessage(
             item.payload.content,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'heartbeat' }),
+          );
+          resolveResponse(reply);
+          return reply;
+        }
+
+        case 'memory_consolidation': {
+          const reply = await this.handleMessage(
+            item.payload.content,
+            undefined,
+            undefined,
+            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'memory_consolidation' }),
           );
           resolveResponse(reply);
           return reply;
@@ -1853,7 +1863,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -4294,7 +4304,8 @@ export class Agent {
       const response = await this.sendMessage(prompt, undefined, undefined, {
         sourceType: 'memory_consolidation',
         sessionId: `sys_${this.id}_${Date.now()}`,
-        scenario: 'heartbeat',
+        scenario: 'memory_consolidation',
+        allowedTools: new Set<string>(),
       });
 
       const jsonMatch = response.match(/\{[\s\S]*\}/);
