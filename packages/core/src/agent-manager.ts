@@ -21,6 +21,7 @@ import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
 import { createManagerTools } from './tools/manager.js';
+import { createHubTools } from './tools/hub-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
@@ -320,6 +321,8 @@ export class AgentManager {
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private templateRegistry?: TemplateRegistry;
+  private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
+  private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
   private groupChatHandlers?: {
     sendGroupMessage: (
       channelKey: string,
@@ -1080,9 +1083,44 @@ export class AgentManager {
         getTaskBoardHealth: this.taskService?.getTaskBoardHealth
           ? (orgId: string) => this.taskService!.getTaskBoardHealth!(orgId)
           : undefined,
+        hireFromTemplate: this.templateRegistry
+          ? async (templateId: string, name: string, skills?: string[]) => {
+              const newAgent = await this.createAgentFromTemplate({
+                templateId,
+                name,
+                orgId: config.orgId ?? 'default',
+                teamId: config.teamId,
+                overrides: skills ? { skills } : undefined,
+              });
+              await this.startAgent(newAgent.id);
+              return { id: newAgent.id, name: newAgent.config.name, role: newAgent.role.name };
+            }
+          : undefined,
+        listTemplates: this.templateRegistry
+          ? () => this.templateRegistry!.list().map(t => ({
+              id: t.id, name: t.name, description: t.description, roleId: t.roleId, category: t.category ?? 'general',
+            }))
+          : undefined,
+        installArtifact: this.builderService
+          ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
+          : undefined,
+        listArtifacts: this.builderService
+          ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
+          : undefined,
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
+      }
+
+      // Hub tools for agents with building skills (Secretary)
+      const BUILDING_SKILLS = new Set(['agent-building', 'team-building', 'skill-building']);
+      const hasBuilderSkill = config.skills?.some((s: string) => BUILDING_SKILLS.has(s));
+      if (hasBuilderSkill && this.hubClient) {
+        const hubTools = createHubTools({
+          searchHub: (opts) => this.hubClient!.search(opts),
+          downloadAndInstall: (itemId) => this.hubClient!.downloadAndInstall(itemId),
+        });
+        for (const tool of hubTools) agent.registerTool(tool);
       }
     }
 
@@ -1631,8 +1669,42 @@ export class AgentManager {
         getTaskBoardHealth: this.taskService?.getTaskBoardHealth
           ? (orgId: string) => this.taskService!.getTaskBoardHealth!(orgId)
           : undefined,
+        hireFromTemplate: this.templateRegistry
+          ? async (templateId: string, name: string, skills?: string[]) => {
+              const newAgent = await this.createAgentFromTemplate({
+                templateId,
+                name,
+                orgId: config.orgId ?? 'default',
+                teamId: config.teamId,
+                overrides: skills ? { skills } : undefined,
+              });
+              await this.startAgent(newAgent.id);
+              return { id: newAgent.id, name: newAgent.config.name, role: newAgent.role.name };
+            }
+          : undefined,
+        listTemplates: this.templateRegistry
+          ? () => this.templateRegistry!.list().map(t => ({
+              id: t.id, name: t.name, description: t.description, roleId: t.roleId, category: t.category ?? 'general',
+            }))
+          : undefined,
+        installArtifact: this.builderService
+          ? (type: 'agent' | 'team' | 'skill', name: string) => this.builderService!.installArtifact(type, name)
+          : undefined,
+        listArtifacts: this.builderService
+          ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
+          : undefined,
       });
       for (const tool of managerTools) agent.registerTool(tool);
+
+      const BUILDING_SKILLS_R = new Set(['agent-building', 'team-building', 'skill-building']);
+      const hasBuilderSkillR = config.skills?.some((s: string) => BUILDING_SKILLS_R.has(s));
+      if (hasBuilderSkillR && this.hubClient) {
+        const hubTools = createHubTools({
+          searchHub: (opts) => this.hubClient!.search(opts),
+          downloadAndInstall: (itemId) => this.hubClient!.downloadAndInstall(itemId),
+        });
+        for (const tool of hubTools) agent.registerTool(tool);
+      }
     }
 
     if (this.agentAuditCallback) {
@@ -1931,6 +2003,14 @@ export class AgentManager {
 
   getTemplateRegistry(): TemplateRegistry | undefined {
     return this.templateRegistry;
+  }
+
+  setBuilderService(service: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> }): void {
+    this.builderService = service;
+  }
+
+  setHubClient(client: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> }): void {
+    this.hubClient = client;
   }
 
   setGroupChatHandlers(handlers: {

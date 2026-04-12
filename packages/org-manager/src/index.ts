@@ -20,3 +20,4 @@ export { StaleDetector } from './stale-detector.js';
 export { ScheduledTaskRunner } from './scheduled-task-runner.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';
 export { searchRegistries, installSkill, type SkillSearchResult, type SkillInstallRequest, type SkillInstallResult } from './skill-service.js';
+export { BuilderService, type ArtifactInfo, type InstallResult } from './builder-service.js';

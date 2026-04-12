@@ -463,8 +463,18 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, 'default');
 
-  // Ensure builder agents exist (idempotent — skips if already created)
-  await orgService.seedBuilderAgents(firstOrgId, skillRegistry);
+  // Register builder context providers on agents with building skills (e.g. Secretary)
+  orgService.registerBuilderContextProviders(skillRegistry);
+
+  // Wire BuilderService and HubClient into AgentManager for hire/install/hub tools
+  const builderService = apiServer.getBuilderService();
+  if (builderService) {
+    agentManager.setBuilderService(builderService);
+  }
+  const hubClient = apiServer.getHubClient();
+  if (hubClient) {
+    agentManager.setHubClient(hubClient);
+  }
 
   // Wire skill search/install callbacks so agents can discover and install remote skills
   agentManager.setSkillSearcher(async (query) => searchRegistries(query));

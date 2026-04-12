@@ -720,6 +720,7 @@ export class ContextEngine {
         lines.push('3. **Reporting** — Report your team\'s progress to human stakeholders');
         lines.push('4. **Cross-team** — Coordinate with other team managers via `agent_send_message` when work crosses team boundaries');
         lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
+        lines.push('6. **Hiring** — Use `team_list_templates` + `team_hire_agent` to recruit agents; use `builder_install` to deploy custom-built or Hub-sourced artifacts');
       }
     } else {
       lines.push(`- Name: ${opts.agentName}`);

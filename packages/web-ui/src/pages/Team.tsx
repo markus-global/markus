@@ -721,6 +721,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         if (detail.params?.selectAgent) {
           handleViewProfile(detail.params.selectAgent);
         }
+        if (detail.params?.prefillMessage) {
+          setInput(detail.params.prefillMessage);
+          setTimeout(() => textareaRef.current?.focus(), 100);
+        }
         if (detail.params?.openHire === 'true') {
           // handled by ChatTeamSidebar via nav events
         }

@@ -8,6 +8,12 @@
 - Check for tasks in `pending` — approve or reject promptly so work is not stalled.
 - **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
 
+## New-Hire & Artifact Monitoring
+
+- Check `team_status` for recently hired agents that are idle, stuck, or in error — proactively send guidance or assign work via `task_create`.
+- For new hires in their first few heartbeats: review their task output quality. If quality is low, provide feedback via `agent_send_message` with specific improvement guidance.
+- Check `builder_list` for artifacts that haven't been installed yet — consider if any should be deployed.
+
 ## Correction & Learning Capture
 
 Scan your recent interactions for correction signals (inspired by OpenClaw's Reflect skill):

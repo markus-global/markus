@@ -11,51 +11,48 @@ function shortenPath(p: string): string {
   return idx >= 0 ? '~/' + p.slice(idx) : p;
 }
 
-const BUILDERS = [
+const BUILDER_PROMPTS = [
   {
-    roleId: 'agent-father',
-    roleName: 'Agent Father',
     icon: '✦',
     color: 'from-brand-500 to-purple-600',
     borderColor: 'border-brand-500/30 hover:border-brand-400/50',
     bgColor: 'bg-brand-500/10',
-    desc: 'AI Agent Architect',
-    detail: 'Design and create powerful AI agents through natural conversation. Describe the agent you need and Agent Father will configure it with the right role, skills, tools, and system prompt.',
+    title: 'Hire an Agent',
+    desc: 'Hire from templates, create custom agents, or find specialists on Markus Hub',
     examples: [
-      'A senior full-stack developer who specializes in React and Node.js',
-      'A DevOps engineer for CI/CD pipeline management',
-      'A code reviewer who enforces best practices',
+      'Hire a senior React developer',
+      'Create a custom code reviewer',
+      'Find a DevOps specialist on Hub',
     ],
+    prompt: 'I need to hire an agent: ',
   },
   {
-    roleId: 'team-factory',
-    roleName: 'Team Factory',
     icon: '◈',
     color: 'from-blue-500 to-blue-600',
     borderColor: 'border-blue-500/30 hover:border-blue-400/50',
     bgColor: 'bg-blue-500/10',
-    desc: 'AI Team Composer',
-    detail: 'Compose optimal agent teams for any project. Describe your goal and Team Factory will design the lineup with the right mix of managers, developers, reviewers, and specialists.',
+    title: 'Build a Team',
+    desc: 'Compose an optimal team for your project or deploy a team template',
     examples: [
-      'A web development team with PM, developers, and QA',
-      'A content team for a tech blog',
+      'A web dev team with PM, devs, and QA',
       'A data engineering squad',
+      'A content creation team',
     ],
+    prompt: 'I need to build a team for: ',
   },
   {
-    roleId: 'skill-architect',
-    roleName: 'Skill Architect',
     icon: '⬡',
     color: 'from-green-500 to-green-600',
     borderColor: 'border-green-500/30 hover:border-green-400/50',
     bgColor: 'bg-green-500/10',
-    desc: 'AI Skill Designer',
-    detail: 'Create new agent skills and tool definitions. Describe the capability you want and Skill Architect will design the complete skill manifest with tools, schemas, and permissions.',
+    title: 'Create a Skill',
+    desc: 'Design new capabilities that agents can learn and use',
     examples: [
-      'A skill that analyzes Git repos and generates changelogs',
-      'A web scraping skill for extracting structured data',
-      'A database migration tool with rollback support',
+      'A Git changelog generator',
+      'A web scraping skill',
+      'A database migration tool',
     ],
+    prompt: 'I need a skill that: ',
   },
 ];
 
@@ -116,8 +113,6 @@ export function AgentBuilder() {
   const [hubDeleteTarget, setHubDeleteTarget] = useState<{ key: string; name: string } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const builderNames = new Set(BUILDERS.map(b => b.roleName));
-
   const loadAll = useCallback(() => {
     setLoading(true);
     Promise.all([
@@ -170,12 +165,12 @@ export function AgentBuilder() {
     return () => window.removeEventListener('markus:navigate', onNav);
   }, [loadAll]);
 
-  const navigateToBuilder = (_roleId: string, roleName: string) => {
-    const builderAgent = agents.find(a => a.role === roleName || a.name === roleName);
-    if (builderAgent) {
-      navBus.navigate(PAGE.TEAM, { agentId: builderAgent.id });
+  const navigateToSecretary = (prompt: string) => {
+    const secretary = agents.find(a => a.role === 'Secretary' || a.name === 'Secretary');
+    if (secretary) {
+      navBus.navigate(PAGE.TEAM, { agentId: secretary.id, prefillMessage: prompt });
     } else {
-      navBus.navigate(PAGE.TEAM);
+      navBus.navigate(PAGE.TEAM, { prefillMessage: prompt });
     }
   };
 
@@ -287,20 +282,20 @@ export function AgentBuilder() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className={`max-w-4xl ${isMobile ? 'px-4 py-5' : 'px-6 py-10'}`}>
-        {/* Builder cards */}
+        {/* Builder prompts → navigate to Secretary */}
         <div className="mb-10">
           <h1 className="text-2xl font-bold text-fg-primary">Builder</h1>
           <p className="text-sm text-fg-tertiary mt-2">
-            Create agents, teams, and skills through AI-powered conversations.
-            Choose a builder to get started.
+            Hire agents, build teams, and create skills. Your Secretary handles the entire process
+            — from sourcing to onboarding.
           </p>
         </div>
 
         <div className="grid gap-5">
-          {BUILDERS.map(b => (
+          {BUILDER_PROMPTS.map(b => (
             <button
-              key={b.roleId}
-              onClick={() => navigateToBuilder(b.roleId, b.roleName)}
+              key={b.title}
+              onClick={() => navigateToSecretary(b.prompt)}
               className={`group text-left w-full rounded-xl border ${b.borderColor} bg-surface-secondary/60 ${isMobile ? 'p-4' : 'p-6'} transition-all hover:bg-surface-secondary/80 hover:shadow-lg`}
             >
               <div className={`flex items-start ${isMobile ? 'gap-3' : 'gap-5'}`}>
@@ -310,17 +305,14 @@ export function AgentBuilder() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className={`${isMobile ? 'text-base' : 'text-lg'} font-semibold bg-gradient-to-r ${b.color} bg-clip-text text-transparent`}>
-                      {b.roleName}
+                      {b.title}
                     </h3>
-                    <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{b.desc}</span>
-                    {agents.find(a => a.role === b.roleName || a.name === b.roleName) && (
-                      <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Agent online" />
-                    )}
                   </div>
-                  <p className="text-sm text-fg-secondary leading-relaxed">{b.detail}</p>
+                  <p className="text-sm text-fg-secondary leading-relaxed">{b.desc}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {b.examples.map((ex, i) => (
-                      <span key={i} className="text-[11px] text-fg-tertiary bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default">
+                      <span key={i} className="text-[11px] text-fg-tertiary bg-surface-elevated/60 rounded-full px-3 py-1 border border-border-default cursor-pointer hover:bg-surface-elevated/80 hover:text-fg-secondary transition-colors"
+                        onClick={(e) => { e.stopPropagation(); navigateToSecretary(b.prompt + ex); }}>
                         &ldquo;{ex}&rdquo;
                       </span>
                     ))}
@@ -333,12 +325,6 @@ export function AgentBuilder() {
             </button>
           ))}
         </div>
-
-        {agents.length > 0 && !agents.some(a => BUILDERS.some(b => a.role === b.roleName || a.name === b.roleName)) && (
-          <div className="mt-8 p-4 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-600 text-xs">
-            Builder agents have not been created yet. They will be automatically seeded on next server restart.
-          </div>
-        )}
 
         {/* Artifact management section */}
         <div className="mt-14 mb-4">

@@ -92,6 +92,7 @@ Contains:
 - Manager info (for workers)
 - Colleague list (name, role, type, status, skills)
 - Human team members
+- **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
 
 #### Task Board (§19)
 Source: `opts.assignedTasks`.  
@@ -308,7 +309,7 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_chat`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_chat`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent-to-user communication:
 | Situation | Tool | Example |
@@ -400,12 +401,13 @@ This ensures that modern models with large output windows are not artificially c
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
 1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, etc.)
-2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`)
-3. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
-4. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
-5. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
-6. **Skill-provided tools**: MCP tools from activated skills
-7. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
+2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`)
+3. **Hub tools**: Added for agents with building skills — Secretary only (e.g., `hub_search`, `hub_install`)
+4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)
+5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
+6. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
+7. **Skill-provided tools**: MCP tools from activated skills
+8. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
 
 ---
 
