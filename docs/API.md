@@ -149,6 +149,166 @@ All requests require authentication via one of:
 
 ---
 
+## Builder Service
+
+Builder Service allows installation and management of Agent, Team, and Skill artifacts. It operates on the `~/.markus/builder-artifacts` directory.
+
+### Service Location
+- **File**: `packages/org-manager/src/builder-service.ts`
+- **Instantiated by**: OrgService during initialization
+
+### Types
+
+```typescript
+interface ArtifactInfo {
+  type: string;           // 'agent' | 'team' | 'skill'
+  name: string;
+  description?: string;
+  meta: Record<string, unknown>;
+  path: string;            // Absolute filesystem path
+  updatedAt: string;       // ISO timestamp
+}
+
+interface InstallResult {
+  type: string;
+  installed: {
+    name: string;
+    path: string;
+    status: string;
+  };
+}
+```
+
+---
+
+### `listArtifacts(type?)`
+
+Lists all installed artifacts (agents, teams, skills).
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | `'agent' \| 'team' \| 'skill'` | No | Filter by artifact type |
+
+**Returns:** `ArtifactInfo[]` — Array of artifact information
+
+**Example:**
+```typescript
+const allArtifacts = builderService.listArtifacts();
+// => [{ type: 'agent', name: 'Secretary', path: '/...', ... }, ...]
+
+const agentsOnly = builderService.listArtifacts('agent');
+// => [{ type: 'agent', name: 'Secretary', ... }, ...]
+```
+
+**Behavior:**
+- Scans `~/.markus/builder-artifacts/{agents,teams,skills}/` directories
+- Reads `manifest.json` from each artifact directory
+- Returns empty array if directory doesn't exist
+
+---
+
+### `installArtifact(artifactUrl, type)`
+
+Installs an artifact from a URL (local path or GitHub remote).
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `artifactUrl` | `string` | Yes | Local path (`~/...`) or GitHub (`owner/repo/path`) |
+| `type` | `'agent' \| 'team' \| 'skill'` | Yes | Target artifact type |
+
+**Returns:** `InstallResult` — Installation result with status
+
+**Example:**
+```typescript
+// Install from local path
+const result = await builderService.installArtifact(
+  '~/my-agent',
+  'agent'
+);
+
+// Install from GitHub
+const result = await builderService.installArtifact(
+  'markus-global/markus/agents/my-agent',
+  'agent'
+);
+```
+
+**Behavior:**
+1. Validates URL format (local path or GitHub shorthand)
+2. Fetches/clones artifact if remote URL
+3. Validates `manifest.json` schema
+4. Copies to `~/.markus/builder-artifacts/{type}/{name}/`
+5. For agents: creates agent entry in database
+6. For skills: registers in runtime skill registry
+
+**Error Handling:**
+| Error | Condition | Result |
+|-------|-----------|--------|
+| `Invalid artifact URL` | Malformed URL | Throws `Error` |
+| `Invalid manifest` | Missing/invalid manifest.json | Throws `Error` |
+| `Artifact already installed` | Duplicate name | Returns existing info |
+
+---
+
+### `hireFromTemplate(templateName, agentName, options?)`
+
+Creates a new agent from a template artifact.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `templateName` | `string` | Yes | Template artifact name (from `listArtifacts('agent')`) |
+| `agentName` | `string` | Yes | Name for the new agent |
+| `options` | `HireOptions` | No | Additional configuration |
+
+```typescript
+interface HireOptions {
+  description?: string;      // Agent description
+  teamId?: string;           // Assign to team
+  assignedAgentId?: string;   // Initial assigned agent
+  reviewerAgentId?: string;  // Reviewer for this agent
+}
+```
+
+**Returns:** `InstallResult` with `type: 'agent'` — New agent details
+
+**Example:**
+```typescript
+// Basic hire
+const agent = await builderService.hireFromTemplate(
+  'Secretary',
+  'MySecretary'
+);
+
+// Hire with options
+const agent = await builderService.hireFromTemplate(
+  'Developer',
+  'BackendDev',
+  {
+    description: 'Backend development specialist',
+    teamId: 'team_123',
+  }
+);
+```
+
+**Behavior:**
+1. Validates template exists in builder artifacts
+2. Creates copy in `~/.markus/agents/{agentId}/`
+3. Generates `manifest.json` with new name
+4. Registers agent in org service
+5. Assigns to team if specified
+
+**Error Handling:**
+| Error | Condition | Result |
+|-------|-----------|--------|
+| `Template not found` | Template artifact doesn't exist | Throws `Error` |
+| `Agent already exists` | Duplicate agent name | Throws `Error` |
+| `Team not found` | Invalid teamId | Throws `Error` |
+
+---
+
 ## WebSocket
 
 **Connection**: `ws://localhost:8056`
