@@ -97,6 +97,7 @@ export type ApprovalCallback = (request: {
   toolName: string;
   toolArgs: Record<string, unknown>;
   reason: string;
+  taskId?: string;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskWorkspace {
@@ -1633,6 +1634,7 @@ export class Agent {
       toolName: 'shell_execute',
       toolArgs: { command },
       reason,
+      taskId: this.getCurrentTaskId(),
     });
   }
 
@@ -3758,6 +3760,7 @@ export class Agent {
           toolName: toolCall.name,
           toolArgs: toolCall.arguments,
           reason: `Agent wants to execute '${toolCall.name}'`,
+          taskId: this.getCurrentTaskId(),
         });
         if (!result.approved) {
           const reason = result.comment ? `: ${result.comment}` : '';

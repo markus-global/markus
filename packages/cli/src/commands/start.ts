@@ -649,13 +649,18 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setApprovalHandler(async (agentId, request) => {
     const agents = agentManager.listAgents();
     const agentName = agents.find(a => a.id === agentId)?.name ?? agentId;
+    let title = `Tool: ${request.toolName}`;
+    if (request.toolName === 'shell_execute') {
+      const reasonMatch = request.reason.match(/requires approval:\s*(.+?)\.?\s*Command:/);
+      title = reasonMatch ? `Git: ${reasonMatch[1]}` : 'Shell: command approval';
+    }
     const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
       type: 'action',
-      title: `Tool: ${request.toolName}`,
+      title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId },
+      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId },
       targetUserId: 'default',
       expiresInMs: 5 * 60 * 1000, // 5 minutes
     });

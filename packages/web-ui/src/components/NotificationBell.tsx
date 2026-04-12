@@ -313,7 +313,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       </button>
 
       {open && createPortal(
-        <div ref={panelRef} className="fixed w-80 max-h-[28rem] bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left }}>
+        <div ref={panelRef} className="fixed w-[28rem] max-h-[36rem] bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left }}>
           {/* Tabs + Close */}
           <div className="flex border-b border-border-default shrink-0">
             <button
@@ -357,28 +357,40 @@ export function NotificationBell({ collapsed, userId }: Props) {
                 <div className="p-6 text-center text-xs text-fg-tertiary">No approval requests</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {approvals.filter(a => a.status === 'pending').map(a => (
-                    <div key={a.id} className="px-3 py-3 space-y-2">
-                      <button onClick={() => navigateForApproval(a)} className="w-full text-left flex items-start gap-2 hover:bg-surface-overlay rounded transition-colors">
+                  {approvals.filter(a => a.status === 'pending').map(a => {
+                    const cmd = a.details?.command as string | undefined;
+                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    return (
+                    <div key={a.id} className="px-3 py-3 space-y-2.5">
+                      <div className="flex items-start gap-2">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 mt-0.5 shrink-0">
                           <path d={TYPE_ICON.approval_request} />
                         </svg>
                         <div className="flex-1 min-w-0">
-                          <div className="text-xs text-fg-primary font-medium">{a.title}</div>
-                          <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName} &middot; {timeAgo(a.requestedAt)}</div>
-                          <p className="text-[11px] text-fg-secondary mt-1 line-clamp-3">{a.description}</p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-fg-primary font-medium">{a.title}</span>
+                            <span className="text-[10px] text-fg-tertiary shrink-0">{timeAgo(a.requestedAt)}</span>
+                          </div>
+                          <div className="text-[11px] text-fg-tertiary mt-0.5">{a.agentName}</div>
                         </div>
+                      </div>
+                      <p className="text-[11px] text-fg-secondary leading-relaxed">{descClean}</p>
+                      {cmd && (
+                        <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed">{cmd}</pre>
+                      )}
+                      <button onClick={() => navigateForApproval(a)} className="text-[11px] text-brand-500 hover:text-brand-400 transition-colors">
+                        View execution context →
                       </button>
                       {rejectingId === a.id ? (
-                        <div className="pl-5 space-y-1.5">
+                        <div className="space-y-1.5">
                           <input
                             type="text"
                             autoFocus
-                            placeholder="Reason for rejection (optional)"
+                            placeholder="Reason for rejection (optional, Enter to submit)"
                             value={rejectComment}
                             onChange={e => setRejectComment(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
-                            className="w-full px-2 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                            className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
                           />
                           <div className="flex gap-2">
                             <button
@@ -393,7 +405,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex gap-2 pl-5">
+                        <div className="flex gap-2">
                           <button
                             disabled={responding === a.id}
                             onClick={() => handleApprovalResponse(a.id, true)}
@@ -407,7 +419,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                   {approvals.filter(a => a.status !== 'pending').slice(0, 20).map(a => (
                     <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 opacity-50 hover:opacity-70 transition-colors">
                       <div className="flex items-center gap-2">
