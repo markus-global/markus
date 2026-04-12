@@ -27,7 +27,7 @@ export const TASK_TRANSITIONS: Readonly<Record<ItemStatus, ReadonlySet<ItemStatu
   review:      new Set<ItemStatus>(['completed', 'in_progress', 'cancelled']),
   completed:   new Set<ItemStatus>(['archived', 'in_progress']),
   failed:      new Set<ItemStatus>(['in_progress', 'archived']),
-  rejected:    new Set<ItemStatus>(['archived']),
+  rejected:    new Set<ItemStatus>(['archived', 'in_progress']),
   cancelled:   new Set<ItemStatus>(['archived']),
   archived:    new Set<ItemStatus>([]),
 };
