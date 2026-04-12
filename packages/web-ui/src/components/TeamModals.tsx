@@ -26,29 +26,43 @@ export function Field({ label, children }: { label: string; children: React.Reac
 
 // ─── NewTeamModal ─────────────────────────────────────────────────────────────
 
-export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, description?: string) => void }) {
+export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string, description: string) => void }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+
+  const submit = () => {
+    setError('');
+    if (!name.trim()) { setError('Team name is required'); return; }
+    onCreate(name.trim(), description.trim());
+  };
+
   return (
-    <Modal onClose={onClose} title={t('modal.new_team')}>
+    <Modal onClose={onClose} title={t('team.create')} width="w-[420px]">
       <div className="space-y-4">
-        <Field label={t('modal.team_name')}>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder={t('modal.team_name_placeholder')} className="input" autoFocus
-            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onCreate(name.trim(), description.trim() || undefined); }}
+        <Field label={t('team.name') + ' *'}>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder={t('team.name_placeholder')}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+            autoFocus
           />
         </Field>
-        <Field label={t('modal.description_optional')}>
-          <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder={t('modal.team_description_placeholder')} className="input" rows={2} />
+        <Field label={t('team.description')}>
+          <textarea
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder={t('team.description_placeholder')}
+            rows={3}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none resize-none"
+          />
         </Field>
-        <div className="text-xs text-fg-tertiary">
-          {t('modal.team_member_hint')}
-        </div>
+        {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
-          <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white">
-            Create Team
-          </button>
+          <button onClick={submit} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white">{t('team.create')}</button>
         </div>
       </div>
     </Modal>
@@ -58,7 +72,6 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
 // ─── AddHumanModal ────────────────────────────────────────────────────────────
 
 export function AddHumanModal({
-  const { t } = useTranslation();
   teamId, teams, onClose, onAdd,
 }: {
   teamId?: string;
@@ -66,6 +79,7 @@ export function AddHumanModal({
   onClose: () => void;
   onAdd: (name: string, role: string, email: string | undefined, password: string | undefined, teamId: string | undefined) => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [role, setRole] = useState('member');
   const [email, setEmail] = useState('');
@@ -82,49 +96,73 @@ export function AddHumanModal({
   };
 
   return (
-    <Modal onClose={onClose} title={t('modal.add_human_member')} width="w-[460px]">
+    <Modal onClose={onClose} title={t('team.add_human')} width="w-[460px]">
       <div className="space-y-4">
-        <Field label={t('modal.name_required')}>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder={t('modal.full_name')} className="input" autoFocus />
+        <Field label={t('member.name') + ' *'}>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder={t('member.name_placeholder')}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+            autoFocus
+          />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={t('modal.role')}>
-            <select value={role} onChange={e => setRole(e.target.value)} className="input">
-              <option value="owner">{t('role.owner')}</option>
-              <option value="admin">{t('role.admin')}</option>
-              <option value="member">{t('role.member')}</option>
-              <option value="guest">{t('role.guest')}</option>
-            </select>
-          </Field>
-          <Field label={t('modal.assign_to_team')}>
-            <select value={selectedTeam} onChange={e => setSelectedTeam(e.target.value)} className="input">
-              <option value="">{t('modal.no_team')}</option>
-              {teams.map(t => (
-                <option key={t.id} value={t.id}>{t.name}</option>
+        <Field label={t('common.role')}>
+          <select
+            value={role}
+            onChange={e => setRole(e.target.value)}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+          >
+            <option value="member">{t('role.member')}</option>
+            <option value="reviewer">{t('role.reviewer')}</option>
+            <option value="manager">{t('role.manager')}</option>
+          </select>
+        </Field>
+        <Field label={t('member.email')}>
+          <input
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            type="email"
+            placeholder={t('member.email_placeholder')}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+          />
+        </Field>
+        {teams.length > 1 && (
+          <Field label={t('common.team')}>
+            <select
+              value={selectedTeam}
+              onChange={e => setSelectedTeam(e.target.value)}
+              className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+            >
+              <option value="">{t('common.none')}</option>
+              {teams.map(team => (
+                <option key={team.id} value={team.id}>{team.name}</option>
               ))}
             </select>
           </Field>
-        </div>
-        <Field label={t('modal.email')}>
-          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Optional (required for login)" className="input" />
+        )}
+        <Field label={t('auth.password')}>
+          <input
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            type="password"
+            placeholder={t('member.password_placeholder')}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+          />
         </Field>
-        <div className="border-t border-border-default pt-3">
-          <div className="text-xs text-fg-tertiary mb-3">Set a password to allow this person to log in.</div>
-          <Field label={t('modal.password')}>
-            <input value={password} onChange={e => setPassword(e.target.value)} type="password" placeholder="Leave blank for no login access" className="input" />
-          </Field>
-          {password && (
-            <div className="mt-3">
-              <Field label={t('modal.confirm_password')}>
-                <input value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} type="password" placeholder="Repeat password" className="input" />
-              </Field>
-            </div>
-          )}
-        </div>
+        <Field label={t('auth.confirm_password')}>
+          <input
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            type="password"
+            placeholder={t('member.confirm_password_placeholder')}
+            className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+          />
+        </Field>
         {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
-          <button onClick={submit} className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 rounded-lg text-white">Add Member</button>
+          <button onClick={submit} className="px-4 py-2 text-sm bg-green-700 hover:bg-green-600 rounded-lg text-white">{t('team.add_human')}</button>
         </div>
       </div>
     </Modal>
@@ -134,7 +172,6 @@ export function AddHumanModal({
 // ─── AddExistingModal ─────────────────────────────────────────────────────────
 
 export function AddExistingModal({
-  const { t } = useTranslation();
   teamId, ungrouped, onClose, onAdd,
 }: {
   teamId: string;
@@ -142,6 +179,7 @@ export function AddExistingModal({
   onClose: () => void;
   onAdd: (memberId: string, memberType: 'human' | 'agent') => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Modal onClose={onClose} title={t('team.invite_member')}>
       <div className="space-y-3">
@@ -161,7 +199,7 @@ export function AddExistingModal({
                 </div>
                 <div className="flex-1">
                   <div className="font-medium text-sm">{m.name}</div>
-                  <div className="text-xs text-fg-tertiary">{m.role} · {m.type === 'agent' ? 'AI' : 'Human'}</div>
+                  <div className="text-xs text-fg-tertiary">{m.role} · {m.type === 'agent' ? t('common.agent') : t('common.human')}</div>
                 </div>
                 {m.status && (
                   <span className={`w-2 h-2 rounded-full ${m.status === 'idle' ? 'bg-green-400' : m.status === 'working' ? 'bg-blue-400' : 'bg-gray-600'}`} />
@@ -171,7 +209,7 @@ export function AddExistingModal({
           </div>
         )}
         <div className="flex justify-end pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Close</button>
+          <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.close')}</button>
         </div>
       </div>
     </Modal>
@@ -181,7 +219,12 @@ export function AddExistingModal({
 // ─── OpenClaw Import Panel ────────────────────────────────────────────────────
 
 export function OpenClawImportModal({
-  const { t } = useTranslation(); onClose, onConnected }: { onClose: () => void; onConnected: () => void }) {
+  onClose, onConnected,
+}: {
+  onClose: () => void;
+  onConnected: () => void;
+}) {
+  const { t } = useTranslation();
   const [agentName, setAgentName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -199,86 +242,107 @@ export function OpenClawImportModal({
       const res = await fetch('/api/external-agents/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ externalAgentId: extId, agentName: agentName.trim(), orgId: 'default', capabilities: ['general'] }),
+        body: JSON.stringify({ externalAgentId: extId }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `HTTP ${res.status}`);
-      }
       const data = await res.json();
-      setResult({
-        externalAgentId: extId,
-        markusAgentId: data.registration?.markusAgentId,
-        token: data.token,
-        gatewayUrl: data.gatewayUrl,
-      });
-    } catch (e) {
-      setError(String(e));
+      if (!res.ok) throw new Error(data.error || 'Registration failed');
+      setResult(data);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const doCopy = (text: string, label: string) => {
+  const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    setCopied(label);
+    setCopied(text);
     setTimeout(() => setCopied(null), 2000);
   };
 
+  const handleConnect = () => {
+    onConnected();
+    onClose();
+  };
+
   return (
-    <Modal onClose={onClose} title="Import OpenClaw Agent" width="w-[560px]">
-      {result ? (() => {
-        const gwUrl = result.gatewayUrl ?? `${window.location.origin}/api/gateway`;
-        const connectionPrompt = `Connect to the Markus AI platform as an external agent.
-
-Gateway URL: ${gwUrl}
-Agent ID: ${result.externalAgentId}
-${result.token ? `Bearer Token: ${result.token}` : ''}
-
-Step 1: Read the integration handbook at GET ${gwUrl}/manual (set header Authorization: Bearer <token above>). It describes the full Markus concept model, API endpoints, and collaboration patterns.
-Step 2: Start a sync loop — call POST ${gwUrl}/sync every 30 seconds with your status. The response includes assigned tasks, inbox messages, team context (colleagues), and project context (requirements).
-Step 3: Accept and execute tasks, report progress, and communicate with teammates via the sync message system.`;
-
-        return (
-          <>
-            <div className="text-center py-6">
-              <div className="text-3xl mb-3 text-green-600">✓</div>
-              <div className="text-base text-green-600 font-medium mb-1">Agent registered</div>
-              <div className="text-sm text-fg-secondary mt-1"><strong>{agentName}</strong></div>
+    <Modal onClose={onClose} title={t('modal.import_agent')} width="w-[480px]">
+      {!result ? (
+        <div className="space-y-4">
+          <p className="text-sm text-fg-secondary">{t('modal.import_desc')}</p>
+          <Field label={t('agent.name') + ' *'}>
+            <input
+              value={agentName}
+              onChange={e => setAgentName(e.target.value)}
+              placeholder={t('agent.name_placeholder')}
+              className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+              autoFocus
+            />
+          </Field>
+          {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
+            <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white disabled:opacity-50">
+              {loading ? t('modal.connecting') : t('modal.register')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div className="text-center py-4">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-green-500/20 flex items-center justify-center">
+              <span className="text-3xl">✓</span>
             </div>
+            <div className="font-semibold text-lg">{t('modal.connection_success')}</div>
+          </div>
 
-            <div className="bg-brand-500/10 border border-brand-500/30 rounded-xl p-4">
-              <div className="text-xs text-fg-secondary mb-3">
-                Copy this prompt and paste it into your OpenClaw agent, Cursor, or any AI assistant.
+          <div className="space-y-3">
+            <Field label="Agent ID">
+              <div className="flex gap-2">
+                <code className="flex-1 px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm font-mono">{result.externalAgentId}</code>
+                <button onClick={() => copyToClipboard(result.externalAgentId)} className="px-3 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">
+                  {copied === result.externalAgentId ? '✓' : t('common.copy')}
+                </button>
               </div>
-              <button onClick={() => doCopy(connectionPrompt, 'prompt')}
-                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied === 'prompt' ? 'bg-green-600 text-white' : 'bg-brand-700 hover:bg-brand-600 text-white'}`}
-              >{copied === 'prompt' ? 'Copied!' : 'Copy Connection Prompt'}</button>
-            </div>
-
-            <div className="flex justify-end pt-5">
-              <button onClick={() => { onConnected(); }} className="px-5 py-2 text-sm bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary border border-border-default">Done</button>
-            </div>
-          </>
-        );
-      })() : (
-        <>
-          <div className="text-xs text-fg-secondary mb-4">
-            Register an OpenClaw agent to join your Markus organization. After registration, you'll get a ready-to-use connection config.
-          </div>
-          <div className="space-y-4">
-            <Field label="Agent Name *">
-              <input className="input" placeholder="e.g. Alice" value={agentName} onChange={e => setAgentName(e.target.value)} autoFocus />
             </Field>
-            {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
-            <div className="flex justify-end gap-3 pt-2">
-              <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
-              <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white disabled:opacity-50">
-                {loading ? t('modal.connecting') : t('modal.import')}
-              </button>
-            </div>
+            <Field label="Access Token">
+              <div className="flex gap-2">
+                <code className="flex-1 px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm font-mono overflow-x-auto">{result.token}</code>
+                <button onClick={() => copyToClipboard(result.token || '')} className="px-3 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">
+                  {copied === result.token ? '✓' : t('common.copy')}
+                </button>
+              </div>
+            </Field>
+            <Field label="Gateway URL">
+              <div className="flex gap-2">
+                <code className="flex-1 px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm font-mono overflow-x-auto">{result.gatewayUrl}</code>
+                <button onClick={() => copyToClipboard(result.gatewayUrl || '')} className="px-3 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">
+                  {copied === result.gatewayUrl ? '✓' : t('common.copy')}
+                </button>
+              </div>
+            </Field>
           </div>
-        </>
+
+          <div className="text-xs text-fg-tertiary bg-surface-base border border-border-default rounded-lg px-3 py-2">
+            {t('modal.token_warning')}
+          </div>
+
+          <Field label={t('agent.name') + ' *'}>
+            <input
+              value={agentName}
+              onChange={e => setAgentName(e.target.value)}
+              placeholder={t('agent.name_placeholder')}
+              className="w-full px-3 py-2 bg-surface-base border border-border-default rounded-lg text-sm focus:border-brand-500 focus:outline-none"
+              autoFocus />
+          </Field>
+          {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
+            <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white disabled:opacity-50">
+              {loading ? t('modal.connecting') : t('modal.import')}
+            </button>
+          </div>
+        </div>
       )}
     </Modal>
   );
