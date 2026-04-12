@@ -21,7 +21,20 @@
     "back": "Back",
     "next": "Next",
     "submit": "Submit",
-    "close": "Close"
+    "close": "Close",
+    "signOut": "Sign out",
+    "version": "Version"
+  },
+  "auth": {
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "email": "Email",
+    "password": "Password",
+    "invalidCredentials": "Invalid email or password",
+    "defaultCredentials": "Default: admin@markus.local / markus123",
+    "brandName": "Markus",
+    "tagline": "AI Digital Employee Platform",
+    "logoAlt": "Markus Logo"
   },
   "agent": {
     "title": "Agents",
