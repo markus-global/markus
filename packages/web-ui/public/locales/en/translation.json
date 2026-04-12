@@ -21,7 +21,12 @@
     "back": "Back",
     "next": "Next",
     "submit": "Submit",
-    "close": "Close"
+    "close": "Close",
+    "none": "None",
+    "agent": "Agent",
+    "human": "Human",
+    "copy": "Copy",
+    "register": "Register"
   },
   "agent": {
     "title": "Agents",
@@ -34,7 +39,10 @@
     "idle": "Idle",
     "busy": "Busy",
     "offline": "Offline",
-    "online": "Online"
+    "online": "Online",
+    "name_required": "Agent name is required",
+    "registration_failed": "Registration failed",
+    "name_placeholder": "Enter agent name"
   },
   "team": {
     "title": "Teams",
@@ -44,7 +52,13 @@
     "manager": "Manager",
     "description": "Description",
     "invite_member": "Add Team Member",
-    "invite": "Add"
+    "invite": "Add",
+    "create_name_required": "Team name is required",
+    "name_placeholder": "e.g. Engineering, Marketing, Support",
+    "description_placeholder": "What does this team work on?",
+    "add_human": "Add Human Member",
+    "name_required": "Name is required",
+    "passwords_mismatch": "Passwords do not match"
   },
   "project": {
     "title": "Projects",
@@ -148,5 +162,19 @@
     "member": "Member",
     "guest": "Guest"
   },
-  "human": "Human"
+  "human": "Human",
+  "member": {
+    "name": "Name",
+    "name_placeholder": "Enter full name",
+    "email": "Email",
+    "email_placeholder": "user@example.com",
+    "password": "Password",
+    "password_placeholder": "Enter password (leave blank for auto-generated)",
+    "confirm_password": "Confirm Password",
+    "confirm_password_placeholder": "Re-enter password"
+  },
+  "auth": {
+    "password": "Password",
+    "confirm_password": "Confirm Password"
+  }
 }

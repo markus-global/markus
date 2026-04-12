@@ -34,7 +34,7 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
 
   const submit = () => {
     setError('');
-    if (!name.trim()) { setError('Team name is required'); return; }
+    if (!name.trim()) { setError(t('team.create_name_required')); return; }
     onCreate(name.trim(), description.trim());
   };
 
@@ -90,8 +90,8 @@ export function AddHumanModal({
 
   const submit = () => {
     setError('');
-    if (!name.trim()) { setError('Name is required'); return; }
-    if (password && password !== confirmPassword) { setError('Passwords do not match'); return; }
+    if (!name.trim()) { setError(t('team.name_required')); return; }
+    if (password && password !== confirmPassword) { setError(t('team.passwords_mismatch')); return; }
     onAdd(name.trim(), role, email || undefined, password || undefined, selectedTeam || undefined);
   };
 
@@ -234,7 +234,7 @@ export function OpenClawImportModal({
   const [copied, setCopied] = useState<string | null>(null);
 
   const handleRegister = async () => {
-    if (!agentName.trim()) { setError('Agent name is required'); return; }
+    if (!agentName.trim()) { setError(t('agent.name_required')); return; }
     const extId = agentName.trim().toLowerCase().replace(/\s+/g, '-');
     setLoading(true);
     setError('');
@@ -245,7 +245,7 @@ export function OpenClawImportModal({
         body: JSON.stringify({ externalAgentId: extId }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Registration failed');
+      if (!res.ok) throw new Error(data.error || t('agent.registration_failed'));
       setResult(data);
     } catch (e: any) {
       setError(e.message);

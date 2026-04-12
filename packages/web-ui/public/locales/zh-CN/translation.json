@@ -21,7 +21,12 @@
     "back": "返回",
     "next": "下一步",
     "submit": "提交",
-    "close": "关闭"
+    "close": "关闭",
+    "none": "无",
+    "agent": "智能体",
+    "human": "人员",
+    "copy": "复制",
+    "register": "注册"
   },
   "agent": {
     "title": "智能体",
@@ -34,7 +39,10 @@
     "idle": "空闲",
     "busy": "忙碌",
     "offline": "离线",
-    "online": "在线"
+    "online": "在线",
+    "name_required": "智能体名称不能为空",
+    "registration_failed": "注册失败",
+    "name_placeholder": "输入智能体名称"
   },
   "team": {
     "title": "团队",
@@ -44,7 +52,13 @@
     "manager": "管理者",
     "description": "描述",
     "invite_member": "添加团队成员",
-    "invite": "添加"
+    "invite": "添加",
+    "create_name_required": "团队名称不能为空",
+    "name_placeholder": "例如：工程、营销、客服",
+    "description_placeholder": "这个团队负责什么工作？",
+    "add_human": "添加人员成员",
+    "name_required": "姓名不能为空",
+    "passwords_mismatch": "两次密码不一致"
   },
   "project": {
     "title": "项目",
@@ -148,5 +162,19 @@
     "member": "成员",
     "guest": "访客"
   },
-  "human": "人员"
+  "human": "人员",
+  "member": {
+    "name": "姓名",
+    "name_placeholder": "输入姓名",
+    "email": "邮箱",
+    "email_placeholder": "user@example.com",
+    "password": "密码",
+    "password_placeholder": "输入密码（留空自动生成）",
+    "confirm_password": "确认密码",
+    "confirm_password_placeholder": "再次输入密码"
+  },
+  "auth": {
+    "password": "密码",
+    "confirm_password": "确认密码"
+  }
 }
