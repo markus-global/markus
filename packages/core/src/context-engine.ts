@@ -120,7 +120,7 @@ export class ContextEngine {
     };
     currentWorkspace?: {
       branch: string;
-      worktreePath: string;
+      workingDirectory: string;
       baseBranch: string;
     };
     announcements?: Array<{
@@ -214,7 +214,7 @@ export class ContextEngine {
     if (opts.currentWorkspace) {
       parts.push('\n## Your Workspace');
       parts.push(`- Branch: \`${opts.currentWorkspace.branch}\``);
-      parts.push(`- Working directory: \`${opts.currentWorkspace.worktreePath}\``);
+      parts.push(`- Working directory: \`${opts.currentWorkspace.workingDirectory}\``);
       parts.push(`- Base branch: ${opts.currentWorkspace.baseBranch}`);
       if (opts.agentWorkspace?.sharedWorkspace) {
         parts.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);

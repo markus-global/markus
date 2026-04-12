@@ -1783,25 +1783,25 @@ export class AgentManager {
   }
 
   /**
-   * Grant a reviewer agent read-only access to a task's worktree.
+   * Grant a reviewer agent read-only access to a task's workspace.
    * Called when a task enters review and a reviewer is assigned.
    */
-  grantReviewAccess(reviewerAgentId: string, worktreePath: string): void {
+  grantReviewAccess(reviewerAgentId: string, workspacePath: string): void {
     if (!this.agents.has(reviewerAgentId)) return;
     const reviewer = this.getAgent(reviewerAgentId);
-    reviewer.grantReadOnlyAccess(worktreePath);
-    log.info('Granted reviewer access to worktree', { reviewerAgentId, worktreePath });
+    reviewer.grantReadOnlyAccess(workspacePath);
+    log.info('Granted reviewer access to task workspace', { reviewerAgentId, workspacePath });
   }
 
   /**
-   * Revoke a reviewer agent's read-only access to a task's worktree.
+   * Revoke a reviewer agent's read-only access to a task's workspace.
    * Called when a review is complete or the reviewer changes.
    */
-  revokeReviewAccess(reviewerAgentId: string, worktreePath: string): void {
+  revokeReviewAccess(reviewerAgentId: string, workspacePath: string): void {
     if (!this.agents.has(reviewerAgentId)) return;
     const reviewer = this.getAgent(reviewerAgentId);
-    reviewer.revokeReadOnlyAccess(worktreePath);
-    log.info('Revoked reviewer access to worktree', { reviewerAgentId, worktreePath });
+    reviewer.revokeReadOnlyAccess(workspacePath);
+    log.info('Revoked reviewer access to task workspace', { reviewerAgentId, workspacePath });
   }
 
   setAuditCallback(

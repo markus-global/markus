@@ -1025,7 +1025,7 @@ export class OrganizationService {
     parts.push('- **`spawn_subagent`** — Spawn lightweight in-process subagents for focused subtasks (deep analysis, research, boilerplate generation) without polluting the parent agent\'s context');
     parts.push('- **`background_exec`** — Run long-running commands (builds, test suites, deployments) in background with automatic completion notifications');
     parts.push('- **`shell_execute`** — Execute any shell command, including `git` (merge, diff, branch) and `gh` CLI (PRs, issues, releases) for Git/GitHub operations');
-    parts.push('- **Worktree isolation** — Each task gets an isolated git worktree (`task/<id>` branch). Developers work in isolation; the reviewer merges after approval.');
+    parts.push('- **Workspace isolation** — Project-bound tasks get an isolated working directory (`task/<id>` branch). Agents work in isolation; the reviewer merges after approval.');
     parts.push('- **`web_search` / `web_fetch`** — Search the web and fetch page content for research, documentation lookup, and real-time information');
     parts.push('- **Task dependencies** — Use `blockedBy` to express dependencies between tasks. Blocked tasks auto-start when dependencies complete.');
     parts.push('- **Deliverables** — Use `deliverable_create` to register outputs (files, conventions, architecture decisions) as trackable artifacts');

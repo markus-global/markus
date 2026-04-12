@@ -161,7 +161,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | Tool | Description |
 |------|-------------|
 | `shell_execute` | Run shell commands (auto-injects Agent identity into git commit) |
-| `file_read` / `file_write` / `file_edit` | File read/write/edit (restricted to worktree path) |
+| `file_read` / `file_write` / `file_edit` | File read/write/edit (restricted to task working directory) |
 | `file_list` | List directory contents |
 | `web_fetch` / `web_search` | HTTP requests / web search |
 | `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
@@ -253,7 +253,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 2. Shared behavior norms (SHARED.md: workflow overview, governance rules, knowledge sharing, etc.)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
-5. **Current workspace** (branch name, worktree path, base branch)
+5. **Current workspace** (branch name, working directory, base branch)
 6. **Agent trust level** (current level and permission description)
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
@@ -292,7 +292,7 @@ LLMRouter
 
 ### 4.2 Workspace Isolation
 
-Each task gets a dedicated Git worktree in the project repo:
+When a task is bound to a project with a repository, the agent receives an isolated workspace (implemented via Git worktrees). This is an **infrastructure-level mechanism** — the workflow details (branching strategy, merge process, review workflow) are defined by **role templates and team norms**, not hardcoded in the core system.
 
 ```
 project-repo/
@@ -304,8 +304,8 @@ project-repo/
 ```
 
 - Branch naming: `task/<taskId>`
-- Agent shell/file tools are restricted to worktree path
-- Worktree cleaned after merge on approval
+- Agent shell/file tools are restricted to the task working directory
+- Workspace cleaned after merge on task acceptance
 
 ### 4.3 Formal Delivery and Review
 
@@ -339,7 +339,7 @@ Agent completes work
 ### 4.5 Archival and Lifecycle
 
 - Completed tasks auto-archive after configurable days
-- Accepted tasks auto-clean worktree after merge
+- Accepted tasks auto-clean workspace after merge
 - Archived tasks delete branch after configurable days
 
 ### 4.6 Stall Detection
@@ -482,7 +482,7 @@ Agents understand the workflow and governance rules through three layers:
 |-------|------|------|
 | **SHARED.md (static norms)** | `templates/roles/SHARED.md` | Shared behavior for all Agents: workflow map, task governance, workspace discipline, formal delivery, knowledge management, trust mechanism, Git commit norms, reports and feedback |
 | **ContextEngine (dynamic injection)** | `packages/core/src/context-engine.ts` | Injected per interaction: current project context, workspace info, system announcements, human feedback, trust level, project knowledge highlights |
-| **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, shell/file tools restricted to worktree, git commit auto-injects metadata |
+| **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, shell/file tools restricted to task workspace, git commit auto-injects metadata |
 
 **Design principles:**
 - Things Agents need for **decisions** -> put in Context (project goals, governance rules, requirement context)

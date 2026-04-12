@@ -958,7 +958,7 @@ export class TaskService {
       : `${scheduleSection}${notesSection}${goalContext}${dependencyContext}${subtaskSection}${task.title}\n\n${task.description}`;
 
     // Workspace management is delegated to the agent — the agent creates and
-    // manages its own worktree/branch during execution. Task-service only
+    // manages its own workspace/branch during execution. Task-service only
     // passes project context so the agent knows which repo to work in.
     let taskWorkspace: TaskWorkspace | undefined;
     if (task.projectId) {
@@ -966,7 +966,7 @@ export class TaskService {
       const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
       if (repo?.localPath) {
         taskWorkspace = {
-          worktreePath: repo.localPath,
+          workingDirectory: repo.localPath,
           branch: `task/${task.id}`,
           baseBranch: repo.defaultBranch,
           projectContext: project ? {
@@ -2387,7 +2387,7 @@ export class TaskService {
           taskId: task.id,
           agentId: task.assignedAgentId,
           description: deliverables.map(d => d.summary ?? '').join('\n'),
-          worktreePath: repoPath,
+          workingDirectory: repoPath,
           baseBranch,
         });
 
@@ -2474,7 +2474,7 @@ export class TaskService {
     }
 
     // Reviewer access to workspace is handled by the agent — the reviewer agent
-    // reads deliverables and code via its own tools, not via worktree grants.
+    // reads deliverables and code via its own tools, not via workspace grants.
 
     if (reviewReport) {
       task.notes = task.notes ?? [];
@@ -2577,13 +2577,11 @@ export class TaskService {
         const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
         if (repo?.localPath) {
           const branchName = `task/${task.id}`;
-          const worktreePath = `${repo.localPath}/.worktrees/task-${task.id}`;
           parts.push('');
           parts.push('**Git Context:**');
           parts.push(`- Repository: \`${repo.localPath}\``);
           parts.push(`- Task branch: \`${branchName}\``);
           parts.push(`- Base branch: \`${repo.defaultBranch}\``);
-          parts.push(`- Worktree: \`${worktreePath}\``);
           parts.push(`- To see changes: \`cd ${repo.localPath} && git diff ${repo.defaultBranch}...${branchName}\``);
         }
       }
@@ -2615,7 +2613,7 @@ export class TaskService {
     }
   }
 
-  // Worktree path derivation removed — agents manage their own workspaces.
+  // Workspace path derivation removed — agents manage their own workspaces.
   // The review service receives repo path and branch info directly.
 
   private detectBuilderMode(agentId?: string): BuilderArtifactType | undefined {

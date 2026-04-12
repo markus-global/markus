@@ -123,6 +123,6 @@ export interface PathAccessPolicy {
   teamDataDir?: string;
   /** Builder artifacts directory — read/write for builder agents to write packages */
   builderArtifactsDir?: string;
-  /** Paths the agent can read but not write (project repos, peer worktrees) */
+  /** Paths the agent can read but not write (project repos, peer workspaces) */
   readOnlyPaths?: string[];
 }

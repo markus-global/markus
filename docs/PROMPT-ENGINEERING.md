@@ -275,7 +275,7 @@ Session management:
 ```
 ┌─ System Prompt (full: identity + memory + tasks + scenario=task_execution)
 │   + projectContext (governance rules, repositories)
-│   + currentWorkspace (branch, worktreePath, baseBranch)
+│   + currentWorkspace (branch, workingDirectory, baseBranch)
 ├─ Task Prompt (injected as first user message):
 │   [TASK EXECUTION — Task ID: xxx]
 │   {description}
@@ -287,7 +287,7 @@ Session management:
 
 Key differences from chat:
 - **Deterministic session ID**: `task_{taskId}_r{round}`. Retries within the same round reuse session history (preserving tool call results). New rounds get fresh sessions.
-- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the worktree path with a new `PathAccessPolicy`.
+- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the task working directory with a new `PathAccessPolicy`.
 - **Retry with history**: If the session has prior assistant work (from interrupted attempts), a `[SYSTEM: Your previous execution attempt was interrupted...]` message is appended instead of the full task prompt.
 - **AbortController**: Linked to `cancelToken` for external cancellation.
 

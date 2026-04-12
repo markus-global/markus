@@ -30,7 +30,7 @@ export interface ReviewContext {
   agentId?: string;
   changedFiles?: string[];
   description?: string;
-  worktreePath?: string;
+  workingDirectory?: string;
   baseBranch?: string;
 }
 
@@ -125,16 +125,16 @@ export class ReviewService {
 
 export function createTypeScriptChecker(): ReviewChecker {
   return async ctx => {
-    if (!ctx.worktreePath) {
+    if (!ctx.workingDirectory) {
       return {
         name: 'typescript',
         status: 'skip',
-        message: 'No worktree path — skipping TypeScript check',
+        message: 'No working directory — skipping TypeScript check',
       };
     }
     try {
       await execAsync('npx tsc --noEmit 2>&1', {
-        cwd: ctx.worktreePath,
+        cwd: ctx.workingDirectory,
         timeout: 120000,
       });
       return { name: 'typescript', status: 'pass', message: 'TypeScript compilation clean' };
@@ -153,14 +153,14 @@ export function createTypeScriptChecker(): ReviewChecker {
 
 export function createTestChecker(): ReviewChecker {
   return async ctx => {
-    if (!ctx.worktreePath) {
-      return { name: 'tests', status: 'skip', message: 'No worktree path — skipping tests' };
+    if (!ctx.workingDirectory) {
+      return { name: 'tests', status: 'skip', message: 'No working directory — skipping tests' };
     }
     try {
       const base = ctx.baseBranch ?? 'main';
       const { stdout: testOutput } = await execAsync(
         `npx vitest run --reporter=verbose --changed ${base} 2>&1`,
-        { cwd: ctx.worktreePath, timeout: 300000 }
+        { cwd: ctx.workingDirectory, timeout: 300000 }
       );
       return {
         name: 'tests',
@@ -183,21 +183,21 @@ export function createTestChecker(): ReviewChecker {
 
 export function createLintChecker(): ReviewChecker {
   return async ctx => {
-    if (!ctx.worktreePath) {
-      return { name: 'lint', status: 'skip', message: 'No worktree path — skipping lint' };
+    if (!ctx.workingDirectory) {
+      return { name: 'lint', status: 'skip', message: 'No working directory — skipping lint' };
     }
     try {
       const base = ctx.baseBranch ?? 'main';
       const { stdout: changedFiles } = await execAsync(
         `git diff --name-only ${base} -- '*.ts' '*.tsx' '*.js' '*.jsx'`,
-        { cwd: ctx.worktreePath }
+        { cwd: ctx.workingDirectory }
       );
       const files = changedFiles.trim().split('\n').filter(Boolean);
       if (files.length === 0) {
         return { name: 'lint', status: 'pass', message: 'No lintable files changed' };
       }
       await execAsync(`npx eslint ${files.join(' ')} 2>&1`, {
-        cwd: ctx.worktreePath,
+        cwd: ctx.workingDirectory,
         timeout: 60000,
       });
       return { name: 'lint', status: 'pass', message: `Lint clean on ${files.length} files` };

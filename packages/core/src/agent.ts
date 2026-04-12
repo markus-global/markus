@@ -50,7 +50,7 @@ import { AttentionController, type AttentionDelegate } from './attention.js';
  * Per-task async context — propagates the executing taskId and task-local
  * tool overrides through the async call chain of _executeTaskInternal,
  * so concurrent tasks each resolve their own taskId and use their own
- * tool bindings (e.g. worktree-scoped tools) without cross-contamination.
+ * tool bindings (e.g. task-workspace-scoped tools) without cross-contamination.
  */
 interface TaskAsyncContext {
   taskId: string;
@@ -100,7 +100,7 @@ export type ApprovalCallback = (request: {
 }) => Promise<boolean>;
 
 export interface TaskWorkspace {
-  worktreePath: string;
+  workingDirectory: string;
   branch: string;
   baseBranch: string;
   projectContext?: {
@@ -2709,12 +2709,12 @@ export class Agent {
 
     emit('status', 'started', { agentId: this.id, agentName: this.config.name });
 
-    // Create a real git worktree for task isolation when a project workspace is provided.
-    // The task-service passes worktreePath=repoRoot — we upgrade it to an isolated
+    // Create an isolated git worktree for task workspace when a project repo is provided.
+    // The task-service passes workingDirectory=repoRoot — we upgrade it to an isolated
     // .worktrees/task-<id> directory so concurrent tasks don't clobber each other.
     let createdWorktreePath: string | undefined;
     if (taskWorkspace && taskWorkspace.branch) {
-      const repoRoot = taskWorkspace.worktreePath;
+      const repoRoot = taskWorkspace.workingDirectory;
       const isolatedPath = join(repoRoot, '.worktrees', `task-${taskId}`);
       try {
         const { exec: execCb } = await import('node:child_process');
@@ -2724,52 +2724,52 @@ export class Agent {
           `git worktree add "${isolatedPath}" -b "${taskWorkspace.branch}" "${taskWorkspace.baseBranch}"`,
           { cwd: repoRoot },
         );
-        taskWorkspace = { ...taskWorkspace, worktreePath: isolatedPath };
+        taskWorkspace = { ...taskWorkspace, workingDirectory: isolatedPath };
         createdWorktreePath = isolatedPath;
-        emit('status', `worktree created: ${isolatedPath}`, { branch: taskWorkspace.branch });
-        log.info('Git worktree created for task', { taskId, path: isolatedPath, branch: taskWorkspace.branch });
+        emit('status', `workspace initialized: ${isolatedPath}`, { branch: taskWorkspace.branch });
+        log.info('Task workspace created', { taskId, path: isolatedPath, branch: taskWorkspace.branch });
       } catch (wtErr: unknown) {
         const msg = String((wtErr as Record<string, string>).message ?? wtErr);
         if (msg.includes('already exists')) {
-          taskWorkspace = { ...taskWorkspace, worktreePath: isolatedPath };
+          taskWorkspace = { ...taskWorkspace, workingDirectory: isolatedPath };
           createdWorktreePath = isolatedPath;
-          log.warn('Worktree already exists, reusing', { taskId, path: isolatedPath });
+          log.warn('Task workspace already exists, reusing', { taskId, path: isolatedPath });
         } else {
-          log.warn('Failed to create worktree, falling back to repo root', { taskId, error: msg });
+          log.warn('Failed to create task workspace, falling back to repo root', { taskId, error: msg });
         }
       }
     }
 
-    // Rebind tools to worktree path for project-bound tasks.
+    // Rebind tools to task workspace for project-bound tasks.
     // Use task-local tools (stored in AsyncLocalStorage) instead of mutating
-    // the shared this.tools — prevents concurrent worktree tasks from
+    // the shared this.tools — prevents concurrent task workspaces from
     // overwriting each other's tool bindings.
     if (taskWorkspace) {
-      const worktreePolicy: PathAccessPolicy = {
-        primaryWorkspace: taskWorkspace.worktreePath,
+      const taskPolicy: PathAccessPolicy = {
+        primaryWorkspace: taskWorkspace.workingDirectory,
         sharedWorkspace: this.pathPolicy?.sharedWorkspace,
         readOnlyPaths: [
           ...(this.pathPolicy?.readOnlyPaths ?? []),
           ...(taskWorkspace.projectContext?.repositories?.map(r => r.localPath) ?? []),
         ].filter(Boolean),
       };
-      if (!worktreePolicy.readOnlyPaths?.length) worktreePolicy.readOnlyPaths = undefined;
+      if (!taskPolicy.readOnlyPaths?.length) taskPolicy.readOnlyPaths = undefined;
 
-      const worktreeTools = createBuiltinTools({
+      const taskTools = createBuiltinTools({
         agentId: this.id,
-        workspacePath: taskWorkspace.worktreePath,
-        pathPolicy: worktreePolicy,
+        workspacePath: taskWorkspace.workingDirectory,
+        pathPolicy: taskPolicy,
       });
       const taskLocalTools = new Map(this.tools);
-      for (const tool of worktreeTools) {
+      for (const tool of taskTools) {
         taskLocalTools.set(tool.name, tool);
       }
       const ctx = taskAsyncContext.getStore();
       if (ctx) {
         ctx.tools = taskLocalTools;
       }
-      log.info('Tools rebound to worktree workspace (task-local)', {
-        taskId, agentId: this.id, worktreePath: taskWorkspace.worktreePath,
+      log.info('Tools rebound to task workspace (task-local)', {
+        taskId, agentId: this.id, workingDirectory: taskWorkspace.workingDirectory,
       });
     }
 
@@ -2872,7 +2872,7 @@ export class Agent {
       ...(taskWorkspace ? {
         currentWorkspace: {
           branch: taskWorkspace.branch,
-          worktreePath: taskWorkspace.worktreePath,
+          workingDirectory: taskWorkspace.workingDirectory,
           baseBranch: taskWorkspace.baseBranch,
         },
         projectContext: taskWorkspace.projectContext,
@@ -3139,7 +3139,7 @@ export class Agent {
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
 
-      // Worktree tools are now task-local (stored in AsyncLocalStorage) and
+      // Task workspace tools are now task-local (stored in AsyncLocalStorage) and
       // automatically discarded when the async context ends — no restore needed.
 
       // Only remove from activeTasks if this execution is still the latest one.
@@ -3168,7 +3168,7 @@ export class Agent {
    * LLM calls and the same onLog callback as task execution. This gives
    * callers full visibility (text deltas, tool_start/tool_end events)
    * without the task lifecycle overhead (no task_submit_review requirement,
-   * no activeTasks tracking, no worktree setup).
+   * no activeTasks tracking, no workspace setup).
    *
    * Intended for post-task discussions where the agent should respond
    * with full context and tools, and the process should be observable.
@@ -3396,7 +3396,7 @@ export class Agent {
 
   /**
    * Dynamically add a read-only path to this agent's access policy and rebuild tools.
-   * Used when assigning review tasks so the reviewer can read the worker's worktree.
+   * Used when assigning review tasks so the reviewer can read the worker's workspace.
    */
   grantReadOnlyAccess(path: string): void {
     if (!this.pathPolicy) return;
