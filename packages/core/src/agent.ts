@@ -97,7 +97,7 @@ export type ApprovalCallback = (request: {
   toolName: string;
   toolArgs: Record<string, unknown>;
   reason: string;
-}) => Promise<boolean>;
+}) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskWorkspace {
   repoPath: string;
@@ -1611,6 +1611,29 @@ export class Agent {
 
   setApprovalCallback(cb: ApprovalCallback): void {
     this.approvalCallback = cb;
+    this.rebuildShellToolWithApproval();
+  }
+
+  private rebuildShellToolWithApproval(): void {
+    const wp = this.pathPolicy?.primaryWorkspace;
+    const newShell = createBuiltinTools({
+      agentId: this.id,
+      workspacePath: wp,
+      pathPolicy: this.pathPolicy,
+      onCommandApproval: this.getCommandApprovalCallback(),
+    }).find(t => t.name === 'shell_execute');
+    if (newShell) this.tools.set('shell_execute', newShell);
+  }
+
+  private getCommandApprovalCallback(): ((command: string, reason: string) => Promise<{ approved: boolean; comment?: string }>) | undefined {
+    if (!this.approvalCallback) return undefined;
+    return async (command: string, reason: string) => this.approvalCallback!({
+      agentId: this.id,
+      agentName: this.config.name,
+      toolName: 'shell_execute',
+      toolArgs: { command },
+      reason,
+    });
   }
 
   setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
@@ -2731,6 +2754,7 @@ export class Agent {
         agentId: this.id,
         workspacePath: taskWorkspace.repoPath,
         pathPolicy: taskPolicy,
+        onCommandApproval: this.getCommandApprovalCallback(),
       });
       const taskLocalTools = new Map(this.tools);
       for (const tool of taskTools) {
@@ -3380,6 +3404,7 @@ export class Agent {
       agentId: this.id,
       workspacePath: this.pathPolicy.primaryWorkspace,
       pathPolicy: this.pathPolicy,
+      onCommandApproval: this.getCommandApprovalCallback(),
     });
     for (const tool of updatedTools) {
       this.tools.set(tool.name, tool);
@@ -3401,6 +3426,7 @@ export class Agent {
       agentId: this.id,
       workspacePath: this.pathPolicy.primaryWorkspace,
       pathPolicy: this.pathPolicy,
+      onCommandApproval: this.getCommandApprovalCallback(),
     });
     for (const tool of updatedTools) {
       this.tools.set(tool.name, tool);
@@ -3726,18 +3752,19 @@ export class Agent {
     if (needsApproval) {
       if (this.approvalCallback) {
         log.info(`Tool ${toolCall.name} requires approval, requesting...`, { agentId: this.id });
-        const approved = await this.approvalCallback({
+        const result = await this.approvalCallback({
           agentId: this.id,
           agentName: this.config.name,
           toolName: toolCall.name,
           toolArgs: toolCall.arguments,
           reason: `Agent wants to execute '${toolCall.name}'`,
         });
-        if (!approved) {
+        if (!result.approved) {
+          const reason = result.comment ? `: ${result.comment}` : '';
           log.info(`Tool ${toolCall.name} execution denied by human`, { agentId: this.id });
           return JSON.stringify({
             status: 'denied',
-            error: `Execution of '${toolCall.name}' was denied by human reviewer`,
+            error: `Execution of '${toolCall.name}' was denied by human reviewer${reason}`,
           });
         }
         log.info(`Tool ${toolCall.name} approved by human`, { agentId: this.id });

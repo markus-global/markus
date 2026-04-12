@@ -1,6 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { PathAccessPolicy } from '@markus/shared';
-import { createShellTool, type ShellAgentMeta } from './shell.js';
+import { createShellTool, type ShellAgentMeta, type CommandApprovalCallback } from './shell.js';
 import { createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 import { WebFetchTool } from './web-fetch.js';
 import { WebSearchTool } from './web-search.js';
@@ -18,6 +18,7 @@ export interface BuiltinToolsOptions {
   /** Multi-tier access policy (takes precedence over workspacePath when set) */
   pathPolicy?: PathAccessPolicy;
   enableBackgroundExec?: boolean;
+  onCommandApproval?: CommandApprovalCallback;
 }
 
 export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler[] {
@@ -25,7 +26,7 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
   const wp = policy?.primaryWorkspace ?? opts?.workspacePath;
 
   const tools: AgentToolHandler[] = [
-    createShellTool(opts?.security, wp, opts?.agentMeta, policy),
+    createShellTool(opts?.security, wp, opts?.agentMeta, policy, opts?.onCommandApproval),
     createFileReadTool(opts?.security, wp, policy),
     createFileWriteTool(opts?.security, wp, policy),
     createFileEditTool(opts?.security, wp, policy),

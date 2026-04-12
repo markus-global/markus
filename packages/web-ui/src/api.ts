@@ -130,6 +130,7 @@ export interface ApprovalInfo {
   requestedAt: string;
   respondedAt?: string;
   respondedBy?: string;
+  responseComment?: string;
 }
 
 export interface CodeReviewCheckInfo {
@@ -1165,8 +1166,8 @@ export const api = {
       const qs = status ? `?status=${status}` : '';
       return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
     },
-    respond: (id: string, approved: boolean, respondedBy?: string) =>
-      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy }) }),
+    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string) =>
+      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment }) }),
   },
   notifications: {
     list: (userId?: string, unread?: boolean, opts?: { type?: string; limit?: number; offset?: number }) => {

@@ -649,13 +649,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   agentManager.setApprovalHandler(async (agentId, request) => {
     const agents = agentManager.listAgents();
     const agentName = agents.find(a => a.id === agentId)?.name ?? agentId;
-    const approved = await hitlService.requestApprovalAndWait({
+    const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
       type: 'action',
       title: `Tool: ${request.toolName}`,
       description: request.reason,
-      details: { toolName: request.toolName, toolArgs: request.toolArgs },
+      details: { ...request.toolArgs, toolName: request.toolName, agentId },
       targetUserId: 'default',
       expiresInMs: 5 * 60 * 1000, // 5 minutes
     });
@@ -664,10 +664,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       agentId,
       type: 'approval_response',
       action: request.toolName,
-      detail: approved ? 'approved' : 'rejected',
-      success: approved,
+      detail: result.approved ? 'approved' : `rejected${result.comment ? ': ' + result.comment : ''}`,
+      success: result.approved,
     });
-    return approved;
+    return result;
   });
 
   agentManager.setAuditCallback((agentId, event) => {

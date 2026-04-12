@@ -92,6 +92,8 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectComment, setRejectComment] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -248,11 +250,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
     navigateForNotification(n);
   };
 
-  const handleApprovalResponse = async (id: string, approved: boolean) => {
+  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string) => {
     setResponding(id);
     try {
-      const { approval } = await api.approvals.respond(id, approved, userId);
+      const { approval } = await api.approvals.respond(id, approved, userId, comment);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
+      setRejectingId(null);
+      setRejectComment('');
 
       const relatedNotif = notifications.find(
         n => n.type === 'approval_request' && n.metadata?.approvalId === id
@@ -281,7 +285,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const navigateForApproval = (a: ApprovalInfo) => {
     const taskId = a.details?.taskId as string | undefined;
+    const agentId = a.details?.agentId as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
+    else if (agentId) navBus.navigate(PAGE.TEAM, { selectAgent: agentId });
     else navBus.navigate(PAGE.WORK);
   };
 
@@ -363,18 +369,43 @@ export function NotificationBell({ collapsed, userId }: Props) {
                           <p className="text-[11px] text-fg-secondary mt-1 line-clamp-3">{a.description}</p>
                         </div>
                       </button>
-                      <div className="flex gap-2 pl-5">
-                        <button
-                          disabled={responding === a.id}
-                          onClick={() => handleApprovalResponse(a.id, true)}
-                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                        >Approve</button>
-                        <button
-                          disabled={responding === a.id}
-                          onClick={() => handleApprovalResponse(a.id, false)}
-                          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                        >Reject</button>
-                      </div>
+                      {rejectingId === a.id ? (
+                        <div className="pl-5 space-y-1.5">
+                          <input
+                            type="text"
+                            autoFocus
+                            placeholder="Reason for rejection (optional)"
+                            value={rejectComment}
+                            onChange={e => setRejectComment(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
+                            className="w-full px-2 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              disabled={responding === a.id}
+                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined)}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
+                            >Confirm Reject</button>
+                            <button
+                              onClick={() => { setRejectingId(null); setRejectComment(''); }}
+                              className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
+                            >Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2 pl-5">
+                          <button
+                            disabled={responding === a.id}
+                            onClick={() => handleApprovalResponse(a.id, true)}
+                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                          >Approve</button>
+                          <button
+                            disabled={responding === a.id}
+                            onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
+                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                          >Reject</button>
+                        </div>
+                      )}
                     </div>
                   ))}
                   {approvals.filter(a => a.status !== 'pending').slice(0, 20).map(a => (
@@ -384,6 +415,9 @@ export function NotificationBell({ collapsed, userId }: Props) {
                         <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
                         <span className="text-[10px] text-fg-tertiary shrink-0">{a.status}</span>
                       </div>
+                      {a.responseComment && (
+                        <p className="text-[10px] text-fg-tertiary mt-0.5 pl-3.5 truncate">&ldquo;{a.responseComment}&rdquo;</p>
+                      )}
                     </button>
                   ))}
                 </div>

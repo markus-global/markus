@@ -38,6 +38,7 @@ export interface ApprovalRequest {
   requestedAt: string;
   respondedAt?: string;
   respondedBy?: string;
+  responseComment?: string;
   expiresAt?: string;
 }
 
@@ -112,7 +113,7 @@ function genId(prefix: string): string {
 
 export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
-  private pendingResolvers = new Map<string, (approved: boolean) => void>();
+  private pendingResolvers = new Map<string, (result: { approved: boolean; comment?: string }) => void>();
   private bounties = new Map<string, BountyTask>();
   private notificationHandlers: NotificationHandler[] = [];
   private notificationRepo?: NotificationRepo;
@@ -185,29 +186,30 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-  }): Promise<boolean> {
+  }): Promise<{ approved: boolean; comment?: string }> {
     const approval = this.requestApproval(opts);
-    return new Promise<boolean>((resolve) => {
+    return new Promise<{ approved: boolean; comment?: string }>((resolve) => {
       this.pendingResolvers.set(approval.id, resolve);
       if (opts.expiresInMs) {
         setTimeout(() => {
           if (this.pendingResolvers.has(approval.id)) {
             this.pendingResolvers.delete(approval.id);
-            resolve(false);
+            resolve({ approved: false, comment: 'Approval timed out' });
           }
         }, opts.expiresInMs);
       }
     });
   }
 
-  respondToApproval(id: string, approved: boolean, respondedBy: string): ApprovalRequest | undefined {
+  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string): ApprovalRequest | undefined {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
 
     approval.status = approved ? 'approved' : 'rejected';
     approval.respondedAt = new Date().toISOString();
     approval.respondedBy = respondedBy;
-    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`);
+    if (comment) approval.responseComment = comment;
+    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, comment ? { comment } : {});
 
     if (this.notificationRepo) {
       try {
@@ -223,7 +225,7 @@ export class HITLService {
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve(approved);
+      resolve({ approved, comment });
     }
     return approval;
   }

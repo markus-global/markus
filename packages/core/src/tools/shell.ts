@@ -32,29 +32,43 @@ function injectGitCommitMeta(command: string, meta?: ShellAgentMeta): string {
   return command + authorFlag + trailerFlags;
 }
 
-const GIT_BRANCH_DENY_PATTERNS = [
-  /\bgit\s+push\s+.*\b(main|master)\b/,
-  /\bgit\s+push\s+--force/,
-  /\bgit\s+push\s+-f\b/,
-  /\bgit\s+merge\s+(?!--abort)/,
-  /\bgit\s+rebase\b/,
-  /\bgit\s+checkout\s+(?!-b\b)(?!--\s)(\S+)/,
-  /\bgit\s+switch\s+(?!-c\b)(?!--create\b)(\S+)/,
+const GIT_ALWAYS_DENY: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bgit\s+push\s+--force/, label: 'force push (--force)' },
+  { pattern: /\bgit\s+push\s+-f\b/, label: 'force push (-f)' },
 ];
 
-function validateGitBranchSafety(command: string): { allowed: boolean; reason?: string } {
-  for (const pattern of GIT_BRANCH_DENY_PATTERNS) {
+const GIT_NEEDS_APPROVAL: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bgit\s+push\s+.*\b(main|master)\b/, label: 'push to protected branch' },
+  { pattern: /\bgit\s+merge\s+(?!--abort)/, label: 'merge branches' },
+  { pattern: /\bgit\s+rebase\b/, label: 'rebase' },
+  { pattern: /\bgit\s+checkout\s+(?!-b\b)(?!--\s)(\S+)/, label: 'switch to existing branch' },
+  { pattern: /\bgit\s+switch\s+(?!-c\b)(?!--create\b)(\S+)/, label: 'switch to existing branch' },
+];
+
+export type CommandApprovalCallback = (command: string, reason: string) => Promise<{ approved: boolean; comment?: string }>;
+
+function validateGitBranchSafety(command: string): { allowed: boolean; needsApproval?: boolean; reason?: string } {
+  for (const { pattern, label } of GIT_ALWAYS_DENY) {
     if (pattern.test(command)) {
       return {
         allowed: false,
-        reason: `Git branch operation denied for workspace isolation: "${command.trim().slice(0, 80)}". Agents must work only on their assigned task branch. Do not checkout, merge, rebase, or push to protected branches.`,
+        reason: `Git operation always denied: ${label}. Command: "${command.trim().slice(0, 80)}"`,
+      };
+    }
+  }
+  for (const { pattern, label } of GIT_NEEDS_APPROVAL) {
+    if (pattern.test(command)) {
+      return {
+        allowed: true,
+        needsApproval: true,
+        reason: `Git operation requires approval: ${label}. Command: "${command.trim().slice(0, 80)}"`,
       };
     }
   }
   return { allowed: true };
 }
 
-export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta, policy?: PathAccessPolicy): AgentToolHandler {
+export function createShellTool(security?: SecurityGuard, workspacePath?: string, agentMeta?: ShellAgentMeta, policy?: PathAccessPolicy, onCommandApproval?: CommandApprovalCallback): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
 
   /** Shell commands can run from any directory — read access is unrestricted */
@@ -106,17 +120,37 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         return JSON.stringify({ status: 'denied', error: check.reason });
       }
       if (check.needsApproval) {
-        return JSON.stringify({
-          status: 'needs_approval',
-          message: 'This command requires human approval before execution',
-          command,
-        });
+        if (onCommandApproval) {
+          const result = await onCommandApproval(command, 'Command matches security approval policy');
+          if (!result.approved) {
+            const reason = result.comment ? `: ${result.comment}` : '';
+            return JSON.stringify({ status: 'denied', error: `Command denied by human reviewer${reason}` });
+          }
+        } else {
+          return JSON.stringify({
+            status: 'needs_approval',
+            message: 'This command requires human approval before execution, but no approval handler is available',
+            command,
+          });
+        }
       }
 
-      if (workspacePath) {
-        const gitCheck = validateGitBranchSafety(command);
-        if (!gitCheck.allowed) {
-          return JSON.stringify({ status: 'denied', error: gitCheck.reason });
+      const gitCheck = validateGitBranchSafety(command);
+      if (!gitCheck.allowed) {
+        return JSON.stringify({ status: 'denied', error: gitCheck.reason });
+      }
+      if (gitCheck.needsApproval) {
+        if (onCommandApproval) {
+          const result = await onCommandApproval(command, gitCheck.reason!);
+          if (!result.approved) {
+            const reason = result.comment ? `: ${result.comment}` : '';
+            return JSON.stringify({ status: 'denied', error: `Git operation denied by human${reason}` });
+          }
+        } else {
+          return JSON.stringify({
+            status: 'denied',
+            error: `${gitCheck.reason} No approval handler available — cannot proceed.`,
+          });
         }
       }
 

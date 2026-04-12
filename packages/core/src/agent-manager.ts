@@ -307,7 +307,7 @@ export class AgentManager {
   private approvalHandler?: (
     agentId: string,
     request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }
-  ) => Promise<boolean>;
+  ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
@@ -1834,7 +1834,7 @@ export class AgentManager {
     handler: (
       agentId: string,
       request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }
-    ) => Promise<boolean>
+    ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;
     for (const [id, agent] of this.agents) {

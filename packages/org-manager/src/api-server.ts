@@ -4735,7 +4735,8 @@ export class APIServer {
       const result = this.hitlService.respondToApproval(
         approvalId,
         body['approved'] as boolean,
-        (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous'
+        (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous',
+        body['comment'] as string | undefined,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });

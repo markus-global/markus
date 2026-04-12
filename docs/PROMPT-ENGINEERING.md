@@ -288,7 +288,8 @@ Session management:
 
 Key differences from chat:
 - **Deterministic session ID**: `task_{taskId}_r{round}`. Retries within the same round reuse session history (preserving tool call results). New rounds get fresh sessions.
-- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the project repository path with a new `PathAccessPolicy`. The agent manages its own workspace setup (branching, isolation) via shell commands.
+- **Workspace rebinding**: If the task has a `TaskWorkspace`, tools are rebound to the project repository path with a new `PathAccessPolicy`. The agent manages its own workspace setup (branching, isolation) via shell commands. The `onCommandApproval` callback is wired into the shell tool so that risky git operations go through HITL approval.
+- **Git command governance**: The shell tool enforces a three-tier model (Allow / Approval / Deny). Safe operations execute immediately, risky ones (checkout existing branch, merge, rebase, push to protected branches) pause for human approval via `HITLService.requestApprovalAndWait()`, and destructive operations (force push) are always denied. Approval responses include optional comments/reasons, which are returned to the agent as actionable feedback.
 - **Retry with history**: If the session has prior assistant work (from interrupted attempts), a `[SYSTEM: Your previous execution attempt was interrupted...]` message is appended instead of the full task prompt.
 - **AbortController**: Linked to `cancelToken` for external cancellation.
 

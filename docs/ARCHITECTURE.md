@@ -292,11 +292,21 @@ LLMRouter
 
 ### 4.2 Workspace Isolation
 
-When a task is bound to a project with a repository, the agent's file tools are rebound to the project repo. The agent manages its own workspace setup (branching, isolation strategy) via `shell_execute`. Workflow details like branching strategy, merge process, and review workflow are defined by **role templates and team norms**, not by the core system.
+When a task is bound to a project with a repository, the agent's file tools are rebound to the project repo. The agent manages its own workspace setup (branching, isolation strategy) via `shell_execute` — including `git worktree add`, `git checkout -b`, etc. Workflow details like branching strategy, merge process, and review workflow are defined by **role templates and team norms**, not by the core system.
 
 - The system provides: tool access to the project repo, branch/base-branch info in context
 - The agent decides: branching strategy, workspace isolation, merge workflow
 - File access control ensures agents only write within their assigned project repo
+
+**Git command governance** (three-tier model):
+
+| Tier | Operations | Behavior |
+|------|-----------|----------|
+| **Allow** | `add`, `commit`, `fetch`, `log`, `diff`, `status`, `branch -a/-l`, `checkout -b`, `switch -c`, `worktree add/list/remove`, `push origin <task-branch>` | Execute immediately |
+| **Approval** | `checkout <existing-branch>`, `switch <existing-branch>`, `push ... main/master`, `merge`, `rebase` | Pause execution, request HITL approval via `HITLService`; agent receives approval or rejection with reason |
+| **Deny** | `push --force/-f` | Always blocked |
+
+The approval tier integrates with the existing HITL approval pipeline (`HITLService.requestApprovalAndWait()`). Human reviewers can approve or reject with a comment; the agent receives the feedback and adjusts. This mechanism is extensible: new dangerous operations can be added via `SecurityPolicy.requireApproval` (config-driven) or new pattern arrays in `shell.ts` (code-driven).
 
 ### 4.3 Formal Delivery and Review
 
