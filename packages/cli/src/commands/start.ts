@@ -493,43 +493,47 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     return { installed: result.installed, name: result.name, method: result.method };
   });
 
-  // Wire proactive user message senders for all agents
+  // Wire proactive user message senders and chat session fetchers for agents
   if (storage?.chatSessionRepo) {
     const ws = apiServer.getWSBroadcaster();
-    for (const info of agentManager.listAgents()) {
-      agentManager.setUserMessageSender(info.id, async (message: string, opts?: { sessionId?: string }) => {
-        let sessionId: string;
-        if (opts?.sessionId) {
-          sessionId = opts.sessionId;
-        } else {
-          const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
-          if (sessions.length > 0) {
-            sessionId = sessions[0]!.id;
+    const wireAgentChatIntegration = (agentId: string) => {
+      try {
+        const agent = agentManager.getAgent(agentId);
+        agentManager.setUserMessageSender(agentId, async (message: string, opts?: { sessionId?: string }) => {
+          let sessionId: string;
+          if (opts?.sessionId) {
+            sessionId = opts.sessionId;
           } else {
-            const newSess = await storage.chatSessionRepo.createSession(info.id);
-            sessionId = newSess.id;
+            const sessions = await storage.chatSessionRepo.getSessionsByAgent(agentId);
+            if (sessions.length > 0) {
+              sessionId = sessions[0]!.id;
+            } else {
+              const newSess = await storage.chatSessionRepo.createSession(agentId);
+              sessionId = newSess.id;
+            }
           }
-        }
-        const msg = await storage.chatSessionRepo.appendMessage(sessionId, info.id, 'assistant', message);
-        ws.broadcastProactiveMessage(info.id, info.name, sessionId, msg.id, message);
-        return { sessionId, messageId: msg.id };
-      });
-    }
-  }
+          const msg = await storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', message);
+          ws.broadcastProactiveMessage(agentId, agent.config.name, sessionId, msg.id, message);
+          return { sessionId, messageId: msg.id };
+        });
+        agentManager.setChatSessionsFetcher(agentId, async () => {
+          const sessions = await storage.chatSessionRepo.getSessionsByAgent(agentId);
+          return sessions.slice(0, 5).map((s: any) => ({
+            id: s.id,
+            title: s.title,
+            lastMessageAt: s.lastMessageAt ?? s.createdAt ?? new Date().toISOString(),
+            lastMessagePreview: s.lastMessagePreview,
+          }));
+        });
+      } catch { /* agent not found */ }
+    };
 
-  // Wire chat sessions fetcher for session-aware prompts
-  if (storage?.chatSessionRepo) {
-    for (const info of agentManager.listAgents()) {
-      agentManager.setChatSessionsFetcher(info.id, async () => {
-        const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
-        return sessions.slice(0, 5).map((s: any) => ({
-          id: s.id,
-          title: s.title,
-          lastMessageAt: s.lastMessageAt ?? s.createdAt ?? new Date().toISOString(),
-          lastMessagePreview: s.lastMessagePreview,
-        }));
-      });
-    }
+    for (const info of agentManager.listAgents()) wireAgentChatIntegration(info.id);
+
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      wireAgentChatIntegration(agentId);
+    });
   }
 
   // Wire user notifier through HITL service
@@ -845,6 +849,34 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   }
 
+  // Persist runtime-created agents (e.g. via team_hire_agent tool) to DB
+  if (storage?.agentRepo) {
+    const agentRepo = storage.agentRepo;
+    const existingIds = new Set(agentManager.listAgents().map(a => a.id));
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      if (existingIds.has(agentId)) return;
+      existingIds.add(agentId);
+      try {
+        const agent = agentManager.getAgent(agentId);
+        agentRepo.create({
+          id: agent.id,
+          name: agent.config.name,
+          orgId: agent.config.orgId ?? 'default',
+          teamId: agent.config.teamId,
+          roleId: agent.config.roleId,
+          roleName: agent.role.name,
+          agentRole: agent.config.agentRole ?? 'worker',
+          skills: agent.config.skills,
+          llmConfig: agent.config.llmConfig,
+          heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+        }).catch((err: unknown) => {
+          log.warn('Failed to persist runtime-created agent to DB', { agentId, error: String(err) });
+        });
+      } catch { /* agent not found */ }
+    });
+  }
+
   // Wire agent activity logs to WS broadcast
   agentManager.getEventBus().on('agent:activity_log', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
@@ -875,6 +907,59 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   eventBus.on('agent:focus-changed', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
     ws.broadcast({ type: 'agent:focus', payload: event, timestamp: new Date().toISOString() });
+  });
+
+  // Wire agent lifecycle events to WS broadcast
+  eventBus.on('agent:removed', (event: unknown) => {
+    const { agentId } = event as { agentId: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastAgentUpdate(agentId, 'removed');
+  });
+  eventBus.on('agent:paused', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:paused', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:resumed', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:resumed', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:started', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:started', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:stopped', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:stopped', payload: event, timestamp: new Date().toISOString() });
+  });
+
+  // Wire task completion/failure events to WS broadcast
+  eventBus.on('task:completed', (event: unknown) => {
+    const { taskId, agentId } = event as { taskId: string; agentId: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastTaskUpdate(taskId, 'completed', { agentId });
+  });
+  eventBus.on('task:failed', (event: unknown) => {
+    const { taskId, agentId, error } = event as { taskId: string; agentId: string; error?: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastTaskUpdate(taskId, 'failed', { agentId, error });
+  });
+
+  // Wire system-wide events to WS broadcast
+  eventBus.on('system:pause-all', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:pause-all', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:resume-all', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:resume-all', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:emergency-stop', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:emergency-stop', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:announcement', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:announcement', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Daily token reset scheduler: runs at midnight to reset per-agent tokensUsedToday

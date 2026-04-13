@@ -390,13 +390,6 @@ export class Agent {
     }
 
     this.notifyStateChange();
-
-    this.eventBus.emit('agent:status-changed', {
-      agentId: this.id,
-      oldStatus,
-      newStatus: status,
-      state: this.getState(),
-    });
   }
 
   async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
@@ -671,7 +664,6 @@ export class Agent {
         return this.processMailboxItemInternal(item);
       },
       onDecisionMade: (decision: AttentionDecision) => {
-        this.eventBus.emit('agent:decision', { agentId: this.id, decision });
         log.debug('Attention decision', {
           agentId: this.id,
           type: decision.decisionType,
@@ -994,6 +986,12 @@ export class Agent {
   pause(reason?: string): void {
     if (this.state.status === 'offline') return;
     this.pauseReason = reason;
+    this.heartbeat.stop();
+    this.attentionController.stop();
+    if (this.memoryConsolidationTimer) {
+      clearInterval(this.memoryConsolidationTimer);
+      this.memoryConsolidationTimer = undefined;
+    }
     this.setStatus('paused');
     this.eventBus.emit('agent:paused', { agentId: this.id, reason });
     log.info(`Agent paused: ${this.config.name}`, { reason });
@@ -1002,6 +1000,15 @@ export class Agent {
   resume(): void {
     if (this.state.status !== 'paused') return;
     this.pauseReason = undefined;
+    this.heartbeat.start();
+    this.attentionController.start();
+    if (!this.memoryConsolidationTimer) {
+      this.memoryConsolidationTimer = setInterval(() => {
+        this.consolidateMemory().catch(e =>
+          log.warn('Memory consolidation failed', { error: String(e) })
+        );
+      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    }
     this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
     this.eventBus.emit('agent:resumed', { agentId: this.id });
     log.info(`Agent resumed: ${this.config.name}`);
@@ -1363,20 +1370,6 @@ export class Agent {
       this.stateManager.updateTokensUsed(tokens);
     }
     this.notifyStateChange();
-    // Enforce daily token budget — pause agent if exceeded
-    const profile = this.config.profile;
-    if (
-      profile?.maxTokensPerDay !== undefined &&
-      profile.maxTokensPerDay !== null &&
-      this.state.tokensUsedToday >= profile.maxTokensPerDay
-    ) {
-      this.setStatus('paused');
-      log.warn('Agent paused: daily token budget exceeded', {
-        agentId: this.id,
-        tokensUsedToday: this.state.tokensUsedToday,
-        maxTokensPerDay: profile.maxTokensPerDay,
-      });
-    }
   }
 
   /**
@@ -1398,25 +1391,13 @@ export class Agent {
 
   /**
    * Reset daily token counter (called at midnight by scheduler).
-   * If agent was paused due to budget exceeded, resume to idle.
    */
   resetDailyTokens(): void {
-    const wasPausedByBudget =
-      this.state.status === 'paused' &&
-      this.config.profile?.maxTokensPerDay !== undefined &&
-      this.config.profile.maxTokensPerDay !== null &&
-      this.state.tokensUsedToday >= this.config.profile.maxTokensPerDay;
-
     this.state.tokensUsedToday = 0;
     if (this.stateManager) {
       this.stateManager.resetTokensUsed();
     }
     this.notifyStateChange();
-
-    if (wasPausedByBudget) {
-      this.setStatus('idle');
-      log.info('Agent resumed after daily token reset', { agentId: this.id });
-    }
   }
 
 

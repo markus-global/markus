@@ -96,6 +96,9 @@ export function ChatTeamSidebar({
 
   useEffect(() => {
     api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => {});
+    const unsubPause = wsClient.on('system:pause-all', () => setGlobalPaused(true));
+    const unsubResume = wsClient.on('system:resume-all', () => setGlobalPaused(false));
+    return () => { unsubPause(); unsubResume(); };
   }, []);
 
   const handlePauseClick = useCallback(() => {
