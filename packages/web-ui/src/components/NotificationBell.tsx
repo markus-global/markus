@@ -86,6 +86,28 @@ function actionHint(n: NotificationInfo): string | null {
   }
 }
 
+function playNotificationSound() {
+  try {
+    const ctx = new AudioContext();
+    const now = ctx.currentTime;
+
+    const g = ctx.createGain();
+    g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.15, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+
+    const o1 = ctx.createOscillator();
+    o1.type = 'sine';
+    o1.frequency.setValueAtTime(880, now);
+    o1.frequency.setValueAtTime(1174.66, now + 0.15);
+    o1.connect(g);
+    o1.start(now);
+    o1.stop(now + 0.6);
+
+    o1.onended = () => ctx.close();
+  } catch { /* audio not available */ }
+}
+
 export function NotificationBell({ collapsed, userId }: Props) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
@@ -98,6 +120,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const prevPendingRef = useRef<number | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -148,6 +171,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
   const badgeCount = unreadCount + pendingApprovals;
+
+  useEffect(() => {
+    if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {
+      playNotificationSound();
+    }
+    prevPendingRef.current = pendingApprovals;
+  }, [pendingApprovals]);
 
   const handleMarkRead = async (id: string) => {
     await api.notifications.markRead(id);
