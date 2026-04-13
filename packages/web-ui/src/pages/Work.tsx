@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } fro
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
-import { taskLogToStreamEntry } from '../api.ts';
+import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -310,6 +310,26 @@ const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
 const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
 const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+
+// Mirror of TASK_TRANSITIONS from @markus/shared — kept in sync manually
+const TASK_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  pending:     new Set(['in_progress', 'blocked', 'rejected', 'cancelled']),
+  in_progress: new Set(['review', 'blocked', 'failed', 'cancelled']),
+  blocked:     new Set(['in_progress', 'cancelled']),
+  review:      new Set(['completed', 'in_progress', 'cancelled']),
+  completed:   new Set(['archived', 'in_progress']),
+  failed:      new Set(['in_progress', 'archived']),
+  rejected:    new Set(['archived']),
+  cancelled:   new Set(['archived']),
+  archived:    new Set([]),
+};
+const REQ_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  pending:     new Set(['in_progress', 'rejected', 'cancelled']),
+  in_progress: new Set(['completed', 'cancelled']),
+  completed:   new Set([]),
+  rejected:    new Set([]),
+  cancelled:   new Set([]),
+};
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400', error: 'bg-red-400', paused: 'bg-amber-400', offline: 'bg-gray-600',
   pending: 'bg-amber-400',
@@ -381,6 +401,9 @@ function CommentBubble({ comment, agents, onReply }: {
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' });
   const [mentionPopover, setMentionPopover] = useState<{ agent: AgentInfo; top: number; left: number } | null>(null);
+  const [logExpanded, setLogExpanded] = useState(false);
+  const [logEntries, setLogEntries] = useState<ExecutionStreamEntryUI[]>([]);
+  const [logLoading, setLogLoading] = useState(false);
 
   const handleMentionClick = useCallback((name: string, event: React.MouseEvent) => {
     const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
@@ -397,6 +420,29 @@ function CommentBubble({ comment, agents, onReply }: {
       setMentionPopover({ agent, top: rect.bottom, left: rect.left });
     }
   }, [agents, comment.authorName]);
+
+  const toggleExecutionLog = useCallback(async () => {
+    if (logExpanded) { setLogExpanded(false); return; }
+    const aid = comment.activityId;
+    if (!aid) return;
+    setLogExpanded(true);
+    if (logEntries.length > 0) return;
+    setLogLoading(true);
+    try {
+      const { logs } = await api.agents.getActivityLogs(comment.authorId, aid);
+      const entries = logs
+        .map(l => activityLogToStreamEntry(l, aid, comment.authorId))
+        .filter((e): e is NonNullable<typeof e> => e !== null)
+        .map(e => ({ ...e, ts: new Date(e.createdAt).getTime() }));
+      setLogEntries(entries);
+    } catch { /* ignore */ }
+    setLogLoading(false);
+  }, [logExpanded, logEntries.length, comment]);
+
+  const execEntries = useMemo(
+    () => filterCompletedStarts(logEntries.map(streamEntryToExecEntry).filter((e): e is ExecEntry => e !== null)),
+    [logEntries],
+  );
 
   return (
     <div className="flex gap-2.5 group py-1" id={`comment-${comment.id}`}>
@@ -425,6 +471,14 @@ function CommentBubble({ comment, agents, onReply }: {
               Reply
             </button>
           )}
+          {comment.activityId && isAgent && (
+            <button
+              onClick={toggleExecutionLog}
+              className="text-fg-tertiary hover:text-brand-400 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1"
+            >
+              {logExpanded ? 'Hide log' : 'View log'}
+            </button>
+          )}
         </div>
         {comment.replyTo && comment.replyToAuthor && (
           <button
@@ -442,6 +496,17 @@ function CommentBubble({ comment, agents, onReply }: {
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
+        {logExpanded && (
+          <div className="mt-2 border border-border-subtle rounded-lg overflow-hidden bg-surface-secondary/30">
+            {logLoading ? (
+              <div className="p-3 text-xs text-fg-tertiary">Loading execution log...</div>
+            ) : execEntries.length === 0 ? (
+              <div className="p-3 text-xs text-fg-tertiary">No execution log available.</div>
+            ) : (
+              <FullExecutionLog entries={logEntries} isActive={false} onCollapse={() => setLogExpanded(false)} embedded />
+            )}
+          </div>
+        )}
       </div>
       {mentionPopover && (
         <MentionPopover
@@ -937,7 +1002,7 @@ function TaskDetailPanel({
   const [showAllSubtasks, setShowAllSubtasks] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string; status: string } | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState<{ dependentCount: number } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
@@ -967,7 +1032,6 @@ function TaskDetailPanel({
     ro.observe(el);
     return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
   }, [activeTab]);
-  const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
@@ -985,10 +1049,10 @@ function TaskDetailPanel({
   useEffect(() => { void loadSubtasks(); }, [loadSubtasks]);
 
   const doUpdate = async (fn: () => Promise<unknown>) => {
-    if (busy) return; setBusy(true);
+    if (actionInFlight) return; setActionInFlight(true);
     try { await fn(); onRefresh(); await loadSubtasks(); } catch (err) {
       setRunError(String(err).replace('Error: ', ''));
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const updateStatus = (taskId: string, status: string) => doUpdate(() => api.tasks.updateStatus(taskId, status));
@@ -996,31 +1060,19 @@ function TaskDetailPanel({
   const assignAgent = (agentId: string) => doUpdate(() => api.tasks.assign(task.id, agentId || null));
   const updateProject = (projectId: string) => doUpdate(() => api.tasks.update(task.id, { projectId: projectId || null }));
 
-  const startTask = async () => {
-    if (busy) return; setBusy(true);
-    try {
-      if (!task.assignedAgentId) {
-        const idle = agents.find(a => a.status === 'idle');
-        if (idle) await api.tasks.assign(task.id, idle.id);
-      }
-      await api.tasks.updateStatus(task.id, 'in_progress');
-      onRefresh();
-    } finally { setBusy(false); }
-  };
-
   const pauseTask = async () => {
-    if (busy) return; setBusy(true);
+    if (actionInFlight) return; setActionInFlight(true);
     try {
       await api.tasks.pause(task.id);
       onRefresh();
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const resumeTask = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-    } finally { setRunning(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const addSubtask = async () => {
@@ -1045,31 +1097,23 @@ function TaskDetailPanel({
   };
 
   const reopenTask = async () => {
-    if (busy) return; setBusy(true);
-    try { await api.tasks.updateStatus(task.id, 'pending'); onRefresh(); } finally { setBusy(false); }
-  };
-
-  const runWithAgent = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
-    try { await api.tasks.run(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-      onRefresh();
-    } finally { setRunning(false); }
+    if (actionInFlight) return; setActionInFlight(true);
+    try { await api.tasks.updateStatus(task.id, 'in_progress'); onRefresh(); } finally { setActionInFlight(false); }
   };
 
   const retryFresh = async () => {
-    if (busy) return; setBusy(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const runScheduledNow = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
       onRefresh();
-    } finally { setRunning(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const onRefreshRef = useRef(onRefresh);
@@ -1090,9 +1134,10 @@ function TaskDetailPanel({
   const isBlocked = task.status === 'blocked';
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
+  const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isCancelled || isArchived;
+  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -1170,7 +1215,7 @@ function TaskDetailPanel({
                       <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
                       <button
                         onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
-                        disabled={busy}
+                        disabled={actionInFlight}
                         className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
                       >Save</button>
                     </div>
@@ -1275,7 +1320,7 @@ function TaskDetailPanel({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Project</label>
-                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
+                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">No Project</option>
                       {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1283,7 +1328,7 @@ function TaskDetailPanel({
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Requirement</label>
-                    <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={busy}
+                    <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">No Requirement</option>
                       {requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
@@ -1293,7 +1338,7 @@ function TaskDetailPanel({
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Assignee</label>
-                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
+                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">Unassigned</option>
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
@@ -1301,14 +1346,14 @@ function TaskDetailPanel({
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Reviewer</label>
-                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={busy}
+                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Priority</label>
-                    <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={busy}
+                    <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                     </select>
@@ -1559,16 +1604,16 @@ function TaskDetailPanel({
             {/* ── Approve / Reject (pending) ── */}
             {task.status === 'pending' && (
               <>
-                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Approve</button>
-                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
               </>
             )}
             {/* ── Review actions ── */}
             {task.status === 'review' && (
               <>
-                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ Approve</button>
+                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ Approve</button>
                 {!showRevision ? (
-                  <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ Request Revision</button>
+                  <button onClick={() => setShowRevision(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ Request Revision</button>
                 ) : (
                   <div className="flex items-center gap-1.5">
                     <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
@@ -1576,7 +1621,7 @@ function TaskDetailPanel({
                       placeholder="Revision reason…" autoFocus
                       className="px-2 py-1 text-xs bg-surface-elevated border border-amber-500/40 rounded-lg text-fg-primary focus:border-amber-400 outline-none w-48" />
                     <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
-                      disabled={busy} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Send</button>
+                      disabled={actionInFlight} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Send</button>
                     <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
                       className="px-1.5 py-1 text-xs text-fg-secondary hover:text-fg-primary">✕</button>
                   </div>
@@ -1586,49 +1631,49 @@ function TaskDetailPanel({
             {/* ── Execution controls (in_progress / blocked / failed) ── */}
             {isRunning && (
               <>
-                <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
+                <button onClick={() => void pauseTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
                   <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>Pause
                 </button>
-                <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-600 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
+                <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-600 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
                   <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
                 </button>
               </>
             )}
             {isBlocked && (
-              <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                {running ? <>Resuming…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume</>}
+              <button onClick={() => void resumeTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                {actionInFlight ? <>Resuming…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume</>}
               </button>
             )}
             {isFailed && (
-              <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+              <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
                 <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
               </button>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
             {isScheduled && (isCompleted || isFailed) && (
-              <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                {running ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
+              <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                {actionInFlight ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
               </button>
             )}
             {isScheduled && !isRunning && (
               schedPaused
-                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
-                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
+                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
+                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
             )}
-            {/* ── Archive (completed) ── */}
-            {isCompleted && (
-              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
+            {/* ── Archive (all archivable terminal states) ── */}
+            {(isCompleted || isFailed || isRejected || isCancelled) && (
+              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
             )}
-            {/* ── Reopen (terminal states) ── */}
-            {isTerminal && (
-              <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
+            {/* ── Reopen (completed/failed only — FSM allows -> in_progress) ── */}
+            {(isCompleted || isFailed) && (
+              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
             )}
             {/* ── Cancel (non-terminal, non-pending) ── */}
             {!isTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
                 if (count > 0) { setCancelConfirm({ dependentCount: count }); } else { void doUpdate(() => api.tasks.cancel(task.id)); }
-              }} disabled={busy} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
+              }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
             )}
           </div>
         </div>
@@ -1963,10 +2008,11 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function TagPicker({ value, options, onSelect }: {
+function TagPicker({ value, options, onSelect, allowedValues }: {
   value: string;
   options: Array<{ value: string; label: string; cls: string }>;
   onSelect: (val: string) => void;
+  allowedValues?: ReadonlySet<string>;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -1996,17 +2042,24 @@ function TagPicker({ value, options, onSelect }: {
       </button>
       {open && (
         <div ref={panelRef} className="absolute top-full left-0 mt-1 w-40 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
-          {options.map(o => (
-            <button
-              key={o.value}
-              onClick={() => { if (o.value !== value) onSelect(o.value); setOpen(false); }}
-              className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 transition-colors ${o.value === value ? 'bg-surface-elevated' : 'hover:bg-surface-elevated/60'}`}
-            >
-              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${o.cls.split(' ')[0]}`} />
-              <span className={`font-medium ${o.value === value ? 'text-fg-primary' : 'text-fg-secondary'}`}>{o.label}</span>
-              {o.value === value && <svg className="w-3 h-3 ml-auto text-brand-500" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-            </button>
-          ))}
+          {options.map(o => {
+            const isCurrent = o.value === value;
+            const isAllowed = isCurrent || !allowedValues || allowedValues.has(o.value);
+            return (
+              <button
+                key={o.value}
+                disabled={!isAllowed}
+                onClick={() => { if (!isCurrent && isAllowed) onSelect(o.value); setOpen(false); }}
+                className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 transition-colors ${
+                  isCurrent ? 'bg-surface-elevated' : isAllowed ? 'hover:bg-surface-elevated/60' : 'opacity-35 cursor-not-allowed'
+                }`}
+              >
+                <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${isAllowed ? o.cls.split(' ')[0] : 'bg-gray-600'}`} />
+                <span className={`font-medium ${isCurrent ? 'text-fg-primary' : isAllowed ? 'text-fg-secondary' : 'text-fg-muted'}`}>{o.label}</span>
+                {isCurrent && <svg className="w-3 h-3 ml-auto text-brand-500" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -2055,6 +2108,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
                   ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
                   : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
               }
+              allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
               onSelect={val => void handleStatusChange(row, val)}
             />
           </div>
@@ -2096,6 +2150,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
               ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
               : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
           }
+          allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
           onSelect={val => void handleStatusChange(row, val)}
         />
       </div>
@@ -2486,11 +2541,10 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
   selectedTaskRef.current = selectedTask;
 
   useEffect(() => {
-    // Reduce polling frequency when modal is open (60s vs 15s)
-    const pollMs = selectedTask ? 60000 : 15000;
+    const pollMs = selectedTaskRef.current ? 60000 : 15000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
     const unsub = wsClient.on('task:update', (event) => {
-      if (!selectedTaskRef.current) { refreshBoard(); refreshRequirements(); }
+      refreshBoard();
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
         setSelectedTask(prev => {
@@ -2516,7 +2570,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
       wsClient.on(evt, () => { refreshRequirements(); })
     );
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
-  }, [refreshBoard, refreshAgents, refreshRequirements, selectedTask]);
+  }, [refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -3778,7 +3832,8 @@ function RequirementDetailPanel({
             >
               {ALL_REQ_STATUSES.map(s => {
                 const b = REQ_STATUS_BADGE[s];
-                return <option key={s} value={s}>{b?.label ?? s}</option>;
+                const allowed = s === req.status || (REQ_ALLOWED_TRANSITIONS[req.status]?.has(s) ?? false);
+                return <option key={s} value={s} disabled={!allowed}>{b?.label ?? s}</option>;
               })}
             </select>
           )}

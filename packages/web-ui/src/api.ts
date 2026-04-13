@@ -566,6 +566,7 @@ export interface TaskComment {
   content: string;
   attachments?: Array<{ type: string; url: string; name: string }>;
   mentions?: string[];
+  activityId?: string;
   replyTo?: string;
   replyToAuthor?: string;
   replyToContent?: string;
@@ -581,6 +582,7 @@ export interface RequirementComment {
   content: string;
   attachments?: Array<{ type: string; url: string; name: string }>;
   mentions?: string[];
+  activityId?: string;
   replyTo?: string;
   replyToAuthor?: string;
   replyToContent?: string;
@@ -791,12 +793,13 @@ export const api = {
       return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
     },
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
+      if (opts?.status) params.set('status', opts.status);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
     },

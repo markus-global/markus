@@ -574,11 +574,14 @@ export class RequirementService {
       }
 
       const agent = this.agentManager.getAgent(creatorId);
+      const isRejection = decision === 'rejected';
       agent.enqueueToMailbox('requirement_update', {
         summary: `Requirement "${req.title}" ${decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
+        extra: isRejection ? { actionRequired: true } : undefined,
       }, {
+        priority: isRejection ? 1 : 3,
         metadata: { senderName: 'System', senderRole: 'manager' },
       });
 

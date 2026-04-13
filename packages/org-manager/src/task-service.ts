@@ -176,7 +176,7 @@ export class TaskService {
   }
 
   /** Post a structured comment on a task (used by agent tools) */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }> {
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }> {
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
@@ -185,6 +185,7 @@ export class TaskService {
       authorType: 'agent',
       content,
       mentions: mentions ?? [],
+      activityId,
     });
     this.ws?.broadcast({
       type: 'task:comment',
@@ -211,26 +212,35 @@ export class TaskService {
       const taskStatus = task?.status ?? 'unknown';
       const notified = new Set<string>();
 
-      const notifyAgent = (agentId: string, reason: string) => {
+      // Suppress assignee/creator notifications when the reviewer posts during
+      // an active review.  The review outcome is communicated via the status
+      // transition (completed / in_progress revision), not intermediate comments.
+      // @mention notifications are still delivered.
+      const isReviewerDuringReview = task?.status === 'review'
+        && !!task.reviewerAgentId
+        && authorId === task.reviewerAgentId;
+
+      const buildNotifContent = (reason: string) => [
+        `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
+        ``,
+        `Comment from ${authorName}: ${content}`,
+        ``,
+        `**MANDATORY before replying**: You MUST first understand the full context:`,
+        `1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`,
+        `2. Read ALL previous comments on this task to understand the conversation thread`,
+        `3. Only THEN formulate your response using \`task_comment\``,
+        `Do NOT reply based solely on the comment above — you need the full picture.`,
+      ].join('\n');
+
+      const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
         try {
           const agent = this.agentManager!.getAgent(agentId);
           if (!agent) return;
-          const notif = [
-            `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
-            ``,
-            `Comment from ${authorName}: ${content}`,
-            ``,
-            `**MANDATORY before replying**: You MUST first understand the full context:`,
-            `1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`,
-            `2. Read ALL previous comments on this task to understand the conversation thread`,
-            `3. Only THEN formulate your response using \`task_comment\``,
-            `Do NOT reply based solely on the comment above — you need the full picture.`,
-          ].join('\n');
-          agent.enqueueToMailbox('task_comment', {
+          agent.enqueueToMailbox(type, {
             summary: `Comment on task "${taskTitle}" from ${authorName}`,
-            content: notif,
+            content: buildNotifContent(reason),
             taskId,
           }, {
             metadata: { senderName: authorName, senderRole: 'user', taskId },
@@ -238,27 +248,29 @@ export class TaskService {
         } catch { /* agent not found */ }
       };
 
-      // 1. Notify @mentioned agents
+      // 1. Notify @mentioned agents as 'mention' type (always, even during review)
       if (mentions) {
         for (const mid of mentions) {
-          notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
+          enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
         }
       }
 
-      // 2. Always notify task assignee
-      if (task?.assignedAgentId) {
-        notifyAgent(task.assignedAgentId, `New comment from ${authorName} on your assigned task`);
-      }
-      // 3. Notify creator only when task is NOT in_progress (assignee handles it during execution)
-      if (task?.createdBy && task.status !== 'in_progress') {
-        notifyAgent(task.createdBy, `New comment from ${authorName} on a task you created`);
+      if (!isReviewerDuringReview) {
+        // 2. Notify task assignee as 'task_comment'
+        if (task?.assignedAgentId) {
+          enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
+        }
+        // 3. Notify creator only when task is NOT in_progress
+        if (task?.createdBy && task.status !== 'in_progress') {
+          enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
+        }
       }
     }
     return { id: comment.id };
   }
 
   /** Post a structured comment on a requirement (used by agent tools) */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -267,6 +279,7 @@ export class TaskService {
       authorType: 'agent',
       content,
       mentions: mentions ?? [],
+      activityId,
     });
     this.ws?.broadcast({
       type: 'requirement:comment',
@@ -293,26 +306,27 @@ export class TaskService {
       const reqStatus = req?.status ?? 'unknown';
       const notified = new Set<string>();
 
-      const notifyAgent = (agentId: string, reason: string) => {
+      const buildNotifContent = (reason: string) => [
+        `${reason} on requirement "${reqTitle}" (ID: ${requirementId}, status: ${reqStatus}).`,
+        ``,
+        `Comment from ${authorName}: ${content}`,
+        ``,
+        `**MANDATORY before replying**: You MUST first understand the full context:`,
+        `1. Call \`requirement_list\` to get the full requirement details and linked tasks`,
+        `2. Read ALL previous comments to understand the conversation thread`,
+        `3. Only THEN formulate your response using \`requirement_comment\``,
+        `Do NOT reply based solely on the comment above — you need the full picture.`,
+      ].join('\n');
+
+      const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
         try {
           const agent = this.agentManager!.getAgent(agentId);
           if (!agent) return;
-          const notif = [
-            `${reason} on requirement "${reqTitle}" (ID: ${requirementId}, status: ${reqStatus}).`,
-            ``,
-            `Comment from ${authorName}: ${content}`,
-            ``,
-            `**MANDATORY before replying**: You MUST first understand the full context:`,
-            `1. Call \`requirement_list\` to get the full requirement details and linked tasks`,
-            `2. Read ALL previous comments to understand the conversation thread`,
-            `3. Only THEN formulate your response using \`requirement_comment\``,
-            `Do NOT reply based solely on the comment above — you need the full picture.`,
-          ].join('\n');
-          agent.enqueueToMailbox('requirement_update', {
+          agent.enqueueToMailbox(type, {
             summary: `Comment on requirement "${reqTitle}" from ${authorName}`,
-            content: notif,
+            content: buildNotifContent(reason),
             requirementId,
           }, {
             metadata: { senderName: authorName, senderRole: 'user' },
@@ -320,16 +334,16 @@ export class TaskService {
         } catch { /* agent not found */ }
       };
 
-      // 1. Notify @mentioned agents
+      // 1. Notify @mentioned agents as 'mention' type
       if (mentions) {
         for (const mid of mentions) {
-          notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
+          enqueueFor(mid, 'mention', `You were mentioned by ${authorName} in a comment`);
         }
       }
 
-      // 2. Always notify requirement creator
+      // 2. Always notify requirement creator as 'requirement_comment'
       if (req?.createdBy) {
-        notifyAgent(req.createdBy, `New comment from ${authorName} on a requirement you created`);
+        enqueueFor(req.createdBy, 'requirement_comment', `New comment from ${authorName} on a requirement you created`);
       }
     }
     return { id: comment.id };
@@ -1781,6 +1795,13 @@ export class TaskService {
 
   // ─── Stage 4b: Assignee mailbox notification ─────────────────────────────────
 
+  // System-managed transitions where the cancel token or auto-start already
+  // handles the real work — an informational notification is pure noise.
+  private static readonly SILENT_TRANSITIONS = new Set([
+    'blocked->in_progress',
+    'in_progress->blocked',
+  ]);
+
   private maybeNotifyAssignee(
     task: Task, from: TaskStatus, to: TaskStatus,
     executionTriggered: boolean, updatedBy?: string,
@@ -1789,6 +1810,8 @@ export class TaskService {
     if (executionTriggered) return;
     // Skip self-initiated review submission — assignee already knows.
     if (from === 'in_progress' && to === 'review') return;
+    // Skip system-managed transitions (cancel token / auto-start does the work).
+    if (TaskService.SILENT_TRANSITIONS.has(`${from}->${to}`)) return;
 
     if (!task.assignedAgentId || !this.agentManager) return;
     try {
@@ -3195,6 +3218,14 @@ export class TaskService {
     const existing = this.taskCancelTokens.get(taskIdStr);
     if (existing) existing.cancelled = true;
 
+    // Purge queued informational status updates for this task before the fresh start
+    if (task.assignedAgentId && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(task.assignedAgentId);
+        agent.dropStaleStatusUpdates(taskIdStr);
+      } catch { /* agent not found — skip */ }
+    }
+
     task.executionRound = (task.executionRound ?? 1) + 1;
     task.result = undefined;
     task.startedAt = undefined;
@@ -3630,6 +3661,14 @@ export class TaskService {
   async resetTaskForRerun(taskIdStr: string): Promise<void> {
     const task = this.tasks.get(taskIdStr);
     if (!task) return;
+
+    // Purge queued informational status updates before rerun
+    if (task.assignedAgentId && this.agentManager) {
+      try {
+        const agent = this.agentManager.getAgent(task.assignedAgentId);
+        agent.dropStaleStatusUpdates(taskIdStr);
+      } catch { /* agent not found — skip */ }
+    }
 
     task.executionRound = (task.executionRound ?? 1) + 1;
     task.result = undefined;

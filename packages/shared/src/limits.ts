@@ -181,3 +181,14 @@ export const TASK_LIST_PAGE_SIZE = 20;
 
 /** Max page size for task queries (prevents accidental full-table scans). */
 export const TASK_LIST_PAGE_MAX = 100;
+
+// ─── Shell Execution Limits ─────────────────────────────────────────────────
+
+/** Default timeout for shell commands (ms).
+ *  60s covers typical builds, tests, git operations. */
+export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
+
+/** Maximum allowed timeout for shell commands (ms).
+ *  5 minutes caps even explicitly requested long-running operations.
+ *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
+export const SHELL_TIMEOUT_MAX_MS = 300_000;

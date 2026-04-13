@@ -215,8 +215,8 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
-  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
-  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }>;
 }
 
 export interface MCPServerConfig {
@@ -794,7 +794,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -820,6 +820,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
           }
         );
         return stripInternalBlocks(reply);
@@ -1001,11 +1002,12 @@ export class AgentManager {
             }
           : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          ? async (taskId, content, mentions, activityId) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId)
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
+          ? async (reqId, content, mentions, activityId) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId)
           : undefined,
+        getCurrentActivityId: () => agent.getCurrentActivityId(),
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
@@ -1418,7 +1420,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -1444,6 +1446,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
           }
         );
       },

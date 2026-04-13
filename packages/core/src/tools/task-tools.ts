@@ -136,9 +136,11 @@ export interface AgentTaskContext {
     updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
   ) => Promise<{ id: string; title: string; status: string }>;
   /** Post a structured comment on a task (with @mention support) */
-  postTaskComment?: (taskId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
+  postTaskComment?: (taskId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
   /** Post a structured comment on a requirement (with @mention support) */
-  postRequirementComment?: (requirementId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
+  postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
+  /** Returns the ID of the agent's currently executing activity (for traceability) */
+  getCurrentActivityId?: () => string | undefined;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -1195,9 +1197,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const taskId = args['task_id'] as string;
-                const content = args['content'] as string;
+                const content = args['content'] as string | undefined;
+                if (!content?.trim()) {
+                  return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
+                }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
-                const result = await ctx.postTaskComment!(taskId, content, mentions);
+                const activityId = ctx.getCurrentActivityId?.();
+                const result = await ctx.postTaskComment!(taskId, content, mentions, activityId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,
@@ -1236,9 +1242,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const requirementId = args['requirement_id'] as string;
-                const content = args['content'] as string;
+                const content = args['content'] as string | undefined;
+                if (!content?.trim()) {
+                  return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
+                }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
-                const result = await ctx.postRequirementComment!(requirementId, content, mentions);
+                const activityId = ctx.getCurrentActivityId?.();
+                const result = await ctx.postRequirementComment!(requirementId, content, mentions, activityId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,

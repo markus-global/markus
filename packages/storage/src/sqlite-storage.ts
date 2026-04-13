@@ -544,6 +544,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
     { table: 'organizations', column: 'manager_agent_id', sql: "ALTER TABLE organizations ADD COLUMN manager_agent_id TEXT" },
     { table: 'task_comments', column: 'mentions', sql: "ALTER TABLE task_comments ADD COLUMN mentions TEXT DEFAULT '[]'" },
+    { table: 'task_comments', column: 'activity_id', sql: "ALTER TABLE task_comments ADD COLUMN activity_id TEXT" },
+    { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
   ];
   for (const m of migrations) {
@@ -1424,14 +1426,15 @@ export class SqliteTaskCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }) {
     const id = generateId('tc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
     return {
       id,
       taskId: data.taskId,
@@ -1441,6 +1444,7 @@ export class SqliteTaskCommentRepo {
       content: data.content,
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
+      activityId: data.activityId,
       createdAt: new Date(ts),
     };
   }
@@ -1459,6 +1463,7 @@ export class SqliteTaskCommentRepo {
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      activityId: r['activity_id'] as string | undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -1479,14 +1484,15 @@ export class SqliteRequirementCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }) {
     const id = generateId('rc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
+      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
     return {
       id,
       requirementId: data.requirementId,
@@ -1496,6 +1502,7 @@ export class SqliteRequirementCommentRepo {
       content: data.content,
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
+      activityId: data.activityId,
       createdAt: new Date(ts),
     };
   }
@@ -1514,6 +1521,7 @@ export class SqliteRequirementCommentRepo {
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      activityId: r['activity_id'] as string | undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -3151,6 +3159,13 @@ export class SqliteMailboxRepo {
     if (extra?.mergedInto !== undefined) { parts.push('merged_into = ?'); params.push((extra.mergedInto as string) ?? null); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  markStaleProcessingAsDropped(agentId: string): number {
+    const result = this.db
+      .prepare("UPDATE mailbox_items SET status = 'dropped' WHERE agent_id = ? AND status = 'processing'")
+      .run(agentId);
+    return (result as { changes?: number }).changes ?? 0;
   }
 
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {

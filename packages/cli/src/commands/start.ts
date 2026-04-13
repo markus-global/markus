@@ -805,7 +805,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     const wireMailboxPersistence = (agentId: string) => {
       try {
         const agent = agentManager.getAgent(agentId);
-        agent.getMailbox().setPersistence({
+        const mailbox = agent.getMailbox();
+        mailbox.setPersistence({
           save: (item) => {
             try {
               mbRepo.save({
@@ -821,7 +822,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
+          markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
         });
+        const dropped = mailbox.recoverStaleItems();
+        if (dropped > 0) log.info('Recovered stale processing mailbox items', { agentId, dropped });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {

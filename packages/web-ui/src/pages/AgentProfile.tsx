@@ -1468,7 +1468,7 @@ const ATTENTION_COLORS: Record<string, string> = {
 const MAILBOX_TYPE_ICONS: Record<string, string> = {
   system_event: '⚙', human_chat: '💬', task_comment: '💬',
   mention: '@', session_reply: '↩', task_status_update: '📋', a2a_message: '🔗',
-  review_request: '👀', requirement_update: '📝', daily_report: '📊',
+  review_request: '👀', requirement_update: '📝', requirement_comment: '💬', daily_report: '📊',
   heartbeat: '♡', memory_consolidation: '🧠',
 };
 
@@ -1504,6 +1504,7 @@ function MindTab({ agentId }: { agentId: string }) {
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const PAGE = 50;
@@ -1512,26 +1513,28 @@ function MindTab({ agentId }: { agentId: string }) {
     if (reset) setLoading(true);
     try {
       const catParam = catFilter === 'all' ? undefined : catFilter;
+      const statusParam = statusFilter === 'all' ? undefined : statusFilter;
       const [m, mb] = await Promise.all([
         api.agents.getMindState(agentId),
-        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam }),
+        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam, status: statusParam }),
       ]);
       setMind(m);
       setMailbox(mb);
       setHasMore((mb.history?.length ?? 0) >= PAGE);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [agentId, catFilter]);
+  }, [agentId, catFilter, statusFilter]);
 
   const loadMore = useCallback(async () => {
     if (!mailbox) return;
     const catParam = catFilter === 'all' ? undefined : catFilter;
+    const statusParam = statusFilter === 'all' ? undefined : statusFilter;
     try {
-      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam });
+      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
       setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
       setHasMore((mb.history?.length ?? 0) >= PAGE);
     } catch { /* ignore */ }
-  }, [agentId, mailbox, catFilter]);
+  }, [agentId, mailbox, catFilter, statusFilter]);
 
   useEffect(() => {
     setExpandedId(null);
@@ -1605,6 +1608,25 @@ function MindTab({ agentId }: { agentId: string }) {
               >{f.label}</button>
             ))}
           </div>
+        </div>
+        <div className="flex gap-1 mb-2 flex-wrap">
+          {[
+            { key: 'all', label: 'All', dot: '' },
+            { key: 'queued', label: 'Queued', dot: 'bg-amber-400' },
+            { key: 'processing', label: 'Processing', dot: 'bg-brand-400' },
+            { key: 'completed', label: 'Completed', dot: 'bg-green-500' },
+            { key: 'merged', label: 'Merged', dot: 'bg-blue-400' },
+            { key: 'deferred', label: 'Deferred', dot: 'bg-purple-400' },
+            { key: 'dropped', label: 'Dropped', dot: 'bg-red-500' },
+          ].map(f => (
+            <button key={f.key} onClick={() => setStatusFilter(f.key)}
+              className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
+                statusFilter === f.key
+                  ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                  : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+              }`}
+            >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{f.label}</button>
+          ))}
         </div>
 
         {(!mailbox?.history || mailbox.history.length === 0) && !loading && (

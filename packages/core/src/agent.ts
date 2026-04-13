@@ -223,7 +223,7 @@ export class Agent {
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
-  private static readonly MAX_CONCURRENT_TASKS = 5;
+  private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
@@ -323,7 +323,7 @@ export class Agent {
     // Initialize task executor
     this.taskExecutor = new TaskExecutor({
       agentId: this.id,
-      maxConcurrentTasks: Agent.MAX_CONCURRENT_TASKS,
+      maxConcurrentTasks: this.config.profile?.maxConcurrentTasks ?? Agent.MAX_CONCURRENT_TASKS,
       defaultPriority: TaskPriority.MEDIUM,
     });
 
@@ -543,7 +543,7 @@ export class Agent {
 
     return new Promise<string>((resolve, reject) => {
       this.mailbox.enqueue('human_chat', payload, {
-        priority: 1,
+        priority: 0,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -635,6 +635,11 @@ export class Agent {
   /** Get the raw mailbox instance (for persistence wiring). */
   getMailbox(): AgentMailbox {
     return this.mailbox;
+  }
+
+  /** Drop queued informational status-update items for a task (used before retry). */
+  dropStaleStatusUpdates(taskId: string): number {
+    return this.mailbox.dropStatusUpdatesByTaskId(taskId);
   }
 
   /** Get the attention controller (for persistence wiring). */
@@ -772,14 +777,11 @@ export class Agent {
             resolveResponse('');
             return;
           }
-          const statusReply = await this.handleMessage(
-            item.payload.content,
-            item.metadata?.senderId,
-            senderInfo,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
-          );
-          resolveResponse(statusReply);
-          return statusReply;
+          log.info('Task status update (informational, no LLM)', {
+            agentId: this.id, summary: item.payload.summary,
+          });
+          resolveResponse('');
+          return;
         }
 
         case 'mention': {
@@ -794,6 +796,25 @@ export class Agent {
         }
 
         case 'requirement_update': {
+          if (extra.actionRequired) {
+            const reqId = item.payload.requirementId ?? 'unknown';
+            const reply = await this.handleMessage(
+              item.payload.content,
+              item.metadata?.senderId,
+              senderInfo,
+              buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+            );
+            resolveResponse(reply);
+            return reply;
+          }
+          log.info('Requirement update (informational, no LLM)', {
+            agentId: this.id, summary: item.payload.summary,
+          });
+          resolveResponse('');
+          return;
+        }
+
+        case 'requirement_comment': {
           const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
             item.payload.content,
@@ -1753,6 +1774,10 @@ export class Agent {
 
   getCurrentActivity(): AgentActivity | undefined {
     return this.state.currentActivity;
+  }
+
+  getCurrentActivityId(): string | undefined {
+    return this.state.currentActivity?.id;
   }
 
   /** Return summary of currently-live in-memory activities */

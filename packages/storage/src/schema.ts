@@ -244,6 +244,7 @@ export const taskComments = pgTable(
     content: text('content').notNull(),
     attachments: jsonb('attachments').default([]), // [{type:'image', url:'...', name:'...'}]
     mentions: jsonb('mentions').default([]), // agent/user IDs mentioned via @
+    activityId: varchar('activity_id', { length: 128 }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   t => [index('idx_task_comments_task').on(t.taskId, t.createdAt)]
@@ -261,6 +262,7 @@ export const requirementComments = pgTable(
     content: text('content').notNull(),
     attachments: jsonb('attachments').default([]),
     mentions: jsonb('mentions').default([]),
+    activityId: varchar('activity_id', { length: 128 }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   t => [index('idx_requirement_comments_req').on(t.requirementId, t.createdAt)]

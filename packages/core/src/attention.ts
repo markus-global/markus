@@ -276,7 +276,7 @@ export class AttentionController {
    */
   /** Types that represent direct user interaction — always highest priority. */
   private static readonly USER_INTERACTION_TYPES: Set<MailboxItemType> = new Set([
-    'human_chat', 'task_comment',
+    'human_chat', 'task_comment', 'requirement_comment',
   ]);
 
   heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
@@ -297,9 +297,9 @@ export class AttentionController {
       return 'merge';
     }
 
-    // R3: Requirement update on the focused requirement → merge
+    // R3: Requirement update/comment on the focused requirement → merge
     if (
-      newItem.sourceType === 'requirement_update' &&
+      (newItem.sourceType === 'requirement_update' || newItem.sourceType === 'requirement_comment') &&
       newItem.payload.requirementId &&
       currentItem.payload.requirementId === newItem.payload.requirementId
     ) {
@@ -314,14 +314,7 @@ export class AttentionController {
       return 'preempt';
     }
 
-    // R5: Status update on the currently focused task → preempt
-    //     (external state change: approval, rejection, pause, etc.)
-    if (
-      newItem.sourceType === 'task_status_update' &&
-      newItem.payload.taskId === currentItem.payload.taskId
-    ) {
-      return 'preempt';
-    }
+    // R5: (Removed — task_status_update is now informational and auto-completed)
 
     // R6: Strictly higher priority (lower number) → preempt
     if (newItem.priority < currentItem.priority) {

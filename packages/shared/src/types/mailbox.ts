@@ -8,6 +8,7 @@ export type MailboxItemType =
   | 'heartbeat'
   | 'review_request'
   | 'requirement_update'
+  | 'requirement_comment'
   | 'mention'
   | 'system_event'
   | 'session_reply'
@@ -56,10 +57,11 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   task_comment:         { label: 'Task Comment',         defaultPriority: 0, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
   mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
   session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true  },
-  task_status_update:   { label: 'Task Status',          defaultPriority: 2, category: 'task',          icon: '📋', activityType: null,                 createsActivity: true,  invokesLLM: true  },
+  task_status_update:   { label: 'Task Status',          defaultPriority: 2, category: 'task',          icon: '📋', activityType: null,                 createsActivity: true,  invokesLLM: false },
   a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', activityType: 'a2a',                createsActivity: true,  invokesLLM: true  },
   review_request:       { label: 'Review Request',       defaultPriority: 2, category: 'task',          icon: '👀', activityType: 'chat',               createsActivity: true,  invokesLLM: true  },
-  requirement_update:   { label: 'Requirement Update',   defaultPriority: 2, category: 'notification',  icon: '📝', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  requirement_comment:  { label: 'Requirement Comment',  defaultPriority: 0, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false },
+  requirement_update:   { label: 'Requirement Update',   defaultPriority: 2, category: 'notification',  icon: '📝', activityType: 'internal',           createsActivity: true,  invokesLLM: false },
   daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
   memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
@@ -67,7 +69,7 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
-  task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'review_request', 'session_reply'] },
+  task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply'] },
   notification: { label: 'Notification', types: ['requirement_update'] },
   system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation'] },
 };

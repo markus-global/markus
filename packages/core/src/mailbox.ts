@@ -26,6 +26,8 @@ export interface EnqueueOptions {
 export interface MailboxPersistence {
   save(item: MailboxItem): void;
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
+  /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
+  markStaleProcessingAsDropped?(agentId: string): number;
 }
 
 /**
@@ -52,14 +54,34 @@ export class AgentMailbox {
   }
 
   /**
+   * On startup, mark any persisted items stuck in 'processing' as 'dropped'.
+   * After a crash/restart the in-flight work is lost; `resumeInProgressTasks`
+   * creates fresh execution items so the stale ones are pure zombies.
+   */
+  recoverStaleItems(): number {
+    return this.persistence?.markStaleProcessingAsDropped?.(this.agentId) ?? 0;
+  }
+
+  /**
    * Add an item to the mailbox. Returns the item ID.
    * Emits 'mailbox:new-item' so the AttentionController can react.
    */
+  private static readonly TASK_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'task_comment', 'task_status_update',
+  ]);
+  private static readonly REQ_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'requirement_comment', 'requirement_update',
+  ]);
+
   enqueue(
     sourceType: MailboxItemType,
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
+    // Enqueue-time dedup: merge into existing queued item for the same entity
+    const merged = this.tryMergeIntoExisting(sourceType, payload);
+    if (merged) return merged;
+
     const item: MailboxItem = {
       id: generateId('mbx'),
       agentId: this.agentId,
@@ -193,6 +215,29 @@ export class AgentMailbox {
   }
 
   /**
+   * Drop queued `task_status_update` items for a specific task.
+   * Only targets informational notifications — execution-trigger items
+   * and other types (comments, mentions) are preserved.
+   */
+  dropStatusUpdatesByTaskId(taskId: string): number {
+    const toRemove: number[] = [];
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const item = this.queue[i];
+      if (item.status === 'queued'
+        && item.sourceType === 'task_status_update'
+        && !item.payload.extra?.triggerExecution
+        && (item.payload.taskId === taskId || item.metadata?.taskId === taskId)) {
+        toRemove.push(i);
+      }
+    }
+    for (const idx of toRemove) {
+      const [item] = this.queue.splice(idx, 1);
+      this.persistence?.updateStatus(item.id, 'dropped');
+    }
+    return toRemove.length;
+  }
+
+  /**
    * Re-enqueue a deferred item back into the active queue.
    */
   resurface(item: MailboxItem): void {
@@ -226,6 +271,10 @@ export class AgentMailbox {
     );
   }
 
+  findByRequirementId(requirementId: string): MailboxItem | undefined {
+    return this.queue.find(i => i.payload.requirementId === requirementId);
+  }
+
   /**
    * Cancel the idle wait (used during shutdown).
    */
@@ -234,6 +283,54 @@ export class AgentMailbox {
       this.idleResolve();
       this.idleResolve = undefined;
     }
+  }
+
+  /**
+   * If a queued (not yet processing) item exists for the same entity and a
+   * dedup-eligible type, append the new content into it and return the
+   * existing item.  Returns undefined when no merge candidate is found.
+   */
+  private tryMergeIntoExisting(
+    sourceType: MailboxItemType,
+    payload: MailboxPayload,
+  ): MailboxItem | undefined {
+    // Never merge execution-trigger items — they must remain standalone.
+    if (payload.extra?.triggerExecution) return undefined;
+
+    let existing: MailboxItem | undefined;
+
+    if (AgentMailbox.TASK_DEDUP_TYPES.has(sourceType)) {
+      const taskId = payload.taskId;
+      if (taskId) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.TASK_DEDUP_TYPES.has(i.sourceType)
+            && !i.payload.extra?.triggerExecution
+            && (i.payload.taskId === taskId || i.metadata?.taskId === taskId),
+        );
+      }
+    } else if (AgentMailbox.REQ_DEDUP_TYPES.has(sourceType)) {
+      const reqId = payload.requirementId;
+      if (reqId) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.REQ_DEDUP_TYPES.has(i.sourceType)
+            && i.payload.requirementId === reqId,
+        );
+      }
+    }
+
+    if (!existing) return undefined;
+
+    existing.payload.content += `\n\n---\n\n${payload.content}`;
+    existing.payload.summary += ` (+1)`;
+    this.persistence?.updateStatus(existing.id, 'queued', existing);
+    log.debug('Mailbox enqueue-time dedup: merged into existing item', {
+      agentId: this.agentId,
+      existingId: existing.id,
+      sourceType,
+    });
+    return existing;
   }
 
   /**

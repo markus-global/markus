@@ -122,8 +122,8 @@ export function registerTaskCommands(program: Command): Command {
         const body: Record<string, unknown> = { title: opts.title };
         if (opts.description !== undefined) body.description = opts.description;
         if (opts.priority !== undefined) body.priority = opts.priority;
-        if (opts.assignee !== undefined) body.assignee = opts.assignee;
-        if (opts.reviewer !== undefined) body.reviewer = opts.reviewer;
+        if (opts.assignee !== undefined) body.assignedAgentId = opts.assignee;
+        if (opts.reviewer !== undefined) body.reviewerAgentId = opts.reviewer;
         if (opts.projectId !== undefined) body.projectId = opts.projectId;
         if (opts.type !== undefined) body.type = opts.type;
         if (blockedBy?.length) body.blockedBy = blockedBy;
@@ -156,9 +156,9 @@ export function registerTaskCommands(program: Command): Command {
         if (opts.description !== undefined) body.description = opts.description;
         if (opts.priority !== undefined) body.priority = opts.priority;
         if (opts.status !== undefined) body.status = opts.status;
-        if (opts.assignee !== undefined) body.assignee = opts.assignee;
+        if (opts.assignee !== undefined) body.assignedAgentId = opts.assignee;
         if (opts.projectId !== undefined) body.projectId = opts.projectId;
-        if (opts.reviewer !== undefined) body.reviewer = opts.reviewer;
+        if (opts.reviewer !== undefined) body.reviewerAgentId = opts.reviewer;
         const blockedBy = parseBlockedBy(opts.blockedBy);
         if (blockedBy !== undefined) body.blockedBy = blockedBy;
         const data = await client.put<unknown>(`/tasks/${encodeURIComponent(id)}`, body);

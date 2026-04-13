@@ -12,6 +12,7 @@ export interface TaskCommentRow {
   content: string;
   attachments: unknown;
   mentions: string[];
+  activityId?: string | null;
   createdAt: Date;
 }
 
@@ -26,6 +27,7 @@ export class TaskCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }): Promise<TaskCommentRow> {
     const [row] = await this.db.insert(taskComments).values({
       id: generateId('tc'),
@@ -36,8 +38,9 @@ export class TaskCommentRepo {
       content: data.content,
       attachments: (data.attachments ?? []) as Record<string, unknown>[],
       mentions: (data.mentions ?? []) as string[],
+      activityId: data.activityId ?? null,
     }).returning();
-    return { ...row!, mentions: (row!.mentions ?? []) as string[] };
+    return { ...row!, mentions: (row!.mentions ?? []) as string[], activityId: row!.activityId };
   }
 
   async getByTask(taskId: string): Promise<TaskCommentRow[]> {

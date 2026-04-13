@@ -12,6 +12,7 @@ export interface RequirementCommentRow {
   content: string;
   attachments: unknown;
   mentions: string[];
+  activityId?: string | null;
   createdAt: Date;
 }
 
@@ -26,6 +27,7 @@ export class RequirementCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }): Promise<RequirementCommentRow> {
     const [row] = await this.db.insert(requirementComments).values({
       id: generateId('rc'),
@@ -36,8 +38,9 @@ export class RequirementCommentRepo {
       content: data.content,
       attachments: (data.attachments ?? []) as Record<string, unknown>[],
       mentions: (data.mentions ?? []) as string[],
+      activityId: data.activityId ?? null,
     }).returning();
-    return { ...row!, mentions: (row!.mentions ?? []) as string[] };
+    return { ...row!, mentions: (row!.mentions ?? []) as string[], activityId: row!.activityId };
   }
 
   async getByRequirement(requirementId: string): Promise<RequirementCommentRow[]> {
