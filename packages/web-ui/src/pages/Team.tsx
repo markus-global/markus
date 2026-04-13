@@ -747,6 +747,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-select secretary agent when no agent is selected and agents have loaded
+  useEffect(() => {
+    if (selectedAgent || agents.length === 0) return;
+    const secretary = agents.find(a => a.role === 'secretary');
+    if (secretary) {
+      setChatMode('direct');
+      setSelectedAgent(secretary.id);
+    }
+  }, [agents, selectedAgent]);
+
   // Track whether the user is at the bottom of the chat scroll container.
   // Uses wheel/touch events to detect genuine user interaction (not programmatic scrolls),
   // and the scroll event to detect when the user scrolls back to the bottom.
@@ -1516,7 +1526,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
-  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  const [, setExpandedMsgIds] = useState<Set<string>>(new Set());
 
   const handleCopy = useCallback((msg: ChatMsg) => {
     const text = msg.segments
@@ -2070,11 +2080,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 const showActions = !isStreamingMsg || msg.isStopped;
                 return (
                   <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={
-                      msg.sender === 'agent' && expandedMsgIds.has(msg.id)
-                        ? 'max-w-full w-full'
-                        : isMobile ? 'max-w-[95%]' : 'max-w-[75%]'
-                    }>
+                    <div className={[
+                      isMobile ? 'max-w-[95%]' : 'max-w-[85%]',
+                      msg.sender === 'agent' ? (isMobile ? 'min-w-[200px]' : 'min-w-[280px]') : '',
+                    ].join(' ')}>
                       <div className="text-xs text-fg-tertiary mb-1">
                         {msg.sender === 'user'
                           ? (currentUserName ?? 'You')
