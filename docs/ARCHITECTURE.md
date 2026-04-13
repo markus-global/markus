@@ -49,6 +49,8 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 packages/
 ├── shared/       # Shared types, constants, utils (governance/project/knowledge types)
 ├── core/         # Agent runtime (core engine) + ReviewService
+│                 # Note: Workspace management has been refactored to agent-side local management
+│                 # (WorkspaceManager removed in v0.4.16)
 ├── storage/      # Database schema + Repository layer
 ├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
 ├── comms/        # Communication adapters (Feishu, etc.)
@@ -294,8 +296,10 @@ LLMRouter
 
 Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The only hard enforcement is that agents **cannot write to other agents' directories** — this prevents cross-agent interference. All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.
 
+**Workspace Management (v0.4.16+):** Workspace management has been refactored from a centralized `WorkspaceManager` to agent-side local management. Each agent manages its own worktrees and workspace isolation through `TaskProjectContext` (previously `TaskWorkspace`), which provides project and repository information. This simplifies the architecture and gives agents more autonomy over their workspace decisions.
+
 - The platform enforces: cross-agent write isolation (deny writes to other agents' directories)
-- The platform provides via prompt: workspace path, project context, best-practice guidance
+- The platform provides via prompt: workspace path, project context (`TaskProjectContext`), best-practice guidance
 - The agent decides: branching strategy, worktree layout, merge workflow
 - Workflow details like branching conventions and review process are defined by **role templates and team norms**, not by the platform
 
