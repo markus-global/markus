@@ -1865,7 +1865,7 @@ export class Agent {
       switch (scenario) {
         case 'a2a':
           actType = 'a2a';
-          actLabel = `A2A: Chat with ${senderInfo?.name ?? senderId}`;
+          actLabel = `Chat from ${senderInfo?.name ?? senderId}`;
           break;
         case 'heartbeat':
           actType = 'internal';
