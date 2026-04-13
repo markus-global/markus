@@ -1,0 +1,84 @@
+{
+  "nav": {
+    "agents": "智能體",
+    "teams": "團隊",
+    "projects": "專案",
+    "reports": "報告",
+    "settings": "設定"
+  },
+  "common": {
+    "loading": "載入中...",
+    "error": "發生錯誤",
+    "save": "儲存",
+    "cancel": "取消",
+    "delete": "刪除",
+    "edit": "編輯",
+    "create": "建立",
+    "search": "搜尋",
+    "filter": "篩選",
+    "refresh": "重新整理",
+    "confirm": "確認",
+    "back": "返回",
+    "next": "下一步",
+    "submit": "送出",
+    "close": "關閉",
+    "signOut": "登出",
+    "version": "版本"
+  },
+  "auth": {
+    "signIn": "登入",
+    "signingIn": "登入中...",
+    "email": "電子郵件",
+    "password": "密碼",
+    "invalidCredentials": "電子郵件或密碼錯誤",
+    "defaultCredentials": "預設帳號: admin@markus.local / markus123",
+    "brandName": "Markus",
+    "tagline": "AI 數位員工平台",
+    "logoAlt": "Markus 標誌"
+  },
+  "agent": {
+    "title": "智能體",
+    "create": "建立智能體",
+    "name": "名稱",
+    "role": "角色",
+    "status": "狀態",
+    "skills": "技能",
+    "actions": "操作",
+    "idle": "閒置",
+    "busy": "忙碌",
+    "offline": "離線",
+    "online": "上線"
+  },
+  "team": {
+    "title": "團隊",
+    "create": "建立團隊",
+    "name": "團隊名稱",
+    "members": "成員",
+    "manager": "管理者",
+    "description": "描述"
+  },
+  "project": {
+    "title": "專案",
+    "create": "建立專案",
+    "name": "專案名稱",
+    "description": "描述",
+    "status": "狀態"
+  },
+  "task": {
+    "title": "任務",
+    "create": "建立任務",
+    "status": {
+      "pending": "待處理",
+      "in_progress": "進行中",
+      "completed": "已完成",
+      "failed": "失敗",
+      "cancelled": "已取消"
+    }
+  },
+  "settings": {
+    "title": "設定",
+    "language": "語言",
+    "theme": "主題",
+    "notifications": "通知"
+  }
+}
