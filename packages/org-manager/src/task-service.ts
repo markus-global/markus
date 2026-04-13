@@ -19,6 +19,25 @@ import {
   type TaskSortField,
   isValidTaskTransition,
   TERMINAL_STATUSES,
+  PROMPT_TASK_NOTES_MAX,
+  PROMPT_TASK_NOTE_CHARS,
+  PROMPT_DEP_NOTES_MAX,
+  PROMPT_DEP_NOTE_CHARS,
+  PROMPT_DEP_DESC_CHARS,
+  PROMPT_EXECUTION_ROUNDS_MAX,
+  PROMPT_LOG_ENTRY_CHARS,
+  PROMPT_RECENT_ERRORS_MAX,
+  PROMPT_HUMAN_COMMENTS_MAX,
+  PROMPT_PROJECT_DESC_CHARS,
+  PROMPT_REQUIREMENT_DESC_CHARS,
+  REVIEWER_NOTES_MAX,
+  REVIEWER_FILE_LIST_MAX,
+  DELIVERABLE_TITLE_CHARS,
+  REVISION_REASON_CHARS,
+  TASK_MAX_RETRIES,
+  TASK_MAX_NO_SUBMIT_RETRIES,
+  TASK_RETRY_DELAYS_MS,
+  TASK_LIST_PAGE_MAX,
 } from '@markus/shared';
 import type { AgentManager, TaskProjectContext, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -372,9 +391,9 @@ export class TaskService {
     }
   }
 
-  private static readonly MAX_TASK_RETRIES = 3;
-  private static readonly MAX_IN_PROGRESS_RETRIES = 8;
-  private static readonly RETRY_DELAYS_MS = [10_000, 30_000, 60_000, 120_000, 300_000];
+  private static readonly MAX_TASK_RETRIES = TASK_MAX_RETRIES;
+  private static readonly MAX_IN_PROGRESS_RETRIES = TASK_MAX_NO_SUBMIT_RETRIES;
+  private static readonly RETRY_DELAYS_MS = TASK_RETRY_DELAYS_MS;
 
   private static readonly STATUS_ACTION_GUIDANCE: Record<string, string> = {
     blocked:   'Task is paused. Stop any active work on this task.',
@@ -643,19 +662,19 @@ export class TaskService {
 
     // Task notes
     if (task?.notes?.length) {
-      const recentNotes = task.notes.slice(-20);
+      const recentNotes = task.notes.slice(-PROMPT_TASK_NOTES_MAX);
       lines.push('### Task Notes (accumulated knowledge)');
-      if (task.notes.length > 20) {
-        lines.push(`_(showing most recent 20 of ${task.notes.length} notes)_`);
+      if (task.notes.length > PROMPT_TASK_NOTES_MAX) {
+        lines.push(`_(showing most recent ${PROMPT_TASK_NOTES_MAX} of ${task.notes.length} notes)_`);
       }
       for (const note of recentNotes) {
-        lines.push(`- ${note.slice(0, 800)}`);
+        lines.push(`- ${note.slice(0, PROMPT_TASK_NOTE_CHARS)}`);
       }
       lines.push('');
     }
 
     // Execution timeline — comments interleaved chronologically
-    const MAX_ROUNDS_TO_SHOW = 3;
+    const MAX_ROUNDS_TO_SHOW = PROMPT_EXECUTION_ROUNDS_MAX;
     const roundsSorted = [...seenRounds].sort((a, b) => a - b);
     const roundsToShow = roundsSorted.length > MAX_ROUNDS_TO_SHOW
       ? roundsSorted.slice(-MAX_ROUNDS_TO_SHOW) : roundsSorted;
@@ -729,7 +748,7 @@ export class TaskService {
       }
 
       if (entry.type === 'text') {
-        const text = entry.content.length > 800 ? entry.content.slice(0, 800) + '…' : entry.content;
+        const text = entry.content.length > PROMPT_LOG_ENTRY_CHARS ? entry.content.slice(0, PROMPT_LOG_ENTRY_CHARS) + '…' : entry.content;
         lines.push(text);
         lines.push('');
       } else if (entry.type === 'tool_start') {
@@ -764,7 +783,7 @@ export class TaskService {
     }
 
     // Error guidance
-    const recentErrors = collectedErrors.slice(-10);
+    const recentErrors = collectedErrors.slice(-PROMPT_RECENT_ERRORS_MAX);
     if (recentErrors.length > 0) {
       const guidance = TaskService.analyzeErrorPatterns(recentErrors);
       if (guidance.length > 0) {
@@ -837,12 +856,12 @@ export class TaskService {
         if (!depTask) continue;
         const lines: string[] = [`### Dependency: ${depTask.title} (ID: ${depId}, status: ${depTask.status})`];
         if (depTask.description) {
-          lines.push(`**Description:** ${depTask.description.slice(0, 300)}`);
+          lines.push(`**Description:** ${depTask.description.slice(0, PROMPT_DEP_DESC_CHARS)}`);
         }
         if (depTask.notes?.length) {
           lines.push('**Notes (most recent first):**');
-          for (const note of depTask.notes.slice(-5).reverse()) {
-            lines.push(`- ${note.slice(0, 500)}`);
+          for (const note of depTask.notes.slice(-PROMPT_DEP_NOTES_MAX).reverse()) {
+            lines.push(`- ${note.slice(0, PROMPT_DEP_NOTE_CHARS)}`);
           }
         }
         if (depTask.deliverables?.length) {
@@ -883,12 +902,12 @@ export class TaskService {
         if (task.projectId && this.projectService) {
           const project = this.projectService.getProject(task.projectId);
           if (project) {
-            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, 300)}`);
+            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, PROMPT_PROJECT_DESC_CHARS)}`);
           }
         }
         goalLines.push(`**Requirement:** ${req.title}`);
         if (req.description) {
-          goalLines.push(`**Requirement Description:** ${req.description.slice(0, 500)}`);
+          goalLines.push(`**Requirement Description:** ${req.description.slice(0, PROMPT_REQUIREMENT_DESC_CHARS)}`);
         }
         goalLines.push('');
         goalLines.push('Keep this goal context in mind. Your task should directly advance this requirement.');
@@ -897,15 +916,15 @@ export class TaskService {
       }
     }
 
-    // Include task notes even when there's no previous execution context — keep last 20
+    // Include task notes even when there's no previous execution context
     let notesSection = '';
     if (!prevContext && task.notes?.length) {
-      const recentNotes = task.notes.slice(-20);
+      const recentNotes = task.notes.slice(-PROMPT_TASK_NOTES_MAX);
       const noteLines: string[] = ['## Task Notes'];
-      if (task.notes.length > 20) {
-        noteLines.push(`_(showing most recent 20 of ${task.notes.length} notes)_`);
+      if (task.notes.length > PROMPT_TASK_NOTES_MAX) {
+        noteLines.push(`_(showing most recent ${PROMPT_TASK_NOTES_MAX} of ${task.notes.length} notes)_`);
       }
-      noteLines.push(...recentNotes.map(n => `- ${n.slice(0, 800)}`), '', '---', '');
+      noteLines.push(...recentNotes.map(n => `- ${n.slice(0, PROMPT_TASK_NOTE_CHARS)}`), '', '---', '');
       notesSection = noteLines.join('\n');
     }
 
@@ -1051,7 +1070,7 @@ export class TaskService {
       );
       if (humanComments.length > 0) {
         const sessionId = `task_${taskId}_r${executionRound}`;
-        const recentFeedback = humanComments.slice(-3);
+        const recentFeedback = humanComments.slice(-PROMPT_HUMAN_COMMENTS_MAX);
         const feedbackLines = recentFeedback.map(c => {
           const ts = c.createdAt instanceof Date
             ? c.createdAt.toISOString().slice(0, 19).replace('T', ' ')
@@ -1979,7 +1998,7 @@ export class TaskService {
     });
 
     // ── Pagination ──
-    const pageSize = Math.min(Math.max(opts?.pageSize ?? 20, 1), 100);
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 20, 1), TASK_LIST_PAGE_MAX);
     const totalPages = Math.max(Math.ceil(total / pageSize), 1);
     const page = Math.min(Math.max(opts?.page ?? 1, 1), totalPages);
     const start = (page - 1) * pageSize;
@@ -2515,7 +2534,7 @@ export class TaskService {
 
         this.deliverableService.create({
           type: d.type === 'directory' ? 'directory' : 'file',
-          title: d.summary.slice(0, 200) || d.reference,
+          title: d.summary.slice(0, DELIVERABLE_TITLE_CHARS) || d.reference,
           summary: d.summary,
           reference,
           taskId: task.id,
@@ -2601,10 +2620,10 @@ export class TaskService {
         if (files.length > 0) {
           parts.push('');
           parts.push('**Deliverables:**');
-          for (const d of files.slice(0, 10)) {
+          for (const d of files.slice(0, REVIEWER_FILE_LIST_MAX)) {
             parts.push(`- [${d.type}] ${d.reference}${d.summary ? ` — ${d.summary}` : ''}`);
           }
-          if (files.length > 10) parts.push(`  ... and ${files.length - 10} more`);
+          if (files.length > REVIEWER_FILE_LIST_MAX) parts.push(`  ... and ${files.length - REVIEWER_FILE_LIST_MAX} more`);
         }
         const branch = task.deliverables.find(d => d.type === 'branch');
         if (branch) {
@@ -2628,7 +2647,7 @@ export class TaskService {
       if (task.notes && task.notes.length > 0) {
         parts.push('');
         parts.push('**Recent Notes:**');
-        for (const note of task.notes.slice(-3)) {
+        for (const note of task.notes.slice(-REVIEWER_NOTES_MAX)) {
           parts.push(`> ${note}`);
         }
       }
@@ -2925,7 +2944,7 @@ export class TaskService {
       agentId: task.assignedAgentId,
       type: 'task_review_revision_requested',
       action: 'request_revision',
-      detail: `Revision requested for task "${task.title}" (round ${task.executionRound}): ${reason.slice(0, 200)}`,
+      detail: `Revision requested for task "${task.title}" (round ${task.executionRound}): ${reason.slice(0, REVISION_REASON_CHARS)}`,
       taskId: task.id,
       projectId: task.projectId,
       success: true,
@@ -3235,10 +3254,10 @@ export class TaskService {
         const depTask = this.tasks.get(depId);
         if (!depTask) continue;
         const lines: string[] = [`### Dependency: ${depTask.title} (ID: ${depId}, status: ${depTask.status})`];
-        if (depTask.description) lines.push(`**Description:** ${depTask.description.slice(0, 300)}`);
+        if (depTask.description) lines.push(`**Description:** ${depTask.description.slice(0, PROMPT_DEP_DESC_CHARS)}`);
         if (depTask.notes?.length) {
           lines.push('**Notes (most recent first):**');
-          for (const note of depTask.notes.slice(-5).reverse()) lines.push(`- ${note.slice(0, 500)}`);
+          for (const note of depTask.notes.slice(-PROMPT_DEP_NOTES_MAX).reverse()) lines.push(`- ${note.slice(0, PROMPT_DEP_NOTE_CHARS)}`);
         }
         if (depTask.deliverables?.length) {
           lines.push('**Deliverables (review these for background context):**');
@@ -3268,12 +3287,12 @@ export class TaskService {
         if (task.projectId && this.projectService) {
           const project = this.projectService.getProject(task.projectId);
           if (project) {
-            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, 300)}`);
+            goalLines.push(`**Project:** ${project.name} — ${project.description.slice(0, PROMPT_PROJECT_DESC_CHARS)}`);
           }
         }
         goalLines.push(`**Requirement:** ${req.title}`);
         if (req.description) {
-          goalLines.push(`**Requirement Description:** ${req.description.slice(0, 500)}`);
+          goalLines.push(`**Requirement Description:** ${req.description.slice(0, PROMPT_REQUIREMENT_DESC_CHARS)}`);
         }
         goalLines.push('');
         goalLines.push('Keep this goal context in mind. Your task should directly advance this requirement.');
@@ -3285,9 +3304,9 @@ export class TaskService {
     // Notes section only (no previous execution context)
     let notesSection = '';
     if (task.notes?.length) {
-      const recentNotes = task.notes.slice(-20);
+      const recentNotes = task.notes.slice(-PROMPT_TASK_NOTES_MAX);
       const noteLines: string[] = ['## Task Notes'];
-      noteLines.push(...recentNotes.map(n => `- ${n.slice(0, 800)}`), '', '---', '');
+      noteLines.push(...recentNotes.map(n => `- ${n.slice(0, PROMPT_TASK_NOTE_CHARS)}`), '', '---', '');
       notesSection = noteLines.join('\n');
     }
 

@@ -2088,6 +2088,12 @@ export class APIServer {
     if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       try {
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.status !== 'in_progress') {
+          this.json(res, 400, { error: `Cannot run task in ${task.status} status — must be in_progress` });
+          return;
+        }
         await this.taskService.runTask(taskId);
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
@@ -2296,11 +2302,19 @@ export class APIServer {
       return;
     }
 
-    // Task resume — resume a paused task
+    // Task resume — resume a paused (blocked) task.
+    // Transition blocked → in_progress via updateTaskStatus; the auto-start
+    // side effect in handleTransitionSideEffects will schedule runTask.
     if (path.match(/^\/api\/tasks\/[^/]+\/resume$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
       try {
-        await this.taskService.runTask(taskId);
+        const task = this.taskService.getTask(taskId);
+        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
+        if (task.status !== 'blocked') {
+          this.json(res, 400, { error: `Cannot resume task in ${task.status} status` });
+          return;
+        }
+        this.taskService.updateTaskStatus(taskId, 'in_progress');
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });
@@ -6765,12 +6779,16 @@ export class APIServer {
         if (task.status === 'pending') {
           this.json(res, 400, { error: 'Task is awaiting approval' }); return;
         }
+        if (['rejected', 'archived'].includes(task.status)) {
+          this.json(res, 400, { error: `Cannot run task in ${task.status} status` }); return;
+        }
         await this.taskService.advanceScheduleConfig(taskId);
         const resettable = ['completed', 'cancelled', 'failed'];
         if (resettable.includes(task.status)) {
           await this.taskService.resetTaskForRerun(taskId);
+        } else {
+          await this.taskService.runTask(taskId);
         }
-        await this.taskService.runTask(taskId);
         this.json(res, 202, { status: 'running', taskId });
       } catch (err) {
         this.json(res, 400, { error: String(err) });

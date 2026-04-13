@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger } from '@markus/shared';
+import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -608,14 +608,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const taskObj = task as Record<string, unknown>;
           if (!full) {
             const notes = taskObj['notes'] as string[] | undefined;
-            if (notes && notes.length > 10) {
-              taskObj['notes'] = notes.slice(-10);
-              taskObj['_notesTruncated'] = { total: notes.length, showing: 10, hint: 'Use full=true to see all' };
+            if (notes && notes.length > TASK_GET_NOTES_DEFAULT) {
+              taskObj['notes'] = notes.slice(-TASK_GET_NOTES_DEFAULT);
+              taskObj['_notesTruncated'] = { total: notes.length, showing: TASK_GET_NOTES_DEFAULT, hint: 'Use full=true to see all' };
             }
             const deliverables = taskObj['deliverables'] as unknown[] | undefined;
-            if (deliverables && deliverables.length > 10) {
-              taskObj['deliverables'] = deliverables.slice(0, 10);
-              taskObj['_deliverablesTruncated'] = { total: deliverables.length, showing: 10, hint: 'Use full=true to see all' };
+            if (deliverables && deliverables.length > TASK_GET_DELIVERABLES_DEFAULT) {
+              taskObj['deliverables'] = deliverables.slice(0, TASK_GET_DELIVERABLES_DEFAULT);
+              taskObj['_deliverablesTruncated'] = { total: deliverables.length, showing: TASK_GET_DELIVERABLES_DEFAULT, hint: 'Use full=true to see all' };
             }
           }
           return JSON.stringify({ status: 'success', task: taskObj });

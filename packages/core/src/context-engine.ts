@@ -5,6 +5,9 @@ import {
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
+  SYSTEM_MY_TASKS_MAX,
+  SYSTEM_TEAM_TASKS_MAX,
+  SYSTEM_TASK_DESC_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -366,8 +369,8 @@ export class ContextEngine {
         const myActive = myTasks.filter(t => !['completed', 'cancelled', 'failed'].includes(t.status)).sort(byPriority);
         const myDone = myTasks.filter(t => ['completed', 'cancelled', 'failed'].includes(t.status));
 
-        const MY_TASK_LIMIT = 15;
-        const TEAM_TASK_LIMIT = 10;
+        const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
+        const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
 
         parts.push('\n## Task Board');
 
@@ -378,7 +381,7 @@ export class ContextEngine {
             parts.push(
               `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
             );
-            if (t.description) parts.push(`  ${t.description.slice(0, 150)}`);
+            if (t.description) parts.push(`  ${t.description.slice(0, SYSTEM_TASK_DESC_CHARS)}`);
           }
           if (myActive.length > MY_TASK_LIMIT) {
             parts.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
