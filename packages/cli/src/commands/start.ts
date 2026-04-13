@@ -839,7 +839,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     for (const a of agentManager.listAgents()) wireMailboxPersistence(a.id);
 
     // Wire for future agents via event bus
-    agentManager.getEventBus().on('agent:registered', (evt: unknown) => {
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
       wireMailboxPersistence(agentId);
     });
