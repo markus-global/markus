@@ -37,7 +37,7 @@ export interface ExecutionStreamEntryUI {
   sourceId: string;
   agentId: string;
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   executionRound?: number;
@@ -353,6 +353,10 @@ export function streamEntryToExecEntry(entry: ExecutionStreamEntryUI): ExecEntry
           durationMs: meta?.durationMs as number | undefined,
         },
       };
+    case 'subagent_start':
+    case 'subagent_progress':
+    case 'subagent_end':
+      return null; // subagent events handled separately via metadata
     default:
       return null;
   }
