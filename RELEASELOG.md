@@ -1,5 +1,37 @@
 # Release Log
 
+## v0.4.16
+
+修复 Agent 动态创建全链路问题（白屏崩溃→数据丢失→事件断路）；修复 pause/resume 实际无效的 bug；移除 token 预算自动暂停机制；新增 heartbeat 完成任务复盘与 SOP 自动注入。
+
+### Bug Fixes
+
+- **修复秘书雇佣员工白屏崩溃** — LLM 调用 `team_hire_agent` 时可能不传 `name`，导致前端 `toLowerCase()` 崩溃；在工具层、`createAgent` 核心层和前端 API 层三重防御
+- **修复新建 Agent 邮箱历史为空** — `start.ts` 监听的事件名 `agent:registered` 与实际 emit 的 `agent:created` 不匹配，导致动态创建的 Agent 未接入 mailbox 持久化
+- **修复新建 Agent 重启后丢失** — 通过 `team_hire_agent` 创建的 Agent 未持久化到 DB，新增 `agent:created` 事件监听写入数据库
+- **修复新建 Agent 无法发送主动消息** — `setUserMessageSender` 和 `setChatSessionsFetcher` 仅在启动时为已有 Agent 注册，重构为事件驱动，动态 Agent 也能即时接入
+- **修复 pause/resume 实际无效** — `pause()` 只改状态标签但不停止 heartbeat、attention controller 和 memory timer，Agent 照常工作；现在真正停止/重启后台进程
+- **修复 `builder_install` / `hub_install` 缺少参数校验** — 与 `team_hire_agent` 同类问题，补充运行时参数验证
+
+### New Features
+
+- **Heartbeat 完成任务复盘** — Agent heartbeat 时自动检查近期完成的任务，提取最佳实践并注入 SOP 上下文
+- **11 个事件消费者接入 WS 广播** — `agent:removed/paused/resumed/started/stopped`、`task:completed/failed`、`system:pause-all/resume-all/emergency-stop/announcement` 全部通过 WebSocket 推送到前端
+- **全局暂停状态 WS 同步** — 侧边栏 Pause/Resume 按钮监听 WS 事件实时同步，多客户端状态一致
+
+### Refactoring
+
+- **移除 token 预算自动暂停机制** — 删除 `maxTokensPerDay` 超限自动 pause 和午夜自动 resume 逻辑，保留 token 计数器供展示
+- **清理冗余事件** — 移除 `agent:status-changed`（与 `stateChangeCallback` 重复）和 `agent:decision`（与 `attention:decision` 重复）
+- **工作区安全策略重构** — 白名单策略替换为 deny-only 跨 Agent 隔离
+- **API 路由加固** — 集中 agent-facing limits，统一前置条件校验
+
+### Stats
+
+- 43 files changed, +706 / −674 lines
+
+---
+
 ## v0.4.15
 
 Secretary 统一建设者角色，新增分级 Git 审批机制；Task FSM 重构为声明式状态机；移除 worktree 耦合，prompt 工程全面清理；修复 dream cycle 幻觉与 UI 问题。
