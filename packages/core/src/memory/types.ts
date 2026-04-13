@@ -42,6 +42,7 @@ export interface IMemoryStore {
 
   addLongTermMemory(key: string, content: string): void;
   getLongTermMemory(): string;
+  getLongTermSection(sectionName: string): string;
 
   compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number };
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[];

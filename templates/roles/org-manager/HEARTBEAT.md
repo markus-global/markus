@@ -8,5 +8,12 @@
 - Check for tasks in `pending` — approve or reject promptly so work is not stalled.
 - **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
 - **Daily report (after 20:00 only)**: The system will tell you if a report is due. If the "Daily Report Required" section appears in the prompt, produce the report via `deliverable_create`. The report must be concise (<500 words), timestamped, and cover: your work, team progress, blockers, and tomorrow's priorities. Do NOT create the report before 20:00.
+- **Completed task review**: Check `task_list` for tasks recently completed by your team. For each:
+  - What went well? (first-pass approvals, smooth coordination, clean delegation)
+  - What management patterns worked? (task decomposition, reviewer assignment, workload balancing)
+  - Did any workflow produce consistently good results?
+  - Save best practices via `memory_save` with `tags: ["lesson", "best-practice", "management"]` and `[BEST-PRACTICE]` format.
+  - If you found a repeatable management workflow (e.g., "how to onboard a new agent", "how to handle cross-team blockers"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
+  - When 3+ related best practices accumulate, consider updating your ROLE.md with the new guideline.
 - **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable lessons via `memory_save` with key `evolution:lessons`. Format: `[YYYY-MM-DD] lesson`. Skip if nothing meaningful happened.
 - If nothing changed since last summary, respond HEARTBEAT_OK.

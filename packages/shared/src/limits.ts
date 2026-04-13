@@ -114,6 +114,66 @@ export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 /** Progressive retry delays in milliseconds. */
 export const TASK_RETRY_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 120_000, 300_000];
 
+// ─── System Prompt: Memory & Knowledge Injection ─────────────────────────────
+// These control how much memory context is injected into the system prompt.
+// All agents see this on every LLM call — tuning affects quality vs. token cost.
+
+/** Max characters for the SOPs section extracted from MEMORY.md.
+ *  SOPs are high-value procedural memory — agents must see them fully.
+ *  A typical SOP is ~200-300 chars; 3000 chars fits ~10 SOPs comfortably.
+ *  Loaded independently from the general MEMORY.md cap. */
+export const SYSTEM_SOPS_CHARS = 3000;
+
+/** Max characters for the full MEMORY.md (Long-term Knowledge).
+ *  Contains lessons-learned, tool-preferences, role-evolution-log, etc.
+ *  Note: SOPs are loaded separately above, so this budget is for everything else.
+ *  5000 chars ≈ ~1200 tokens — moderate cost, good coverage. */
+export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
+
+/** Max recent lesson entries (tagged "lesson") injected into system prompt.
+ *  These are individual memory_save entries from self-evolution.
+ *  10 entries × ~150 chars = ~1500 chars ≈ ~375 tokens. */
+export const SYSTEM_LESSON_ENTRIES_MAX = 10;
+
+/** Max recent best-practice entries (tagged "best-practice") injected.
+ *  These come from heartbeat task reviews; same budget as lessons.
+ *  10 entries × ~200 chars = ~2000 chars ≈ ~500 tokens. */
+export const SYSTEM_BEST_PRACTICE_ENTRIES_MAX = 10;
+
+/** Max characters for shared deliverables context in system prompt.
+ *  Deliverables are team-wide knowledge; 3000 chars provides useful context
+ *  without overwhelming the prompt. */
+export const SYSTEM_DELIVERABLES_CHARS = 3000;
+
+/** Max characters for the daily activity log summary in system prompt.
+ *  Provides recent context; 1500 chars covers key events from the day. */
+export const SYSTEM_DAILY_LOG_CHARS = 1500;
+
+/** Number of recent days of daily logs to include. */
+export const SYSTEM_DAILY_LOG_DAYS = 1;
+
+/** Max characters for the shared user profile (USER.md) in system prompt.
+ *  Owner preferences and communication style; kept compact. */
+export const SYSTEM_USER_PROFILE_CHARS = 1500;
+
+/** Max chat sessions shown in system prompt for continuity. */
+export const SYSTEM_CHAT_SESSIONS_MAX = 5;
+
+/** Max characters for the manager daily report activity log in heartbeat. */
+export const HEARTBEAT_DAILY_LOG_CHARS = 3000;
+
+/** Max characters for project description in system prompt. */
+export const SYSTEM_PROJECT_DESC_CHARS = 200;
+
+/** Max characters for project deliverable content preview. */
+export const SYSTEM_DELIVERABLE_PREVIEW_CHARS = 200;
+
+/** Max characters for mailbox merged context shown in system prompt. */
+export const SYSTEM_MAILBOX_MERGED_CHARS = 500;
+
+/** Max characters for mailbox item summary/reasoning preview. */
+export const SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS = 120;
+
 // ─── Pagination Defaults ─────────────────────────────────────────────────────
 
 /** Default page size for task_list tool. */

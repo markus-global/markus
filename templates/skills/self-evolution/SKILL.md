@@ -113,6 +113,19 @@ When you find yourself repeatedly doing a multi-step process, document it as an 
 - You've done the same multi-step workflow 2+ times and want to standardize it
 - You found a significantly better sequence of steps for an existing SOP
 - A step in an existing SOP failed or was suboptimal, and you found a fix
+- **During heartbeat review**: You reviewed recently completed tasks and identified a repeatable pattern that led to successful outcomes (especially first-pass approvals)
+
+### Extracting SOPs from Completed Tasks
+
+During each heartbeat, review your recently completed tasks to mine for SOP-worthy patterns:
+
+1. **Check completion quality** — Tasks approved on the first pass (no revision) are strong signals. The approach you used is worth preserving.
+2. **Identify the workflow** — What sequence of steps did you follow? Was there a specific order that mattered? What tools and techniques were critical?
+3. **Generalize** — Strip task-specific details. Ask: "If I faced a similar class of problem, would these steps still work?"
+4. **Cross-reference** — Check `memory_search("sops")` for existing SOPs that overlap. Update existing ones rather than creating duplicates.
+5. **Save or update** — Use `memory_update_longterm({ section: "sops", ... })` with the full SOP set (including the new or updated one).
+
+Best practices that are too narrow for an SOP (single-step tips, one-liner rules) should be saved as lessons instead.
 
 ### How to Save SOPs
 
@@ -150,10 +163,12 @@ This is the deepest level of self-evolution. Your ROLE.md defines your core iden
 
 Only modify your ROLE.md when ALL of these conditions are met:
 
-1. **Pattern threshold** — You have 3+ related lessons pointing to a fundamental behavioral change (not a one-off fix)
-2. **High confidence** — The change reflects proven experience, not speculation
+1. **Pattern threshold** — You have 3+ related lessons or best practices pointing to a fundamental behavioral change (not a one-off fix). Heartbeat task reviews are a primary source of these patterns.
+2. **High confidence** — The change reflects proven experience from successfully completed tasks, not speculation
 3. **Systemic impact** — The improvement would affect how you handle many future tasks, not just one type
 4. **Not contradicting core role** — The change refines or extends your role, not contradicts it
+
+**Heartbeat-driven role evolution**: During heartbeat, after reviewing completed tasks and extracting best practices, check if accumulated best practices (tagged `best-practice`) form a coherent behavioral guideline. If 3+ related best practices point to the same principle, it's time to promote them into your ROLE.md as a permanent behavioral guideline.
 
 ### How to Modify ROLE.md
 

@@ -8,6 +8,19 @@ import {
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_TASK_DESC_CHARS,
+  SYSTEM_SOPS_CHARS,
+  SYSTEM_LONGTERM_MEMORY_CHARS,
+  SYSTEM_LESSON_ENTRIES_MAX,
+  SYSTEM_BEST_PRACTICE_ENTRIES_MAX,
+  SYSTEM_DELIVERABLES_CHARS,
+  SYSTEM_DAILY_LOG_CHARS,
+  SYSTEM_DAILY_LOG_DAYS,
+  SYSTEM_USER_PROFILE_CHARS,
+  SYSTEM_CHAT_SESSIONS_MAX,
+  SYSTEM_PROJECT_DESC_CHARS,
+  SYSTEM_DELIVERABLE_PREVIEW_CHARS,
+  SYSTEM_MAILBOX_MERGED_CHARS,
+  SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -196,7 +209,7 @@ export class ContextEngine {
       const { project, repositories, governanceRules, teamRole } = opts.projectContext;
       parts.push('\n## Current Project');
       parts.push(`- Project: **${project.name}** (${project.status})`);
-      if (project.description) parts.push(`- ${project.description.slice(0, 200)}`);
+      if (project.description) parts.push(`- ${project.description.slice(0, SYSTEM_PROJECT_DESC_CHARS)}`);
       if (repositories?.length) {
         for (const repo of repositories) {
           parts.push(
@@ -247,7 +260,7 @@ export class ContextEngine {
           const userProfile = readFileSync(userMdPath, 'utf-8').trim();
           if (userProfile) {
             parts.push('\n## About the Owner');
-            parts.push(userProfile.slice(0, 1500));
+            parts.push(userProfile.slice(0, SYSTEM_USER_PROFILE_CHARS));
             parts.push('\n_This profile is maintained by the Secretary. If you notice new preferences or patterns from the owner, mention them to the Secretary via `agent_send_message`._');
           }
         }
@@ -302,7 +315,7 @@ export class ContextEngine {
     if (opts.projectDeliverables?.length) {
       parts.push('\n## Project Deliverables (key entries)');
       for (const k of opts.projectDeliverables) {
-        parts.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, 200)}`);
+        parts.push(`- **[${k.category}]** ${k.title}: ${k.content.slice(0, SYSTEM_DELIVERABLE_PREVIEW_CHARS)}`);
       }
     }
 
@@ -316,13 +329,22 @@ export class ContextEngine {
       }
     }
 
+    // SOPs get their own dedicated section — always fully loaded, not truncated by the
+    // general MEMORY.md cap, so agents reliably see their accumulated procedures.
+    const sops = opts.memory.getLongTermSection('sops');
+    if (sops) {
+      parts.push('\n## Your SOPs (Standard Operating Procedures)');
+      parts.push('These are your proven, repeatable workflows. Follow them when the trigger matches.');
+      parts.push(sops.slice(0, SYSTEM_SOPS_CHARS));
+    }
+
     const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
-      parts.push(longTermMem.slice(0, 5000));
+      parts.push(longTermMem.slice(0, SYSTEM_LONGTERM_MEMORY_CHARS));
     }
 
-    const lessons = opts.memory.getEntriesByTag('lesson', 10);
+    const lessons = opts.memory.getEntriesByTag('lesson', SYSTEM_LESSON_ENTRIES_MAX);
     if (lessons.length > 0) {
       parts.push('\n## Lessons from Past Experience');
       for (const lesson of lessons) {
@@ -331,11 +353,21 @@ export class ContextEngine {
       }
     }
 
+    const bestPractices = opts.memory.getEntriesByTag('best-practice', SYSTEM_BEST_PRACTICE_ENTRIES_MAX);
+    if (bestPractices.length > 0) {
+      parts.push('\n## Best Practices');
+      parts.push('Proven approaches from your completed tasks. Apply when relevant.');
+      for (const bp of bestPractices) {
+        const ts = bp.timestamp ? new Date(bp.timestamp).toLocaleDateString() : '';
+        parts.push(`- [${ts}] ${bp.content}`);
+      }
+    }
+
     const isDream = opts.scenario === 'memory_consolidation';
 
     if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
       parts.push('\n## Shared Deliverables');
-      parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, 3000));
+      parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
     }
 
     if (!isDream) {
@@ -350,10 +382,10 @@ export class ContextEngine {
     }
 
     if (!isDream) {
-      const dailyLog = opts.memory.getRecentDailyLogs(1);
+      const dailyLog = opts.memory.getRecentDailyLogs(SYSTEM_DAILY_LOG_DAYS);
       if (dailyLog) {
         parts.push('\n## Recent Activity Summary');
-        parts.push(dailyLog.slice(0, 1500));
+        parts.push(dailyLog.slice(0, SYSTEM_DAILY_LOG_CHARS));
       }
     }
 
@@ -483,7 +515,7 @@ export class ContextEngine {
     // --- Chat session context for session-aware user communication ---
     if (!isDream && opts.chatSessions && opts.chatSessions.length > 0) {
       const sessionLines = ['\n## Your Chat Sessions with the User'];
-      for (const s of opts.chatSessions.slice(0, 5)) {
+      for (const s of opts.chatSessions.slice(0, SYSTEM_CHAT_SESSIONS_MAX)) {
         const preview = s.lastMessagePreview ? `: "${s.lastMessagePreview}"` : '';
         const title = s.title ? ` (${s.title})` : '';
         sessionLines.push(`- Session ${s.id}${title} (last active: ${s.lastMessageAt})${preview}`);
@@ -529,19 +561,19 @@ export class ContextEngine {
     if (ctx.topQueued && ctx.topQueued.length > 0) {
       lines.push('You MUST review all waiting items and prioritize user chat/comments above everything else:');
       for (const q of ctx.topQueued) {
-        lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, 120)}`);
+        lines.push(`  - [${q.type}] p${q.priority}: ${q.summary.slice(0, SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS)}`);
       }
     }
 
     if (ctx.recentDecisions && ctx.recentDecisions.length > 0) {
       lines.push('**Recent attention decisions**:');
       for (const d of ctx.recentDecisions.slice(-5)) {
-        lines.push(`  - ${d.type}: ${d.reasoning.slice(0, 120)}`);
+        lines.push(`  - ${d.type}: ${d.reasoning.slice(0, SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS)}`);
       }
     }
 
     if (ctx.mergedContent) {
-      lines.push(`**Merged context** (absorbed into current work):\n${ctx.mergedContent.slice(0, 500)}`);
+      lines.push(`**Merged context** (absorbed into current work):\n${ctx.mergedContent.slice(0, SYSTEM_MAILBOX_MERGED_CHARS)}`);
     }
 
     return lines.join('\n');

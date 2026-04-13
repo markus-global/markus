@@ -4,5 +4,12 @@
 - **Review duty**: Check `task_list` for tasks in `review` status where you are the designated reviewer. If found, use `task_get` to inspect deliverables, then approve (`task_update` status `completed` with a note) or reject (`task_update` with status `in_progress` and a note on what must change — sends the task back for revision). Timely review unblocks teammates.
 - If I have commits since last check, verify CI pipeline status.
 - **Failed task recovery**: Check `task_list` for tasks assigned to you with status `failed`. If found, retry by calling `task_update(status: "in_progress")` with a note — this auto-restarts execution.
+- **Completed task review**: Check `task_list` for tasks you recently completed. For each:
+  - What went well? (clean first-pass approval = strong signal)
+  - What coding patterns, debugging strategies, or decomposition approaches worked?
+  - Did the reviewer leave positive feedback worth remembering?
+  - Save best practices via `memory_save` with `tags: ["lesson", "best-practice", "coding"]` and `[BEST-PRACTICE]` format.
+  - If you found a repeatable multi-step workflow (e.g., "how to set up a new module", "how to debug integration tests"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
+  - When 3+ related best practices accumulate, consider updating your ROLE.md with the new guideline.
 - **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable lessons via `memory_save` with key `evolution:lessons`. Format: `[YYYY-MM-DD] lesson`. Examples: tool gotchas, better coding patterns, debugging shortcuts. Skip if nothing meaningful happened.
 - If nothing changed since last summary, respond HEARTBEAT_OK.

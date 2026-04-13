@@ -362,6 +362,10 @@ export class EnhancedMemorySystem implements IMemoryStore {
     return this.baseStore.getLongTermMemory();
   }
 
+  getLongTermSection(sectionName: string): string {
+    return this.baseStore.getLongTermSection(sectionName);
+  }
+
   getRecentMessages(sessionId: string, limit: number): LLMMessage[] {
     return this.baseStore.getRecentMessages(sessionId, limit);
   }

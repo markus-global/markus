@@ -215,6 +215,14 @@ export class MemoryStore implements IMemoryStore {
     return readFileSync(this.longTermFile, 'utf-8');
   }
 
+  getLongTermSection(sectionName: string): string {
+    const content = this.getLongTermMemory();
+    if (!content) return '';
+    const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = content.match(new RegExp(`## ${escaped}\\n([\\s\\S]*?)(?=\\n## |$)`));
+    return match?.[1]?.trim() ?? '';
+  }
+
   // --- Context compaction (OpenClawd pattern) ---
 
   compactSession(sessionId: string, keepLast: number = 20): { summary: string; flushedCount: number } {

@@ -21,6 +21,7 @@ import {
   type DecisionType,
   type AgentMindState,
   MailboxPriorityLevel,
+  HEARTBEAT_DAILY_LOG_CHARS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -3914,7 +3915,7 @@ export class Agent {
         'Base your report primarily on the activity log below and current task statuses.',
         '',
         todayLog
-          ? `**Today's activity log (${todayDate})**:\n\`\`\`\n${todayLog.slice(0, 3000)}\n\`\`\``
+          ? `**Today's activity log (${todayDate})**:\n\`\`\`\n${todayLog.slice(0, HEARTBEAT_DAILY_LOG_CHARS)}\n\`\`\``
           : `**Today's activity log**: No activity recorded for ${todayDate}.`,
         '',
         '**Report format** — create a deliverable via `deliverable_create`:',
@@ -3937,14 +3938,33 @@ export class Agent {
     // --- Self-evolution reflection section (all agents) ---
     const selfEvolutionSection = [
       '',
+      '## Completed Task Review & Best Practice Extraction',
+      'Use `task_list` to find tasks recently completed (status `completed`) where you were the assignee.',
+      'For each completed task since your last heartbeat:',
+      '',
+      '1. **What went well?** — Identify approaches, patterns, or techniques that led to a smooth completion.',
+      '   - First-pass approvals (no revision needed) are strong signals of good practice.',
+      '   - Efficient tool usage, clean code patterns, good decomposition strategies.',
+      '2. **What could be improved?** — Note any friction, rework, or reviewer feedback that revealed a better way.',
+      '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), this is SOP material.',
+      '',
+      'If you identify a best practice worth preserving:',
+      '- Save it via `memory_save` with `tags: ["lesson", "best-practice", ...]` and format:',
+      '  `[BEST-PRACTICE] <one-line summary>\\nContext: <when this applies>\\nApproach: <what to do>\\nWhy: <why this works>`',
+      '- If it is a multi-step repeatable workflow, promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.',
+      '',
       '## Self-Evolution Reflection',
-      'Before finishing, briefly reflect on your recent work since the last heartbeat.',
-      'Follow your **self-evolution** skill instructions. Check each layer:',
+      'After reviewing completed tasks, reflect on your overall growth. Follow your **self-evolution** skill instructions:',
       '',
       '1. **Lessons** — Did anything go wrong or get corrected? Save with `memory_save` using `tags: ["lesson", ...]` and the `[LESSON]` format.',
       '2. **Tool preferences** — Did you discover a better tool or parameter for a task? Save with `tags: ["lesson", "tool-preference", ...]` and the `[TOOL-PREF]` format.',
-      '3. **SOPs** — Did you repeat a multi-step workflow that should be standardized? Update `memory_update_longterm({ section: "sops", ... })`.',
-      '4. **Role evolution** — Do you have 3+ related lessons pointing to a fundamental behavioral change? If so, consider updating your ROLE.md.',
+      '3. **SOPs** — Consolidate best practices from completed tasks into SOPs. Update `memory_update_longterm({ section: "sops", ... })`.',
+      '   - Review existing SOPs first (`memory_search("sops")`) — update rather than duplicate.',
+      '   - Each SOP: trigger, steps, gotchas, last updated date.',
+      '4. **Role evolution** — When you accumulate 3+ related best practices or lessons pointing to a fundamental behavioral improvement, update your ROLE.md:',
+      '   - Read current ROLE.md via `file_read`',
+      '   - Append the new guideline (do NOT rewrite the file)',
+      '   - Log the change via `memory_save` with `tags: ["lesson", "role-evolution"]`',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',

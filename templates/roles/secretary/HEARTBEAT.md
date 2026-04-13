@@ -39,6 +39,18 @@ Check if team dynamics, agent capabilities, or project context changed:
 - New agent hired? Agent struggling? Team conflict? Architecture decision?
 - Save via `memory_save` with key `org:knowledge` and tag `team,org`.
 
+## Completed Task Review & Best Practice Extraction
+
+Check `task_list` for tasks recently completed by you or your team members. For each:
+- **What went well?** — Identify approaches that led to smooth completions (first-pass approvals, effective coordination, clean artifact management).
+- **What patterns are worth standardizing?** — Repeatable workflows for hiring, onboarding, knowledge management, user profile updates.
+- **Any reviewer feedback worth preserving?** — Positive signals indicate proven practices.
+
+For identified best practices:
+- Save via `memory_save` with `tags: ["lesson", "best-practice", "secretary"]` and `[BEST-PRACTICE]` format.
+- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
+- When 3+ related best practices accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["lesson", "role-evolution"]`).
+
 ## Self-Evolution Reflection
 
 - **What did I accomplish since last heartbeat?**
