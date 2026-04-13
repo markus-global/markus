@@ -191,9 +191,13 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const templateId = (args['template_id'] as string | undefined)?.trim();
+                const name = (args['name'] as string | undefined)?.trim();
+                if (!templateId) return JSON.stringify({ status: 'error', error: 'template_id is required' });
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — please provide a display name for the new agent' });
                 const result = await ctx.hireFromTemplate!(
-                  args['template_id'] as string,
-                  args['name'] as string,
+                  templateId,
+                  name,
                   args['skills'] as string[] | undefined,
                 );
                 return JSON.stringify({
@@ -255,9 +259,13 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const type = (args['type'] as string | undefined)?.trim() as 'agent' | 'team' | 'skill' | undefined;
+                const name = (args['name'] as string | undefined)?.trim();
+                if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required — provide the artifact name from builder_list' });
                 const result = await ctx.installArtifact!(
-                  args['type'] as 'agent' | 'team' | 'skill',
-                  args['name'] as string,
+                  type,
+                  name,
                 );
                 const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
                 return JSON.stringify({

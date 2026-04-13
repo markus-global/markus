@@ -740,7 +740,7 @@ export interface AgentUsageInfo {
 
 export const api = {
   agents: {
-    list: () => request<{ agents: AgentInfo[] }>('/agents'),
+    list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
     create: (name: string, roleName: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
       request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),

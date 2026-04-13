@@ -610,6 +610,7 @@ export class AgentManager {
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
+    if (!request.name?.trim()) throw new Error('Agent name is required');
     const id = genAgentId();
     const role = this.roleLoader.loadRole(request.roleName);
     const agentDataDir = join(this.dataDir, id);
