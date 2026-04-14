@@ -25,6 +25,7 @@ function resolveActorName(id: string | undefined, agents: AgentInfo[], users: Hu
 }
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agents.find(a => a.id === agentId);
@@ -79,6 +80,7 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -125,6 +127,7 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -1374,7 +1377,7 @@ function TaskDetailPanel({
                     </div>
                   ) : null;
                 })()}
-                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">{t('work.noSubtasksYet')}</div>
+                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">{t('work.noSubtasksYet')}</div>}
                 {addingSubtask && (
                   <div className="flex gap-2 mt-2">
                     <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
@@ -1574,7 +1577,7 @@ function TaskDetailPanel({
               <>
                 <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ {t('work.approve')}</button>
                 {!showRevision ? (
-                  <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ {t('work.requestRevision')}
+                  <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ {t('work.requestRevision')}</button>
                 ) : (
                   <div className="flex items-center gap-1.5">
                     <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
