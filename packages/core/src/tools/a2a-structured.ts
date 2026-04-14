@@ -91,7 +91,7 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', description: 'Current status', enum: ['idle', 'busy', 'blocked', 'available', 'unavailable'] },
+          status: { type: 'string', description: 'Current status', enum: ['idle', 'working', 'busy', 'blocked', 'offline'] },
           current_task_id: { type: 'string', description: 'Current task ID (optional)' },
           current_task_title: { type: 'string', description: 'Current task title (optional)' },
           available_capacity: { type: 'number', description: 'Available capacity (0-100) for new work (optional)' },

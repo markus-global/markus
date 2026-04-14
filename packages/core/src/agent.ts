@@ -3527,8 +3527,8 @@ export class Agent {
   /**
    * Handle the discover_tools meta-tool. Supports:
    * - mode="list_skills": list all available skills (prompt-based instruction packages, optionally with MCP tools)
-   * - tool_names with skill names: activate skill by injecting its instructions and connecting its MCP servers
-   * - tool_names with tool names: activate individual tools already registered on the agent
+   * - name with skill names: activate skill by injecting its instructions and connecting its MCP servers
+   * - name with tool names: activate individual tools already registered on the agent
    */
   private async handleDiscoverTools(args: Record<string, unknown>): Promise<string> {
     const mode = (args.mode as string) ?? 'activate';
@@ -3552,7 +3552,7 @@ export class Agent {
       return JSON.stringify({
         status: 'ok',
         skills: catalog,
-        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill (loads its instructions and MCP tools into your context).`,
+        message: `${catalog.length} skills available. Use discover_tools({ name: ["skill-name"] }) to activate a skill (loads its instructions and MCP tools into your context).`,
       });
     }
 
@@ -3579,9 +3579,20 @@ export class Agent {
       }
     }
 
+    // Normalize `name` — accept string, array, or legacy `tool_names` for backward compat
+    const resolvedNames: string[] = [];
+    const nameArg = args.name ?? args.tool_names;
+    if (Array.isArray(nameArg)) {
+      for (const n of nameArg as string[]) {
+        if (typeof n === 'string' && n.trim()) resolvedNames.push(n.trim());
+      }
+    } else if (typeof nameArg === 'string' && nameArg.trim()) {
+      resolvedNames.push(nameArg.trim());
+    }
+
     // Install a skill from a remote registry
     if (mode === 'install') {
-      const skillName = args.name as string;
+      const skillName = resolvedNames[0];
       if (!skillName) {
         return JSON.stringify({ status: 'error', message: 'name is required for install mode.' });
       }
@@ -3589,13 +3600,14 @@ export class Agent {
         return JSON.stringify({ status: 'error', message: 'Skill installation is not available.' });
       }
       try {
-        const result = await this.skillInstaller(args);
+        const installArgs = { ...args, name: skillName };
+        const result = await this.skillInstaller(installArgs);
         log.info('Skill installed via discover_tools', { agentId: this.id, skill: skillName, method: result.method });
         return JSON.stringify({
           status: 'ok',
           installed: result.name,
           method: result.method,
-          message: `Skill "${result.name}" installed successfully. Use discover_tools({ tool_names: ["${result.name}"] }) to activate it.`,
+          message: `Skill "${result.name}" installed successfully. Use discover_tools({ name: ["${result.name}"] }) to activate it.`,
         });
       } catch (err) {
         return JSON.stringify({ status: 'error', message: `Install failed: ${String(err instanceof Error ? err.message : err)}` });
@@ -3603,7 +3615,7 @@ export class Agent {
     }
 
     // mode === 'activate' (default)
-    const requested = (args.tool_names as string[]) ?? [];
+    const requested = resolvedNames;
     const activated: string[] = [];
     const unknown: string[] = [];
 

@@ -719,7 +719,7 @@ export class ContextEngine {
         if (filtered.length < opts.availableSkills.length) {
           lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills installed — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
         }
-        lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to load a skill's full instructions when needed.`);
+        lines.push(`  Use \`discover_tools({ name: ["skill-name"] })\` to load a skill's full instructions when needed.`);
       } else if (self.skills.length > 0) {
         lines.push(`- Active Skills: ${self.skills.join(', ')}`);
       }

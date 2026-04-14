@@ -355,7 +355,7 @@ export class APIServer {
             writeFileSync(filePath, content, 'utf-8');
           }
         } else if (data.config) {
-          writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(data.config, null, 2), 'utf-8');
+          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(data.config, null, 2), 'utf-8');
         }
         return self.builderService!.installArtifact(mode, slug);
       },
