@@ -1,5 +1,20 @@
 # Release Log
 
+## v0.4.18
+
+紧急修复 LLM 路由错误处理崩溃与流式气泡动画跨浏览器兼容问题。
+
+### Bug Fixes
+
+- **修复 LLM router enrichError 崩溃** — 部分 SDK Error 子类（OpenAI、Anthropic）将 `message` 定义为 getter-only 属性，直接赋值导致 "Cannot set property message of which has only a getter" 崩溃；改为包装新 Error 对象
+- **修复流式气泡边框动画跨浏览器兼容** — 替换 `mask-composite` 方案（Windows/Chrome 下失效）为 double-background 技术（padding-box 纯色填充 + border-box conic-gradient），无需 mask 支持即可工作
+
+### Stats
+
+- 2 files changed, +17 / −25 lines
+
+---
+
 ## v0.4.17
 
 移除 PostgreSQL 支持，全面精简存储层；新增 Main Session 活动上下文与子 Agent 执行可见性；Mailbox 恢复与通知级联抑制；团队创建 UX 与流式动画优化；用户聊天可抢占后台处理。
