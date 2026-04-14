@@ -1614,6 +1614,18 @@ export class SqliteChatSessionRepo {
       .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND is_main = 1 LIMIT 1')
       .get(agentId) as Record<string, unknown> | undefined;
     if (existing) return this._mapSession(existing);
+    // Promote the oldest existing session to main instead of creating a duplicate
+    const oldest = this.db
+      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1')
+      .get(agentId) as Record<string, unknown> | undefined;
+    if (oldest) {
+      const title = (oldest['title'] as string) || 'Main';
+      this.db.prepare('UPDATE chat_sessions SET is_main = 1, title = ? WHERE id = ?')
+        .run(title, oldest['id'] as string);
+      oldest['is_main'] = 1;
+      oldest['title'] = title;
+      return this._mapSession(oldest);
+    }
     const id = generateId('cs');
     const ts = now();
     this.db
@@ -1626,7 +1638,7 @@ export class SqliteChatSessionRepo {
     return (
       this.db
         .prepare(
-          'SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY last_message_at DESC LIMIT ?'
+          'SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY is_main DESC, last_message_at DESC LIMIT ?'
         )
         .all(agentId, limit) as Record<string, unknown>[]
     ).map(r => this._mapSession(r));

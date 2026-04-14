@@ -550,8 +550,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   });
 
-  // Persist activity log messages to the agent's main chat session and broadcast
+  // Ensure every agent has a main session on startup, then persist activity logs to it
   if (storage?.chatSessionRepo) {
+    for (const info of agentManager.listAgents()) {
+      try {
+        storage.chatSessionRepo.getOrCreateMainSession(info.id);
+      } catch { /* skip */ }
+    }
     const ws = apiServer.getWSBroadcaster();
     agentManager.getEventBus().on('agent:activity-log', async (evt: unknown) => {
       const { agentId, message, metadata } = evt as {
@@ -568,6 +573,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       } catch (e) {
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
+    });
+    // Also create main session for newly created agents
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      try { storage.chatSessionRepo.getOrCreateMainSession(agentId); } catch { /* skip */ }
     });
   }
 

@@ -174,7 +174,7 @@ export function App() {
   }
 
   return (
-    <div className={`flex h-dvh bg-surface-primary text-fg-primary ${isMobile ? 'flex-col' : ''}`}>
+    <div className={`flex h-dvh bg-surface-primary text-fg-primary overflow-x-hidden ${isMobile ? 'flex-col' : ''}`}>
       {/* Desktop sidebar */}
       {!isMobile && (
         <>

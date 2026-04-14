@@ -44,9 +44,7 @@ export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/ty
 export {
   SemanticMemorySearch,
   OpenAIEmbeddingProvider,
-  PgVectorStore,
   LocalVectorStore,
-  TrigramFallbackSearch,
   type EmbeddingProvider,
   type VectorStore,
   type SemanticSearchResult,

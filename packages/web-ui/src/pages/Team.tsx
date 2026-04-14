@@ -202,10 +202,22 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
 
+  const adjustRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const pad = 8;
+    if (rect.right > vw - pad) el.style.left = `${Math.max(pad, vw - rect.width - pad)}px`;
+    if (rect.left < pad) el.style.left = `${pad}px`;
+    if (rect.bottom > vh - pad) el.style.top = `${Math.max(pad, vh - rect.height - pad)}px`;
+  }, []);
+
   return (
     <div
-      ref={ref}
-      className="fixed z-50 w-64 bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
+      ref={adjustRef}
+      className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
       style={{ top: anchorRect.top + 40, left: anchorRect.left }}
     >
       <div className="flex items-center gap-3">
@@ -1804,7 +1816,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   }`}
                 >{chatMode === 'channel' ? 'Team' : 'Profile'}</button>
                 <div className="flex-1" />
-                {chatMode === 'direct' && (
+                {chatMode === 'direct' && mainTab !== 'profile' && (
                   <>
                     <button
                       onClick={newConversation}
@@ -1866,7 +1878,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
             {/* Right side buttons */}
             <div className="ml-auto flex items-center gap-2">
-            {chatMode === 'direct' && currentAgent && (
+            {chatMode === 'direct' && currentAgent && mainTab !== 'profile' && (
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={newConversation}
@@ -2350,6 +2362,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const isWorking = agent.status === 'working';
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
@@ -2362,6 +2375,25 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !popoverRef.current) return;
+    const el = popoverRef.current;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    if (rect.right > vw - 8) {
+      el.style.left = 'auto';
+      el.style.right = '0';
+    }
+    if (rect.left < 8) {
+      el.style.left = '0';
+      el.style.right = 'auto';
+    }
+    const maxW = vw - 16;
+    if (rect.width > maxW) {
+      el.style.width = `${maxW}px`;
+    }
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
@@ -2392,7 +2424,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       </button>
 
       {open && isError && (
-        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
           <p className="text-[10px] text-red-500 uppercase font-semibold">Error Details</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
@@ -2410,7 +2442,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       )}
 
       {open && isWorking && (
-        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
           <p className="text-[10px] text-fg-tertiary uppercase font-semibold">Current Activity</p>
           {currentTask ? (
             <div

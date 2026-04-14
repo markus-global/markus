@@ -119,7 +119,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
   const prevPendingRef = useRef<number | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -142,11 +142,33 @@ export function NotificationBell({ collapsed, userId }: Props) {
     return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); };
   }, [fetchData]);
 
-  useLayoutEffect(() => {
-    if (!open || !btnRef.current) return;
+  const reposition = useCallback(() => {
+    if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    setPos({ top: rect.top, left: rect.right + 8 });
-  }, [open]);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const panelW = Math.min(448, vw - 16);
+    const panelMaxH = Math.min(576, vh - 16);
+
+    let left = rect.right + 8;
+    let top = rect.top;
+
+    if (left + panelW > vw - 8) left = Math.max(8, vw - panelW - 8);
+    if (top + panelMaxH > vh - 8) top = Math.max(8, vh - panelMaxH - 8);
+
+    setPos({ top, left, width: panelW, maxHeight: panelMaxH });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    reposition();
+  }, [open, reposition]);
+
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener('resize', reposition);
+    return () => window.removeEventListener('resize', reposition);
+  }, [open, reposition]);
 
   useEffect(() => {
     if (!open) return;
@@ -343,7 +365,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       </button>
 
       {open && createPortal(
-        <div ref={panelRef} className="fixed w-[28rem] max-h-[36rem] bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left }}>
+        <div ref={panelRef} className="fixed bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}>
           {/* Tabs + Close */}
           <div className="flex border-b border-border-default shrink-0">
             <button
