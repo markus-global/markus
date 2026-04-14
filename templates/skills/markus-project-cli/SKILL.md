@@ -5,6 +5,8 @@ description: Manage projects, tasks, requirements, deliverables, reports, review
 
 # Project & Task Management via CLI
 
+> **IMPORTANT**: Prefer built-in tools (`task_create`, `task_update`, `task_list`, `task_assign`, `task_comment`, `requirement_propose`, `requirement_list`, `deliverable_create`, `deliverable_search`, etc.) over CLI commands. Only use CLI when no built-in tool provides the needed operation (e.g., `task approve`, `task revision`, `project create/delete`, `report generate`).
+
 Operate projects, tasks, requirements, deliverables, reports, reviews, and approvals through `shell_execute` with `markus` commands. Always use `--json` for parseable output.
 
 ## Projects

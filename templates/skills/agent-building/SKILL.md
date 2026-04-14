@@ -124,10 +124,12 @@ If an agent needs to be cautious with certain tools, write that into `POLICIES.m
 
 ## After Creation
 
+> **CRITICAL**: Creating an artifact is NOT the same as installing/deploying it. Creating writes files to `builder-artifacts/`; installing deploys a live agent that consumes resources and joins the org. **NEVER auto-install.** Only install when the user explicitly says "install", "deploy", or "hire". This applies to ALL modes (chat, task, A2A).
+
 Once all files are written, tell the user:
 
 1. **The agent has been created and saved** — summarize what was created (name, purpose, key skills).
-2. **Go to the Builder page** to manage the agent: install it to deploy, share it to Markus Hub, or delete it.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
 3. **To modify or improve** this agent (e.g., update the role, change skills, adjust policies), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Rules

@@ -145,10 +145,12 @@ file_write("~/.markus/builder-artifacts/skills/git-changelog/README.md", "# Git 
 
 ## After Creation
 
+> **CRITICAL**: Creating an artifact is NOT the same as installing/deploying it. Creating writes files to `builder-artifacts/`; installing makes the skill available to agents in the live org. **NEVER auto-install.** Only install when the user explicitly asks. This applies to ALL modes (chat, task, A2A).
+
 Once all files are written, tell the user:
 
 1. **The skill has been created and saved** — summarize what was created (name, purpose, what agents can do with it).
-2. **Go to the Builder page** to manage the skill: install it to make it available to agents, share it to Markus Hub, or delete it.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
 3. **To modify or improve** this skill (e.g., add more instructions, update examples, fix edge cases), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Guidelines

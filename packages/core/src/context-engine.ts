@@ -505,6 +505,8 @@ export class ContextEngine {
       parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
       parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
       parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
+      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless the user explicitly requests it (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
     }
 
     // --- Mailbox & attention context ---
@@ -621,7 +623,9 @@ export class ContextEngine {
         lines.push('3. **Failed task recovery**: Retry `failed` tasks via `task_update(status:"in_progress", note:"...")` — auto-restarts execution.');
         lines.push('4. **Daily report (managers, after 20:00)**: If prompted, produce the report as top priority after reviews.');
         lines.push('5. **Self-evolution**: Record specific, actionable lessons learned since last heartbeat.');
-        lines.push('6. **Do NOT** create new tasks, start work, or do research (exception: daily report and failed task retry).');
+        lines.push('6. **Do NOT** start complex implementation work or do deep research in heartbeat.');
+        lines.push('   - You MAY create tasks via `task_create` if you spot something that needs doing, and propose requirements via `requirement_propose`.');
+        lines.push('   - You MUST NOT execute the work yourself — just triage, create/assign, and move on.');
         lines.push('');
         lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
@@ -766,7 +770,14 @@ export class ContextEngine {
         lines.push('3. **Reporting** — Report your team\'s progress to human stakeholders');
         lines.push('4. **Cross-team** — Coordinate with other team managers via `agent_send_message` when work crosses team boundaries');
         lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
-        lines.push('6. **Hiring** — Use `team_list_templates` + `team_hire_agent` to recruit agents; use `builder_install` to deploy custom-built or Hub-sourced artifacts');
+        lines.push('6. **Hiring & Team Building** — Two phases: CREATE then INSTALL (only when user requests).');
+        lines.push('   a) *Creating* (design the artifact): activate `agent-building` or `team-building` skill → write artifact files. Or `hub_search` to browse community packages.');
+        lines.push('   b) *Installing* (deploy into org — ONLY when user explicitly asks to install/deploy/hire):');
+        lines.push('      - Quick hire from template: `team_list_templates` → `team_hire_agent`');
+        lines.push('      - Install artifact: `builder_install` (for custom-built or Hub-downloaded packages)');
+        lines.push('      - Hub one-step: `hub_install` (download + install)');
+        lines.push('   c) After install: onboard via `agent_send_message` (project context) → `task_create` (initial work)');
+        lines.push('   **IMPORTANT**: NEVER auto-install. Creating an artifact does NOT mean deploying it. Wait for explicit user request.');
       }
     } else {
       lines.push(`- Name: ${opts.agentName}`);

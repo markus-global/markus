@@ -408,6 +408,26 @@ This ensures that modern models with large output windows are not artificially c
 7. **Skill-provided tools**: MCP tools from activated skills
 8. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
 
+### 7.1 Agent/Team Creation & Deployment
+
+Creation and deployment are **two separate phases** with an explicit user gate between them.
+
+**Phase 1 — Create (design the artifact):**
+- Activate `agent-building`, `team-building`, or `skill-building` skill via `discover_tools`
+- Write manifest + content files to `~/.markus/builder-artifacts/{agents|teams|skills}/{name}/`
+- This produces a package on disk. No live resources are created.
+
+**Phase 2 — Deploy (ONLY on explicit user request):**
+| Method | When to use | Tools |
+|--------|-------------|-------|
+| Quick hire from template | Standard roles, minor customization | `team_list_templates` → `team_hire_agent` |
+| Install artifact | Custom-built or Hub-downloaded packages | `builder_install` |
+| Hub one-step | Community packages from Markus Hub | `hub_search` → `hub_install` |
+
+**Post-deploy:** Onboard new agents via `agent_send_message` (project context) → `task_create` (initial work).
+
+**Critical rule:** Agents must NEVER auto-deploy. `builder_install`, `team_hire_agent`, and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
+
 ---
 
 ## 8. Provider Routing & Resilience

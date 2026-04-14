@@ -409,7 +409,14 @@ function AgentMessageBody({
     const hasTools = segments.some(s => s.type === 'tool');
     const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
     const streamingText = isStreaming
-      ? segments.filter(s => s.type === 'text').map(s => s.content).join('').slice(-200)
+      ? (() => {
+          const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
+          const cleaned = raw
+            .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+            .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+            .trim();
+          return cleaned ? cleaned.slice(-200) : undefined;
+        })()
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
@@ -2174,7 +2181,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                             ? 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm border-b-2 border-red-500/60'
                             : 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm'
-                      }`}>
+                      } ${isStreamingMsg && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
                           ? <>
                               {msg.images && msg.images.length > 0 && (

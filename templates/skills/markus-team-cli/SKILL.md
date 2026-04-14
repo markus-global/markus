@@ -5,6 +5,8 @@ description: Manage teams via markus CLI — create, members, lifecycle, export.
 
 # Team Management via CLI
 
+> **IMPORTANT**: Prefer built-in tools (`team_hire_agent`, `builder_install`, `team_list`, `team_status`, `agent_send_message`, etc.) over CLI commands. Only use CLI when no built-in tool provides the needed operation (e.g., `team delete`, `team export`, `team pause/resume`).
+
 Operate teams through `shell_execute` with `markus team` commands. Always use `--json` for parseable output.
 
 ## Quick examples

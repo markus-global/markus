@@ -4152,6 +4152,7 @@ export class Agent {
       baseTools.push(
         'task_board_health', 'task_cleanup_duplicates', 'task_assign',
         'team_status', 'deliverable_create', 'deliverable_search',
+        'team_hire_agent', 'team_list_templates', 'builder_install', 'builder_list',
       );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);

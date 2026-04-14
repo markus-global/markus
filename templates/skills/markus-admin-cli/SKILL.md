@@ -5,6 +5,8 @@ description: System administration via markus CLI — system controls, audit, us
 
 # System Administration via CLI
 
+> **NOTE**: Most admin CLI commands have no built-in tool equivalent — CLI is the primary interface for system administration. Use `builder_install`/`builder_list` for artifact management when available.
+
 Administrative operations through `shell_execute` with `markus admin` commands. Always use `--json` for parseable output.
 
 ## System Controls

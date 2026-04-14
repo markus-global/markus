@@ -83,6 +83,9 @@ export function ChatTeamSidebar({
   const [actionMenu, setActionMenu] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
 
+  // Highlight newly created team
+  const [highlightTeamId, setHighlightTeamId] = useState<string | null>(null);
+
   // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -178,7 +181,10 @@ export function ChatTeamSidebar({
                 const last = [...segs].reverse().find(s => s.type === 'text');
                 if (last && last.type === 'text') raw = last.content;
               }
-              const txt = raw.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/\n+/g, ' ').trim().slice(0, 80);
+              const txt = raw
+                .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+                .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+                .replace(/\n+/g, ' ').trim().slice(0, 80);
               if (txt) entries.push([a.id, txt]);
             }
           } catch { /* ignore */ }
@@ -453,7 +459,7 @@ export function ChatTeamSidebar({
               {subtitle || '\u00A0'}
             </div>
           </div>
-          <span className="flex items-center gap-1 shrink-0">
+          <span className="flex items-center gap-1.5 shrink-0">
             {a.mailboxDepth != null && a.mailboxDepth > 0 && (
               <span className="text-[8px] text-fg-tertiary bg-surface-overlay rounded-full px-1 leading-relaxed">{a.mailboxDepth}</span>
             )}
@@ -462,6 +468,21 @@ export function ChatTeamSidebar({
               onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}
               className={`w-2 h-2 rounded-full cursor-pointer transition-transform duration-150 hover:scale-[2] ${statusColor}`}
             />
+            {isMobile && isAdmin && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={e => {
+                  e.stopPropagation();
+                  if (agentMenu?.agentId === a.id) { setAgentMenu(null); }
+                  else { const pos = clampMenuPos(e as unknown as React.MouseEvent); setAgentMenu({ agentId: a.id, teamId, ...pos }); }
+                }}
+                className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors"
+                title="More options"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
+              </span>
+            )}
           </span>
         </button>
       </div>
@@ -475,11 +496,13 @@ export function ChatTeamSidebar({
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
     const teamGc = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? [])[0] : undefined;
     const isGcActive = teamGc && chatMode === 'channel' && activeChannel === teamGc.channelKey;
+    const isHighlighted = highlightTeamId === tid;
 
     return (
       <div
         key={tid}
-        className={`mb-1 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''}`}
+        data-team-id={tid}
+        className={`mb-1 rounded-lg transition-all duration-500 ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''} ${isHighlighted ? 'ring-2 ring-brand-500 bg-brand-500/10' : ''}`}
         onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
         onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
       >
@@ -706,17 +729,17 @@ export function ChatTeamSidebar({
             </button>
           ))}
 
-          {/* Teams with agents */}
+          {/* Teams with agents or members */}
           {teams.map(t => {
             const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
             if (agentList.length === 0 && (!t.members || t.members.length === 0)) return null;
             return renderTeamSection(t.id, t, agentList, t.name);
           })}
 
-          {/* Empty teams */}
+          {/* Empty teams (no agents and no members) */}
           {teams.filter(t => {
             const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
-            return agentList.length === 0 && t.members && t.members.length > 0;
+            return agentList.length === 0 && (!t.members || t.members.length === 0);
           }).map(t => renderTeamSection(t.id, t, [], t.name))}
 
           {/* Ungrouped agents */}
@@ -948,9 +971,19 @@ export function ChatTeamSidebar({
         <NewTeamModal
           onClose={() => setShowNewTeam(false)}
           onCreate={async (name, description) => {
-            await api.teams.create(name, description);
-            setShowNewTeam(false);
-            onRefreshTeams();
+            try {
+              const { team: newTeam } = await api.teams.create(name, description);
+              setShowNewTeam(false);
+              onRefreshTeams();
+              setHighlightTeamId(newTeam.id);
+              setTimeout(() => {
+                const el = document.querySelector(`[data-team-id="${newTeam.id}"]`);
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 300);
+              setTimeout(() => setHighlightTeamId(null), 3000);
+            } catch (e) {
+              alert(`Failed to create team: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }}
         />
       )}
