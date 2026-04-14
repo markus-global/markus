@@ -222,7 +222,9 @@ User chat (`human_chat`), task comments (`task_comment`), and requirement commen
 Yield points are inserted at natural pauses in the agent's processing pipeline:
 
 - **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. If preempted, the task session state is fully saved and execution is **automatically re-queued** via `TaskService.runTask()` — the task stays `in_progress` and a new `task_status_update` (execution mode) is enqueued to the mailbox. The re-queued item sits behind any higher-priority items and resumes with full session context when the agent is available.
-- **Chat/message handling** (`handleMessage`): After tool results are recorded. Only merge decisions are honoured here (no preemption, since the caller is awaiting a response).
+- **Chat/message handling** (`handleMessage`): After tool results are recorded. The preemption behaviour depends on the **scenario**:
+  - **Preemptable scenarios** (`heartbeat`, `memory_consolidation`): Full preemption is allowed. If a higher-priority item arrives (e.g., user chat), the current processing is abandoned and the agent immediately switches to the new item. Since these are self-initiated periodic processes with no external caller waiting, abandoning them is safe — the next scheduled cycle will retry.
+  - **Non-preemptable scenarios** (`chat`, `a2a`, `comment_response`): Only merge decisions are honoured (no preemption), since an external caller is awaiting a response. The `system_event` and `daily_report` types use scenario `heartbeat` internally, so they are also preemptable.
 
 ---
 

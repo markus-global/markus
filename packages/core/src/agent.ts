@@ -1962,6 +1962,8 @@ export class Agent {
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+    const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
+    const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
@@ -2234,9 +2236,17 @@ export class Agent {
           }
         }
 
-        // Attention yield point (merge only — no preemption during chat,
-        // since the caller is awaiting a response).
+        // Attention yield point — preemptable scenarios (heartbeat, memory
+        // consolidation, etc.) allow full preemption; user-facing chat only
+        // allows merge since the caller is awaiting a response.
         const chatYield = await this.checkAttentionYieldPoint();
+        if (chatYield.decision === 'preempt' && isPreemptable) {
+          log.info('handleMessage preempted by higher-priority item', {
+            agentId: this.id, scenario,
+            preemptedBy: chatYield.item?.sourceType,
+          });
+          return '[preempted]';
+        }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });

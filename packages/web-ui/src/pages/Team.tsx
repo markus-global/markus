@@ -569,10 +569,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind' }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
+    if (isMobile) enterMobileDetail();
     switchToProfile(opts?.tab);
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [switchToProfile]);
+  }, [isMobile, enterMobileDetail, switchToProfile]);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
