@@ -11,7 +11,7 @@ WorkspaceManager 完全移除，API Server 状态检查增强，deny-only 跨代
 
 ### Bug Fixes
 
-- **API Server 执行端点简化** — `/run`、`/resume`、`/retry` 端点移除冗余的状态前置检查，统一由 `runTask` 内部处理状态验证，简化调用链路
+- **API Server 状态检查增强** — `/run` 端点新增任务状态验证（仅 `in_progress` 状态可运行），`/resume` 端点修复状态判断（仅 `blocked` 状态可恢复），`/retry` 端点新增状态限制（`rejected`/`archived` 状态不可重试）
 
 ### Breaking Changes
 
