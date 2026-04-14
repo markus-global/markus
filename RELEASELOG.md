@@ -1,5 +1,55 @@
 # Release Log
 
+## v0.4.17
+
+移除 PostgreSQL 支持，全面精简存储层；新增 Main Session 活动上下文与子 Agent 执行可见性；Mailbox 恢复与通知级联抑制；团队创建 UX 与流式动画优化；用户聊天可抢占后台处理。
+
+### New Features
+
+- **Main Session 活动上下文** — 新增 `is_main` 会话概念，非聊天类 mailbox 处理完成后自动注入活动摘要到主会话，Agent 跨任务执行保持叙事连续性
+- **子 Agent 执行可见性** — Work 页任务执行日志展示嵌套子 Agent 时间线，ToolDetailModal 渲染子 Agent 详情，Chat 流式路径透传 subagentLogs
+- **团队创建 UX 优化** — 创建团队后自动滚动高亮，空团队状态优化，Create Team 弹窗增加 Secretary 高级创建提示
+- **流式气泡动画** — Chat 气泡在 Agent 流式输出时显示流动渐变边框动画
+- **Heartbeat 支持创建任务/需求** — heartbeat 场景下允许调用 `task_create` 和 `requirement_propose`
+
+### Bug Fixes
+
+- **修复用户聊天无法抢占后台处理** — `handleMessage` 对自发场景（heartbeat、memory_consolidation、system_event、daily_report）支持抢占，human_chat 消息在下一个 yield point 中断后台工作
+- **修复 notify_user 时序 bug** — `setUserNotifier` 追溯推送给所有已存在 Agent，缺少 notifier 时优雅降级而非硬错误
+- **修复 discover_tools 参数混乱** — 合并 `name` 和 `tool_names` 为单一 `name` 参数，消除 LLM 参数混淆导致的技能激活失败
+- **修复 Hub artifact manifest 写入错误** — `downloadAndInstall` 写入正确的类型文件名（agent.json/team.json/skill.json）而非通用 manifest.json
+- **修复 main session 排序问题** — `getSessionsByAgent` 按 `is_main DESC` 排序，避免多会话 Agent 主会话被淹没
+- **修复评论内容为 undefined** — task_comment/requirement_comment 增加内容校验
+- **抑制审核通知级联** — 活跃审核期间抑制 reviewer→worker/creator 的冗余通知
+- **Mailbox 启动恢复** — 重启时将卡在 processing 状态的 mailbox 项标记为 dropped
+- **修复 agent_broadcast_status schema 枚举不匹配**
+- **修复移动端 Profile 导航缺失 `enterMobileDetail` 调用**
+
+### Refactoring
+
+- **移除 PostgreSQL/Drizzle 支持** — 删除全部 Drizzle schema、repos、migrations 和 PgVectorStore，存储层仅保留 SQLite
+- **存储类型整合** — 新增独立 `types.ts`，定义 `TaskRow` 等类型接口，移除 repo 的 `[key: string]: unknown` 索引签名
+- **合并 A2A 工具组** — `structured-a2a` 和 `group-chat` 合并为 `a2a-extended`
+- **静默状态转换** — blocked↔in_progress 转换不再触发冗余通知
+- **集中 shell 超时限制** — 统一 shell 命令超时配置
+
+### Enhancements
+
+- FSM 感知的 TagPicker，高亮合法状态转换
+- Mailbox 状态过滤器与 requirement_comment 类型支持
+- WebSocket task:update handler 始终刷新看板
+- 消息预览过滤未闭合 `<think>` 标签和工具调用 XML
+- Secretary prompt 更新团队优先创建最佳实践
+- Prompt 工程增加内置工具优先与禁止自动安装规则
+- Manager 招聘指导扩展为 CREATE/INSTALL 两阶段工作流
+- 安装脚本更新
+
+### Stats
+
+- 84 files changed, +1,632 / −4,911 lines
+
+---
+
 ## v0.4.16
 
 修复 Agent 动态创建全链路问题（白屏崩溃→数据丢失→事件断路）；修复 pause/resume 实际无效的 bug；移除 token 预算自动暂停机制；新增 heartbeat 完成任务复盘与 SOP 自动注入。
