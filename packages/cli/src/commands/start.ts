@@ -550,6 +550,27 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   });
 
+  // Persist activity log messages to the agent's main chat session and broadcast
+  if (storage?.chatSessionRepo) {
+    const ws = apiServer.getWSBroadcaster();
+    agentManager.getEventBus().on('agent:activity-log', async (evt: unknown) => {
+      const { agentId, message, metadata } = evt as {
+        agentId: string; message: string;
+        metadata: Record<string, unknown>;
+      };
+      try {
+        const mainSession = await storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const msg = await storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', message, 0, metadata,
+        );
+        const agent = agentManager.getAgent(agentId);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, message);
+      } catch (e) {
+        log.warn('Failed to persist activity log', { agentId, error: String(e) });
+      }
+    });
+  }
+
   // Auto-resume in_progress tasks after agents are fully loaded.
   // Tasks retain their execution history in DB (task_logs + comments),
   // so the agent receives full previous context on resume.

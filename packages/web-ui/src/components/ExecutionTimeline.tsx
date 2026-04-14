@@ -116,7 +116,24 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
               <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
-          {!argEntries.length && !isRunning && !info.result && !info.error && (
+          {info.subagentLogs && info.subagentLogs.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Sub-agent Execution</h4>
+              <div className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-[50vh] overflow-y-auto">
+                {info.subagentLogs.map((log, idx) => {
+                  const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '💭' : '→';
+                  const color = log.eventType === 'error' ? 'text-red-500' : log.eventType === 'completed' ? 'text-green-500' : log.eventType === 'started' ? 'text-brand-500' : 'text-fg-tertiary';
+                  return (
+                    <div key={idx} className="flex items-start gap-1.5 text-xs">
+                      <span className={`shrink-0 ${color}`}>{icon}</span>
+                      <span className={`font-mono break-all ${color}`}>{log.content}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {!argEntries.length && !isRunning && !info.result && !info.error && !(info.subagentLogs?.length) && (
             <div className="text-sm text-fg-tertiary italic py-4 text-center">No detailed data recorded for this tool call.</div>
           )}
         </div>

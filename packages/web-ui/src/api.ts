@@ -31,6 +31,7 @@ export interface ChatSessionInfo {
   agentId: string;
   userId: string | null;
   title: string | null;
+  isMain?: boolean;
   createdAt: string;
   lastMessageAt: string;
 }
@@ -45,7 +46,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; mailboxItemId?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -301,7 +302,7 @@ export interface AgentActivityInfo {
 
 export interface AgentActivityLogEntry {
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
@@ -1286,7 +1287,7 @@ export interface ExecutionStreamEntryAPI {
   sourceId: string;
   agentId: string;
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   executionRound?: number;

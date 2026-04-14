@@ -8,6 +8,7 @@ export interface ChatSession {
   agentId: string;
   userId: string | null;
   title: string | null;
+  isMain: boolean;
   createdAt: Date;
   lastMessageAt: Date;
 }
@@ -32,6 +33,22 @@ export class ChatSessionRepo {
       agentId,
       userId: userId ?? null,
       title: null,
+      lastMessageAt: new Date(),
+    }).returning();
+    return row!;
+  }
+
+  async getOrCreateMainSession(agentId: string): Promise<ChatSession> {
+    const [existing] = await this.db.select().from(chatSessions)
+      .where(and(eq(chatSessions.agentId, agentId), eq(chatSessions.isMain, true)))
+      .limit(1);
+    if (existing) return existing;
+    const [row] = await this.db.insert(chatSessions).values({
+      id: generateId('ses'),
+      agentId,
+      userId: null,
+      title: 'Main',
+      isMain: true,
       lastMessageAt: new Date(),
     }).returning();
     return row!;

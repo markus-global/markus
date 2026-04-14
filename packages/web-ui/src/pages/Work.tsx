@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
@@ -805,7 +805,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
   // Single round — render log entries with comments interleaved chronologically
   if (!hasMultipleRounds) {
     const exec = streamEntries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
-    const filtered = filterCompletedStarts(exec);
+    const filtered = attachSubagentLogsToEntries(allLoadedLogs, filterCompletedStarts(exec));
 
     type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
     const timeline: TimelineItem[] = [
@@ -903,7 +903,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
                   {logs && (() => {
                     const entries = logs.map(l => taskLogToStreamEntry(l));
                     const exec = entries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
-                    const filtered = filterCompletedStarts(exec);
+                    const filtered = attachSubagentLogsToEntries(logs, filterCompletedStarts(exec));
 
                     type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
                     const tl: TimelineItem[] = [

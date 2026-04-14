@@ -54,6 +54,10 @@ interface ChatMsg {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  /** Activity log metadata — compact system card instead of bubble */
+  isActivityLog?: boolean;
+  activityType?: string;
+  mailboxItemId?: string;
 }
 
 type ChatMode = 'channel' | 'direct' | 'dm';
@@ -83,6 +87,11 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.images?.length) {
     base.images = m.metadata.images;
+  }
+  if (m.metadata?.activityLog) {
+    base.isActivityLog = true;
+    base.activityType = m.metadata.activityType;
+    base.mailboxItemId = m.metadata.mailboxItemId;
   }
   return base;
 }
@@ -352,7 +361,11 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
         entries.push({
           id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
           seq: seq++, type: 'tool_end', content: seg.tool,
-          metadata: { arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, success: seg.status !== 'error' },
+          metadata: {
+            arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs,
+            success: seg.status !== 'error',
+            ...(seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
+          },
           createdAt: now,
         });
       }
@@ -966,8 +979,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         loadSessions(selectedAgent).then(s => {
           if (currentConvKeyRef.current !== newKey) return;
           if (s.length > 0) {
-            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : s.slice(0, 5);
-            const restoreId = savedActiveSession !== undefined ? savedActiveSession : initialTabs[0]!.id;
+            // Ensure main session is always first in the default tab list
+            const mainSession = s.find(ss => ss.isMain);
+            const defaultTabs = mainSession
+              ? [mainSession, ...s.filter(ss => !ss.isMain).slice(0, 4)]
+              : s.slice(0, 5);
+            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
+            const restoreId = savedActiveSession !== undefined ? savedActiveSession : (mainSession?.id ?? initialTabs[0]!.id);
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
             setOpenSessionTabs(initialTabs);
@@ -1060,6 +1078,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
       // Only append to display if we're viewing this agent's direct chat
       if (chatMode === 'direct' && selectedAgent === agentId) {
+        const isActivity = message.startsWith('[ACTIVITY:');
         const newMsg: ChatMsg = {
           id: `proactive_${Date.now()}`,
           sender: 'agent',
@@ -1067,6 +1086,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           time: new Date().toLocaleTimeString(),
           agentName,
           agentId,
+          ...(isActivity ? { isActivityLog: true } : {}),
         };
         const key = makeConvKey('direct', agentId, activeChannel, activeDmUserId);
         updateConvMsgs(key, prev => [...prev, newMsg]);
@@ -1892,13 +1912,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     }
                   }}
                 >
-                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.title || 'Conversation')}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
-                    className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
-                  >
-                    ✕
-                  </button>
+                  {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
+                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.isMain ? 'Main' : (s.title || 'Conversation'))}</span>
+                  {!s.isMain && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
+                      className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1950,7 +1973,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                             s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
                           }`}
                         >
-                          <div className="truncate font-medium">{s.title || 'Conversation'}</div>
+                          <div className="truncate font-medium flex items-center gap-1">
+                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-60">●</span>}
+                            {s.isMain ? 'Main' : (s.title || 'Conversation')}
+                          </div>
                           <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
                         </button>
                       ))}
@@ -2078,6 +2104,29 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 const isStreamingMsg = isPending && sending;
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
+
+                // Activity log → compact system-style card
+                if (msg.isActivityLog) {
+                  const activityText = msg.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
+                  return (
+                    <div key={msg.id} id={`msg-${msg.id}`} className="flex items-start gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors group/msg">
+                      <span className="text-[10px] text-fg-quaternary mt-0.5 shrink-0 font-mono">{msg.time}</span>
+                      <span className="inline-flex items-center gap-1.5 text-xs text-fg-tertiary">
+                        <span className="w-1.5 h-1.5 rounded-full bg-brand-500/50 shrink-0" />
+                        <span className="truncate">{activityText}</span>
+                      </span>
+                      {msg.agentId && (
+                        <button
+                          onClick={() => handleViewProfile(msg.agentId!, { tab: 'mind' })}
+                          className="ml-auto shrink-0 text-[10px] text-brand-500/60 hover:text-brand-500 transition-colors opacity-0 group-hover/msg:opacity-100"
+                        >
+                          Details
+                        </button>
+                      )}
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={[

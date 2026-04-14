@@ -913,6 +913,55 @@ export class Agent {
       throw err;
     } finally {
       this.processingMailboxItemId = undefined;
+
+      // Inject concise activity summary into main session for non-chat items
+      // so the agent maintains narrative continuity across processing contexts.
+      if (item.sourceType !== 'human_chat' && this.currentSessionId) {
+        try {
+          const outcome = this.buildActivityOutcome(item);
+          if (outcome) {
+            this.injectActivityToMainSession({
+              type: item.sourceType,
+              summary: item.payload.summary?.slice(0, 120) ?? item.sourceType,
+              outcome,
+              mailboxItemId: item.id,
+            });
+          }
+        } catch { /* never fail the main flow */ }
+      }
+    }
+  }
+
+  /** Derive a short outcome string for the activity log based on item type. */
+  private buildActivityOutcome(item: MailboxItem): string | undefined {
+    const extra = item.payload.extra ?? {};
+    switch (item.sourceType) {
+      case 'task_status_update':
+        return extra.triggerExecution ? 'executed' : 'noted (informational)';
+      case 'review_request':
+        return 'reviewed';
+      case 'a2a_message':
+        return 'responded';
+      case 'mention':
+        return 'responded to mention';
+      case 'task_comment':
+        return item.payload.taskId && this.activeTasks.has(item.payload.taskId)
+          ? 'injected into active task session'
+          : 'responded to comment';
+      case 'requirement_comment':
+        return 'responded to requirement comment';
+      case 'requirement_update':
+        return (extra.actionRequired) ? 'processed (action required)' : 'noted (informational)';
+      case 'heartbeat':
+        return 'heartbeat processed';
+      case 'session_reply':
+        return 'replied in session';
+      case 'system_event':
+      case 'daily_report':
+      case 'memory_consolidation':
+        return 'processed';
+      default:
+        return 'processed';
     }
   }
 
@@ -1516,6 +1565,38 @@ export class Agent {
 
   setChatSessionsFetcher(cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
     this.chatSessionsFetcher = cb;
+  }
+
+  /**
+   * Inject a concise activity summary into the main chat session.
+   * This keeps the agent aware of what it has done across different processing
+   * contexts (task execution, review, A2A, etc.) and surfaces the activity
+   * in the frontend chat timeline.
+   */
+  injectActivityToMainSession(opts: {
+    type: string;
+    summary: string;
+    outcome?: string;
+    mailboxItemId?: string;
+  }): void {
+    if (!this.currentSessionId) return;
+    const text = opts.outcome
+      ? `[ACTIVITY: ${opts.type}] ${opts.summary} → ${opts.outcome}`
+      : `[ACTIVITY: ${opts.type}] ${opts.summary}`;
+    this.memory.appendMessage(this.currentSessionId, {
+      role: 'assistant',
+      content: text,
+    });
+    this.eventBus.emit('agent:activity-log', {
+      agentId: this.id,
+      sessionId: this.currentSessionId,
+      message: text,
+      metadata: {
+        activityLog: true,
+        activityType: opts.type,
+        mailboxItemId: opts.mailboxItemId,
+      },
+    });
   }
 
   private async fetchChatSessions(): Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }> | undefined> {
@@ -3606,22 +3687,28 @@ export class Agent {
       if (!title || !body) {
         return JSON.stringify({ status: 'error', message: 'title and body are required' });
       }
-      if (!this.userNotifier) {
-        return JSON.stringify({ status: 'error', message: 'User notifications are not available.' });
-      }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
         const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
         const actionType = relatedTaskId ? 'navigate' : 'none';
         const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
-        this.userNotifier({
-          type: 'agent_report',
-          title,
-          body,
-          priority,
-          actionType,
-          actionTarget,
-          metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+        // Send to notification bell
+        if (this.userNotifier) {
+          this.userNotifier({
+            type: 'agent_report',
+            title,
+            body,
+            priority,
+            actionType,
+            actionTarget,
+            metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+          });
+        }
+        // Also post to main session so it appears in the chat timeline
+        this.injectActivityToMainSession({
+          type: 'notify_user',
+          summary: title,
+          outcome: body.length > 200 ? body.slice(0, 200) + '…' : body,
         });
         log.info('User notification sent', { agentId: this.id, title });
         return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });

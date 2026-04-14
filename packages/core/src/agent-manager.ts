@@ -556,6 +556,10 @@ export class AgentManager {
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
+    // Retroactively push to all existing agents
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setUserNotifier(cb); } catch { /* skip */ }
+    }
   }
 
   setChatSessionsFetcher(agentId: string, cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {

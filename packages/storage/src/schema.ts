@@ -167,6 +167,8 @@ export const chatSessions = pgTable(
       .references(() => agents.id, { onDelete: 'cascade' }),
     userId: varchar('user_id', { length: 255 }), // null = anonymous
     title: varchar('title', { length: 255 }), // auto-generated from first message
+    /** At most one session per agent is the "main" session that receives activity logs */
+    isMain: boolean('is_main').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     lastMessageAt: timestamp('last_message_at').notNull().defaultNow(),
   },

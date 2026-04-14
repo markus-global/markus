@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   user_id TEXT,
   title TEXT,
+  is_main INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -547,6 +548,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_comments', column: 'activity_id', sql: "ALTER TABLE task_comments ADD COLUMN activity_id TEXT" },
     { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
+    { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1601,9 +1603,23 @@ export class SqliteChatSessionRepo {
       agentId,
       userId: userId ?? null,
       title: null,
+      isMain: false,
       createdAt: new Date(ts),
       lastMessageAt: new Date(ts),
     };
+  }
+
+  getOrCreateMainSession(agentId: string) {
+    const existing = this.db
+      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND is_main = 1 LIMIT 1')
+      .get(agentId) as Record<string, unknown> | undefined;
+    if (existing) return this._mapSession(existing);
+    const id = generateId('cs');
+    const ts = now();
+    this.db
+      .prepare('INSERT INTO chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at) VALUES (?,?,?,?,1,?,?)')
+      .run(id, agentId, null, 'Main', ts, ts);
+    return { id, agentId, userId: null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
   }
 
   getSessionsByAgent(agentId: string, limit = 50) {
@@ -1704,6 +1720,7 @@ export class SqliteChatSessionRepo {
       agentId: r['agent_id'],
       userId: r['user_id'],
       title: r['title'],
+      isMain: !!(r['is_main']),
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
