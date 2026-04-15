@@ -1728,6 +1728,25 @@ export class SqliteChatSessionRepo {
     return r.cnt;
   }
 
+  /**
+   * Remove the last user+assistant exchange from a session (for retry).
+   * Deletes from the end backwards through the last assistant message
+   * and its preceding user message.
+   */
+  deleteLastExchange(sessionId: string): void {
+    const rows = this.db.prepare(
+      'SELECT id, role FROM chat_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 10'
+    ).all(sessionId) as Array<Record<string, unknown>>;
+    let foundAssistant = false;
+    for (const row of rows) {
+      const role = row['role'] as string;
+      const id = row['id'] as string;
+      this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+      if (role === 'assistant') foundAssistant = true;
+      if (role === 'user' && foundAssistant) break;
+    }
+  }
+
   private _mapSession(r: Record<string, unknown>) {
     return {
       id: r['id'],

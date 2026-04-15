@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type RefObject } from 'react';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type HumanUserInfo, type ExternalAgentInfo,
@@ -316,16 +316,19 @@ function friendlyAgentError(err: unknown): string {
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
-  msg, onCopy, onRetry, onReply, isCopied,
+  msg, onCopy, onRetry, onReply, isCopied, isLastAgentMsg,
 }: {
   msg: ChatMsg;
   onCopy: (msg: ChatMsg) => void;
   onRetry?: (msg: ChatMsg) => void;
   onReply?: (msg: ChatMsg) => void;
   isCopied: boolean;
+  /** Only the most recent agent message should offer Retry/Re-ask */
+  isLastAgentMsg?: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
   const isStopped = msg.isStopped;
+  const canRetry = isLastAgentMsg !== false;
   return (
     <div className="flex items-center gap-0.5 mt-1">
       {/* Copy */}
@@ -341,8 +344,8 @@ function MessageActions({
         )}
         {isCopied ? 'Copied' : 'Copy'}
       </button>
-      {/* Re-ask — for stopped messages */}
-      {isStopped && onRetry && (
+      {/* Re-ask — for stopped messages (only on latest agent msg) */}
+      {canRetry && isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-500 hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
@@ -352,8 +355,8 @@ function MessageActions({
           Re-ask
         </button>
       )}
-      {/* Retry — for error messages */}
-      {isError && !isStopped && onRetry && (
+      {/* Retry — for error messages (only on latest agent msg) */}
+      {canRetry && isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
@@ -363,8 +366,8 @@ function MessageActions({
           Retry
         </button>
       )}
-      {/* Retry — for normal agent messages (re-generate response) */}
-      {!isError && !isStopped && msg.sender === 'agent' && onRetry && (
+      {/* Retry — for normal agent messages (only on latest agent msg) */}
+      {canRetry && !isError && !isStopped && msg.sender === 'agent' && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
@@ -452,10 +455,9 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const lastText = !isStreaming && textSegments.length > 0
-      ? textSegments[textSegments.length - 1]!.content
-      : null;
-    const displayText = viewMode === 'compact' ? lastText : allText;
+    // Always use allText so MarkdownMessage can properly extract think blocks
+    // that span across text segments (split by tool-call segments in between).
+    const displayText = allText;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
@@ -1214,7 +1216,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setActivities([]);
   };
 
-  const send = async (retryText?: string) => {
+  const send = async (retryText?: string, options?: { isRetry?: boolean }) => {
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
@@ -1341,6 +1343,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
       ]);
 
+      /** Track whether we're inside a <think> block across streaming chunks */
+      let insideThink = false;
+
       /** Append a text chunk to the segment stream */
       const appendTextChunk = (chunk: string) => {
         updateConvMsgs(sendKey, prev => {
@@ -1349,21 +1354,43 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           if (idx < 0) return prev;
           const segs = u[idx]!.segments ?? [];
           const last = segs[segs.length - 1];
+          const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
 
-          // Extract thinking content from chunk (between <think> and </think> tags)
-          let thinking: string | undefined;
-          let content = chunk;
+          let thinking = '';
+          let content = '';
+          let remaining = chunk;
 
-          // Check for standard format <think>...</think>
-          const thinkingMatch = chunk.match(/<think>([\s\S]*?)<\/think>/);
-          if (thinkingMatch) {
-            thinking = (last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '') + thinkingMatch[1];
-            content = chunk.replace(/<think>[\s\S]*?<\/think>/, '');
+          // Process the chunk character-by-character tracking think state.
+          // Handles <think>...</think> that may span across multiple chunks.
+          while (remaining.length > 0) {
+            if (insideThink) {
+              const closeIdx = remaining.indexOf('</think>');
+              if (closeIdx >= 0) {
+                thinking += remaining.slice(0, closeIdx);
+                remaining = remaining.slice(closeIdx + '</think>'.length);
+                insideThink = false;
+              } else {
+                thinking += remaining;
+                remaining = '';
+              }
+            } else {
+              const openIdx = remaining.indexOf('<think>');
+              if (openIdx >= 0) {
+                content += remaining.slice(0, openIdx);
+                remaining = remaining.slice(openIdx + '<think>'.length);
+                insideThink = true;
+              } else {
+                content += remaining;
+                remaining = '';
+              }
+            }
           }
 
+          const mergedThinking = (prevThinking + thinking) || undefined;
+
           const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: thinking ?? (last as { thinking?: string }).thinking }]
-            : [...segs, { type: 'text', content, thinking }];
+            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking }]
+            : [...segs, { type: 'text', content, thinking: mergedThinking }];
           u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
           return u;
         });
@@ -1465,6 +1492,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           abortCtrl.signal,
           imagesToSend,
           effectiveSessionId,
+          options?.isRetry,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {
@@ -1627,6 +1655,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [, setExpandedMsgIds] = useState<Set<string>>(new Set());
 
+  const lastAgentMsgId = useMemo(() => {
+    for (let j = messages.length - 1; j >= 0; j--) {
+      if (messages[j]?.sender === 'agent' && !messages[j]?.isActivityLog) return messages[j]!.id;
+    }
+    return null;
+  }, [messages]);
+
   const handleCopy = useCallback((msg: ChatMsg) => {
     const text = msg.segments
       ? msg.segments.filter(s => s.type === 'text').map(s => (s as { content: string }).content).join('\n')
@@ -1661,7 +1696,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    void send(retryText);
+    void send(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -2172,8 +2207,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           </div>
                       }
                     </div>
-                    <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
+                    <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                     </div>
                   </div>
                 </div>
@@ -2301,8 +2336,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         }
                       </div>
                       {showActions && (
-                        <div className={`transition-opacity ${msg.isStopped ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
+                        <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>
                       )}
                     </div>

@@ -13,11 +13,14 @@ const thinkRegex = /<think>([\s\S]*?)(<\/think>|$)/g;
 
 function extractThinkBlocks(text: string): { thinking: string[]; rest: string } {
   const thinking: string[] = [];
-  const rest = text.replace(thinkRegex, (_match, inner: string) => {
+  let rest = text.replace(thinkRegex, (_match, inner: string) => {
     const trimmed = inner.trim();
     if (trimmed) thinking.push(trimmed);
     return '';
   });
+  // Strip orphaned closing/opening think tags that can occur when
+  // think blocks span across message segments (split by tool calls)
+  rest = rest.replace(/<\/think>/g, '').replace(/<think>/g, '');
   return { thinking, rest: rest.trim() };
 }
 

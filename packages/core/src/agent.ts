@@ -1108,16 +1108,31 @@ export class Agent {
    * Restore the agent's memory context for an existing DB session.
    * If a mapping exists to a live memory session, switch to it.
    * Otherwise, create a new memory session populated with the DB messages.
+   *
+   * When `isRetry` is true, the last assistant reply (and preceding user
+   * message) are stripped from the memory context so the retried message
+   * doesn't see the old failed response.
    */
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
+    options?: { isRetry?: boolean },
   ): void {
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
       if (session) {
         this.currentSessionId = existingMemorySessionId;
+        if (options?.isRetry) {
+          // Strip last assistant reply + preceding user msg from memory
+          while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
+            session.messages.pop();
+          }
+          if (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'user') {
+            session.messages.pop();
+          }
+          log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
+        }
         log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
         return;
       }

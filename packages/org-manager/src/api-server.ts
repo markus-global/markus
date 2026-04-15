@@ -1305,6 +1305,7 @@ export class APIServer {
         const senderId = body['senderId'] as string | undefined;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+        const isRetry = body['isRetry'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -1315,10 +1316,14 @@ export class APIServer {
           // Restore agent memory context from DB session history so the agent
           // has full conversation context when replying to an existing chat.
           try {
+            if (isRetry) {
+              this.storage.chatSessionRepo.deleteLastExchange(sessionId);
+            }
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
               histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
+              { isRetry: !!isRetry },
             );
           } catch (err) {
             log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
