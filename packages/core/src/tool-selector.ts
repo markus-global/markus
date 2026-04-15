@@ -48,7 +48,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'manager',
     keywords: ['team', 'delegate', 'status', 'manage', 'assign', 'route',
       '团队', '管理', '委派', '分配', '路由'],
-    toolNames: ['team_list', 'team_status', 'delegate_message'],
+    toolNames: ['team_list', 'team_status', 'delegate_message', 'team_hire_agent', 'team_list_templates'],
   },
   {
     name: 'deliverables',
@@ -122,6 +122,7 @@ export class ToolSelector {
         'task_get', 'task_note', 'task_assign',
         'subtask_create', 'subtask_complete', 'subtask_list',
         'task_submit_review',
+        'requirement_get', 'requirement_update', 'requirement_resubmit',
       ]) {
         if (opts.allTools.has(name)) selected.add(name);
       }
@@ -171,17 +172,31 @@ export class ToolSelector {
     });
 
     result.push({
-      name: 'request_user_chat',
-      description: 'Request a conversation with the user about a specific topic. Use when you need user input, a decision, approval, or want to discuss something interactively. The user receives a notification they can click to open a chat with you. If you want to continue an existing conversation, provide the session_id from a previous interaction.',
+      name: 'request_user_approval',
+      description: 'Request a decision or approval from the user. The tool BLOCKS until the user responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
       inputSchema: {
         type: 'object',
         properties: {
-          topic: { type: 'string', description: 'What you want to discuss (shown in notification title)' },
-          message: { type: 'string', description: 'Your opening message (shown when user opens the chat)' },
+          title: { type: 'string', description: 'Short headline for the approval request' },
+          description: { type: 'string', description: 'Detailed context for the decision' },
+          options: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                label: { type: 'string' },
+                description: { type: 'string' },
+              },
+              required: ['id', 'label'],
+            },
+            description: 'Custom options. If omitted, defaults to Approve/Reject.',
+          },
+          allow_freeform: { type: 'boolean', description: 'Allow user to type a custom text response in addition to options. Default: false' },
+          related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
           priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
-          session_id: { type: 'string', description: 'Optional. ID of an existing chat session to continue. If omitted, reuses the most recent session or creates a new one.' },
         },
-        required: ['topic', 'message'],
+        required: ['title', 'description'],
       },
     });
 

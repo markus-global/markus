@@ -169,7 +169,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `git_*` | Git operations |
 | `agent_send_message` | Send message to another Agent (A2A via mailbox) |
 | `notify_user` | Send one-way notification to user notification bell |
-| `request_user_chat` | Request interactive chat with user (creates notification + chat message) |
+| `request_user_approval` | Request user decision/approval (blocks until user responds; supports custom options + freeform) |
 | `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
 | `task_submit_review` | Submit delivery for review |
 | `requirement_propose` / `requirement_list` | Requirement management |

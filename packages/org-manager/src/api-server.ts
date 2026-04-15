@@ -4586,6 +4586,7 @@ export class APIServer {
         body['approved'] as boolean,
         (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous',
         body['comment'] as string | undefined,
+        body['selectedOption'] as string | undefined,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });

@@ -16,7 +16,6 @@ import {
   SYSTEM_DAILY_LOG_CHARS,
   SYSTEM_DAILY_LOG_DAYS,
   SYSTEM_USER_PROFILE_CHARS,
-  SYSTEM_CHAT_SESSIONS_MAX,
   SYSTEM_PROJECT_DESC_CHARS,
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
@@ -172,7 +171,6 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
-    chatSessions?: Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -471,8 +469,8 @@ export class ContextEngine {
       parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
       parts.push('');
       parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — one-way status updates, progress reports, findings (no response expected)');
-      parts.push('- `request_user_chat` — ONLY when genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints). Do NOT use for routine updates.');
+      parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
+      parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
     }
 
     if (opts.environment) {
@@ -512,19 +510,6 @@ export class ContextEngine {
     // --- Mailbox & attention context ---
     if (!isDream && opts.mailboxContext) {
       parts.push(this.buildMailboxSection(opts.mailboxContext));
-    }
-
-    // --- Chat session context for session-aware user communication ---
-    if (!isDream && opts.chatSessions && opts.chatSessions.length > 0) {
-      const sessionLines = ['\n## Your Chat Sessions with the User'];
-      for (const s of opts.chatSessions.slice(0, SYSTEM_CHAT_SESSIONS_MAX)) {
-        const preview = s.lastMessagePreview ? `: "${s.lastMessagePreview}"` : '';
-        const title = s.title ? ` (${s.title})` : '';
-        sessionLines.push(`- Session ${s.id}${title} (last active: ${s.lastMessageAt})${preview}`);
-      }
-      sessionLines.push('');
-      sessionLines.push('When using `request_user_chat`, you can provide the `session_id` of an existing session to continue that conversation thread.');
-      parts.push(sessionLines.join('\n'));
     }
 
     // --- Scenario-specific behavioral guidance ---

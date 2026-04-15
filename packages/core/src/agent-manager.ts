@@ -292,9 +292,12 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSenders?: Map<string, (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>>;
+  private userApprovalRequester?: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
-  private chatSessionsFetchers?: Map<string, () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>>;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
@@ -557,22 +560,22 @@ export class AgentManager {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(agentId: string, cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
-    if (!this.userMessageSenders) this.userMessageSenders = new Map();
-    this.userMessageSenders.set(agentId, cb);
+  setUserApprovalRequester(cb: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+    this.userApprovalRequester = cb;
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch { /* skip */ }
+    }
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
-    // Retroactively push to all existing agents
     for (const info of this.listAgents()) {
       try { this.getAgent(info.id).setUserNotifier(cb); } catch { /* skip */ }
     }
-  }
-
-  setChatSessionsFetcher(agentId: string, cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
-    if (!this.chatSessionsFetchers) this.chatSessionsFetchers = new Map();
-    this.chatSessionsFetchers.set(agentId, cb);
   }
 
   getSharedDataDir(): string | undefined {
@@ -783,15 +786,8 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
-    if (this.userMessageSenders) {
-      const sender = this.userMessageSenders.get(id);
-      if (sender) agent.setUserMessageSender(sender);
-    }
+    if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
-    if (this.chatSessionsFetchers) {
-      const fetcher = this.chatSessionsFetchers.get(id);
-      if (fetcher) agent.setChatSessionsFetcher(fetcher);
-    }
 
     // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
@@ -1422,15 +1418,8 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
-    if (this.userMessageSenders) {
-      const sender = this.userMessageSenders.get(id);
-      if (sender) agent.setUserMessageSender(sender);
-    }
+    if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
-    if (this.chatSessionsFetchers) {
-      const fetcher = this.chatSessionsFetchers.get(id);
-      if (fetcher) agent.setChatSessionsFetcher(fetcher);
-    }
 
     const a2aCtx = {
       selfId: id,

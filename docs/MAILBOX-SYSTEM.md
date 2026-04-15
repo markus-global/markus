@@ -675,50 +675,48 @@ Fire-and-forget informational updates. Creates a persistent notification in the 
 
 **Flow**: `agent.executeTool('notify_user')` → `agent.userNotifier(title, message, priority)` → `HITLService.notify()` → SQLite + WebSocket → NotificationBell
 
-### 13.2 `request_user_chat` — Interactive Chat Request
+### 13.2 `request_user_approval` — Blocking Decision Request
 
-Opens (or continues) a two-way chat conversation. Creates both a notification AND a chat message.
+Requests a decision or approval from the user. The tool **blocks** until the user responds — no timeout. Supports default Approve/Reject options, custom options, and optional freeform text input.
 
 ```typescript
 // Tool schema
 {
-  name: 'request_user_chat',
+  name: 'request_user_approval',
   parameters: {
-    message: string,      // The chat message to send
-    reason: string,       // Why the agent needs user input (shown in notification)
-    session_id?: string   // Optional: continue an existing chat session
+    title: string,           // Short headline
+    description: string,     // Detailed context
+    options?: Array<{        // Custom options (defaults to Approve/Reject)
+      id: string,
+      label: string,
+      description?: string
+    }>,
+    allow_freeform?: boolean, // Allow user to type custom text
+    related_task_id?: string,
+    priority?: 'normal' | 'high' | 'urgent'
   }
 }
+// Returns: { status: 'ok', approved: boolean, selected_option: string, comment: string }
 ```
 
-**When to use**: Blocking questions, approval requests, design decisions, anything requiring user response.
+**When to use**: Approval requests, design decisions, choosing between approaches, anything requiring user input or decision.
 
-**Flow**: `agent.executeTool('request_user_chat')` → `agent.userMessageSender(message, sessionId)` → chat session created/reused → `HITLService.notify('agent_chat_request', ...)` → WebSocket `notification` + `chat:proactive_message`
+**Flow**: `agent.executeTool('request_user_approval')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
 
-### 13.3 Session Awareness
+The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 10-minute backstop while waiting for approval, preventing the mailbox item from being requeued prematurely.
 
-Agents are given context about their recent chat sessions in the system prompt:
-
-```
-## Recent user conversations
-- Session abc123: "API design discussion" (last: 2h ago) — "Should we use REST or..."
-- Session def456: "Bug report follow-up" (last: 1d ago) — "The fix has been deployed..."
-```
-
-This enables agents to continue existing conversations by passing `session_id` to `request_user_chat`, rather than always creating new sessions.
-
-### 13.4 Prompt Guidance
+### 13.3 Prompt Guidance
 
 The system prompt includes scenario-specific guidance on which tool to use:
 
 | Situation | Tool |
 |-----------|------|
-| Task completed, just informing | `notify_user` |
-| Need approval or clarification | `request_user_chat` |
-| Encountered an error, FYI | `notify_user` |
-| Design question, need answer | `request_user_chat` |
-| Progress update | `notify_user` |
-| Continuing a previous conversation | `request_user_chat` with `session_id` |
+| Status report, progress update, FYI alert | `notify_user` |
+| Task completed notification | `notify_user` with `related_task_id` |
+| Need user to approve/reject something | `request_user_approval` (default options) |
+| Need user to choose between approaches | `request_user_approval` with custom `options` |
+| Need user freeform input | `request_user_approval` with `allow_freeform: true` |
+| Want to discuss interactively | Mention user via task/requirement comment |
 
 ---
 

@@ -205,9 +205,12 @@ export class Agent {
   ) => Promise<AgentToolHandler[]>;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSender?: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>;
+  private userApprovalRequester?: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
-  private chatSessionsFetcher?: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>;
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
@@ -1641,16 +1644,16 @@ export class Agent {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
-    this.userMessageSender = cb;
+  setUserApprovalRequester(cb: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+    this.userApprovalRequester = cb;
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
-  }
-
-  setChatSessionsFetcher(cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
-    this.chatSessionsFetcher = cb;
   }
 
   /**
@@ -1722,13 +1725,6 @@ export class Agent {
     }
     lines.push(`Reasoning: ${result.reasoning}`);
     this.currentCognition = lines.join('\n');
-  }
-
-  private async fetchChatSessions(): Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }> | undefined> {
-    if (!this.chatSessionsFetcher) return undefined;
-    try {
-      return await this.chatSessionsFetcher();
-    } catch { return undefined; }
   }
 
   private getDynamicContext(): string | undefined {
@@ -2176,7 +2172,6 @@ export class Agent {
       await counter.ensureReady();
     }
 
-    const chatSessions = isLightweight ? undefined : await this.fetchChatSessions();
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -2200,7 +2195,6 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
-      chatSessions,
       ...this.getTeamContextParams(),
     });
 
@@ -3890,35 +3884,47 @@ export class Agent {
       }
     }
 
-    // Handle request_user_chat: interactive chat request with notification
-    if (toolCall.name === 'request_user_chat') {
-      const topic = (toolCall.arguments.topic as string) ?? '';
-      const message = (toolCall.arguments.message as string) ?? '';
-      if (!topic || !message) {
-        return JSON.stringify({ status: 'error', message: 'topic and message are required' });
+    // Handle request_user_approval: blocking approval/decision request
+    if (toolCall.name === 'request_user_approval') {
+      const title = (toolCall.arguments.title as string) ?? '';
+      const description = (toolCall.arguments.description as string) ?? '';
+      if (!title || !description) {
+        return JSON.stringify({ status: 'error', message: 'title and description are required' });
       }
-      if (!this.userMessageSender) {
-        return JSON.stringify({ status: 'error', message: 'User messaging is not available.' });
+      if (!this.userApprovalRequester) {
+        return JSON.stringify({ status: 'error', message: 'User approval is not available.' });
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
-        const requestedSessionId = toolCall.arguments.session_id as string | undefined;
-        const result = await this.userMessageSender(message, { sessionId: requestedSessionId });
-        if (this.userNotifier) {
-          this.userNotifier({
-            type: 'agent_chat_request',
-            title: `${this.config.name} wants to discuss: ${topic}`,
-            body: message.slice(0, 200),
+        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const options = toolCall.arguments.options as Array<{ id: string; label: string; description?: string }> | undefined;
+        const allowFreeform = (toolCall.arguments.allow_freeform as boolean) ?? false;
+
+        this.attentionController.setWaitingForApproval(true);
+        try {
+          const result = await this.userApprovalRequester({
+            agentId: this.id,
+            agentName: this.config.name,
+            title,
+            description,
+            options,
+            allowFreeform,
             priority,
-            actionType: 'open_chat',
-            actionTarget: JSON.stringify({ agentId: this.id, sessionId: result.sessionId }),
-            metadata: { agentId: this.id, agentName: this.config.name, sessionId: result.sessionId, topic },
+            relatedTaskId,
           });
+
+          log.info('User approval response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption });
+          return JSON.stringify({
+            status: 'ok',
+            approved: result.approved,
+            selected_option: result.selectedOption ?? (result.approved ? 'approve' : 'reject'),
+            comment: result.comment ?? '',
+          });
+        } finally {
+          this.attentionController.setWaitingForApproval(false);
         }
-        log.info('Chat request sent to user', { agentId: this.id, sessionId: result.sessionId, topic });
-        return JSON.stringify({ status: 'ok', sessionId: result.sessionId, messageId: result.messageId });
       } catch (err) {
-        return JSON.stringify({ status: 'error', message: `Failed to send chat request: ${String(err)}` });
+        return JSON.stringify({ status: 'error', message: `Failed to get user approval: ${String(err)}` });
       }
     }
 
@@ -4270,8 +4276,8 @@ export class Agent {
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Notify user**: `notify_user` — send status updates, reports, alerts to the user notification bell',
-      '- **Request user chat**: `request_user_chat` — when you need user input or a decision',
+      '- **Notify user**: `notify_user` — send pure FYI status updates, reports, alerts (no response expected)',
+      '- **Request user approval**: `request_user_approval` — when you need a user decision, approval, or input (blocks until user responds)',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
@@ -4284,7 +4290,7 @@ export class Agent {
       '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
       '- If you identify something complex that needs doing:',
       '  1. Notify the user via `notify_user` explaining what you found and why it matters',
-      '     (Use `request_user_chat` only if you need the user to make a decision or provide input)',
+      '     (Use `request_user_approval` if you need the user to make a decision or provide input)',
       '  2. Create a task via `task_create` with clear description and acceptance criteria',
       '  3. The user will approve and the task system handles execution',
       '',
@@ -4307,7 +4313,7 @@ export class Agent {
       'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
-      'discover_tools', 'notify_user', 'request_user_chat',
+      'discover_tools', 'notify_user', 'request_user_approval',
     ];
     if (isManager) {
       baseTools.push(

@@ -18,6 +18,7 @@ import {
   PRIORITY_LABELS,
   TRIAGE_PROMPT_MAX_ITEMS,
   MAILBOX_PROCESSING_TIMEOUT_MS,
+  APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
 } from '@markus/shared';
@@ -124,6 +125,7 @@ export class AttentionController {
   private watchdogTimer?: ReturnType<typeof setInterval>;
   private watchdogLastTick = Date.now();
   private processingStartedAt?: number;
+  private waitingForHumanApproval = false;
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
@@ -143,6 +145,10 @@ export class AttentionController {
 
   setDecisionPersistence(p: DecisionPersistence): void {
     this.decisionPersistence = p;
+  }
+
+  setWaitingForApproval(waiting: boolean): void {
+    this.waitingForHumanApproval = waiting;
   }
 
   /**
@@ -333,8 +339,9 @@ export class AttentionController {
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
       const processing = this.delegate?.processMailboxItem(item);
+      const backstopMs = this.waitingForHumanApproval ? APPROVAL_WAIT_TIMEOUT_MS : MAILBOX_PROCESSING_TIMEOUT_MS;
       const backstop = new Promise<undefined>(resolve =>
-        setTimeout(() => resolve(undefined), MAILBOX_PROCESSING_TIMEOUT_MS),
+        setTimeout(() => resolve(undefined), backstopMs),
       );
       const result = await Promise.race([
         processing?.then(r => ({ done: true as const, reply: r })),
@@ -348,7 +355,7 @@ export class AttentionController {
           agentId: this.agentId,
           itemId: item.id,
           type: item.sourceType,
-          timeoutMs: MAILBOX_PROCESSING_TIMEOUT_MS,
+          timeoutMs: backstopMs,
         });
       }
     } catch (err) {

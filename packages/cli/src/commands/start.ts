@@ -502,48 +502,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     return { installed: result.installed, name: result.name, method: result.method };
   });
 
-  // Wire proactive user message senders and chat session fetchers for agents
-  if (storage?.chatSessionRepo) {
-    const ws = apiServer.getWSBroadcaster();
-    const wireAgentChatIntegration = (agentId: string) => {
-      try {
-        const agent = agentManager.getAgent(agentId);
-        agentManager.setUserMessageSender(agentId, async (message: string, opts?: { sessionId?: string }) => {
-          let sessionId: string;
-          if (opts?.sessionId) {
-            sessionId = opts.sessionId;
-          } else {
-            const sessions = await storage.chatSessionRepo.getSessionsByAgent(agentId);
-            if (sessions.length > 0) {
-              sessionId = sessions[0]!.id;
-            } else {
-              const newSess = await storage.chatSessionRepo.createSession(agentId);
-              sessionId = newSess.id;
-            }
-          }
-          const msg = await storage.chatSessionRepo.appendMessage(sessionId, agentId, 'assistant', message);
-          ws.broadcastProactiveMessage(agentId, agent.config.name, sessionId, msg.id, message);
-          return { sessionId, messageId: msg.id };
-        });
-        agentManager.setChatSessionsFetcher(agentId, async () => {
-          const sessions = await storage.chatSessionRepo.getSessionsByAgent(agentId);
-          return sessions.slice(0, 5).map((s: any) => ({
-            id: s.id,
-            title: s.title,
-            lastMessageAt: s.lastMessageAt ?? s.createdAt ?? new Date().toISOString(),
-            lastMessagePreview: s.lastMessagePreview,
-          }));
-        });
-      } catch { /* agent not found */ }
-    };
-
-    for (const info of agentManager.listAgents()) wireAgentChatIntegration(info.id);
-
-    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
-      const { agentId } = evt as { agentId: string };
-      wireAgentChatIntegration(agentId);
+  // Wire user approval requester through HITL service
+  agentManager.setUserApprovalRequester(async (opts) => {
+    return hitlService.requestApprovalAndWait({
+      agentId: opts.agentId,
+      agentName: opts.agentName,
+      type: 'custom',
+      title: opts.title,
+      description: opts.description,
+      targetUserId: 'default',
+      options: opts.options,
+      allowFreeform: opts.allowFreeform,
+      details: { priority: opts.priority, relatedTaskId: opts.relatedTaskId },
     });
-  }
+  });
 
   // Wire user notifier through HITL service
   agentManager.setUserNotifier((opts) => {
@@ -721,7 +693,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       description: request.reason,
       details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId },
       targetUserId: 'default',
-      expiresInMs: 5 * 60 * 1000, // 5 minutes
     });
     auditService.record({
       orgId: 'default',

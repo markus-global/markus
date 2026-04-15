@@ -282,3 +282,11 @@ export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
  *  5 minutes caps even explicitly requested long-running operations.
  *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
 export const SHELL_TIMEOUT_MAX_MS = 300_000;
+
+// ─── Human-Approval Wait ─────────────────────────────────────────────────────
+
+/** Backstop timeout (ms) for mailbox items that are blocking on human approval.
+ *  Normal processing uses MAILBOX_PROCESSING_TIMEOUT_MS (10 min), but
+ *  request_user_approval can wait indefinitely for the user. 24 hours is a
+ *  generous safety net while allowing realistic human response times. */
+export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;

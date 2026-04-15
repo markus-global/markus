@@ -116,6 +116,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [responding, setResponding] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectComment, setRejectComment] = useState('');
+  const [freeformText, setFreeformText] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -308,13 +309,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
     navigateForNotification(n);
   };
 
-  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string) => {
+  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string) => {
     setResponding(id);
     try {
-      const { approval } = await api.approvals.respond(id, approved, userId, comment);
+      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
       setRejectingId(null);
       setRejectComment('');
+      setFreeformText('');
 
       const relatedNotif = notifications.find(
         n => n.type === 'approval_request' && n.metadata?.approvalId === id
@@ -439,7 +441,38 @@ export function NotificationBell({ collapsed, userId }: Props) {
                       <button onClick={() => navigateForApproval(a)} className="text-[11px] text-brand-500 hover:text-brand-400 transition-colors">
                         View execution context →
                       </button>
-                      {rejectingId === a.id ? (
+                      {a.options && a.options.length > 0 ? (
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap gap-1.5">
+                            {a.options.map(opt => (
+                              <button
+                                key={opt.id}
+                                disabled={responding === a.id}
+                                onClick={() => handleApprovalResponse(a.id, true, undefined, opt.id)}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                                title={opt.description}
+                              >{opt.label}</button>
+                            ))}
+                          </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
+                        </div>
+                      ) : rejectingId === a.id ? (
                         <div className="space-y-1.5">
                           <input
                             type="text"
@@ -447,13 +480,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
                             placeholder="Reason for rejection (optional, Enter to submit)"
                             value={rejectComment}
                             onChange={e => setRejectComment(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
+                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject'); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
                             className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
                           />
                           <div className="flex gap-2">
                             <button
                               disabled={responding === a.id}
-                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined)}
+                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject')}
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
                             >Confirm Reject</button>
                             <button
@@ -461,19 +494,55 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
                             >Cancel</button>
                           </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5 mt-1">
+                              <input
+                                type="text"
+                                placeholder="Or type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <div className="flex gap-2">
-                          <button
-                            disabled={responding === a.id}
-                            onClick={() => handleApprovalResponse(a.id, true)}
-                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                          >Approve</button>
-                          <button
-                            disabled={responding === a.id}
-                            onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
-                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                          >Reject</button>
+                        <div className="space-y-1.5">
+                          <div className="flex gap-2">
+                            <button
+                              disabled={responding === a.id}
+                              onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                            >Approve</button>
+                            <button
+                              disabled={responding === a.id}
+                              onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                            >Reject</button>
+                          </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Or type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
