@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
-import { useTranslation } from 'react-i18next';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
