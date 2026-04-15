@@ -392,14 +392,56 @@ function MessageActions({
   );
 }
 
+/**
+ * Convert message segments to execution stream entries for the timeline.
+ *
+ * Text segments are accumulated between tool calls and processed as a group
+ * so that `<think>` blocks spanning multiple segments (split by tool calls)
+ * are properly extracted rather than rendered as scattered fragments.
+ */
 function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
   if (!segments) return [];
   const entries: ExecutionStreamEntryUI[] = [];
   let seq = 0;
   const now = new Date().toISOString();
   const aid = agentId ?? '';
+  const thinkRe = /<think>([\s\S]*?)(<\/think>|$)/g;
+
+  // Flush accumulated text buffer: extract thinking blocks, emit entries
+  const flushTextBuf = (buf: string) => {
+    if (!buf) return;
+    // Also merge segment-level thinking (from client-side extraction)
+    const thinking: string[] = [];
+    let rest = buf.replace(thinkRe, (_m, inner: string) => {
+      const t = inner.trim();
+      if (t) thinking.push(t);
+      return '';
+    });
+    // Strip orphaned tags left over from cross-segment splits
+    rest = rest.replace(/<\/think>/g, '').replace(/<think>/g, '').trim();
+
+    if (thinking.length > 0) {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'text', content: thinking.join('\n\n'), createdAt: now,
+        metadata: { isThinking: true },
+      });
+    }
+    if (rest) {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'text', content: rest, createdAt: now,
+      });
+    }
+  };
+
+  let textBuf = '';
   for (const seg of segments) {
     if (seg.type === 'tool') {
+      // Flush any accumulated text before this tool
+      flushTextBuf(textBuf);
+      textBuf = '';
+
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
         seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: now,
@@ -416,13 +458,15 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
           createdAt: now,
         });
       }
-    } else if (seg.content) {
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: seg.content, createdAt: now,
-      });
+    } else {
+      // Accumulate text (including segment-level thinking) across tool boundaries
+      // so think blocks that span segments are properly reunited.
+      if (seg.thinking) textBuf += `<think>${seg.thinking}</think>`;
+      textBuf += seg.content;
     }
   }
+  // Flush remaining text after the last tool
+  flushTextBuf(textBuf);
   return entries;
 }
 
