@@ -163,11 +163,11 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             {/* Team Status — grouped by team */}
             <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Team Status</h3>
-                <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
+                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('home.teamStatus.title')}</h3>
+                <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('home.teamStatus.viewAll')}</button>
               </div>
               {teamSummaries.length === 0 && agents.length === 0 ? (
-                <div className="text-sm text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>No teams yet. Create a team or hire agents to get started.</div>
+                <div className="text-sm text-fg-tertiary py-4 text-center cursor-pointer" onClick={() => navBus.navigate(PAGE.TEAM)}>{t('home.teamStatus.noTeams')}</div>
               ) : (
                 <div className="space-y-4">
                   {teamSummaries.map(ts => (
@@ -179,9 +179,9 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                           {ts.team.description && <div className="text-[11px] text-fg-tertiary truncate max-w-[260px]">{ts.team.description}</div>}
                         </div>
                         <div className="flex items-center gap-2 text-[11px] text-fg-tertiary ml-auto shrink-0">
-                          <span className="px-1.5 py-0.5 rounded bg-surface-overlay/50">{ts.total} members</span>
-                          {ts.working > 0 && <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500">{ts.working} working</span>}
-                          <span className={`px-1.5 py-0.5 rounded ${ts.active === ts.total ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay/50'}`}>{ts.active} active</span>
+                          <span className="px-1.5 py-0.5 rounded bg-surface-overlay/50">{ts.total} {t('home.teamStatus.members')}</span>
+                          {ts.working > 0 && <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-500">{ts.working} {t('home.teamStatus.working')}</span>}
+                          <span className={`px-1.5 py-0.5 rounded ${ts.active === ts.total ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay/50'}`}>{ts.active} {t('home.teamStatus.active')}</span>
                         </div>
                       </div>
                       <div className="flex gap-2 flex-wrap">
@@ -191,7 +191,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                             <span className="text-[11px] text-fg-secondary">{a.name}</span>
                           </div>
                         ))}
-                        {ts.agents.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">+{ts.agents.length - 6} more</span>}
+                        {ts.agents.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">{t('home.unassignedAgents.more', { count: ts.agents.length - 6 })}</span>}
                       </div>
                     </div>
                   ))}
@@ -203,8 +203,8 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                     return (
                       <div className="bg-surface-elevated/20 border border-border-default/20 rounded-lg p-4">
                         <div className="flex items-center justify-between mb-3">
-                          <div className="text-xs text-fg-tertiary font-medium">Unassigned Agents</div>
-                          <span className="text-[10px] text-fg-tertiary">{ungrouped.length} agents</span>
+                          <div className="text-xs text-fg-tertiary font-medium">{t('home.unassignedAgents.title')}</div>
+                          <span className="text-[10px] text-fg-tertiary">{t('home.unassignedAgents.count', { count: ungrouped.length })}</span>
                         </div>
                         <div className="flex gap-2 flex-wrap">
                           {ungrouped.slice(0, 6).map(a => (
@@ -213,7 +213,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                               <span className="text-[11px] text-fg-secondary">{a.name}</span>
                             </div>
                           ))}
-                          {ungrouped.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">+{ungrouped.length - 6} more</span>}
+                          {ungrouped.length > 6 && <span className="text-[10px] text-fg-tertiary self-center">{t('home.unassignedAgents.more', { count: ungrouped.length - 6 })}</span>}
                         </div>
                       </div>
                     );
@@ -232,7 +232,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
-                    <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">Pending Reviews</h3>
+                    <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider">{t('home.pendingReviews.title')}</h3>
                   </div>
                   <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">Review →</button>
                 </div>
@@ -251,7 +251,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
                     </div>
                   ))}
                   {pendingReqs.length > 5 && (
-                    <div className="text-[10px] text-fg-tertiary text-center pt-1">+{pendingReqs.length - 5} more</div>
+                    <div className="text-[10px] text-fg-tertiary text-center pt-1">{t('home.pendingReviews.more', { count: pendingReqs.length - 5 })}</div>
                   )}
                 </div>
                 <p className="text-[10px] text-fg-tertiary mt-3">
@@ -264,7 +264,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             {ops && ops.taskKPI.recentActivity.length > 0 && (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Recent Activity</h3>
+                  <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('home.recentActivity.title')}</h3>
                   <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">View all →</button>
                 </div>
                 <div className="space-y-1.5">
@@ -282,7 +282,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             {/* System Health */}
             {ops && (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5">
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">System Health</h3>
+                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-4">{t('home.systemHealth.title')}</h3>
                 <div className="space-y-3">
                   <HealthGauge label="Health Score" value={ops.systemHealth.overallScore} max={100} unit="%" color={ops.systemHealth.overallScore >= 80 ? 'green' : ops.systemHealth.overallScore >= 50 ? 'amber' : 'red'} />
                   <HealthGauge label="Success Rate" value={ops.taskKPI.successRate} max={100} unit="%" color={ops.taskKPI.successRate >= 80 ? 'green' : 'amber'} />
@@ -309,7 +309,7 @@ export function HomePage({ authUser }: { authUser?: { id: string; name: string; 
             {storageInfo && (
               <div className="bg-surface-secondary border border-border-default rounded-xl p-5 cursor-pointer hover:border-brand-500/30 transition-colors"
                 onClick={() => navBus.navigate(PAGE.SETTINGS)}>
-                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Storage</h3>
+                <h3 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('home.storage.title')}</h3>
                 <div className="flex items-baseline gap-2">
                   <span className="text-2xl font-bold text-fg-primary">{fmtBytes(storageInfo.totalSize)}</span>
                   <span className="text-xs text-fg-tertiary">total</span>

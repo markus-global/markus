@@ -381,6 +381,40 @@
     "taskDistribution": {
       "title": "Task Distribution",
       "blocked": "blocked — needs attention"
+    },
+    "teamStatus": {
+      "title": "Team Status",
+      "viewAll": "View all →",
+      "noTeams": "No teams yet. Create a team or hire agents to get started.",
+      "members": "members",
+      "working": "working",
+      "active": "active"
+    },
+    "unassignedAgents": {
+      "title": "Unassigned Agents",
+      "agents": "agents",
+      "more": "+{{count}} more"
+    },
+    "pendingReviews": {
+      "title": "Pending Reviews",
+      "review": "Review →"
+    },
+    "recentActivity": {
+      "title": "Recent Activity",
+      "viewAll": "View all →"
+    },
+    "systemHealth": {
+      "title": "System Health"
+    },
+    "storage": {
+      "title": "Storage",
+      "total": "total",
+      "db": "DB",
+      "agents": "Agents",
+      "clickToView": "Click to view details in Settings"
+    },
+    "agentFocus": {
+      "queued": "{{count}} queued"
     }
   }
 }

@@ -376,11 +376,43 @@
     "agentFocus": {
       "title": "智能体焦点",
       "totalQueued": "共 {{count}} 个排队中",
-      "working": "工作中..."
+      "working": "工作中...",
+      "queued": "{{count}} 排队中"
     },
     "taskDistribution": {
       "title": "任务分布",
       "blocked": "受阻 — 需要关注"
+    },
+    "teamStatus": {
+      "title": "团队状态",
+      "viewAll": "查看全部 →",
+      "noTeams": "暂无团队。创建团队或雇用智能体开始使用。",
+      "members": "名成员",
+      "working": "工作中",
+      "active": "活跃"
+    },
+    "unassignedAgents": {
+      "title": "未分配智能体",
+      "agents": "名智能体",
+      "more": "+{{count}} 名"
+    },
+    "pendingReviews": {
+      "title": "待审核",
+      "review": "审核 →"
+    },
+    "recentActivity": {
+      "title": "最近活动",
+      "viewAll": "查看全部 →"
+    },
+    "systemHealth": {
+      "title": "系统健康"
+    },
+    "storage": {
+      "title": "存储",
+      "total": "总计",
+      "db": "数据库",
+      "agents": "智能体",
+      "clickToView": "点击在设置中查看详情"
     }
   }
 }

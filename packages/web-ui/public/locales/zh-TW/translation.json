@@ -158,11 +158,43 @@
     "agentFocus": {
       "title": "智能體焦點",
       "totalQueued": "共 {{count}} 個排隊中",
-      "working": "工作中..."
+      "working": "工作中...",
+      "queued": "{{count}} 排隊中"
     },
     "taskDistribution": {
       "title": "任務分布",
       "blocked": "受阻 — 需要關注"
+    },
+    "teamStatus": {
+      "title": "團隊狀態",
+      "viewAll": "查看全部 →",
+      "noTeams": "暫無團隊。建立團隊或雇用智慧體開始使用。",
+      "members": "名成員",
+      "working": "工作中",
+      "active": "活躍"
+    },
+    "unassignedAgents": {
+      "title": "未指派智慧體",
+      "agents": "名智慧體",
+      "more": "+{{count}} 名"
+    },
+    "pendingReviews": {
+      "title": "待審核",
+      "review": "審核 →"
+    },
+    "recentActivity": {
+      "title": "最近活動",
+      "viewAll": "查看全部 →"
+    },
+    "systemHealth": {
+      "title": "系統健康"
+    },
+    "storage": {
+      "title": "儲存",
+      "total": "總計",
+      "db": "資料庫",
+      "agents": "智慧體",
+      "clickToView": "點擊在設定中查看詳情"
     }
   }
 }
