@@ -272,7 +272,7 @@ const BOARD_COLUMNS = [
   { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
   { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
   { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled'],   accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
+  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled', 'archived'], accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -984,7 +984,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailPanel({
-  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser,
+  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
@@ -995,6 +995,8 @@ function TaskDetailPanel({
   onClose: () => void;
   onRefresh: () => void;
   authUser?: { id: string; name: string; role: string; orgId: string };
+  scrollToComments?: boolean;
+  onScrollToCommentsDone?: () => void;
 }) {
   const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
@@ -1032,6 +1034,17 @@ function TaskDetailPanel({
     ro.observe(el);
     return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
   }, [activeTab]);
+  useEffect(() => {
+    if (!scrollToComments) return;
+    setActiveTab('details');
+    const timer = setTimeout(() => {
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      onScrollToCommentsDone?.();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [scrollToComments, onScrollToCommentsDone]);
+
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
@@ -1945,13 +1958,14 @@ const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   completed:   { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
   rejected:    { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
   cancelled:   { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
+  archived:    { label: 'Archived',  cls: 'bg-gray-600/10 text-fg-tertiary/60' },
 };
 
 const REQ_COLUMN_MAP: Record<string, string> = {
   pending: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
-  rejected: 'closed', cancelled: 'closed',
+  rejected: 'closed', cancelled: 'closed', archived: 'closed',
 };
 
 const REQ_DROP_STATUS: Record<string, string> = {
@@ -1984,7 +1998,7 @@ const GROUP_HEADER_CLS: Record<string, string> = {
   closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
-const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived'] as const;
 
 function taskToGroup(status: string): string {
   for (const col of BOARD_COLUMNS) {
@@ -2587,14 +2601,18 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     }
   }, []);
 
-  const forceOpenTask = useCallback((task: TaskInfo) => {
+  const [scrollToComments, setScrollToComments] = useState(false);
+
+  const forceOpenTask = useCallback((task: TaskInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedTask(task);
     setSelectedReq(null);
+    if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
   }, [isMobile]);
-  const forceOpenReq = useCallback((req: RequirementInfo) => {
+  const forceOpenReq = useCallback((req: RequirementInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedReq(req);
     setSelectedTask(null);
+    if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
   }, [isMobile]);
 
@@ -2642,23 +2660,38 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
       }
     };
 
-    const handler = (e: Event) => {
+    const handler = async (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
       if (resolvePageId(detail.page) === PAGE.WORK) {
         if (detail.params?.openTask) {
-          const allTasks = Object.values(boardRef.current).flat();
-          const task = allTasks.find(t => t.id === detail.params!.openTask);
+          const taskId = detail.params.openTask;
+          const wantComments = detail.params.scrollToComments === 'true';
+          localStorage.removeItem('markus_nav_openTask');
+          let task = Object.values(boardRef.current).flat().find(t => t.id === taskId);
+          if (!task) {
+            try {
+              const resp = await api.tasks.get(taskId);
+              task = resp.task;
+            } catch { /* ignore */ }
+          }
           if (task) {
             ensureProjectVisible(task.projectId);
-            forceOpenTask(task);
-            localStorage.removeItem('markus_nav_openTask');
+            forceOpenTask(task, { scrollToComments: wantComments });
           }
         }
         if (detail.params?.openRequirement) {
-          const req = allRequirementsRef.current.find(r => r.id === detail.params!.openRequirement);
+          const reqId = detail.params.openRequirement;
+          const wantComments = detail.params.scrollToComments === 'true';
+          let req = allRequirementsRef.current.find(r => r.id === reqId);
+          if (!req) {
+            try {
+              const resp = await api.requirements.get(reqId);
+              req = resp.requirement;
+            } catch { /* ignore */ }
+          }
           if (req) {
             ensureProjectVisible(req.projectId);
-            forceOpenReq(req);
+            forceOpenReq(req, { scrollToComments: wantComments });
           }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
@@ -2840,11 +2873,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
 
   // ── Filter & display helpers ──
 
-  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const isLargerThanOneDay = (t: { updatedAt?: string }) => t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
-  const isArchived = (t: { status: string; updatedAt?: string }) =>
-    (t.status === 'completed' || t.status === 'cancelled') && isLargerThanOneDay(t);
+  const isArchived = (t: { status: string }) => t.status === 'archived';
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
     let result = tasks.filter(t => showArchived || includeArchived || !isArchived(t));
@@ -3314,6 +3343,8 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
               onClose={handleCloseDetail}
               onRefresh={handleTaskRefresh}
               authUser={authUser}
+              scrollToComments={scrollToComments}
+              onScrollToCommentsDone={() => setScrollToComments(false)}
             />
           ) : selectedReq ? (
             <RequirementDetailPanel
@@ -3329,6 +3360,8 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
               onStatusChange={async (id, status) => {
                 try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
+              scrollToComments={scrollToComments}
+              onScrollToCommentsDone={() => setScrollToComments(false)}
               onRefresh={refreshRequirements}
               authUser={authUser}
             />
@@ -3653,7 +3686,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -3667,16 +3700,29 @@ function RequirementDetailPanel({
   onStatusChange?: (id: string, status: string) => void;
   onRefresh?: () => void;
   authUser?: { id: string; name: string };
+  scrollToComments?: boolean;
+  onScrollToCommentsDone?: () => void;
 }) {
   const isMobile = useIsMobile();
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
+  const reqScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!scrollToComments) return;
+    const timer = setTimeout(() => {
+      const el = reqScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      onScrollToCommentsDone?.();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [scrollToComments, onScrollToCommentsDone]);
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled';
+  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -3710,7 +3756,7 @@ function RequirementDetailPanel({
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div ref={reqScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
           <div>
             <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
             {editingDesc ? (

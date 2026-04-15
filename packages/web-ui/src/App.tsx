@@ -44,6 +44,11 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(() => {
+    const stored = localStorage.getItem('markus_update_dismissed');
+    return stored ? stored : null;
+  });
 
   const navigate = useCallback((p: PageId) => {
     let normalized = resolvePageId(p);
@@ -94,6 +99,11 @@ export function App() {
       .then(({ user }) => {
         setAuthUser(user);
         checkLlmConfig();
+        api.health().then(h => {
+          if (h.updateAvailable && h.latestVersion) {
+            setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
+          }
+        }).catch(() => {});
         prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
         prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
         prefetch(PREFETCH_KEYS.builderHubMyItems, () => hubApi.myItems());
@@ -213,6 +223,15 @@ export function App() {
               </button>
               <button onClick={() => setLlmBannerDismissed(true)} className="text-amber-500 hover:text-amber-600 text-xs">Dismiss</button>
             </div>
+          </div>
+        )}
+        {updateInfo && updateBannerDismissed !== updateInfo.latestVersion && (
+          <div className="flex items-center justify-between px-4 py-2 bg-brand-500/10 border-b border-brand-500/30 text-brand-400 text-sm shrink-0">
+            <span className={isMobile ? 'text-xs' : ''}>
+              New version available: <strong>v{updateInfo.latestVersion}</strong> (current: v{updateInfo.currentVersion})
+              {!isMobile && <span className="text-fg-tertiary ml-2">— run <code className="bg-surface-overlay px-1.5 py-0.5 rounded text-xs font-mono">npm i -g @markus-global/cli</code> to upgrade</span>}
+            </span>
+            <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-brand-400 hover:text-brand-300 text-xs shrink-0">Dismiss</button>
           </div>
         )}
         <main className="flex-1 overflow-hidden flex flex-col">

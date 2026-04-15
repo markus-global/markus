@@ -99,10 +99,10 @@ export class WSBroadcaster {
     });
   }
 
-  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string): void {
+  broadcastProactiveMessage(agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>): void {
     this.broadcast({
       type: 'chat:proactive_message',
-      payload: { agentId, agentName, sessionId, messageId, message },
+      payload: { agentId, agentName, sessionId, messageId, message, metadata },
       timestamp: new Date().toISOString(),
     });
   }

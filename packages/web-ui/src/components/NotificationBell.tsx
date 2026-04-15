@@ -75,7 +75,7 @@ function actionHint(n: NotificationInfo): string | null {
     case 'agent_chat_request':
       return 'Open chat →';
     case 'agent_alert': case 'agent_escalation': case 'agent_notification':
-      return meta.agentId ? 'View agent →' : null;
+      return meta.agentId ? 'Open chat →' : null;
     case 'approval_request':
       return 'View approval →';
     default:
@@ -270,10 +270,16 @@ export function NotificationBell({ collapsed, userId }: Props) {
       }
       case 'agent_notification':
       case 'agent_alert':
-      case 'agent_escalation':
-        if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
-        else navBus.navigate(PAGE.TEAM);
+      case 'agent_escalation': {
+        if (meta.agentId) {
+          const params: Record<string, string> = { agentId: meta.agentId as string };
+          if (meta.sessionId) params.sessionId = meta.sessionId as string;
+          navBus.navigate(PAGE.TEAM, params);
+        } else {
+          navBus.navigate(PAGE.TEAM);
+        }
         break;
+      }
       case 'bounty_posted':
         navBus.navigate(PAGE.SETTINGS);
         break;
@@ -281,7 +287,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
         else if (meta.projectId) navBus.navigate(PAGE.WORK, { projectId: meta.projectId as string });
-        else if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
+        else if (meta.agentId) navBus.navigate(PAGE.TEAM, { agentId: meta.agentId as string });
         break;
     }
   };
@@ -339,7 +345,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
     const taskId = a.details?.taskId as string | undefined;
     const agentId = a.details?.agentId as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
-    else if (agentId) navBus.navigate(PAGE.TEAM, { selectAgent: agentId });
+    else if (agentId) navBus.navigate(PAGE.TEAM, { agentId });
     else navBus.navigate(PAGE.WORK);
   };
 

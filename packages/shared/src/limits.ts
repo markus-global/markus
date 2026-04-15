@@ -108,6 +108,20 @@ export const REVISION_REASON_CHARS = 200;
 /** Max retries after transient errors (network, rate-limit). */
 export const TASK_MAX_RETRIES = 3;
 
+/** Max retries for mailbox items whose reply lacks the completion marker.
+ *  Keeps retry budget low because repeated failures with the same model
+ *  are unlikely to self-correct. */
+export const MAILBOX_ITEM_MAX_RETRIES = 2;
+
+/** Sentinel token the agent must emit at the end of every mailbox-item reply
+ *  to signal successful processing.  Absence triggers automatic retry.
+ *  Chosen to be unique enough to never collide with natural language. */
+export const COMPLETION_MARKER = '<<HANDLE_COMPLETE>>';
+
+/** Instruction appended to the user message for LLM-invoking mailbox items. */
+export const COMPLETION_MARKER_INSTRUCTION =
+  `\n\n[IMPORTANT: When you have finished processing this request, you MUST end your final response with the exact token: ${COMPLETION_MARKER}]`;
+
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 
@@ -181,6 +195,33 @@ export const TASK_LIST_PAGE_SIZE = 20;
 
 /** Max page size for task queries (prevents accidental full-table scans). */
 export const TASK_LIST_PAGE_MAX = 100;
+
+// ─── Auto-Archive Policy ─────────────────────────────────────────────────────
+
+/** Days after which completed tasks are auto-archived.
+ *  30 days gives reviewers/users plenty of time to revisit results
+ *  before the task moves to the archive filter. */
+export const ARCHIVE_COMPLETED_AFTER_DAYS = 30;
+
+/** Days after which failed/rejected/cancelled tasks are auto-archived.
+ *  Terminal-but-unsuccessful tasks are less likely to be revisited;
+ *  7 days keeps the board clean without losing traceability. */
+export const ARCHIVE_TERMINAL_AFTER_DAYS = 7;
+
+/** Days after which completed/failed/rejected/cancelled requirements are auto-archived.
+ *  Aligned with task archival for consistency. */
+export const ARCHIVE_REQUIREMENT_AFTER_DAYS = 30;
+
+/** Interval between automatic archive scans (ms).
+ *  6 hours balances responsiveness with minimal overhead. */
+export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+// ─── Mailbox Item TTL ────────────────────────────────────────────────────────
+
+/** Maximum age (ms) for queued mailbox items before they are dropped on restart.
+ *  Items older than 3 days are stale — the context they carried is no longer
+ *  timely, and processing them would confuse agents with outdated information. */
+export const MAILBOX_QUEUED_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
 // ─── Shell Execution Limits ─────────────────────────────────────────────────
 

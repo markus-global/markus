@@ -9,7 +9,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string }
 
 type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
@@ -34,7 +34,7 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId }: Props) {
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
@@ -122,7 +122,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack 
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
-        {tab === 'mind' && <MindTab agentId={agentId} />}
+        {tab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} />}
@@ -1383,7 +1383,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
 
 // ─── Activity Log (Heartbeat / A2A) ─────────────────────────────────────────
 
-function ActivityLog({ agentId, activityId }: { agentId: string; activityId: string }) {
+function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string; activityId: string; isLive?: boolean }) {
   const [logs, setLogs] = useState<AgentActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
@@ -1395,6 +1395,26 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
       .catch(() => setLoading(false));
   }, [agentId, activityId]);
 
+  useEffect(() => {
+    if (!isLive) return;
+    const unsub = wsClient.on('agent:activity_log', (event) => {
+      const p = event.payload;
+      if (p.agentId !== agentId || p.activityId !== activityId) return;
+      const entry: AgentActivityLogEntry = {
+        seq: p.seq as number,
+        type: p.type as AgentActivityLogEntry['type'],
+        content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined,
+        createdAt: p.createdAt as string,
+      };
+      setLogs(prev => {
+        if (prev.some(e => e.seq === entry.seq)) return prev;
+        return [...prev, entry];
+      });
+    });
+    return unsub;
+  }, [agentId, activityId, isLive]);
+
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
 
@@ -1403,9 +1423,9 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
   return (
     <div className="px-3 py-2">
       {viewMode === 'compact' ? (
-        <CompactExecutionCard entries={streamEntries} isActive={false} onExpand={() => setViewMode('full')} />
+        <CompactExecutionCard entries={streamEntries} isActive={isLive} onExpand={() => setViewMode('full')} />
       ) : (
-        <FullExecutionLog entries={streamEntries} isActive={false} onCollapse={() => setViewMode('compact')} />
+        <FullExecutionLog entries={streamEntries} isActive={isLive} onCollapse={() => setViewMode('compact')} />
       )}
     </div>
   );
@@ -1499,13 +1519,14 @@ const ACTIVITY_ICONS: Record<string, string> = {
   task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
 };
 
-function MindTab({ agentId }: { agentId: string }) {
+function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: string }) {
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [hasMore, setHasMore] = useState(true);
   const PAGE = 50;
 
@@ -1537,21 +1558,34 @@ function MindTab({ agentId }: { agentId: string }) {
   }, [agentId, mailbox, catFilter, statusFilter]);
 
   useEffect(() => {
-    setExpandedId(null);
+    setExpandedId(highlightId ?? null);
+    setHighlightedId(highlightId ?? null);
     load();
-  }, [load]);
+  }, [load, highlightId]);
+
+  // Auto-scroll to highlighted mailbox item after data loads
+  useEffect(() => {
+    if (!highlightedId || loading) return;
+    const el = document.getElementById(`mbx-${highlightedId}`);
+    if (el) {
+      setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+      const timer = setTimeout(() => setHighlightedId(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlightedId, loading, mailbox]);
 
   useEffect(() => {
-    const unsub1 = wsClient.on('agent:mailbox', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    const unsub2 = wsClient.on('agent:decision', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    const unsub3 = wsClient.on('agent:attention', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const refresh = (evt: { payload?: unknown }) => {
+      if ((evt.payload as { agentId?: string })?.agentId === agentId) load(false);
+    };
+    const unsubs = [
+      wsClient.on('agent:mailbox', refresh),
+      wsClient.on('agent:decision', refresh),
+      wsClient.on('agent:attention', refresh),
+      wsClient.on('agent:focus', refresh),
+      wsClient.on('agent:update', refresh),
+    ];
+    return () => unsubs.forEach(u => u());
   }, [agentId, load]);
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">Loading agent mind state...</div>;
@@ -1572,7 +1606,7 @@ function MindTab({ agentId }: { agentId: string }) {
           ) : (
             <span className="text-sm text-fg-tertiary">Idle — waiting for new mail</span>
           )}
-          <button onClick={() => load()} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary">↻ Refresh</button>
+          <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">↻ Refresh</button>
         </div>
 
         {(mind?.queuedItems?.length ?? 0) > 0 && (
@@ -1641,8 +1675,9 @@ function MindTab({ agentId }: { agentId: string }) {
             const fullContent = item.payload?.content;
             const senderName = item.metadata?.senderName as string | undefined;
             const senderRole = item.metadata?.senderRole as string | undefined;
+            const isHighlighted = highlightedId === item.id;
             return (
-              <div key={item.id} className="bg-surface-2 rounded-lg border border-border-subtle">
+              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-2 rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
                 <button
                   className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
                   onClick={() => setExpandedId(isExpanded ? null : item.id)}
@@ -1716,7 +1751,7 @@ function MindTab({ agentId }: { agentId: string }) {
                         {item.activity.type === 'task' && item.payload?.taskId ? (
                           <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
                         ) : (
-                          <ActivityLog agentId={agentId} activityId={item.activity.id} />
+                          <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
                         )}
                       </div>
                     ) : item.status === 'processing' ? (

@@ -155,7 +155,7 @@ Once all files are written, tell the user:
 
 ## Guidelines
 
-- Instructions in SKILL.md should reference actual tools: `shell_execute`, `file_read`, `file_write`, `file_edit`, `grep`, `glob`, `web_fetch`, `web_search`, `gui` — or MCP tool names if the skill provides its own tools
+- Instructions in SKILL.md should reference actual tools: `shell_execute`, `file_read`, `file_write`, `file_edit`, `grep_search`, `glob_find`, `list_directory`, `web_fetch`, `web_search`, `gui` — or MCP tool names if the skill provides its own tools
 - For MCP-based skills, document every tool with its prefixed name (e.g., `my-api__search`) in SKILL.md so the agent knows how to use them
 - Be specific — include actual CLI commands, file paths, and URL patterns
 - Include error handling: what to do when commands fail, pages don't load, etc.

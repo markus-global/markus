@@ -296,6 +296,7 @@ export interface TaskCommentRepo {
 /** Contract for requirement comment persistence */
 export interface RequirementCommentRepo {
   add(data: Record<string, unknown>): Promise<RequirementCommentRow>;
+  getByRequirement(requirementId: string): RequirementCommentRow[];
 }
 
 /** Contract for deliverable persistence */

@@ -46,7 +46,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; mailboxItemId?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -1051,7 +1051,7 @@ export const api = {
     agents: (orgId = 'default') =>
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
   },
-  health: () => request<{ status: string; version: string; agents: number }>('/health'),
+  health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
   system: {
     openPath: (path: string) =>
       request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),

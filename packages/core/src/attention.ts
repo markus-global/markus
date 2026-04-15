@@ -11,9 +11,41 @@ import {
   type AgentMindState,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
+  MAILBOX_ITEM_MAX_RETRIES,
+  COMPLETION_MARKER,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
+
+// ─── Abnormal Completion Detection ──────────────────────────────────────────
+
+/**
+ * Check whether a mailbox-item reply was completed normally.
+ *
+ * For LLM-invoking items the agent is instructed to end its reply with
+ * `COMPLETION_MARKER`.  If the marker is absent the model either crashed,
+ * output garbage (e.g. raw XML tool calls), or was interrupted — in all
+ * cases we should retry.
+ *
+ * Returns a reason string when abnormal, `undefined` when the reply is OK.
+ */
+export function detectAbnormalCompletion(
+  reply: string | void,
+  item: MailboxItem,
+): string | undefined {
+  const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
+  if (!registry?.invokesLLM) return undefined;
+
+  if (reply === undefined || reply === '') {
+    return 'empty reply from LLM-invoking item';
+  }
+
+  if (!reply.includes(COMPLETION_MARKER)) {
+    return 'completion marker missing from reply';
+  }
+
+  return undefined;
+}
 
 const log = createLogger('attention');
 
@@ -157,6 +189,9 @@ export class AttentionController {
 
   /**
    * Process a single mailbox item with full focus.
+   * After processing, validates the result; if the LLM produced an abnormal
+   * reply (e.g. raw XML tool-call markup), the item is requeued for retry
+   * up to `MAILBOX_ITEM_MAX_RETRIES` times.
    */
   private async processFocusedItem(item: MailboxItem): Promise<void> {
     this.setState('focused');
@@ -165,8 +200,9 @@ export class AttentionController {
     this.pendingInterruptItem = undefined;
     this.delegate?.onFocusChanged(item);
 
+    let reply: string | void = undefined;
     try {
-      await this.delegate?.processMailboxItem(item);
+      reply = await this.delegate?.processMailboxItem(item);
     } catch (err) {
       log.warn('Error processing mailbox item', {
         agentId: this.agentId,
@@ -174,12 +210,36 @@ export class AttentionController {
         type: item.sourceType,
         error: String(err),
       });
-    } finally {
-      this.mailbox.complete(item.id);
-      this.currentFocus = undefined;
-      this.interruptSignal = false;
-      this.pendingInterruptItem = undefined;
     }
+
+    const abnormalReason = detectAbnormalCompletion(reply, item);
+    const retries = item.retryCount ?? 0;
+
+    if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
+      log.warn('Abnormal completion detected, requeueing for retry', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+        retryCount: retries + 1,
+        reason: abnormalReason,
+      });
+      this.mailbox.requeue(item);
+    } else {
+      if (abnormalReason) {
+        log.error('Abnormal completion persisted after max retries, completing anyway', {
+          agentId: this.agentId,
+          itemId: item.id,
+          type: item.sourceType,
+          retryCount: retries,
+          reason: abnormalReason,
+        });
+      }
+      this.mailbox.complete(item.id);
+    }
+
+    this.currentFocus = undefined;
+    this.interruptSignal = false;
+    this.pendingInterruptItem = undefined;
   }
 
   /**
@@ -274,9 +334,9 @@ export class AttentionController {
    * Fast heuristic decision when no LLM judgment is available.
    * Rules are evaluated top-to-bottom; first match wins.
    */
-  /** Types that represent direct user interaction — always highest priority. */
+  /** Types that are unconditionally from a human user — always highest priority. */
   private static readonly USER_INTERACTION_TYPES: Set<MailboxItemType> = new Set([
-    'human_chat', 'task_comment', 'requirement_comment',
+    'human_chat',
   ]);
 
   heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {

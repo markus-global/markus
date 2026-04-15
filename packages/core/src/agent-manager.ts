@@ -126,6 +126,12 @@ export interface RequirementServiceBridge {
     id: string,
     updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
   ): { id: string; title: string; status: string };
+  getRequirement(id: string): {
+    id: string; title: string; description: string; status: string;
+    priority: string; source: string; createdBy?: string;
+    approvedBy?: string; approvedAt?: string; rejectedReason?: string;
+    taskIds: string[]; tags?: string[]; createdAt: string; updatedAt: string;
+  } | undefined;
 }
 
 export interface TaskServiceBridge {
@@ -215,8 +221,10 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
-  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }>;
-  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
+  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
 }
 
 export interface MCPServerConfig {
@@ -984,6 +992,14 @@ export class AgentManager {
               });
             }
           : undefined,
+        getRequirement: this.requirementService
+          ? async (reqId) => {
+              const req = this.requirementService!.getRequirement(reqId);
+              if (!req) return null;
+              const comments = ts.getRequirementComments?.(reqId) ?? [];
+              return { ...req, comments };
+            }
+          : undefined,
         updateRequirementStatus: this.requirementService
           ? async (reqId, status, reason) => {
               if (status === 'rejected') {
@@ -1004,6 +1020,9 @@ export class AgentManager {
           ? async (reqId, updates) => {
               return this.requirementService!.resubmitRequirement(reqId, updates);
             }
+          : undefined,
+        getTaskComments: ts.getTaskComments
+          ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
           ? async (taskId, content, mentions, activityId) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId)
@@ -1177,6 +1196,7 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    this.forwardAgentEvents(agent);
 
     if (config.teamId) {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
@@ -1573,6 +1593,14 @@ export class AgentManager {
               });
             }
           : undefined,
+        getRequirement: this.requirementService
+          ? async (reqId) => {
+              const req = this.requirementService!.getRequirement(reqId);
+              if (!req) return null;
+              const comments = ts.getRequirementComments?.(reqId) ?? [];
+              return { ...req, comments };
+            }
+          : undefined,
         updateRequirementStatus: this.requirementService
           ? async (reqId, status, reason) => {
               if (status === 'rejected') {
@@ -1593,6 +1621,9 @@ export class AgentManager {
           ? async (reqId, updates) => {
               return this.requirementService!.resubmitRequirement(reqId, updates);
             }
+          : undefined,
+        getTaskComments: ts.getTaskComments
+          ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
           ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
@@ -1733,6 +1764,7 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    this.forwardAgentEvents(agent);
 
     if (config.teamId) {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
@@ -1911,6 +1943,38 @@ export class AgentManager {
     this.stateChangeHandler = handler;
     for (const [, agent] of this.agents) {
       agent.setStateChangeCallback(handler);
+    }
+  }
+
+  /**
+   * Forward events from an agent's private EventBus to the manager's
+   * EventBus so that external listeners (e.g. start.ts WS broadcasts) receive them.
+   *
+   * Each Agent creates its own EventBus. Without forwarding, events emitted by
+   * the agent, its mailbox, and its attention controller would never reach the
+   * manager-level bus where start.ts registers WS broadcast handlers.
+   */
+  private forwardAgentEvents(agent: Agent): void {
+    const FORWARDED_EVENTS = [
+      'agent:activity-log',
+      'agent:activity_log',
+      'agent:started',
+      'agent:stopped',
+      'agent:paused',
+      'agent:resumed',
+      'agent:focus-changed',
+      'agent:message',
+      'task:completed',
+      'task:failed',
+      'mailbox:new-item',
+      'attention:decision',
+      'attention:state-changed',
+    ] as const;
+    const agentBus = agent.getEventBus();
+    for (const eventName of FORWARDED_EVENTS) {
+      agentBus.on(eventName, (payload: unknown) => {
+        this.eventBus.emit(eventName, payload);
+      });
     }
   }
 

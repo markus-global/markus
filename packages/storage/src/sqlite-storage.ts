@@ -475,7 +475,8 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   started_at TEXT,
   completed_at TEXT,
   deferred_until TEXT,
-  merged_into TEXT
+  merged_into TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
@@ -549,6 +550,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
+    { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -3153,6 +3155,7 @@ export interface MailboxItemRow {
   completedAt: string | null;
   deferredUntil: string | null;
   mergedInto: string | null;
+  retryCount: number;
 }
 
 export class SqliteMailboxRepo {
@@ -3186,6 +3189,7 @@ export class SqliteMailboxRepo {
     if (extra?.completedAt) { parts.push('completed_at = ?'); params.push(extra.completedAt as string); }
     if (extra?.deferredUntil !== undefined) { parts.push('deferred_until = ?'); params.push((extra.deferredUntil as string) ?? null); }
     if (extra?.mergedInto !== undefined) { parts.push('merged_into = ?'); params.push((extra.mergedInto as string) ?? null); }
+    if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
@@ -3244,6 +3248,7 @@ export class SqliteMailboxRepo {
       completedAt: r['completed_at'] as string | null,
       deferredUntil: r['deferred_until'] as string | null,
       mergedInto: r['merged_into'] as string | null,
+      retryCount: (r['retry_count'] as number) ?? 0,
     };
   }
 }

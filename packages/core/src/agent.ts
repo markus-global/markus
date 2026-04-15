@@ -21,7 +21,10 @@ import {
   type DecisionType,
   type AgentMindState,
   MailboxPriorityLevel,
+  MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
+  COMPLETION_MARKER_INSTRUCTION,
+  COMPLETION_MARKER,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -72,6 +75,53 @@ import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 
 const log = createLogger('agent');
+
+/**
+ * Strip raw XML tool-call markup from LLM replies.  The completion marker
+ * is NOT removed here — it must survive until `detectAbnormalCompletion`
+ * inspects the reply; stripping happens later in `stripCompletionMarker`.
+ */
+const RAW_TOOL_XML_RE =
+  /(?:minimax:tool_call\s*)?<invoke\s+name="[^"]*">\s*(?:<parameter\s+name="[^"]*">[^<]*<\/parameter>\s*)*<\/invoke>\s*(?:<\/minimax:tool_call>)?/gi;
+
+function sanitizeLLMReply(reply: string): string {
+  const cleaned = reply.replace(RAW_TOOL_XML_RE, '').trim();
+  return cleaned || reply;
+}
+
+/**
+ * Remove the completion marker from a reply so it is never stored in
+ * memory or shown to users.  Called after abnormal-completion detection.
+ */
+function stripCompletionMarker(reply: string): string {
+  return reply.replaceAll(COMPLETION_MARKER, '').trim();
+}
+
+/**
+ * Create a streaming delta emitter that buffers the tail to strip
+ * the completion marker from real-time output. The marker may arrive
+ * split across multiple chunks, so we hold back enough characters.
+ */
+function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
+  const markerLen = COMPLETION_MARKER.length;
+  let tail = '';
+
+  const emit = (chunk: string) => {
+    tail += chunk;
+    if (tail.length <= markerLen) return;
+    const safe = tail.slice(0, tail.length - markerLen);
+    tail = tail.slice(safe.length);
+    if (safe) rawEmit(safe);
+  };
+
+  const flush = () => {
+    const cleaned = tail.replaceAll(COMPLETION_MARKER, '');
+    tail = '';
+    if (cleaned) rawEmit(cleaned);
+  };
+
+  return { emit, flush };
+}
 
 /** Returns true when a tool returned a structured error (status: 'error' | 'denied'). */
 function isErrorResult(result: string): boolean {
@@ -200,6 +250,8 @@ export class Agent {
   private activeStreamToken?: { cancelled: boolean };
   /** The mailbox item ID currently being processed – threaded into activity records. */
   private processingMailboxItemId?: string;
+  /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
+  private lastInjectedActivityType?: string;
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
@@ -409,6 +461,14 @@ export class Agent {
       log.info(
         `Resumed session ${latestSession.id} with ${latestSession.messages.length} messages`
       );
+    }
+
+    // Ensure currentSessionId is always set so activity injection works
+    // even if the agent has never chatted with anyone.
+    if (!this.currentSessionId) {
+      const fallback = this.memory.createSession(this.id);
+      this.currentSessionId = fallback.id;
+      log.info(`Created fallback session for activity injection: ${fallback.id}`);
     }
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
@@ -711,13 +771,17 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
       : undefined;
     const resolveResponse = (reply: string) => {
-      item.metadata?.responsePromise?.resolve(reply);
+      item.metadata?.responsePromise?.resolve(stripCompletionMarker(reply));
     };
     const rejectResponse = (err: unknown) => {
       item.metadata?.responsePromise?.reject(err);
     };
 
     const ts = Date.now();
+
+    const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
+    const needsMarker = !!registry?.invokesLLM;
+    const markerSuffix = needsMarker ? COMPLETION_MARKER_INSTRUCTION : '';
 
     const buildHandleOpts = (defaults: Record<string, unknown> = {}) => {
       const opts: Record<string, unknown> = { ...defaults };
@@ -738,7 +802,7 @@ export class Agent {
         case 'a2a_message': {
           if (extra.stream && typeof extra.onEvent === 'function') {
             const reply = await this.handleMessageStream(
-              item.payload.content,
+              item.payload.content + markerSuffix,
               extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
               item.metadata?.senderId,
               senderInfo,
@@ -752,7 +816,7 @@ export class Agent {
             ? { sessionId: `a2a_${this.id}_${ts}`, scenario: 'a2a' as const }
             : {};
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts(defaults),
@@ -786,7 +850,7 @@ export class Agent {
 
         case 'mention': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
@@ -799,7 +863,7 @@ export class Agent {
           if (extra.actionRequired) {
             const reqId = item.payload.requirementId ?? 'unknown';
             const reply = await this.handleMessage(
-              item.payload.content,
+              item.payload.content + markerSuffix,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
@@ -817,7 +881,7 @@ export class Agent {
         case 'requirement_comment': {
           const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
@@ -835,7 +899,7 @@ export class Agent {
           } else {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
-              item.payload.content,
+              item.payload.content + markerSuffix,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
@@ -847,7 +911,7 @@ export class Agent {
 
         case 'review_request': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
@@ -870,7 +934,7 @@ export class Agent {
         case 'system_event':
         case 'daily_report': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'heartbeat' }),
@@ -881,7 +945,7 @@ export class Agent {
 
         case 'memory_consolidation': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'memory_consolidation' }),
@@ -894,12 +958,12 @@ export class Agent {
           const sessionId = extra.sessionId as string | undefined;
           const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
           if (sessionId) {
-            const reply = await this.respondInSession(sessionId, item.payload.content, onLog);
+            const reply = await this.respondInSession(sessionId, item.payload.content + markerSuffix, onLog);
             resolveResponse(reply);
             return reply;
           }
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}` }),
@@ -925,6 +989,8 @@ export class Agent {
               summary: item.payload.summary?.slice(0, 120) ?? item.sourceType,
               outcome,
               mailboxItemId: item.id,
+              taskId: item.payload.taskId ?? item.metadata?.taskId as string | undefined,
+              requirementId: item.payload.requirementId,
             });
           }
         } catch { /* never fail the main flow */ }
@@ -1578,11 +1644,18 @@ export class Agent {
     summary: string;
     outcome?: string;
     mailboxItemId?: string;
+    taskId?: string;
+    requirementId?: string;
   }): void {
     if (!this.currentSessionId) return;
-    const text = opts.outcome
-      ? `[ACTIVITY: ${opts.type}] ${opts.summary} → ${opts.outcome}`
-      : `[ACTIVITY: ${opts.type}] ${opts.summary}`;
+
+    // Collapse consecutive heartbeats: skip if previous injection was also a heartbeat
+    if (opts.type === 'heartbeat' && this.lastInjectedActivityType === 'heartbeat') {
+      return;
+    }
+    this.lastInjectedActivityType = opts.type;
+
+    const text = opts.summary;
     this.memory.appendMessage(this.currentSessionId, {
       role: 'assistant',
       content: text,
@@ -1594,7 +1667,10 @@ export class Agent {
       metadata: {
         activityLog: true,
         activityType: opts.type,
-        mailboxItemId: opts.mailboxItemId,
+        ...(opts.outcome ? { outcome: opts.outcome } : {}),
+        ...(opts.mailboxItemId ? { mailboxItemId: opts.mailboxItemId } : {}),
+        ...(opts.taskId ? { taskId: opts.taskId } : {}),
+        ...(opts.requirementId ? { requirementId: opts.requirementId } : {}),
       },
     });
   }
@@ -1818,6 +1894,11 @@ export class Agent {
   }
 
   private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
+    // Defensive: strip completion marker from all log content regardless of caller
+    const cleanContent = (type === 'text' || type === 'status')
+      ? stripCompletionMarker(content)
+      : content;
+
     let logs = this.activityLogs.get(activityId);
     if (!logs) {
       logs = [];
@@ -1830,7 +1911,7 @@ export class Agent {
     const entry: AgentActivityLogEntry = {
       seq,
       type,
-      content,
+      content: cleanContent,
       metadata,
       createdAt: new Date().toISOString(),
     };
@@ -1840,7 +1921,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content, metadata }); } catch { /* best effort */ }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch { /* best effort */ }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -2288,22 +2369,23 @@ export class Agent {
         });
       }
 
-      const reply = response.content;
-      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
         this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
         return filtered;
       }
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
-      if (!isLightweight && reply.length > 50 && senderId) {
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      if (!isLightweight && displayReply.length > 50 && senderId) {
         this.memory.writeDailyLog(
           this.id,
-          `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`
+          `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${displayReply.slice(0, 300)}`
         );
       }
-      if (chatActivityId && reply.trim()) {
-        this.emitActivityLog(chatActivityId, 'text', reply);
+      if (chatActivityId && displayReply.trim()) {
+        this.emitActivityLog(chatActivityId, 'text', displayReply);
       }
       if (chatActivityId) this.endActivity(chatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -2312,11 +2394,11 @@ export class Agent {
         agentId: this.id,
         senderId,
         userMessage,
-        reply,
+        reply: displayReply,
         tokensUsed: this.getTokensUsed(),
       });
 
-      return reply;
+      return rawReply;
     } catch (error) {
       if (chatActivityId) this.endActivity(chatActivityId);
 
@@ -2435,9 +2517,16 @@ export class Agent {
 
     let lastResponseContent = '';
     let thinkingBuffer = '';
+    const streamMarkerDelta = createMarkerStrippingDelta((text) => {
+      onEvent({ type: 'text_delta', text });
+    });
     const wrappedOnEvent = (event: LLMStreamEvent & { agentEvent?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
         thinkingBuffer += event.thinking;
+      }
+      if (event.type === 'text_delta' && event.text) {
+        streamMarkerDelta.emit(event.text);
+        return;
       }
       onEvent(event);
     };
@@ -2631,19 +2720,21 @@ export class Agent {
         });
       }
 
-      const reply = response.content;
-      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      streamMarkerDelta.flush();
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
         this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: filtered });
         return filtered;
       }
-      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
+      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: displayReply });
       if (streamChatActivityId && thinkingBuffer.trim()) {
         this.emitActivityLog(streamChatActivityId, 'text', thinkingBuffer, { isThinking: true });
       }
-      if (streamChatActivityId && reply.trim()) {
-        this.emitActivityLog(streamChatActivityId, 'text', reply);
+      if (streamChatActivityId && displayReply.trim()) {
+        this.emitActivityLog(streamChatActivityId, 'text', displayReply);
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -2652,12 +2743,13 @@ export class Agent {
         agentId: this.id,
         senderId,
         userMessage,
-        reply,
+        reply: displayReply,
         tokensUsed: this.getTokensUsed(),
       });
 
-      return reply;
+      return rawReply;
     } catch (error) {
+      streamMarkerDelta.flush();
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.cancelled });
       if (cancelToken?.cancelled) {
         if (lastResponseContent && this.currentSessionId) {
@@ -2819,9 +2911,11 @@ export class Agent {
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
-    const emitDelta = (text: string) => {
+    const rawEmitDelta = (text: string) => {
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
     };
+    const markerDelta = createMarkerStrippingDelta(rawEmitDelta);
+    const emitDelta = markerDelta.emit;
 
     // Wire subagent progress events into task execution logs so the frontend
     // can render subagent steps (tool calls, thinking, completion) in real-time.
@@ -2959,6 +3053,7 @@ export class Agent {
     let taskToolIterations = 0;
 
     const flushText = () => {
+      markerDelta.flush();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
@@ -3166,7 +3261,7 @@ export class Agent {
       }
 
       flushText();
-      const finalReply = response.content;
+      const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
       emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
@@ -3256,9 +3351,11 @@ export class Agent {
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
-    const emitDelta = (text: string) => {
+    const rawEmitDeltaRIS = (text: string) => {
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
     };
+    const markerDeltaRIS = createMarkerStrippingDelta(rawEmitDeltaRIS);
+    const emitDelta = markerDeltaRIS.emit;
 
     this.memory.getOrCreateSession(this.id, sessionId);
     this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
@@ -3292,6 +3389,7 @@ export class Agent {
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
     const flushText = () => {
+      markerDeltaRIS.flush();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
@@ -3402,9 +3500,10 @@ export class Agent {
       }
 
       flushText();
-      const finalReply = response.content;
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
-      return finalReply;
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      return rawReply;
     } catch (error) {
       if (textBuffer.trim()) {
         this.memory.appendMessage(sessionId, { role: 'assistant', content: textBuffer + '\n\n[interrupted by error]' });
@@ -4191,10 +4290,11 @@ export class Agent {
           });
         }
 
-        const isOk = reply?.trim() === 'HEARTBEAT_OK';
-        if (reply && !isOk && reply.length > 20) {
-          this.emitActivityLog(activityId, 'text', reply);
-          this.memory.writeDailyLog(this.id, `[Heartbeat] ${reply}`);
+        const cleanReply = reply ? stripCompletionMarker(reply) : '';
+        const isOk = cleanReply.trim() === 'HEARTBEAT_OK';
+        if (cleanReply && !isOk && cleanReply.length > 20) {
+          this.emitActivityLog(activityId, 'text', cleanReply);
+          this.memory.writeDailyLog(this.id, `[Heartbeat] ${cleanReply}`);
         }
         this.endActivity(activityId);
         return;

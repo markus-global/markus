@@ -649,7 +649,7 @@ export class ContextEngine {
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
         lines.push('');
         lines.push('**MANDATORY context-gathering protocol (do this BEFORE writing any reply):**');
-        lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_list` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, and all fields');
+        lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_get` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, comments, and all fields');
         lines.push('2. **Read ALL previous comments**: Review the entire comment thread to understand the conversation history, who said what, and what has already been discussed or decided');
         lines.push('3. **Identify the commenter\'s intent**: Is it a question? A request for action? Feedback? A status inquiry? An objection?');
         lines.push('4. **Check related context**: If the comment references other tasks, requirements, or files, look them up too');
@@ -663,7 +663,7 @@ export class ContextEngine {
         lines.push('- If the comment is unclear, ask a clarifying question rather than guessing');
         lines.push('');
         lines.push('**NEVER do this:**');
-        lines.push('- Reply immediately without calling `task_get`/`requirement_list` first');
+        lines.push('- Reply immediately without calling `task_get`/`requirement_get` first');
         lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
         lines.push('- Ignore prior comments that provide important context for the current discussion');
         lines.push('');

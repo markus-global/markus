@@ -35,7 +35,7 @@ You will receive the **live list** of available skills as dynamic context. **Che
 
 ## Guidelines
 
-- Instructions in SKILL.md should reference actual tools: `shell_execute`, `file_read`, `file_write`, `file_edit`, `grep`, `glob`, `web_fetch`, `web_search`, `gui` — or MCP tool names if the skill provides its own tools
+- Instructions in SKILL.md should reference actual tools: `shell_execute`, `file_read`, `file_write`, `file_edit`, `grep_search`, `glob_find`, `list_directory`, `web_fetch`, `web_search`, `gui` — or MCP tool names if the skill provides its own tools
 - Be specific — include actual CLI commands, file paths, and URL patterns
 - Include error handling: what to do when commands fail, pages don't load, etc.
 - Provide examples of typical input/output for each workflow step

@@ -730,8 +730,10 @@ When multiple messages for the same entity arrive before the agent can process t
 
 | Group | Dedup Key | Eligible Types |
 |-------|-----------|---------------|
-| Task | `payload.taskId` | `task_comment`, `task_status_update` |
-| Requirement | `payload.requirementId` | `requirement_comment`, `requirement_update` |
+| Task comments | `payload.taskId` | `task_comment` |
+| Requirement comments | `payload.requirementId` | `requirement_comment` |
+
+**Why status updates are excluded**: `task_status_update` and `requirement_update` represent distinct state transitions with different processing semantics. Merging a "task blocked" notification with a "task resumed" notification would lose critical state information. Only comments — which are additive human/agent text — are safe to merge.
 
 ### Merge Behaviour
 
@@ -810,11 +812,22 @@ This is safe because:
 - The stale items' callbacks (`onLog`, `cancelToken`, etc.) are garbage-collected references that cannot be resumed.
 - Marking as `dropped` (not `completed`) preserves the audit trail — these items did not complete successfully.
 
+### Post-Recovery Deduplication
+
+After all queued items are restored from the database, `recoverStaleItems()` runs `deduplicateQueue()` to collapse redundant entries that accumulated before the restart:
+
+1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `dropped`.
+2. **Comment merging**: `task_comment` items with the same `taskId` are merged (content appended, summary updated with `(+1)`). Same for `requirement_comment` by `requirementId`.
+3. **Priority escalation**: When merging, the survivor inherits the highest priority of all merged items.
+4. **Execution-trigger safety**: Items with `extra.triggerExecution` are never merged — they carry critical callbacks that must remain standalone.
+
+This prevents scenarios where a restart causes the agent to process 10 redundant heartbeats or 5 separate comment notifications for the same task.
+
 ### Startup Sequence
 
 ```
-1. wireMailboxPersistence(agentId)   — sets save/updateStatus/markStaleProcessingAsDropped
-2. mailbox.recoverStaleItems()       — cleans up stale processing items
+1. wireMailboxPersistence(agentId)   — sets save/updateStatus/markStaleProcessingAsDropped/loadQueued
+2. mailbox.recoverStaleItems()       — drops stale processing, restores queued, deduplicates
 3. resumeInProgressTasks()           — re-creates execution items for active tasks
 ```
 
@@ -845,7 +858,95 @@ Only `task_status_update` items that meet **all** conditions:
 
 ---
 
-## 19. Future Work
+## 19. EventBus Architecture
+
+Each `Agent` creates its own private `EventBus` instance. The `AgentManager` has a separate manager-level `EventBus`. External listeners (e.g., WebSocket broadcast handlers in `start.ts`) register on the **manager's** EventBus.
+
+### Event Forwarding
+
+To bridge the gap, `AgentManager.forwardAgentEvents()` is called when each agent is created or restored. It subscribes to key events on the agent's private bus and re-emits them on the manager's bus:
+
+```
+Agent's Private EventBus          Manager's EventBus          start.ts (WS broadcast)
+─────────────────────              ──────────────────          ───────────────────────
+agent:activity-log  ──────────►  agent:activity-log  ──────►  Persist to main session DB
+agent:activity_log  ──────────►  agent:activity_log  ──────►  Stream to frontend Activity tab
+agent:started       ──────────►  agent:started       ──────►  agent:started WS event
+agent:stopped       ──────────►  agent:stopped       ──────►  agent:stopped WS event
+agent:paused        ──────────►  agent:paused        ──────►  agent:paused WS event
+agent:resumed       ──────────►  agent:resumed       ──────►  agent:resumed WS event
+agent:focus-changed ──────────►  agent:focus-changed ──────►  agent:focus WS event
+agent:message       ──────────►  agent:message
+task:completed      ──────────►  task:completed      ──────►  task update WS event
+task:failed         ──────────►  task:failed         ──────►  task update WS event
+mailbox:new-item    ──────────►  mailbox:new-item    ──────►  agent:mailbox WS event
+attention:decision  ──────────►  attention:decision  ──────►  agent:decision WS event
+attention:state-changed ──────►  attention:state-changed ──►  agent:attention WS event
+```
+
+Events emitted directly on the manager's bus (no forwarding needed):
+- `agent:created` — emitted by `AgentManager.createAgent()` / `restoreFromDB()`
+- `agent:removed` — emitted by `AgentManager.removeAgent()`
+- `system:*` — emitted by `AgentManager` global operations
+
+### Why Two Buses?
+
+The agent's private bus provides internal encapsulation — the agent, its mailbox, and its attention controller communicate without coupling to the manager. The manager's bus provides a single subscription point for infrastructure concerns (persistence, WS broadcast, monitoring).
+
+---
+
+## 20. Main Session Activity Injection
+
+Each agent has a **main session** — a persistent chat session that serves as the agent's chronological activity log. Every mailbox item the agent processes (except `human_chat`) generates a concise activity summary in this session.
+
+### Purpose
+
+Without the main session, the agent loses narrative continuity across processing contexts. For example: a user creates a task via chat, the task completes via heartbeat-triggered execution, but the agent's chat session has no record of the completion. The main session bridges this gap by recording all mailbox-driven activity.
+
+### Data Flow
+
+```
+Agent processes mailbox item
+  └─ finally block in processMailboxItemInternal()
+       └─ buildActivityOutcome(item) → outcome string
+            └─ injectActivityToMainSession({type, summary, outcome, mailboxItemId})
+                 ├─ memory.appendMessage() → in-memory context for next LLM turn
+                 └─ eventBus.emit('agent:activity-log', {agentId, sessionId, message, metadata})
+                      └─ [forwarded to manager's EventBus]
+                           └─ start.ts listener:
+                                ├─ chatSessionRepo.getOrCreateMainSession(agentId)
+                                ├─ chatSessionRepo.appendMessage() → DB persistence
+                                ├─ chatSessionRepo.updateLastMessage() → session sort order
+                                └─ ws.broadcastProactiveMessage() → real-time frontend update
+```
+
+### Message Format
+
+```
+[ACTIVITY: <sourceType>] <summary> → <outcome>
+```
+
+Examples:
+- `[ACTIVITY: heartbeat] Heartbeat check-in → heartbeat processed`
+- `[ACTIVITY: review_request] Review task "Fix login bug" → reviewed`
+- `[ACTIVITY: task_status_update] Task assigned: implement API → executed`
+
+### Frontend Rendering
+
+Activity messages are rendered as compact system-style cards (colored dot + text) rather than full chat bubbles. The `[ACTIVITY: type]` prefix is stripped for display. Messages with a `mailboxItemId` show a "Details" button on hover.
+
+When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and activity entries, displayed chronologically.
+
+### Completion Marker
+
+Agent responses include a `<<HANDLE_COMPLETE>>` completion marker to detect abnormal termination. This marker is:
+- Required in the agent's prompt instructions for non-chat processing
+- Stripped from all output before display (streaming `text_delta`, SSE segment fallback, heartbeat daily log)
+- Detected by `detectAbnormalCompletion()` — if absent, the mailbox item is requeued for retry
+
+---
+
+## 21. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.

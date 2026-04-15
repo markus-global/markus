@@ -15,4 +15,5 @@ export * from './utils/id.js';
 export * from './utils/text.js';
 export * from './models.js';
 export * from './version.js';
+export * from './update-checker.js';
 export * from './limits.js';

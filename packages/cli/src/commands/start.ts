@@ -8,6 +8,7 @@ import {
   getDefaultConfigPath,
   createLogger,
   closeRuntimeLogger,
+  checkForUpdate,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -35,6 +36,7 @@ import {
   DeliverableService,
   ReportService,
   TrustService,
+  ArchiveService,
   ScheduledTaskRunner,
   initStorage,
   searchRegistries,
@@ -438,6 +440,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   taskService.setProjectService(projectService);
   taskService.setRequirementService(requirementService);
 
+  // Auto-archive: archive terminal tasks and requirements after configured thresholds
+  const archiveService = new ArchiveService(taskService, projectService);
+  archiveService.setRequirementService(requirementService);
+  archiveService.start();
+
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
@@ -564,12 +571,16 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         metadata: Record<string, unknown>;
       };
       try {
-        const mainSession = await storage.chatSessionRepo.getOrCreateMainSession(agentId);
-        const msg = await storage.chatSessionRepo.appendMessage(
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const msg = storage.chatSessionRepo.appendMessage(
           mainSession.id, agentId, 'assistant', message, 0, metadata,
         );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
         const agent = agentManager.getAgent(agentId);
-        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, message);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, message, {
+          ...metadata,
+          isMainSession: true,
+        });
       } catch (e) {
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
@@ -674,12 +685,22 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });
+    let mainSessionId: string | undefined;
+    if (storage?.chatSessionRepo) {
+      try {
+        const ms = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        if (ms && typeof ms === 'object' && 'id' in ms) mainSessionId = (ms as { id: string }).id;
+      } catch { /* skip */ }
+    }
     hitlService.notify({
       targetUserId: 'default',
       type: 'system',
       title: 'Agent needs help',
       body: reason,
       priority: 'high',
+      actionType: 'open_chat',
+      actionTarget: JSON.stringify({ agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) }),
+      metadata: { agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) },
     });
     auditService.record({
       orgId: 'default',
@@ -854,9 +875,27 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
           markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
+          loadQueued: (aid: string) => {
+            const rows = mbRepo.getByAgent(aid, { status: 'queued' });
+            return rows.map((r: any) => ({
+              id: r.id,
+              agentId: r.agentId,
+              sourceType: r.sourceType,
+              priority: r.priority,
+              status: r.status as 'queued',
+              payload: r.payload,
+              metadata: r.metadata,
+              queuedAt: r.queuedAt,
+              startedAt: r.startedAt ?? undefined,
+              completedAt: r.completedAt ?? undefined,
+              deferredUntil: r.deferredUntil ?? undefined,
+              mergedInto: r.mergedInto ?? undefined,
+              retryCount: r.retryCount ?? 0,
+            }));
+          },
         });
-        const dropped = mailbox.recoverStaleItems();
-        if (dropped > 0) log.info('Recovered stale processing mailbox items', { agentId, dropped });
+        const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
+        if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {
@@ -1094,6 +1133,14 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     progress.finish(uiUrl);
   }
 
+  // Non-blocking update check — runs after startup, never blocks or throws
+  checkForUpdate().then(info => {
+    if (info.updateAvailable) {
+      console.log(`\n  \x1b[33m⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})\x1b[0m`);
+      console.log(`    Run \x1b[1mnpm i -g @markus-global/cli\x1b[0m to upgrade\n`);
+    }
+  }).catch(() => {});
+
   // Start restored agents in background (server is already accepting requests)
   orgService.startRestoredAgentsInBackground();
 
@@ -1101,6 +1148,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     console.error('\nShutting down...');
     closeStartupLogger();
     closeRuntimeLogger();
+    archiveService.stop();
     scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()

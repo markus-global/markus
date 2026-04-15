@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkForUpdate } from '@markus/shared';
 import { createClient, ApiError } from '../api-client.js';
 import { detail, success, fail } from '../output.js';
 
@@ -164,11 +165,21 @@ export function registerSystemCommands(program: Command): Command {
     const markusRoot = findMarkusRoot();
     const info: Record<string, unknown> = {};
 
+    // npm registry check (works for all install methods)
+    try {
+      const updateInfo = await checkForUpdate();
+      info.currentVersion = updateInfo.currentVersion;
+      info.latestVersion = updateInfo.latestVersion;
+      info.npmUpdateAvailable = updateInfo.updateAvailable;
+    } catch { /* ignore */ }
+
     if (markusRoot) {
-      try {
-        const pkg = JSON.parse(readFileSync(resolve(markusRoot, 'package.json'), 'utf-8')) as { version: string };
-        info.currentVersion = pkg.version;
-      } catch { /* ignore */ }
+      if (!info.currentVersion) {
+        try {
+          const pkg = JSON.parse(readFileSync(resolve(markusRoot, 'package.json'), 'utf-8')) as { version: string };
+          info.currentVersion = pkg.version;
+        } catch { /* ignore */ }
+      }
 
       try {
         const isGit = existsSync(resolve(markusRoot, '.git'));
@@ -180,9 +191,9 @@ export function registerSystemCommands(program: Command): Command {
             execSync('git fetch origin --quiet', { cwd: markusRoot, timeout: 10_000 });
             const behind = execSync('git rev-list HEAD..origin/main --count', { cwd: markusRoot, encoding: 'utf-8' }).trim();
             info.commitsBehind = parseInt(behind, 10);
-            info.updateAvailable = parseInt(behind, 10) > 0;
+            info.gitUpdateAvailable = parseInt(behind, 10) > 0;
           } catch {
-            info.updateAvailable = 'unknown (fetch failed)';
+            info.gitUpdateAvailable = 'unknown (fetch failed)';
           }
         }
       } catch { /* not a git repo */ }
@@ -193,7 +204,11 @@ export function registerSystemCommands(program: Command): Command {
       console.log(JSON.stringify(info, null, 2));
     } else {
       detail(info, { title: 'Markus Version' });
-      if (info.updateAvailable === true) {
+      if (info.npmUpdateAvailable === true) {
+        console.log(`\n  ⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})`);
+        console.log(`    Run \`npm i -g @markus-global/cli\` to upgrade.`);
+      }
+      if (info.gitUpdateAvailable === true) {
         console.log(`\n  ⬆ ${info.commitsBehind} commit(s) behind origin/main. Run \`markus admin system update\` to update.`);
       }
     }

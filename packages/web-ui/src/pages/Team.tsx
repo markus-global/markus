@@ -57,10 +57,31 @@ interface ChatMsg {
   /** Activity log metadata — compact system card instead of bubble */
   isActivityLog?: boolean;
   activityType?: string;
+  outcome?: string;
   mailboxItemId?: string;
+  taskId?: string;
+  requirementId?: string;
 }
 
 type ChatMode = 'channel' | 'direct' | 'dm';
+
+// Mirror of MAILBOX_TYPE_REGISTRY icon/category from @markus/shared — kept in sync manually
+const ACTIVITY_TYPE_META: Record<string, { icon: string; category: string }> = {
+  system_event:         { icon: '⚙',  category: 'System' },
+  human_chat:           { icon: '💬', category: 'Chat' },
+  task_comment:         { icon: '💬', category: 'Task' },
+  mention:              { icon: '@',  category: 'Chat' },
+  session_reply:        { icon: '↩',  category: 'Task' },
+  task_status_update:   { icon: '📋', category: 'Task' },
+  a2a_message:          { icon: '🔗', category: 'Agent' },
+  review_request:       { icon: '👀', category: 'Review' },
+  requirement_comment:  { icon: '💬', category: 'Task' },
+  requirement_update:   { icon: '📝', category: 'Notification' },
+  daily_report:         { icon: '📊', category: 'System' },
+  heartbeat:            { icon: '♡',  category: 'System' },
+  memory_consolidation: { icon: '🧠', category: 'System' },
+  notify_user:          { icon: '🔔', category: 'Notification' },
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +112,16 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   if (m.metadata?.activityLog) {
     base.isActivityLog = true;
     base.activityType = m.metadata.activityType;
+    base.outcome = m.metadata.outcome;
     base.mailboxItemId = m.metadata.mailboxItemId;
+    base.taskId = m.metadata.taskId;
+    base.requirementId = m.metadata.requirementId;
+    // Legacy compat: old rows have [ACTIVITY: type] prefix and outcome baked into content
+    if (!base.outcome && base.text.startsWith('[ACTIVITY:')) {
+      const arrowIdx = base.text.lastIndexOf(' → ');
+      if (arrowIdx !== -1) base.outcome = base.text.slice(arrowIdx + 3);
+      base.text = base.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
+    }
   }
   return base;
 }
@@ -552,9 +582,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
   const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | 'mind' | undefined>();
+  const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
-  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind') => {
+  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind', highlightMailboxId?: string) => {
     setProfileDefaultTab(defaultTab);
+    setProfileHighlightMailboxId(highlightMailboxId);
     setMainTab('profile');
     if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
   }, [isMobile]);
@@ -566,11 +598,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind' }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind'; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
     if (isMobile) enterMobileDetail();
-    switchToProfile(opts?.tab);
+    switchToProfile(opts?.tab, opts?.highlightMailboxId);
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile, enterMobileDetail, switchToProfile]);
@@ -827,21 +859,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
   }, [messages, activities]);
 
-  const savedScrollTopRef = useRef<number | null>(null);
   useEffect(() => {
     if (mainTab === 'chat') {
       requestAnimationFrame(() => {
-        const el = chatScrollRef.current;
-        if (!el) return;
-        if (savedScrollTopRef.current != null) {
-          el.scrollTop = savedScrollTopRef.current;
-          savedScrollTopRef.current = null;
-        } else if (userAtBottomRef.current) {
-          messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
-        }
+        messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+        userAtBottomRef.current = true;
       });
-    } else {
-      savedScrollTopRef.current = chatScrollRef.current?.scrollTop ?? null;
     }
   }, [mainTab]);
 
@@ -1094,11 +1117,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const agentName = (p['agentName'] as string) ?? 'Agent';
       const message = (p['message'] as string) ?? '';
       const sessionId = (p['sessionId'] as string) ?? '';
+      const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       if (!agentId || !message) return;
 
-      // Only append to display if we're viewing this agent's direct chat
+      const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
+
+      // Append to display if we're viewing this agent's direct chat
       if (chatMode === 'direct' && selectedAgent === agentId) {
-        const isActivity = message.startsWith('[ACTIVITY:');
         const newMsg: ChatMsg = {
           id: `proactive_${Date.now()}`,
           sender: 'agent',
@@ -1106,15 +1131,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           time: new Date().toLocaleTimeString(),
           agentName,
           agentId,
-          ...(isActivity ? { isActivityLog: true } : {}),
+          ...(isActivity ? {
+            isActivityLog: true,
+            activityType: meta.activityType as string | undefined,
+            outcome: meta.outcome as string | undefined,
+            mailboxItemId: meta.mailboxItemId as string | undefined,
+            taskId: meta.taskId as string | undefined,
+            requirementId: meta.requirementId as string | undefined,
+          } : {}),
         };
         const key = makeConvKey('direct', agentId, activeChannel, activeDmUserId);
         updateConvMsgs(key, prev => [...prev, newMsg]);
-
-        // Update the active session if the proactive message came with a session ID
-        if (sessionId && activeSessionId !== sessionId) {
-          setActiveSessionId(sessionId);
-        }
       }
     });
     return unsub;
@@ -2016,6 +2043,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onBack={() => setMainTab('chat')}
               inline
               defaultTab={profileDefaultTab}
+              highlightMailboxId={profileHighlightMailboxId}
               onSwipeBack={() => { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }}
             />
           </div>
@@ -2125,24 +2153,45 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
 
-                // Activity log → compact system-style card
+                // Activity log → compact inline card rendered from metadata
                 if (msg.isActivityLog) {
-                  const activityText = msg.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
+                  // Collapse consecutive heartbeats: only show the last one in a run
+                  if (msg.activityType === 'heartbeat') {
+                    const next = messages[i + 1];
+                    if (next?.isActivityLog && next.activityType === 'heartbeat') return null;
+                  }
+                  const meta = ACTIVITY_TYPE_META[msg.activityType ?? ''];
+                  const icon = meta?.icon ?? '•';
+                  const category = meta?.category;
+                  const navToWork = !!(msg.taskId || msg.requirementId);
+                  const navToMind = !navToWork && !!msg.mailboxItemId;
+                  const canNavigate = navToWork || navToMind;
+                  const isCommentType = msg.activityType === 'task_comment' || msg.activityType === 'requirement_comment';
+                  const handleNavigate = () => {
+                    if (msg.taskId) {
+                      navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                    } else if (msg.requirementId) {
+                      navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                    } else if (msg.mailboxItemId && selectedAgent) {
+                      handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
+                    }
+                  };
                   return (
-                    <div key={msg.id} id={`msg-${msg.id}`} className="flex items-start gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors group/msg">
-                      <span className="text-[10px] text-fg-quaternary mt-0.5 shrink-0 font-mono">{msg.time}</span>
-                      <span className="inline-flex items-center gap-1.5 text-xs text-fg-tertiary">
-                        <span className="w-1.5 h-1.5 rounded-full bg-brand-500/50 shrink-0" />
-                        <span className="truncate">{activityText}</span>
-                      </span>
-                      {msg.agentId && (
-                        <button
-                          onClick={() => handleViewProfile(msg.agentId!, { tab: 'mind' })}
-                          className="ml-auto shrink-0 text-[10px] text-brand-500/60 hover:text-brand-500 transition-colors opacity-0 group-hover/msg:opacity-100"
-                        >
-                          Details
-                        </button>
-                      )}
+                    <div key={msg.id} id={`msg-${msg.id}`} className={`flex justify-start ${isMobile ? 'max-w-[95%]' : 'max-w-[85%]'}`}>
+                      <div className="flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full">
+                        <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
+                        <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
+                        {category && <span className="shrink-0 text-[9px] font-medium rounded-full px-1.5 py-px bg-surface-elevated text-fg-quaternary">{category}</span>}
+                        {canNavigate ? (
+                          <span
+                            onClick={handleNavigate}
+                            className="text-xs text-fg-tertiary hover:text-brand-500 truncate min-w-0 cursor-pointer transition-colors"
+                          >{msg.text}</span>
+                        ) : (
+                          <span className="text-xs text-fg-tertiary truncate min-w-0">{msg.text}</span>
+                        )}
+                        {msg.outcome && <span className="shrink-0 text-[10px] text-fg-quaternary">→ {msg.outcome}</span>}
+                      </div>
                     </div>
                   );
                 }

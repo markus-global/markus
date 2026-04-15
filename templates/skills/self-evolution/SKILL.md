@@ -74,7 +74,7 @@ Over time you will discover which tools work best for specific situations. Recor
 ### When to Update Tool Preferences
 
 - You discover a tool is significantly better than another for a specific task type
-- You find optimal parameters or flags for a tool (e.g., `grep` with specific flags vs. `glob`)
+- You find optimal parameters or flags for a tool (e.g., `grep_search` with specific flags vs. `glob_find`)
 - You learn that a tool has limitations you should work around
 - A tool combination (pipeline) works well for a recurring need
 

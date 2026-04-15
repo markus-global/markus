@@ -175,15 +175,16 @@ export class TaskService {
     this.requirementCommentRepo = repo;
   }
 
-  /** Post a structured comment on a task (used by agent tools) */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }> {
+  /** Post a structured comment on a task. Called from both agent tools and HTTP API. */
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[] }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
       authorId,
       authorName,
-      authorType: 'agent',
+      authorType: opts?.authorType ?? 'agent',
       content,
+      attachments: opts?.attachments,
       mentions: mentions ?? [],
       activityId,
     });
@@ -205,6 +206,9 @@ export class TaskService {
       },
       timestamp: new Date().toISOString(),
     });
+    // Inject live comment into running agent's context (or trigger post-task reply)
+    this.injectCommentIntoRunningTask(taskId, authorName, content);
+
     // Notify agents about the comment
     if (this.agentManager) {
       const task = this.tasks.get(taskId);
@@ -232,6 +236,7 @@ export class TaskService {
         `Do NOT reply based solely on the comment above — you need the full picture.`,
       ].join('\n');
 
+      const isHuman = opts?.authorType === 'human';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -243,7 +248,8 @@ export class TaskService {
             content: buildNotifContent(reason),
             taskId,
           }, {
-            metadata: { senderName: authorName, senderRole: 'user', taskId },
+            ...(isHuman ? { priority: 0 as const } : {}),
+            metadata: { senderName: authorName, senderRole: isHuman ? 'user' : 'agent', taskId },
           });
         } catch { /* agent not found */ }
       };
@@ -266,18 +272,26 @@ export class TaskService {
         }
       }
     }
-    return { id: comment.id };
+    const serialized = {
+      id: comment.id, taskId: comment.taskId,
+      authorId: comment.authorId, authorName: comment.authorName, authorType: comment.authorType,
+      content: comment.content, attachments: comment.attachments, mentions: comment.mentions,
+      activityId: comment.activityId,
+      createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+    };
+    return { id: comment.id, comment: serialized };
   }
 
-  /** Post a structured comment on a requirement (used by agent tools) */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string }> {
+  /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[] }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
       authorId,
       authorName,
-      authorType: 'agent',
+      authorType: opts?.authorType ?? 'agent',
       content,
+      attachments: opts?.attachments,
       mentions: mentions ?? [],
       activityId,
     });
@@ -312,12 +326,13 @@ export class TaskService {
         `Comment from ${authorName}: ${content}`,
         ``,
         `**MANDATORY before replying**: You MUST first understand the full context:`,
-        `1. Call \`requirement_list\` to get the full requirement details and linked tasks`,
+        `1. Call \`requirement_get\` with requirement_id "${requirementId}" to see the full description, linked tasks, and all comments`,
         `2. Read ALL previous comments to understand the conversation thread`,
         `3. Only THEN formulate your response using \`requirement_comment\``,
         `Do NOT reply based solely on the comment above — you need the full picture.`,
       ].join('\n');
 
+      const isHumanReq = opts?.authorType === 'human';
       const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -329,7 +344,8 @@ export class TaskService {
             content: buildNotifContent(reason),
             requirementId,
           }, {
-            metadata: { senderName: authorName, senderRole: 'user' },
+            ...(isHumanReq ? { priority: 0 as const } : {}),
+            metadata: { senderName: authorName, senderRole: isHumanReq ? 'user' : 'agent' },
           });
         } catch { /* agent not found */ }
       };
@@ -346,7 +362,37 @@ export class TaskService {
         enqueueFor(req.createdBy, 'requirement_comment', `New comment from ${authorName} on a requirement you created`);
       }
     }
-    return { id: comment.id };
+    const serialized = {
+      id: comment.id, requirementId: comment.requirementId,
+      authorId: comment.authorId, authorName: comment.authorName, authorType: comment.authorType,
+      content: comment.content, attachments: comment.attachments, mentions: comment.mentions,
+      activityId: comment.activityId,
+      createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
+    };
+    return { id: comment.id, comment: serialized };
+  }
+
+  getRequirementComments(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }> {
+    if (!this.requirementCommentRepo) return [];
+    return this.requirementCommentRepo.getByRequirement(requirementId).map(c => ({
+      id: c.id,
+      authorId: c.authorId,
+      authorName: c.authorName,
+      content: c.content,
+      createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt),
+    }));
+  }
+
+  async getTaskComments(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>> {
+    if (!this.taskCommentRepo) return [];
+    const rows = await this.taskCommentRepo.getByTask(taskId);
+    return rows.map(c => ({
+      id: c.id,
+      authorId: c.authorId,
+      authorName: c.authorName,
+      content: c.content,
+      createdAt: c.createdAt instanceof Date ? c.createdAt.toISOString() : String(c.createdAt),
+    }));
   }
 
   setAuditService(audit: AuditService): void {
