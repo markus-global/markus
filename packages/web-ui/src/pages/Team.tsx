@@ -395,9 +395,11 @@ function MessageActions({
 /**
  * Convert message segments to execution stream entries for the timeline.
  *
- * Text segments are accumulated between tool calls and processed as a group
- * so that `<think>` blocks spanning multiple segments (split by tool calls)
- * are properly extracted rather than rendered as scattered fragments.
+ * Uses a stateful parser that tracks whether we are inside a `<think>` block
+ * across segment and tool-call boundaries. This ensures:
+ * - `<think>` blocks that span multiple segments are properly merged
+ * - Real (non-thinking) text between tool calls is shown at its natural position
+ * - Thinking content that spans a tool call is preserved across the gap
  */
 function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
   if (!segments) return [];
@@ -405,42 +407,71 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   let seq = 0;
   const now = new Date().toISOString();
   const aid = agentId ?? '';
-  const thinkRe = /<think>([\s\S]*?)(<\/think>|$)/g;
 
-  // Flush accumulated text buffer: extract thinking blocks, emit entries
-  const flushTextBuf = (buf: string) => {
-    if (!buf) return;
-    // Also merge segment-level thinking (from client-side extraction)
-    const thinking: string[] = [];
-    let rest = buf.replace(thinkRe, (_m, inner: string) => {
-      const t = inner.trim();
-      if (t) thinking.push(t);
-      return '';
-    });
-    // Strip orphaned tags left over from cross-segment splits
-    rest = rest.replace(/<\/think>/g, '').replace(/<think>/g, '').trim();
+  let insideThink = false;
+  let thinkBuf = '';
+  let textBuf = '';
 
-    if (thinking.length > 0) {
+  const emitThinking = () => {
+    const t = thinkBuf.trim();
+    if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: thinking.join('\n\n'), createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: now,
         metadata: { isThinking: true },
       });
     }
-    if (rest) {
+    thinkBuf = '';
+  };
+
+  const emitText = () => {
+    const t = textBuf.trim();
+    if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: rest, createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: now,
       });
+    }
+    textBuf = '';
+  };
+
+  const OPEN_TAG = '<think>';
+  const CLOSE_TAG = '</think>';
+
+  /** Parse text content, tracking <think> state across calls */
+  const processText = (content: string) => {
+    let pos = 0;
+    while (pos < content.length) {
+      if (insideThink) {
+        const closeIdx = content.indexOf(CLOSE_TAG, pos);
+        if (closeIdx === -1) {
+          thinkBuf += content.slice(pos);
+          pos = content.length;
+        } else {
+          thinkBuf += content.slice(pos, closeIdx);
+          insideThink = false;
+          emitThinking();
+          pos = closeIdx + CLOSE_TAG.length;
+        }
+      } else {
+        const openIdx = content.indexOf(OPEN_TAG, pos);
+        if (openIdx === -1) {
+          textBuf += content.slice(pos);
+          pos = content.length;
+        } else {
+          textBuf += content.slice(pos, openIdx);
+          emitText();
+          insideThink = true;
+          pos = openIdx + OPEN_TAG.length;
+        }
+      }
     }
   };
 
-  let textBuf = '';
   for (const seg of segments) {
     if (seg.type === 'tool') {
-      // Flush any accumulated text before this tool
-      flushTextBuf(textBuf);
-      textBuf = '';
+      // Flush pending regular text before the tool (thinking stays open across tools)
+      if (!insideThink) emitText();
 
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
@@ -459,14 +490,22 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
         });
       }
     } else {
-      // Accumulate text (including segment-level thinking) across tool boundaries
-      // so think blocks that span segments are properly reunited.
-      if (seg.thinking) textBuf += `<think>${seg.thinking}</think>`;
-      textBuf += seg.content;
+      // Handle client-side extracted thinking (from streaming)
+      if (seg.thinking) {
+        if (!insideThink) emitText();
+        thinkBuf += seg.thinking;
+        emitThinking();
+      }
+      processText(seg.content);
     }
   }
-  // Flush remaining text after the last tool
-  flushTextBuf(textBuf);
+
+  // Flush whatever remains
+  if (insideThink) {
+    emitThinking();
+  } else {
+    emitText();
+  }
   return entries;
 }
 
