@@ -1,6 +1,6 @@
 # Markus -- Technical Architecture
 
-> Last updated: 2026-04
+> Last updated: 2026-04-15
 
 ---
 
@@ -369,6 +369,8 @@ The `BuilderService` (`packages/org-manager/src/builder-service.ts`) encapsulate
 
 ## 5. Database Schema
 
+> **⚠️ Breaking Change (v0.4.17+):** PostgreSQL support has been completely removed. Markus now uses **SQLite exclusively**. Users upgrading from v0.4.16 or earlier who were using PostgreSQL will need to migrate their data to SQLite before upgrading.
+
 ```sql
 -- Users
 users (id, org_id, name, email, role, password_hash, created_at, last_login_at)
@@ -537,3 +539,15 @@ Same dashboard URL: `http://localhost:8056`.
 | `DATABASE_URL` | SQLite path override (default: `~/.markus/data.db`, format: `sqlite:/path/to/db`) |
 | `JWT_SECRET` | JWT signing key (recommended for production) |
 | `AUTH_ENABLED` | Enable login auth (default true) |
+
+---
+
+## 12. Known Risks
+
+| Risk | Level | Mitigation |
+|------|-------|------------|
+| **PostgreSQL removal (v0.4.17)** | High | Users with existing PostgreSQL deployments must migrate to SQLite before upgrading to v0.4.17+. No automatic migration tool is provided — manual data export/import required. |
+| **SQLite concurrent write** | Medium | SQLite has limited concurrent write performance. For high-throughput deployments, consider sequential task dispatch or external write coordination. |
+| **Mailbox deduplication edge cases** | Medium | `deduplicateQueue()` merges comments by taskId/requirementId — if comments have different content but same anchor, only the latest is preserved. Monitor production logs after deployment. |
+| **Memory consolidation (Dream Cycle)** | Low | Memory consolidation runs on a sleep cycle and may trigger unexpectedly in task-execution context. Ensure agents are idle when consolidation runs. |
+| **Large worktree directories** | Low | The platform stores per-task worktrees in agent directories (`~/.markus/agents/<agentId>/worktrees/`). Periodic cleanup of completed worktrees is recommended to avoid disk bloat. |
