@@ -1,5 +1,43 @@
 # Release Log
 
+## v0.4.19
+
+Mailbox 可靠性与 LLM 分诊系统；新增 `request_user_approval` 阻塞审批工具；结构化活动日志与持久认知；执行时间线 thinking 解析修复；移动端聊天 UI 优化。
+
+### New Features
+
+- **Mailbox 可靠性** — 完成标记系统（`<<HANDLE_COMPLETE>>`），异常检测自动重试（最多 2 次）；原始 XML 工具调用消毒（sanitizeLLMReply）；DB 新增 `retry_count` 列
+- **LLM 分诊系统** — 多项邮箱队列 LLM 驱动分诊决策，同实体（相同 task/requirement）预合并；分诊推理作为持久认知（persistent cognition）注入后续所有 LLM 调用
+- **`request_user_approval` 工具** — 替代 `request_user_chat`，支持自定义选项按钮、自由文本输入，阻塞等待用户响应；审批等待使用 24h 超时而非 5 分钟
+- **结构化活动日志** — 活动内容为干净摘要，metadata 携带 activityType / outcome / mailboxItemId / taskId 等，前端按类型渲染图标和分类卡片，支持点击展开和导航
+- **npm 更新检查器** — CLI 启动时检查新版本（24h 缓存），健康端点同步暴露
+- **Windows PowerShell 安装脚本** — 新增 `install.ps1`
+- **自动归档服务** — 可配置阈值的自动归档
+
+### Bug Fixes
+
+- **修复执行时间线 thinking 标签泄漏** — 状态化字符级解析器替代正则，跨工具调用边界正确追踪 `<think>` 状态，合并分散的文本片段
+- **修复移动端聊天 UI** — 操作按钮（Copy/Retry/Reply）移动端默认显示；Retry/Re-ask 限制为最新 Agent 消息；重试传递 `isRetry` 标志，服务端裁剪失败交互避免污染 LLM 上下文
+- **修复移动端滚动自动加载历史** — 替代手动"加载更早消息"按钮，滚动到顶部自动触发，浮动加载指示器不受滚动位置影响
+- **修复活动时间线文本溢出** — 长通知内容截断显示，短内容完整展示；移除 `notify_user` outcome 200 字符截断限制
+
+### Enhancements
+
+- 人类优先优先级模型：`human_chat` 为唯一 p0 用户交互类型，`system_event` / `task_comment` / `requirement_comment` 降为 p1
+- Mailbox 恢复增强：重启时重载排队项、过期 >3d 旧项、心跳折叠与评论合并去重
+- 任务恢复优化：优先级排序启动恢复、重试抖动（±20%）避免惊群、抢占重排队延迟
+- 活动类型重分类：Chat（human_chat、a2a_message）、Comment（task_comment、requirement_comment）、Mention（mention）
+- EventBus 转发（`forwardAgentEvents`）：agent 事件总线桥接到 manager 层
+- 评论逻辑集中到 TaskService，API Server 去重
+- 新增 `getRequirement` / `getTaskComments` Agent 工具
+- 睡眠看门狗（observational）与宽松处理超时，系统休眠后优雅恢复
+
+### Stats
+
+- 42 files changed, +3,043 / −731 lines
+
+---
+
 ## v0.4.18
 
 紧急修复 LLM 路由错误处理崩溃与流式气泡动画跨浏览器兼容问题。
