@@ -449,9 +449,10 @@ Connection: `ws://localhost:8056`
 |-------|---------|
 | `agent:update` | Agent state change (idle/working/offline/paused) |
 | `agent:mailbox` | New item enqueued to an agent's mailbox |
-| `agent:decision` | Agent attention decision (pick/defer/drop) |
+| `agent:decision` | Agent attention decision (pick/defer/drop/triage) |
 | `agent:attention` | Attention controller state change |
 | `agent:focus` | Agent switches to a new mailbox item |
+| `agent:triage` | Agent triage deliberation result (reasoning, process/defer/drop) |
 | `agent:started` | Agent process started |
 | `agent:stopped` | Agent process stopped |
 | `agent:paused` | Agent paused |

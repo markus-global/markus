@@ -9,6 +9,8 @@ import {
   createLogger,
   closeRuntimeLogger,
   checkForUpdate,
+  TRIAGE_MAX_TOKENS,
+  TRIAGE_TEMPERATURE,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -592,16 +594,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   }
 
-  // Auto-resume in_progress tasks after agents are fully loaded.
-  // Tasks retain their execution history in DB (task_logs + comments),
-  // so the agent receives full previous context on resume.
-  setTimeout(async () => {
-    try {
-      await taskService.resumeInProgressTasks();
-    } catch (err) {
-      log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
-    }
-  }, 3000);
+  // Task resume is triggered after agents finish starting (see below).
 
   // Wire External Agent Gateway for OpenClaw integration
   const gatewaySecret = config.security?.gatewaySecret ?? process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
@@ -910,6 +903,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
+        // Wire TriageJudge — uses the agent's configured LLM provider
+        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
+          ? agent.config.llmConfig.primary : undefined;
+        agent.getAttentionController().setTriageJudge(async (prompt: string) => {
+          const response = await llmRouter.chat({
+            messages: [
+              { role: 'system', content: 'You are a mailbox triage assistant. Output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: TRIAGE_TEMPERATURE,
+            maxTokens: TRIAGE_MAX_TOKENS,
+          }, triageProvider);
+          return response.content;
+        });
       } catch { /* agent not found */ }
     };
 
@@ -981,6 +988,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   eventBus.on('agent:focus-changed', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
     ws.broadcast({ type: 'agent:focus', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('attention:triage', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:triage', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Wire agent lifecycle events to WS broadcast
@@ -1141,8 +1152,15 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     }
   }).catch(() => {});
 
-  // Start restored agents in background (server is already accepting requests)
-  orgService.startRestoredAgentsInBackground();
+  // Start restored agents in background (server is already accepting requests),
+  // then auto-resume in_progress tasks once all agents are ready.
+  orgService.startRestoredAgentsInBackground().then(async () => {
+    try {
+      await taskService.resumeInProgressTasks();
+    } catch (err) {
+      log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
+    }
+  });
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');

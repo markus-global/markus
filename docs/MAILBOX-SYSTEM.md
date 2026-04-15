@@ -882,6 +882,7 @@ task:failed         ──────────►  task:failed         ─�
 mailbox:new-item    ──────────►  mailbox:new-item    ──────►  agent:mailbox WS event
 attention:decision  ──────────►  attention:decision  ──────►  agent:decision WS event
 attention:state-changed ──────►  attention:state-changed ──►  agent:attention WS event
+attention:triage    ──────────►  attention:triage    ──────►  agent:triage WS event
 ```
 
 Events emitted directly on the manager's bus (no forwarding needed):
@@ -946,7 +947,81 @@ Agent responses include a `<<HANDLE_COMPLETE>>` completion marker to detect abno
 
 ---
 
-## 21. Future Work
+## 21. Mailbox Triage System
+
+When an agent dequeues a mailbox item and additional items remain in the queue, the Attention Controller triggers an LLM-driven **triage phase** before processing. This ensures the agent considers all pending work holistically rather than blindly following priority order.
+
+### Pre-Triage Entity Consolidation
+
+Before triage (or processing), the system automatically consolidates queued items that share the same `taskId` or `requirementId` — regardless of `sourceType`. This is a cross-type merge: a `task_status_update`, `a2a_message`, `mention`, and `task_comment` all referencing `tsk_abc123` are collapsed into a single rich-context item.
+
+This differs from enqueue-time dedup (which only merges same-type comments):
+- **Enqueue-time**: `task_comment` + `task_comment` for same task → merged (fast, prevents accumulation)
+- **Pre-triage**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
+
+The headItem is temporarily put back into the queue so it participates in consolidation, then re-dequeued.
+
+### Fast Path vs Deep Path
+
+- **Fast path** (queue depth = 0 after consolidation): No triage needed — process the single item immediately.
+- **Deep path** (queue depth > 0): The `TriageJudge` LLM callback is invoked with all candidate items, recent conversation context, and recent activity summaries.
+
+### Triage Flow
+
+```
+dequeueAsync() → headItem
+  │
+  ├─ queue empty? → FAST PATH: record 'pick' → process(headItem)
+  │
+  └─ queue non-empty?
+       ├─ CONSOLIDATION: putBack(headItem) → consolidateByEntity() → dequeue()
+       │    (items sharing same taskId/requirementId merged cross-type)
+       │
+       ├─ queue empty after consolidation? → FAST PATH
+       │
+       └─ triageJudge configured?
+            → performTriage(headItem)
+                 ├─ Build prompt (all candidates + agent context)
+                 ├─ TriageJudge returns JSON: { processItemId, deferItemIds, dropItemIds, reasoning }
+                 ├─ Validate IDs against candidate set
+                 ├─ If chosen ≠ headItem: putBack(headItem), dequeueById(chosen)
+                 ├─ Apply defer/drop decisions
+                 ├─ Notify delegate → updateCognition
+                 ├─ Emit 'attention:triage' → WS → frontend
+                 └─ Record 'triage' decision
+```
+
+### Cognition Injection
+
+The triage reasoning becomes the agent's **persistent situational awareness** — stored as `currentCognition` and injected into all subsequent LLM system prompts via `getDynamicContext()`. This ensures the agent maintains behavioral consistency across different processing contexts (chat, task execution, A2A communication).
+
+```
+TriageResult.reasoning
+  → Agent.updateCognition()
+    → this.currentCognition = "## Current Situational Awareness ..."
+      → getDynamicContext() includes currentCognition
+        → injected into every LLM call's system prompt
+```
+
+### Key Methods
+
+| Method | Location | Purpose |
+|--------|----------|---------|
+| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
+| `performTriage()` | `attention.ts` | Builds prompt, calls TriageJudge, parses/validates result |
+| `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
+| `putBack()` | `mailbox.ts` | Returns a dequeued item to queue (no retryCount increment) |
+| `dequeueById()` | `mailbox.ts` | Dequeues a specific item by ID (for triage swap) |
+| `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
+| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity |
+
+### Triage Prompt Identity
+
+The triage prompt uses first-person perspective: "You are {agentName}." The agent deliberates **as itself**, not as an external "attention manager." This is consistent with the agent's self-identity across all LLM interactions.
+
+---
+
+## 22. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.

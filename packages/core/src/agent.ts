@@ -20,6 +20,7 @@ import {
   type AttentionDecision,
   type DecisionType,
   type AgentMindState,
+  type TriageResult,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
@@ -252,6 +253,11 @@ export class Agent {
   private processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
   private lastInjectedActivityType?: string;
+  /** Persistent situational awareness from the latest triage deliberation. */
+  private currentCognition?: string;
+  /** Ring buffer of recent activity summaries for triage context. */
+  private recentActivityRing: string[] = [];
+  private static readonly ACTIVITY_RING_SIZE = 8;
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
@@ -755,6 +761,20 @@ export class Agent {
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
         return this.attentionController.heuristicDecision(currentItem, newItem);
+      },
+      getTriageContext: async () => {
+        const messages = this.currentSessionId
+          ? this.memory.getRecentMessages(this.currentSessionId, 10)
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .slice(-6)
+              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 200) : String(m.content).slice(0, 200) }))
+          : [];
+        const activities = this.recentActivitySummaries();
+        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities };
+      },
+      onTriageCompleted: (result) => {
+        if (!result) return;
+        this.updateCognition(result);
       },
     };
   }
@@ -1656,6 +1676,10 @@ export class Agent {
     this.lastInjectedActivityType = opts.type;
 
     const text = opts.summary;
+    this.recentActivityRing.push(`[${opts.type}] ${text}${opts.outcome ? ' → ' + opts.outcome : ''}`);
+    if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+      this.recentActivityRing.shift();
+    }
     this.memory.appendMessage(this.currentSessionId, {
       role: 'assistant',
       content: text,
@@ -1675,6 +1699,31 @@ export class Agent {
     });
   }
 
+  /**
+   * Get the last N activity summaries for triage context.
+   */
+  private recentActivitySummaries(count = 5): string[] {
+    return this.recentActivityRing.slice(-count);
+  }
+
+  /**
+   * Update the agent's persistent situational awareness from a triage result.
+   * This cognition is injected into all subsequent system prompts via getDynamicContext().
+   */
+  private updateCognition(result: TriageResult): void {
+    const lines: string[] = [];
+    lines.push('## Current Situational Awareness (latest triage)');
+    lines.push(`Decision: Processing item [${result.processItemId}]`);
+    if (result.deferItemIds.length > 0) {
+      lines.push(`Deferred ${result.deferItemIds.length} item(s)`);
+    }
+    if (result.dropItemIds.length > 0) {
+      lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
+    }
+    lines.push(`Reasoning: ${result.reasoning}`);
+    this.currentCognition = lines.join('\n');
+  }
+
   private async fetchChatSessions(): Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }> | undefined> {
     if (!this.chatSessionsFetcher) return undefined;
     try {
@@ -1686,6 +1735,9 @@ export class Agent {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
+    }
+    if (this.currentCognition) {
+      parts.push(this.currentCognition);
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -3829,7 +3881,7 @@ export class Agent {
         this.injectActivityToMainSession({
           type: 'notify_user',
           summary: title,
-          outcome: body.length > 200 ? body.slice(0, 200) + '…' : body,
+          outcome: body,
         });
         log.info('User notification sent', { agentId: this.id, title });
         return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });

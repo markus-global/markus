@@ -135,7 +135,23 @@ export type DecisionType =
   | 'defer'
   | 'merge'
   | 'delegate'
-  | 'drop';
+  | 'drop'
+  | 'triage';
+
+// ─── Triage Types ──────────────────────────────────────────────────────────
+
+export interface TriageContext {
+  agentName: string;
+  recentMainSessionMessages: Array<{ role: string; content: string }>;
+  recentActivitySummaries: string[];
+}
+
+export interface TriageResult {
+  processItemId: string;
+  deferItemIds: string[];
+  dropItemIds: string[];
+  reasoning: string;
+}
 
 export interface AttentionDecision {
   id: string;
@@ -184,6 +200,13 @@ export interface AgentMindState {
     deferredUntil?: string;
   }>;
   recentDecisions: AttentionDecision[];
+  lastTriage?: {
+    reasoning: string;
+    processedItemId: string;
+    deferredItemIds: string[];
+    droppedItemIds: string[];
+    timestamp: string;
+  };
 }
 
 // ─── User Notification Type Registry ─────────────────────────────────────────

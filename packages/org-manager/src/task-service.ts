@@ -38,6 +38,8 @@ import {
   TASK_MAX_NO_SUBMIT_RETRIES,
   TASK_RETRY_DELAYS_MS,
   TASK_LIST_PAGE_MAX,
+  withJitter,
+  PREEMPT_REQUEUE_DELAY_MS,
 } from '@markus/shared';
 import type { AgentManager, TaskProjectContext, ReviewService, ReviewReport } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -1236,7 +1238,7 @@ export class TaskService {
               if (!alreadyTerminal && currentTask && currentTask.status === 'in_progress') {
                 const nextAttempt = _retryAttempt + 1;
                 if (nextAttempt < TaskService.MAX_IN_PROGRESS_RETRIES) {
-                  const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000;
+                  const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
                   log.warn(`Task execution finished without task_submit_review — auto-retrying in ${delayMs / 1000}s (attempt ${nextAttempt})`, { taskId });
                   this.addTaskNote(taskId,
                     `[System] Execution finished but agent did not call task_submit_review. Auto-retrying (attempt ${nextAttempt}).`,
@@ -1286,7 +1288,7 @@ export class TaskService {
                 `[System] Task preempted by higher-priority item (${preemptedBy}). Will auto-resume.`,
                 'system'
               );
-              setImmediate(() => {
+              setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
                 const activeToken = this.taskCancelTokens.get(taskId);
@@ -1295,14 +1297,14 @@ export class TaskService {
                 this.runTask(taskId).catch(err =>
                   log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
                 );
-              });
+              }, PREEMPT_REQUEUE_DELAY_MS);
             }
           } else if (entry.type === 'error') {
             const nextAttempt = _retryAttempt + 1;
             const retryDecision = this.shouldRetryTask(taskId, entry.content, _retryAttempt, cancelToken.cancelled);
             if (retryDecision.shouldRetry) {
-              const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000;
-              const retryMsg = `Attempt ${nextAttempt} failed. Retrying in ${delayMs / 1000}s… (${retryDecision.reason})`;
+              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
+              const retryMsg = `Attempt ${nextAttempt} failed. Retrying in ${Math.round(delayMs / 1000)}s… (${retryDecision.reason})`;
               log.warn(retryMsg, { taskId, attempt: nextAttempt, error: entry.content });
               const noticeSeq = seq++;
               const noticeEntry = {
@@ -1363,9 +1365,9 @@ export class TaskService {
         if (!cancelToken.cancelled) {
           const retryDecision = this.shouldRetryTask(taskId, String(err), _retryAttempt, false);
           if (retryDecision.shouldRetry) {
-            const delayMs = TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000;
+            const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
             const nextAttempt = _retryAttempt + 1;
-            log.warn(`Retrying task in ${delayMs / 1000}s (attempt ${nextAttempt}, ${retryDecision.reason})`, { taskId });
+            log.warn(`Retrying task in ${Math.round(delayMs / 1000)}s (attempt ${nextAttempt}, ${retryDecision.reason})`, { taskId });
             setTimeout(() => {
               const current = this.tasks.get(taskId);
               if (!current || current.status !== 'in_progress') return;
@@ -1458,12 +1460,23 @@ export class TaskService {
     }
   }
 
+  private static readonly PRIORITY_ORDER: Record<string, number> = {
+    urgent: 0, high: 1, medium: 2, low: 3,
+  };
+
   /**
    * Resume execution for all tasks that are currently in_progress.
    * Call this after agents have been loaded and started (on server startup).
+   * Tasks are resumed in priority order (urgent first) so the most important
+   * work enters the attention queue earliest.
    */
   async resumeInProgressTasks(): Promise<void> {
-    const inProgressTasks = [...this.tasks.values()].filter(t => t.status === 'in_progress');
+    const inProgressTasks = [...this.tasks.values()]
+      .filter(t => t.status === 'in_progress')
+      .sort((a, b) =>
+        (TaskService.PRIORITY_ORDER[a.priority] ?? 2) -
+        (TaskService.PRIORITY_ORDER[b.priority] ?? 2)
+      );
     if (inProgressTasks.length === 0) return;
 
     log.info(`Resuming ${inProgressTasks.length} in_progress task(s) after restart`);
@@ -1471,7 +1484,7 @@ export class TaskService {
     for (const task of inProgressTasks) {
       try {
         await this.runTask(task.id);
-        log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title });
+        log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title, priority: task.priority });
       } catch (err) {
         log.warn(`Failed to resume task on startup`, {
           taskId: task.id,
@@ -3495,8 +3508,8 @@ export class TaskService {
             const currentTask = this.tasks.get(taskId);
             const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived'].includes(currentTask.status);
             if (!alreadyTerminal && currentTask && currentTask.status === 'in_progress') {
-              const delayMs = TaskService.RETRY_DELAYS_MS[0] ?? 10_000;
-              log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${delayMs / 1000}s`, { taskId });
+              const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 10_000);
+              log.warn(`Fresh retry finished without task_submit_review — auto-retrying in ${Math.round(delayMs / 1000)}s`, { taskId });
               this.addTaskNote(taskId,
                 `[System] Fresh retry finished without task_submit_review. Auto-retrying.`,
                 'system'

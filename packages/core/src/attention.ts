@@ -9,10 +9,17 @@ import {
   type DecisionType,
   type DecisionContext,
   type AgentMindState,
+  type TriageContext,
+  type TriageResult,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
   COMPLETION_MARKER,
+  PRIORITY_LABELS,
+  TRIAGE_PROMPT_MAX_ITEMS,
+  MAILBOX_PROCESSING_TIMEOUT_MS,
+  WATCHDOG_INTERVAL_MS,
+  WATCHDOG_DRIFT_THRESHOLD_MS,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
@@ -62,6 +69,8 @@ export interface AttentionDelegate {
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): Promise<DecisionType>;
+  getTriageContext?(): Promise<TriageContext>;
+  onTriageCompleted?(result: TriageResult | null): void;
 }
 
 export interface DecisionPersistence {
@@ -73,6 +82,14 @@ export interface DecisionPersistence {
  * Receives a structured prompt and returns a DecisionType string.
  */
 export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
+
+/**
+ * LLM judge for triage decisions — holistic assessment of all queued items.
+ * Returns a raw JSON string that the caller parses into a TriageResult.
+ * Separate from LLMDecisionJudge because triage is N-item → structured JSON,
+ * while interrupt decisions are 2-item → single word.
+ */
+export type TriageJudge = (prompt: string) => Promise<string>;
 
 /**
  * Event-driven attention controller for a single agent.
@@ -100,8 +117,13 @@ export class AttentionController {
   private delegate?: AttentionDelegate;
   private decisionPersistence?: DecisionPersistence;
   private llmJudge?: LLMDecisionJudge;
+  private triageJudge?: TriageJudge;
+  private lastTriageResult?: TriageResult & { timestamp: string };
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
+  private watchdogTimer?: ReturnType<typeof setInterval>;
+  private watchdogLastTick = Date.now();
+  private processingStartedAt?: number;
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
@@ -139,6 +161,7 @@ export class AttentionController {
       },
     );
 
+    this.startWatchdog();
     this.loopPromise = this.runLoop();
     log.info('Attention controller started', { agentId: this.agentId });
   }
@@ -150,13 +173,54 @@ export class AttentionController {
     this.running = false;
     this.unsubscribeNewItem?.();
     this.unsubscribeNewItem = undefined;
+    this.stopWatchdog();
     this.mailbox.cancelWait();
     log.info('Attention controller stopped', { agentId: this.agentId });
+  }
+
+  // ─── Sleep Watchdog ──────────────────────────────────────────────────────
+
+  private startWatchdog(): void {
+    this.watchdogLastTick = Date.now();
+    this.watchdogTimer = setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - this.watchdogLastTick;
+      this.watchdogLastTick = now;
+
+      if (elapsed > WATCHDOG_INTERVAL_MS + WATCHDOG_DRIFT_THRESHOLD_MS) {
+        const focusedId = this.currentFocus?.id;
+        const processingFor = this.processingStartedAt
+          ? Math.round((now - this.processingStartedAt) / 1000)
+          : 0;
+        log.warn('System sleep/wake detected', {
+          agentId: this.agentId,
+          driftMs: elapsed,
+          state: this.state,
+          focusedItemId: focusedId,
+          processingForSec: processingFor,
+        });
+      }
+    }, WATCHDOG_INTERVAL_MS);
+
+    if (this.watchdogTimer && typeof this.watchdogTimer === 'object' && 'unref' in this.watchdogTimer) {
+      this.watchdogTimer.unref();
+    }
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = undefined;
+    }
   }
 
   /**
    * Main attention loop. Blocks on mailbox when idle, processes one item
    * at a time, then returns to idle.
+   *
+   * Triage phase: after dequeuing the head item, if additional items remain
+   * in the queue AND a TriageJudge is configured, perform LLM-driven
+   * deliberation to decide which item to process first.
    */
   private async runLoop(): Promise<void> {
     while (this.running) {
@@ -180,8 +244,68 @@ export class AttentionController {
         break;
       }
 
-      const decision = this.recordDecision('pick', item, `Idle, processing ${item.sourceType}`);
-      this.delegate?.onDecisionMade(decision);
+      // Pre-triage consolidation: merge items sharing the same task/requirement.
+      // Put headItem back temporarily so it participates in consolidation,
+      // then re-dequeue the (possibly enriched) head.
+      if (this.mailbox.depth > 0) {
+        this.mailbox.putBack(item);
+        const consolidated = this.mailbox.consolidateByEntity();
+        const reHead = this.mailbox.dequeue();
+        if (reHead) {
+          item = reHead;
+        }
+        if (consolidated > 0) {
+          log.info('Pre-triage consolidation reduced queue', {
+            agentId: this.agentId,
+            merged: consolidated,
+            remainingDepth: this.mailbox.depth,
+          });
+        }
+      }
+
+      // Triage: LLM deliberation is only needed when:
+      // 1. Multiple distinct items remain after consolidation
+      // 2. Priority alone can't decide — the head item shares its priority
+      //    with at least one other queued item (ambiguous ordering)
+      // 3. A TriageJudge is configured
+      // When priorities clearly separate items, the priority queue already
+      // produces the right order — no LLM call needed.
+      let triaged = false;
+      if (this.mailbox.depth > 0 && this.triageJudge && this.needsLLMTriage(item)) {
+        const triageResult = await this.performTriage(item);
+        if (triageResult) {
+          triaged = true;
+          if (triageResult.processItemId !== item.id) {
+            this.mailbox.putBack(item);
+            const chosen = this.mailbox.dequeueById(triageResult.processItemId);
+            if (chosen) {
+              item = chosen;
+            } else {
+              const redequeued = this.mailbox.dequeueById(item.id);
+              if (redequeued) item = redequeued;
+            }
+          }
+          for (const deferId of triageResult.deferItemIds) {
+            this.mailbox.defer(deferId);
+          }
+          for (const dropId of triageResult.dropItemIds) {
+            this.mailbox.complete(dropId);
+          }
+          this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
+          this.delegate?.onTriageCompleted?.(triageResult);
+          this.eventBus.emit('attention:triage', {
+            agentId: this.agentId,
+            triage: this.lastTriageResult,
+          });
+          const triageDecision = this.recordDecision('triage', item, triageResult.reasoning);
+          this.delegate?.onDecisionMade(triageDecision);
+        }
+      }
+
+      if (!triaged) {
+        const decision = this.recordDecision('pick', item, `Idle, processing ${item.sourceType}`);
+        this.delegate?.onDecisionMade(decision);
+      }
 
       await this.processFocusedItem(item);
     }
@@ -198,11 +322,35 @@ export class AttentionController {
     this.currentFocus = item;
     this.interruptSignal = false;
     this.pendingInterruptItem = undefined;
+    this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
     let reply: string | void = undefined;
+    let timedOut = false;
     try {
-      reply = await this.delegate?.processMailboxItem(item);
+      // The delegate's processMailboxItem makes LLM calls and shell commands,
+      // each of which has its own transport-level timeout. This outer timeout
+      // is a generous backstop — by the time it fires, all underlying I/O has
+      // surely completed or failed, so requeuing is safe.
+      const processing = this.delegate?.processMailboxItem(item);
+      const backstop = new Promise<undefined>(resolve =>
+        setTimeout(() => resolve(undefined), MAILBOX_PROCESSING_TIMEOUT_MS),
+      );
+      const result = await Promise.race([
+        processing?.then(r => ({ done: true as const, reply: r })),
+        backstop.then(() => ({ done: false as const, reply: undefined })),
+      ]);
+      if (result?.done) {
+        reply = result.reply;
+      } else {
+        timedOut = true;
+        log.error('Processing exceeded backstop timeout — requeueing', {
+          agentId: this.agentId,
+          itemId: item.id,
+          type: item.sourceType,
+          timeoutMs: MAILBOX_PROCESSING_TIMEOUT_MS,
+        });
+      }
     } catch (err) {
       log.warn('Error processing mailbox item', {
         agentId: this.agentId,
@@ -212,29 +360,35 @@ export class AttentionController {
       });
     }
 
-    const abnormalReason = detectAbnormalCompletion(reply, item);
-    const retries = item.retryCount ?? 0;
+    this.processingStartedAt = undefined;
 
-    if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
-      log.warn('Abnormal completion detected, requeueing for retry', {
-        agentId: this.agentId,
-        itemId: item.id,
-        type: item.sourceType,
-        retryCount: retries + 1,
-        reason: abnormalReason,
-      });
+    if (timedOut) {
       this.mailbox.requeue(item);
     } else {
-      if (abnormalReason) {
-        log.error('Abnormal completion persisted after max retries, completing anyway', {
+      const abnormalReason = detectAbnormalCompletion(reply, item);
+      const retries = item.retryCount ?? 0;
+
+      if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
+        log.warn('Abnormal completion detected, requeueing for retry', {
           agentId: this.agentId,
           itemId: item.id,
           type: item.sourceType,
-          retryCount: retries,
+          retryCount: retries + 1,
           reason: abnormalReason,
         });
+        this.mailbox.requeue(item);
+      } else {
+        if (abnormalReason) {
+          log.error('Abnormal completion persisted after max retries, completing anyway', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            retryCount: retries,
+            reason: abnormalReason,
+          });
+        }
+        this.mailbox.complete(item.id);
       }
-      this.mailbox.complete(item.id);
     }
 
     this.currentFocus = undefined;
@@ -328,6 +482,10 @@ export class AttentionController {
    */
   setLLMJudge(judge: LLMDecisionJudge | undefined): void {
     this.llmJudge = judge;
+  }
+
+  setTriageJudge(judge: TriageJudge | undefined): void {
+    this.triageJudge = judge;
   }
 
   /**
@@ -455,12 +613,12 @@ export class AttentionController {
 
     const queuedItems = this.mailbox.getQueuedItems();
     const queueSection = queuedItems.length > 0
-      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary.slice(0, 80)}"`).join('\n')
+      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary}"`).join('\n')
       : '  (empty)';
 
     return [
-      'You are an attention manager for an AI agent. Decide how to handle a new incoming item.',
-      'CRITICAL RULE: User chat (human_chat) and user comments (task_comment) ALWAYS take priority over all other work.',
+      'You are deciding how to handle a new incoming item in your mailbox.',
+      'CRITICAL RULE: Human messages (human_chat) and human comments ALWAYS take priority over all other work.',
       '',
       `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
       `  "${currentItem.payload.summary}"`,
@@ -478,6 +636,159 @@ export class AttentionController {
       '',
       'Choose exactly one: continue | preempt | merge | defer',
       'Reply with ONLY the decision word, nothing else.',
+    ].join('\n');
+  }
+
+  // ─── Triage ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Determine whether LLM triage is actually needed.
+   *
+   * Priority queue already handles the clear cases:
+   * - headItem is p0 (Critical) and all queued items are p1+ → just process head
+   * - headItem has a strictly lower priority number than all queued items → process head
+   *
+   * LLM triage is needed when:
+   * - Multiple items at the same priority level as head (ambiguous ordering)
+   * - Or queued items contain a higher-priority item than head (shouldn't happen
+   *   with correct priority queue, but defensive check)
+   */
+  private needsLLMTriage(headItem: MailboxItem): boolean {
+    const queued = this.mailbox.getQueuedItems();
+    if (queued.length === 0) return false;
+
+    // If any queued item has the same or higher priority as head, LLM should decide
+    const samePriorityCount = queued.filter(i => i.priority <= headItem.priority).length;
+    return samePriorityCount > 0;
+  }
+
+  /**
+   * LLM-driven triage: given the dequeued head item plus all remaining
+   * queued items, ask the agent to decide which one to process first
+   * and whether to defer or drop any others.
+   */
+  private async performTriage(headItem: MailboxItem): Promise<TriageResult | null> {
+    if (!this.triageJudge) return null;
+    this.setState('deciding');
+
+    try {
+      const ctx = await this.delegate?.getTriageContext?.();
+      const prompt = this.buildTriagePrompt(headItem, ctx ?? undefined);
+      const raw = await this.triageJudge(prompt);
+
+      // Strip <think>...</think> blocks that some models (e.g. Qwen, DeepSeek) emit.
+      // Handle both closed tags and unclosed (truncated) thinking blocks.
+      const cleaned = raw
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/<think>[\s\S]*/gi, '')
+        .trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log.warn('Triage judge returned non-JSON response', { agentId: this.agentId, raw: raw.slice(0, 300) });
+        return null;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]) as Partial<TriageResult>;
+      if (!parsed.processItemId || !parsed.reasoning) {
+        log.warn('Triage judge returned incomplete result', { agentId: this.agentId, parsed });
+        return null;
+      }
+
+      // Validate that processItemId is in our candidate set
+      const allCandidateIds = new Set([headItem.id, ...this.mailbox.getQueuedItems().map(i => i.id)]);
+      if (!allCandidateIds.has(parsed.processItemId)) {
+        log.warn('Triage judge chose unknown item ID', {
+          agentId: this.agentId,
+          chosen: parsed.processItemId,
+          candidates: [...allCandidateIds],
+        });
+        return null;
+      }
+
+      return {
+        processItemId: parsed.processItemId,
+        deferItemIds: (parsed.deferItemIds ?? []).filter(id => allCandidateIds.has(id)),
+        dropItemIds: (parsed.dropItemIds ?? []).filter(id => allCandidateIds.has(id)),
+        reasoning: parsed.reasoning,
+      };
+    } catch (err) {
+      log.warn('Triage deliberation failed, falling back to priority order', {
+        agentId: this.agentId,
+        error: String(err),
+      });
+      return null;
+    }
+  }
+
+  private buildTriagePrompt(headItem: MailboxItem, ctx?: TriageContext): string {
+    const agentName = ctx?.agentName ?? 'Agent';
+    const queuedItems = this.mailbox.getQueuedItems();
+    const allItems = [headItem, ...queuedItems];
+
+    const shown = allItems.slice(0, TRIAGE_PROMPT_MAX_ITEMS);
+    const overflow = allItems.length - shown.length;
+
+    const formatItem = (item: MailboxItem, idx: number) => {
+      const pri = PRIORITY_LABELS?.[item.priority] ?? `p${item.priority}`;
+      const age = Math.round((Date.now() - new Date(item.queuedAt).getTime()) / 60000);
+      return [
+        `  [${idx + 1}] id="${item.id}"`,
+        `      type=${item.sourceType}  priority=${pri}  age=${age}min`,
+        `      summary: "${item.payload.summary}"`,
+        item.payload.taskId ? `      taskId: ${item.payload.taskId}` : null,
+        item.metadata?.senderName ? `      from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
+      ].filter(Boolean).join('\n');
+    };
+
+    const itemsSection = shown.map(formatItem).join('\n\n');
+    const overflowNote = overflow > 0
+      ? `\n\n  ... and ${overflow} more items (lower priority, similar types). You can only choose from the items listed above.`
+      : '';
+
+    const recentContext = ctx?.recentMainSessionMessages
+      ?.map(m => `  [${m.role}]: ${m.content}`)
+      .join('\n') ?? '  (no recent context)';
+
+    const recentActivity = ctx?.recentActivitySummaries?.length
+      ? ctx.recentActivitySummaries.map(a => `  - ${a}`).join('\n')
+      : '  (no recent activity)';
+
+    const recentDecs = this.decisions.slice(-5).map(d =>
+      `  - ${d.decisionType}: ${d.reasoning}`
+    ).join('\n') || '  (none)';
+
+    return [
+      `You are ${agentName}. You have ${allItems.length} items in your mailbox that need attention.`,
+      `Your job is to decide which item to process NOW.`,
+      '',
+      `## Mailbox Items (top ${shown.length} candidates)`,
+      itemsSection + overflowNote,
+      '',
+      '## Your Recent Conversation Context',
+      recentContext,
+      '',
+      '## Your Recent Activity',
+      recentActivity,
+      '',
+      '## Your Recent Decisions',
+      recentDecs,
+      '',
+      '## Rules',
+      '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
+      '- Consider dependencies: if one item provides context needed by another, process it first.',
+      '- Consider urgency: older high-priority items should not be indefinitely deferred.',
+      '- DEFER means "handle later" — use for items that can wait but should not be forgotten.',
+      '- DROP means "not worth processing" — use only for truly redundant or obsolete items (e.g., status updates already superseded).',
+      '- When in doubt, process items in priority order (lower number = higher priority).',
+      '',
+      '## Required Response Format',
+      'Respond with ONLY a JSON object, nothing else:',
+      '{',
+      '  "processItemId": "<id of the item to process NOW>",',
+      '  "deferItemIds": ["<ids to defer>"],',
+      '  "dropItemIds": ["<ids to drop>"],',
+      '  "reasoning": "<1-2 sentence explanation>"',
+      '}',
     ].join('\n');
   }
 
@@ -518,6 +829,13 @@ export class AttentionController {
       })),
       deferredItems: [],
       recentDecisions: this.decisions.slice(-10),
+      lastTriage: this.lastTriageResult ? {
+        reasoning: this.lastTriageResult.reasoning,
+        processedItemId: this.lastTriageResult.processItemId,
+        deferredItemIds: this.lastTriageResult.deferItemIds,
+        droppedItemIds: this.lastTriageResult.dropItemIds,
+        timestamp: this.lastTriageResult.timestamp,
+      } : undefined,
     };
   }
 
@@ -576,8 +894,8 @@ export class AttentionController {
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): string {
-    const newLabel = `${newItem.sourceType}: "${newItem.payload.summary.slice(0, 60)}"`;
-    const currentLabel = `${currentItem.sourceType}: "${currentItem.payload.summary.slice(0, 60)}"`;
+    const newLabel = `${newItem.sourceType}: "${newItem.payload.summary}"`;
+    const currentLabel = `${currentItem.sourceType}: "${currentItem.payload.summary}"`;
 
     switch (type) {
       case 'continue':

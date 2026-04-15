@@ -1969,6 +1969,7 @@ export class AgentManager {
       'mailbox:new-item',
       'attention:decision',
       'attention:state-changed',
+      'attention:triage',
     ] as const;
     const agentBus = agent.getEventBus();
     for (const eventName of FORWARDED_EVENTS) {

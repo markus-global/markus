@@ -1501,8 +1501,8 @@ const CATEGORY_FILTERS: Array<{ key: string; label: string }> = [
 ];
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: 'bg-green-500', processing: 'bg-brand-400 animate-pulse',
-  deferred: 'bg-purple-400', merged: 'bg-blue-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
+  completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
+  deferred: 'bg-purple-400', merged: 'bg-cyan-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
 };
 
 const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }> = [
@@ -1518,6 +1518,162 @@ const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }>
 const ACTIVITY_ICONS: Record<string, string> = {
   task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
 };
+
+const STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  pending: { label: 'Pending', color: 'text-gray-400' },
+  assigned: { label: 'Assigned', color: 'text-blue-400' },
+  in_progress: { label: 'In Progress', color: 'text-brand-400' },
+  completed: { label: 'Completed', color: 'text-green-400' },
+  failed: { label: 'Failed', color: 'text-red-400' },
+  cancelled: { label: 'Cancelled', color: 'text-gray-500' },
+  review: { label: 'Review', color: 'text-amber-400' },
+  approved: { label: 'Approved', color: 'text-green-500' },
+  rejected: { label: 'Rejected', color: 'text-red-500' },
+  draft: { label: 'Draft', color: 'text-gray-400' },
+};
+
+/**
+ * Extract the actual comment text from a mailbox content payload.
+ * The content typically looks like:
+ *   `... Comment from Author: <actual text>\n\n**MANDATORY ...`
+ * We extract just the user-written comment, trimmed to a reasonable preview length.
+ */
+function extractCommentText(content: string): string | undefined {
+  // Pattern: "Comment from AuthorName: actual comment text"
+  const m = content.match(/Comment from .+?:\s*(.+?)(?:\n\n\*\*MANDATORY|\n\n---|\n\n\[|$)/s);
+  if (m?.[1]) {
+    const text = m[1].trim().replace(/\n/g, ' ');
+    if (text.length > 80) return text.slice(0, 80) + '…';
+    return text;
+  }
+  return undefined;
+}
+
+/**
+ * Extract user-friendly display title and optional subtitle from a mailbox item,
+ * replacing raw prompt text with structured information.
+ */
+function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): { title: string; subtitle?: string; badge?: { label: string; color: string } } {
+  const payload = item.payload;
+  const summary = payload?.summary ?? '';
+  const content = payload?.content ?? '';
+  const sender = item.metadata?.senderName as string | undefined;
+
+  switch (item.sourceType) {
+    case 'task_status_update': {
+      // Extract task title and status transition from summary: `Task "title" status: from → to`
+      const titleMatch = summary.match(/^Task "(.+?)" status:/);
+      const statusMatch = summary.match(/status:\s*(\S+)\s*→\s*(\S+)/);
+      const taskTitle = titleMatch?.[1] ?? summary;
+      if (statusMatch) {
+        const from = statusMatch[1];
+        const to = statusMatch[2];
+        const fromDisplay = STATUS_DISPLAY[from] ?? { label: from, color: 'text-fg-tertiary' };
+        const toDisplay = STATUS_DISPLAY[to] ?? { label: to, color: 'text-fg-secondary' };
+        return {
+          title: taskTitle,
+          subtitle: `${fromDisplay.label} → ${toDisplay.label}`,
+          badge: toDisplay,
+        };
+      }
+      // Fallback for task execution triggers
+      const execMatch = summary.match(/^Task:\s*(.+)/);
+      if (execMatch) return { title: execMatch[1] };
+      return { title: taskTitle };
+    }
+
+    case 'task_comment': {
+      const m = summary.match(/^Comment on task "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const commentText = extractCommentText(content);
+      if (m) {
+        const sub = commentText
+          ? `${m[2]}: ${commentText}`
+          : `Comment from ${m[2]}`;
+        return { title: m[1], subtitle: sub };
+      }
+      return { title: summary };
+    }
+
+    case 'requirement_update': {
+      // Summary: `Requirement "title" status: from → to` or `Requirement "title" rejected/approved`
+      const titleMatch = summary.match(/^Requirement "(.+?)"\s+(.*)/);
+      if (titleMatch) return { title: titleMatch[1], subtitle: titleMatch[2] };
+      return { title: summary };
+    }
+
+    case 'requirement_comment': {
+      const m = summary.match(/^Comment on requirement "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const commentText = extractCommentText(content);
+      if (m) {
+        const sub = commentText
+          ? `${m[2]}: ${commentText}`
+          : `Comment from ${m[2]}`;
+        return { title: m[1], subtitle: sub };
+      }
+      return { title: summary };
+    }
+
+    case 'human_chat': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Chat from ${sender}` : 'Human Chat',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'a2a_message': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Message from ${sender}` : 'Agent Message',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'mention': {
+      const m = summary.match(/from (.+)$/);
+      const commentText = extractCommentText(content);
+      return {
+        title: m ? `Mentioned by ${m[1]}` : 'Mention',
+        subtitle: commentText || undefined,
+      };
+    }
+
+    case 'review_request': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Review request from ${sender}` : 'Review Request',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'session_reply': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Reply in session (${sender})` : 'Session Reply',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'heartbeat':
+      return { title: 'Scheduled heartbeat check-in' };
+
+    case 'daily_report':
+      return { title: 'Daily Report' };
+
+    case 'memory_consolidation':
+      return { title: 'Memory Consolidation' };
+
+    case 'system_event': {
+      // Summary: `[Announcement] title`
+      const annoMatch = summary.match(/^\[Announcement]\s*(.+)/);
+      if (annoMatch) return { title: annoMatch[1], subtitle: 'System Announcement' };
+      return { title: summary || 'System Event' };
+    }
+
+    default:
+      return { title: summary || item.sourceType };
+  }
+}
 
 function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: string }) {
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
@@ -1563,16 +1719,40 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
     load();
   }, [load, highlightId]);
 
-  // Auto-scroll to highlighted mailbox item after data loads
+  // Auto-load more history until the highlighted item appears, then scroll to it
+  const autoLoadingForHighlightRef = useRef(false);
   useEffect(() => {
     if (!highlightedId || loading) return;
-    const el = document.getElementById(`mbx-${highlightedId}`);
-    if (el) {
-      setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
-      const timer = setTimeout(() => setHighlightedId(null), 3000);
-      return () => clearTimeout(timer);
+    const found = mailbox?.history?.some(h => h.id === highlightedId);
+    if (found) {
+      autoLoadingForHighlightRef.current = false;
+      const el = document.getElementById(`mbx-${highlightedId}`);
+      if (el) {
+        setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+        const timer = setTimeout(() => setHighlightedId(null), 3000);
+        return () => clearTimeout(timer);
+      }
+    } else if (hasMore && !autoLoadingForHighlightRef.current) {
+      autoLoadingForHighlightRef.current = true;
+      (async () => {
+        let currentHistory = mailbox?.history ?? [];
+        let moreAvailable: boolean = hasMore;
+        while (moreAvailable) {
+          try {
+            const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: currentHistory.length });
+            const newHistory = [...currentHistory, ...mb.history];
+            currentHistory = newHistory;
+            moreAvailable = (mb.history?.length ?? 0) >= PAGE;
+            const itemFound = mb.history.some(h => h.id === highlightedId);
+            setMailbox(prev => prev ? { ...prev, history: newHistory } : mb);
+            setHasMore(moreAvailable);
+            if (itemFound || !moreAvailable) break;
+          } catch { break; }
+        }
+        autoLoadingForHighlightRef.current = false;
+      })();
     }
-  }, [highlightedId, loading, mailbox]);
+  }, [highlightedId, loading, mailbox, hasMore, agentId]);
 
   useEffect(() => {
     const refresh = (evt: { payload?: unknown }) => {
@@ -1584,6 +1764,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
       wsClient.on('agent:attention', refresh),
       wsClient.on('agent:focus', refresh),
       wsClient.on('agent:update', refresh),
+      wsClient.on('agent:triage', refresh),
     ];
     return () => unsubs.forEach(u => u());
   }, [agentId, load]);
@@ -1598,12 +1779,26 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
           <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-300'}`}>
             {(mind?.attentionState ?? 'idle').toUpperCase()}
           </span>
-          {mind?.currentFocus ? (
-            <span className="text-sm text-fg-secondary">
-              {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'} <span className="text-fg-primary font-medium">{mind.currentFocus.label}</span>
-              <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
-            </span>
-          ) : (
+          {mind?.currentFocus ? (() => {
+            const focusDisplay = getMailboxItemDisplay({
+              id: mind.currentFocus.mailboxItemId,
+              agentId,
+              sourceType: mind.currentFocus.type,
+              priority: 0,
+              status: 'processing',
+              payload: { summary: mind.currentFocus.label, taskId: mind.currentFocus.taskId },
+              metadata: {},
+              queuedAt: mind.currentFocus.startedAt,
+            } as import('../api.ts').EnrichedMailboxItem);
+            return (
+              <span className="text-sm text-fg-secondary">
+                {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
+                <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
+                {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
+                <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
+              </span>
+            );
+          })() : (
             <span className="text-sm text-fg-tertiary">Idle — waiting for new mail</span>
           )}
           <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">↻ Refresh</button>
@@ -1627,6 +1822,27 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
         )}
       </section>
 
+      {/* ── Last Triage Decision ── */}
+      {mind?.lastTriage && (
+        <section className="bg-surface-2 rounded-lg border border-indigo-500/20 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm">🧠</span>
+            <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">Triage Decision</h4>
+            <span className="text-[10px] text-fg-quaternary ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
+          </div>
+          <p className="text-xs text-fg-secondary leading-relaxed">{mind.lastTriage.reasoning}</p>
+          <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
+            <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">Processing: {mind.lastTriage.processedItemId.slice(0, 12)}…</span>
+            {mind.lastTriage.deferredItemIds.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Deferred: {mind.lastTriage.deferredItemIds.length}</span>
+            )}
+            {mind.lastTriage.droppedItemIds.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">Dropped: {mind.lastTriage.droppedItemIds.length}</span>
+            )}
+          </div>
+        </section>
+      )}
+
       {/* ── Mailbox History ── */}
       <section>
         <div className="flex items-center gap-2 mb-2">
@@ -1647,9 +1863,9 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
           {[
             { key: 'all', label: 'All', dot: '' },
             { key: 'queued', label: 'Queued', dot: 'bg-amber-400' },
-            { key: 'processing', label: 'Processing', dot: 'bg-brand-400' },
+            { key: 'processing', label: 'Processing', dot: 'bg-blue-400' },
             { key: 'completed', label: 'Completed', dot: 'bg-green-500' },
-            { key: 'merged', label: 'Merged', dot: 'bg-blue-400' },
+            { key: 'merged', label: 'Merged', dot: 'bg-cyan-400' },
             { key: 'deferred', label: 'Deferred', dot: 'bg-purple-400' },
             { key: 'dropped', label: 'Dropped', dot: 'bg-red-500' },
           ].map(f => (
@@ -1671,8 +1887,7 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
           {mailbox?.history?.map(item => {
             const isExpanded = expandedId === item.id;
             const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
-            const summary = item.payload?.summary ?? item.id;
-            const fullContent = item.payload?.content;
+            const display = getMailboxItemDisplay(item);
             const senderName = item.metadata?.senderName as string | undefined;
             const senderRole = item.metadata?.senderRole as string | undefined;
             const isHighlighted = highlightedId === item.id;
@@ -1687,9 +1902,15 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
                   <span className="text-sm">{icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{summary}</span>
+                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{display.title}</span>
+                      {display.badge && (
+                        <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>
+                      )}
                       <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? ''}</span>
                     </div>
+                    {display.subtitle && (
+                      <div className={`text-[11px] text-fg-secondary mt-0.5 ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
+                    )}
                     <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
                       <span>{new Date(item.queuedAt).toLocaleString()}</span>
                       {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
@@ -1706,20 +1927,18 @@ function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: stri
 
                 {isExpanded && (
                   <div className="border-t border-border-subtle px-3 py-3 space-y-3">
-                    {/* Full content & metadata */}
-                    {(fullContent || senderName) && (
-                      <div className="space-y-1.5">
-                        {senderName && (
-                          <div className="text-[10px] text-fg-tertiary">
-                            From: <span className="text-fg-secondary">{senderName}</span>
-                            {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
-                          </div>
-                        )}
-                        {fullContent && fullContent !== summary && (
-                          <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
-                            {fullContent}
-                          </div>
-                        )}
+                    {/* Sender & contextual metadata */}
+                    {senderName && (
+                      <div className="text-[10px] text-fg-tertiary">
+                        From: <span className="text-fg-secondary">{senderName}</span>
+                        {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
+                      </div>
+                    )}
+
+                    {/* Full content for message-type items (chat, a2a, comments, reviews) */}
+                    {item.payload?.content && ['human_chat', 'a2a_message', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'mention'].includes(item.sourceType) && (
+                      <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+                        {item.payload.content}
                       </div>
                     )}
 

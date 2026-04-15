@@ -69,19 +69,21 @@ type ChatMode = 'channel' | 'direct' | 'dm';
 const ACTIVITY_TYPE_META: Record<string, { icon: string; category: string }> = {
   system_event:         { icon: '⚙',  category: 'System' },
   human_chat:           { icon: '💬', category: 'Chat' },
-  task_comment:         { icon: '💬', category: 'Task' },
-  mention:              { icon: '@',  category: 'Chat' },
+  a2a_message:          { icon: '🔗', category: 'Chat' },
+  task_comment:         { icon: '📝', category: 'Comment' },
+  requirement_comment:  { icon: '📝', category: 'Comment' },
+  mention:              { icon: '@',  category: 'Mention' },
   session_reply:        { icon: '↩',  category: 'Task' },
   task_status_update:   { icon: '📋', category: 'Task' },
-  a2a_message:          { icon: '🔗', category: 'Agent' },
   review_request:       { icon: '👀', category: 'Review' },
-  requirement_comment:  { icon: '💬', category: 'Task' },
   requirement_update:   { icon: '📝', category: 'Notification' },
   daily_report:         { icon: '📊', category: 'System' },
   heartbeat:            { icon: '♡',  category: 'System' },
   memory_consolidation: { icon: '🧠', category: 'System' },
   notify_user:          { icon: '🔔', category: 'Notification' },
 };
+
+const SCROLL_TO_BOTTOM_ACTIVITY_TYPES = new Set(['task_comment', 'requirement_comment', 'mention', 'notify_user']);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -636,6 +638,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
 
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
@@ -687,6 +690,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
   const userAtBottomRef = useRef(true);
+  /** Stable ref to loadMore for use in IntersectionObserver callback */
+  const loadMoreRef = useRef<() => Promise<void>>(undefined);
 
   // Close history panel on click outside
   useEffect(() => {
@@ -928,21 +933,22 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     } catch { setSessions([]); return []; }
   }, []);
 
-  // Load more (pagination)
+  // Load more (pagination) — preserves scroll position after prepending
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || !oldestMsgId.current) return;
     setLoadingMore(true);
+    const scrollEl = chatScrollRef.current;
+    const prevScrollHeight = scrollEl?.scrollHeight ?? 0;
     try {
       const convKey = currentConvKeyRef.current;
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
         const newMsgs = result.messages.map(channelMsgToChat);
-        // Suppress scroll-to-bottom — prepending old messages must not jump the viewport
         skipScrollRef.current = true;
         setMessages(prev => {
           const combined = [...newMsgs, ...prev];
-          msgBuffers.current.set(convKey, combined); // keep buffer in sync
+          msgBuffers.current.set(convKey, combined);
           return combined;
         });
         setHasMore(result.hasMore);
@@ -959,8 +965,38 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         setHasMore(result.hasMore);
         if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       }
-    } catch { /* ignore */ } finally { setLoadingMore(false); }
+    } catch { /* ignore */ } finally {
+      setLoadingMore(false);
+      // Restore scroll position after React re-render
+      requestAnimationFrame(() => {
+        if (scrollEl) {
+          const newScrollHeight = scrollEl.scrollHeight;
+          scrollEl.scrollTop += newScrollHeight - prevScrollHeight;
+        }
+      });
+    }
   }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId, authUser?.id, activeDmUserId]);
+
+  loadMoreRef.current = loadMore;
+
+  // Auto-load earlier messages when user scrolls near the top
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        if (el.scrollTop < 100) {
+          loadMoreRef.current?.();
+        }
+      });
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
 
   // When mode/target changes: switch to the new conversation's buffer.
   // If the new conv is already streaming or has buffered messages, show them immediately.
@@ -2059,18 +2095,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         )}
 
         {/* Chat Tab: Messages */}
-        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'} ${mainTab !== 'chat' ? 'hidden' : ''}`} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
-          {hasMore && (
-            <div className="flex justify-center py-2">
-              <button
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                className="text-xs text-brand-500 hover:text-brand-500 disabled:opacity-50 px-4 py-1.5 border border-brand-500/30 rounded-lg"
-              >
-                {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
-              </button>
+        <div className={`flex-1 overflow-hidden flex flex-col relative ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+          {loadingMore && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center items-center gap-2 py-2 bg-gradient-to-b from-surface-primary/90 to-transparent pointer-events-none">
+              <svg className="animate-spin h-3.5 w-3.5 text-brand-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-xs text-fg-tertiary">Loading earlier messages…</span>
             </div>
           )}
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
@@ -2166,31 +2201,45 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   const navToWork = !!(msg.taskId || msg.requirementId);
                   const navToMind = !navToWork && !!msg.mailboxItemId;
                   const canNavigate = navToWork || navToMind;
-                  const isCommentType = msg.activityType === 'task_comment' || msg.activityType === 'requirement_comment';
-                  const handleNavigate = () => {
-                    if (msg.taskId) {
-                      navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                    } else if (msg.requirementId) {
-                      navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                    } else if (msg.mailboxItemId && selectedAgent) {
-                      handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
+                  const isCommentType = SCROLL_TO_BOTTOM_ACTIVITY_TYPES.has(msg.activityType ?? '');
+                  const isExpanded = expandedActivities.has(msg.id);
+                  const fullText = msg.text + (msg.outcome ? `\n→ ${msg.outcome}` : '');
+                  const handleActivityClick = () => {
+                    if (canNavigate) {
+                      if (msg.taskId) {
+                        navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                      } else if (msg.requirementId) {
+                        navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                      } else if (msg.mailboxItemId && selectedAgent) {
+                        handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
+                      }
+                    } else {
+                      setExpandedActivities(prev => {
+                        const next = new Set(prev);
+                        if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                        return next;
+                      });
                     }
                   };
                   return (
                     <div key={msg.id} id={`msg-${msg.id}`} className={`flex justify-start ${isMobile ? 'max-w-[95%]' : 'max-w-[85%]'}`}>
-                      <div className="flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full">
-                        <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
-                        <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
-                        {category && <span className="shrink-0 text-[9px] font-medium rounded-full px-1.5 py-px bg-surface-elevated text-fg-quaternary">{category}</span>}
-                        {canNavigate ? (
-                          <span
-                            onClick={handleNavigate}
-                            className="text-xs text-fg-tertiary hover:text-brand-500 truncate min-w-0 cursor-pointer transition-colors"
-                          >{msg.text}</span>
-                        ) : (
-                          <span className="text-xs text-fg-tertiary truncate min-w-0">{msg.text}</span>
+                      <div className="min-w-0 w-full">
+                        <div
+                          className="group/act flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full overflow-hidden cursor-pointer"
+                          onClick={handleActivityClick}
+                          title={canNavigate ? undefined : fullText}
+                        >
+                          <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
+                          <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
+                          {category && <span className="shrink-0 text-[9px] font-medium rounded py-px bg-surface-elevated text-fg-quaternary inline-flex items-center justify-center overflow-hidden" style={{ width: 68 }}>{category}</span>}
+                          <span className={`text-xs text-fg-tertiary truncate min-w-0 flex-1 ${canNavigate ? 'group-hover/act:text-brand-500 transition-colors' : ''}`}>{msg.text}</span>
+                          {msg.outcome && !isExpanded && <span className="text-[10px] text-fg-quaternary shrink-0 truncate max-w-[50%]">→ {msg.outcome}</span>}
+                        </div>
+                        {isExpanded && msg.outcome && (
+                          <div className="ml-10 mr-4 mt-1 mb-2 py-2 px-3 rounded-md bg-surface-elevated/40 text-[11px] text-fg-tertiary whitespace-pre-wrap break-words leading-relaxed max-h-[240px] overflow-y-auto">
+                            {msg.outcome}
+                          </div>
                         )}
-                        {msg.outcome && <span className="shrink-0 text-[10px] text-fg-quaternary">→ {msg.outcome}</span>}
                       </div>
                     </div>
                   );
@@ -2269,6 +2318,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             <div className="text-xs text-fg-tertiary animate-pulse ml-11">Agent is thinking…</div>
           )}
           <div ref={messagesEnd} />
+        </div>
         </div>
 
         {/* Avatar popover */}

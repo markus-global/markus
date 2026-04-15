@@ -125,8 +125,18 @@ export const COMPLETION_MARKER_INSTRUCTION =
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 
-/** Progressive retry delays in milliseconds. */
+/** Progressive retry delays in milliseconds (base values before jitter). */
 export const TASK_RETRY_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 120_000, 300_000];
+
+/** Apply ±20% random jitter to a delay to avoid thundering-herd retries. */
+export function withJitter(baseMs: number, factor = 0.2): number {
+  const jitter = baseMs * factor * (2 * Math.random() - 1);
+  return Math.max(0, Math.round(baseMs + jitter));
+}
+
+/** Delay (ms) before re-queuing a preempted task, giving the higher-priority
+ *  item time to enter processing first. */
+export const PREEMPT_REQUEUE_DELAY_MS = 3_000;
 
 // ─── System Prompt: Memory & Knowledge Injection ─────────────────────────────
 // These control how much memory context is injected into the system prompt.
@@ -222,6 +232,45 @@ export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
  *  Items older than 3 days are stale — the context they carried is no longer
  *  timely, and processing them would confuse agents with outdated information. */
 export const MAILBOX_QUEUED_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+
+// ─── Mailbox Processing ─────────────────────────────────────────────────────
+
+/** Maximum time (ms) allowed for processing a single mailbox item.
+ *  If processing exceeds this duration — typically caused by system sleep,
+ *  network hang, or an unresponsive LLM provider — the item is requeued
+ *  for retry and the attention loop continues.
+ *  10 minutes covers even long tool-chain executions while catching genuine hangs. */
+export const MAILBOX_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Watchdog interval (ms) for detecting system sleep/wake cycles.
+ *  A timer fires every WATCHDOG_INTERVAL_MS; if the actual elapsed time
+ *  between fires exceeds WATCHDOG_DRIFT_THRESHOLD_MS, the system likely slept.
+ *  On detection, any in-flight processing is aborted and requeued. */
+export const WATCHDOG_INTERVAL_MS = 30_000;
+
+/** Drift threshold (ms) that signals a sleep/wake event.
+ *  If a 30s timer fires 60+ seconds late, the system was asleep. */
+export const WATCHDOG_DRIFT_THRESHOLD_MS = 60_000;
+
+// ─── Mailbox Triage ─────────────────────────────────────────────────────────
+// These control the LLM-driven triage phase in the attention controller.
+// Triage runs when multiple queued items compete for attention and priority
+// alone cannot decide the order.
+
+/** Max candidate items included in the triage LLM prompt.
+ *  Items beyond this count are omitted from the prompt (but still in the
+ *  queue).  50 items × ~5 lines each ≈ 250 lines — substantial context
+ *  without overwhelming the model's attention. */
+export const TRIAGE_PROMPT_MAX_ITEMS = 50;
+
+/** Max tokens for the triage LLM response.
+ *  Must be generous enough for models that emit <think> blocks before the
+ *  JSON payload.  4096 tokens covers even verbose chain-of-thought. */
+export const TRIAGE_MAX_TOKENS = 4096;
+
+/** Temperature for the triage LLM call.
+ *  Low temperature produces deterministic, focused decisions. */
+export const TRIAGE_TEMPERATURE = 0.1;
 
 // ─── Shell Execution Limits ─────────────────────────────────────────────────
 

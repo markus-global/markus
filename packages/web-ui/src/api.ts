@@ -353,6 +353,13 @@ export interface AgentMindState {
     reasoning: string;
     createdAt: string;
   }>;
+  lastTriage?: {
+    reasoning: string;
+    processedItemId: string;
+    deferredItemIds: string[];
+    droppedItemIds: string[];
+    timestamp: string;
+  };
 }
 
 export interface MailboxHistoryDecision {

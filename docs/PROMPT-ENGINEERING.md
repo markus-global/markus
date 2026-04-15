@@ -39,7 +39,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 ```
 ┌─────────────────────────────────────────────┐
 │  1. Role System Prompt (from ROLE.md)       │  ← Stable: rarely changes
-│  2. Dynamic Context (activated skills)      │
+│  2. Dynamic Context (skills + cognition)    │
 │  3. Identity Section                        │
 │  4. Organization Context (CONTEXT.md)       │
 │  5. Team Announcements & Norms              │
@@ -78,9 +78,10 @@ Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.
 Contains the core behavioral instructions, personality, and domain expertise.
 
 #### Dynamic Context (§2)
-Source: `getDynamicContext()` — two sources:
+Source: `getDynamicContext()` — three sources:
 1. **Registered providers**: Callback functions set via `registerDynamicContextProvider()`.
 2. **Activated skill instructions**: When an agent calls `discover_tools` to activate a skill, its instructions are wrapped in `<skill name="...">...</skill>` tags and injected here.
+3. **Triage cognition**: When the mailbox triage system produces a decision, the reasoning is stored as `currentCognition` and injected here as "Current Situational Awareness." This gives the agent persistent awareness of its latest prioritization decision across all LLM calls (chat, task execution, A2A, etc.).
 
 #### Identity Section (§3)
 Source: `buildIdentitySection()`.  

@@ -187,12 +187,93 @@ export class AgentMailbox {
   }
 
   /**
+   * Pre-triage consolidation: merge all queued items that share the same
+   * taskId or requirementId into a single consolidated item, regardless
+   * of sourceType.  This runs right before triage so the LLM sees one
+   * consolidated item per entity instead of N scattered ones.
+   *
+   * Unlike enqueue-time dedup (which only merges same-type comments),
+   * this cross-type merge produces a comprehensive context block:
+   *   "[task_status_update] Task assigned → ...\n[a2a_message] Review ...\n[task_comment] ..."
+   *
+   * Returns the number of items removed.
+   */
+  consolidateByEntity(): number {
+    let removed = 0;
+
+    // Group by taskId
+    removed += this.consolidateGroup(
+      (item) => item.payload.taskId ?? (item.metadata?.taskId as string | undefined),
+      'task',
+    );
+
+    // Group by requirementId (only for items that don't also have a taskId)
+    removed += this.consolidateGroup(
+      (item) => {
+        if (item.payload.taskId || item.metadata?.taskId) return undefined;
+        return item.payload.requirementId;
+      },
+      'requirement',
+    );
+
+    if (removed > 0) {
+      log.info('Pre-triage consolidation', { agentId: this.agentId, merged: removed });
+    }
+    return removed;
+  }
+
+  private consolidateGroup(
+    getKey: (item: MailboxItem) => string | undefined,
+    _groupType: string,
+  ): number {
+    let removed = 0;
+    const seen = new Map<string, number>();
+
+    for (let i = 0; i < this.queue.length; i++) {
+      const item = this.queue[i];
+      if (item.status !== 'queued') continue;
+      if (item.payload.extra?.triggerExecution) continue;
+
+      const key = getKey(item);
+      if (!key) continue;
+
+      const survivorIdx = seen.get(key);
+      if (survivorIdx === undefined) {
+        seen.set(key, i);
+        continue;
+      }
+
+      const survivor = this.queue[survivorIdx];
+      const typeLabel = item.sourceType !== survivor.sourceType
+        ? `[${item.sourceType}] ` : '';
+      survivor.payload.content += `\n\n---\n\n${typeLabel}${item.payload.content}`;
+      const countMatch = survivor.payload.summary.match(/\((\+\d+)\)$/);
+      if (countMatch) {
+        const prev = parseInt(countMatch[1].slice(1), 10);
+        survivor.payload.summary = survivor.payload.summary.replace(/\(\+\d+\)$/, `(+${prev + 1})`);
+      } else {
+        survivor.payload.summary += ' (+1)';
+      }
+      if (item.priority < survivor.priority) {
+        survivor.priority = item.priority;
+      }
+      this.persistence?.updateStatus(survivor.id, 'queued', survivor);
+
+      this.queue.splice(i, 1);
+      this.persistence?.updateStatus(item.id, 'dropped');
+      removed++;
+      i--;
+    }
+
+    return removed;
+  }
+
+  /**
    * Add an item to the mailbox. Returns the item ID.
    * Emits 'mailbox:new-item' so the AttentionController can react.
    */
-  // Only comments merge with other comments for the same entity.
-  // Status updates are structurally different (state transitions) and must not
-  // be merged with comments or with each other.
+  // Enqueue-time dedup: only comments merge with other comments for the same entity.
+  // Cross-type consolidation happens later in consolidateByEntity() before triage.
   private static readonly TASK_COMMENT_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
     'task_comment',
   ]);
@@ -395,6 +476,31 @@ export class AgentMailbox {
 
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
     this.wakeIdleLoop();
+  }
+
+  /**
+   * Return a dequeued item to the queue without incrementing retryCount.
+   * Used by the triage phase when it picks a different item to process.
+   */
+  putBack(item: MailboxItem): void {
+    item.status = 'queued';
+    item.startedAt = undefined;
+    this.insertSorted(item);
+    this.persistence?.updateStatus(item.id, 'queued');
+  }
+
+  /**
+   * Dequeue a specific item by ID (not just the head of the queue).
+   * Used by the triage phase to pick its chosen item.
+   */
+  dequeueById(id: string): MailboxItem | undefined {
+    const idx = this.queue.findIndex(i => i.id === id);
+    if (idx === -1) return undefined;
+    const [item] = this.queue.splice(idx, 1);
+    item.status = 'processing';
+    item.startedAt = new Date().toISOString();
+    this.persistence?.updateStatus(item.id, 'processing', { startedAt: item.startedAt });
+    return item;
   }
 
   /**
