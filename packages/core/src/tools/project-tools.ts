@@ -170,6 +170,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   projects: projects.map(p => ({
                     id: p.id,
                     name: p.name,
+                    description: p.description,
                     status: p.status,
                   })),
                 });
