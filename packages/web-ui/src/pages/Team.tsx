@@ -979,23 +979,19 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
   loadMoreRef.current = loadMore;
 
-  // Auto-load earlier messages when user scrolls near the top
-  useEffect(() => {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    let ticking = false;
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        ticking = false;
-        if (el.scrollTop < 100) {
-          loadMoreRef.current?.();
-        }
-      });
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
+  // Auto-load earlier messages when user scrolls near the top.
+  // Uses a React onScroll handler instead of addEventListener so it works
+  // on mobile where the chat container is conditionally mounted.
+  const scrollTickingRef = useRef(false);
+  const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (scrollTickingRef.current) return;
+    scrollTickingRef.current = true;
+    requestAnimationFrame(() => {
+      scrollTickingRef.current = false;
+      if ((e.target as HTMLDivElement).scrollTop < 100) {
+        loadMoreRef.current?.();
+      }
+    });
   }, []);
 
   // When mode/target changes: switch to the new conversation's buffer.
@@ -2105,7 +2101,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               <span className="text-xs text-fg-tertiary">Loading earlier messages…</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
