@@ -90,8 +90,8 @@ describe('SQLite Storage Backend', () => {
       agentRepo.create({ id: 'agent-2', name: 'Agent2', orgId: 'org-1', roleId: 'r1', roleName: 'Reviewer' });
 
       const repo = new SqliteTaskRepo(db);
-      repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high', assignedAgentId: 'agent-1', reviewerId: 'agent-2' });
-      repo.updateStatus('task-1', 'in_progress');
+      await repo.create({ id: 'task-1', orgId: 'org-1', title: 'Build feature', priority: 'high', assignedAgentId: 'agent-1', reviewerId: 'agent-2' });
+      await repo.updateStatus('task-1', 'in_progress');
 
       const task = repo.findById('task-1');
       expect(task!.status).toBe('in_progress');
@@ -241,18 +241,18 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('TaskLogRepo', () => {
-    it('should append and retrieve task logs', () => {
+    it('should append and retrieve task logs', async () => {
       const orgRepo = new SqliteOrgRepo(db);
       orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
       agentRepo.create({ id: 'agent-1', name: 'Agent1', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
       agentRepo.create({ id: 'agent-2', name: 'Agent2', orgId: 'org-1', roleId: 'r1', roleName: 'Reviewer' });
       const taskRepo = new SqliteTaskRepo(db);
-      taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task', assignedAgentId: 'agent-1', reviewerId: 'agent-2' });
+      await taskRepo.create({ id: 't1', orgId: 'org-1', title: 'Task', assignedAgentId: 'agent-1', reviewerId: 'agent-2' });
 
       const repo = new SqliteTaskLogRepo(db);
-      repo.append({ taskId: 't1', agentId: 'a1', seq: 0, type: 'status', content: 'started' });
-      repo.append({ taskId: 't1', agentId: 'a1', seq: 1, type: 'text', content: 'working on it' });
+      await repo.append({ taskId: 't1', agentId: 'a1', seq: 0, type: 'status', content: 'started' });
+      await repo.append({ taskId: 't1', agentId: 'a1', seq: 1, type: 'text', content: 'working on it' });
 
       const logs = repo.getByTask('t1');
       expect(logs.length).toBe(2);
