@@ -41,8 +41,8 @@ Three independent storage backends serve different purposes:
 
 | Table | Used by | Purpose |
 |-------|---------|---------|
-| `chat_sessions` | API server, Web UI | Persistent chat session list for UI display |
-| `chat_messages` | API server, Web UI | Persistent message history for UI display and session restore |
+| `chat_sessions` | API server, Web UI | Persistent chat session list; each agent has one **main session** (`is_main = 1`) for activity log |
+| `chat_messages` | API server, Web UI | Persistent message history (user conversations + activity log entries with `metadata.activityLog`) |
 | `agent_activities` | Agent, API server, Activity Tab | **Single source of truth** for all agent activity sessions (task, chat, heartbeat, A2A, internal) |
 | `agent_activity_logs` | Agent, API server, Activity Tab | Event-level logs within each activity (LLM calls, tool calls, status changes) |
 | `mailbox_items` | Agent mailbox, API server, Agent Mind UI | **Episodic memory ground truth** — every stimulus the agent received, with timestamps and status |
@@ -50,6 +50,8 @@ Three independent storage backends serve different purposes:
 | `memories` | *(unused — dead code)* | Was intended for DB-backed memory but never wired into the core loop |
 
 **Relationship**: The API server writes every chat turn to `chat_sessions` + `chat_messages` for UI persistence. When a user reopens a chat in the Web UI, the API server calls `agent.restoreSessionFromHistory()` to hydrate the file-based `MemoryStore` from the SQLite messages. The two systems are synchronized only in this direction: **SQLite → File System** (on session restore).
+
+**Main Session**: Each agent's main session (`is_main = 1`) accumulates activity summaries from mailbox processing — task execution outcomes, review results, heartbeat summaries, etc. These entries have `metadata.activityLog = true` and are rendered as compact cards in the frontend. The main session ensures the agent maintains narrative continuity across different processing contexts. See `docs/MAILBOX-SYSTEM.md` §20.
 
 ### Vector Index
 

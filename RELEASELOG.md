@@ -1,39 +1,137 @@
 # Release Log
 
-## v0.4.16
+## v0.4.19
 
-WorkspaceManager 完全移除，API Server 状态检查增强，deny-only 跨代理隔离策略替代白名单模式。
+Mailbox 可靠性与 LLM 分诊系统；新增 `request_user_approval` 阻塞审批工具；结构化活动日志与持久认知；执行时间线 thinking 解析修复；移动端聊天 UI 优化。
 
-### Refactoring
+### New Features
 
-- **WorkspaceManager 完全移除** — 删除 `packages/core/src/workspace-manager.ts`，相关代码迁移至 agent 端本地管理，`TaskWorkspace` 替换为 `TaskProjectContext`，支持多仓库场景
-- **deny-only 跨代理隔离策略** — 白名单工作区策略重构为拒绝式隔离，agents 默认可以访问所有工作区，除非明确禁止，降低配置复杂度
+- **Mailbox 可靠性** — 完成标记系统（`<<HANDLE_COMPLETE>>`），异常检测自动重试（最多 2 次）；原始 XML 工具调用消毒（sanitizeLLMReply）；DB 新增 `retry_count` 列
+- **LLM 分诊系统** — 多项邮箱队列 LLM 驱动分诊决策，同实体（相同 task/requirement）预合并；分诊推理作为持久认知（persistent cognition）注入后续所有 LLM 调用
+- **`request_user_approval` 工具** — 替代 `request_user_chat`，支持自定义选项按钮、自由文本输入，阻塞等待用户响应；审批等待使用 24h 超时而非 5 分钟
+- **结构化活动日志** — 活动内容为干净摘要，metadata 携带 activityType / outcome / mailboxItemId / taskId 等，前端按类型渲染图标和分类卡片，支持点击展开和导航
+- **npm 更新检查器** — CLI 启动时检查新版本（24h 缓存），健康端点同步暴露
+- **Windows PowerShell 安装脚本** — 新增 `install.ps1`
+- **自动归档服务** — 可配置阈值的自动归档
 
 ### Bug Fixes
 
-- **API Server 执行端点简化** — `/run`、`/resume`、`/retry` 端点移除冗余的状态前置检查，统一由 `runTask` 内部处理状态验证，简化调用链路
+- **修复执行时间线 thinking 标签泄漏** — 状态化字符级解析器替代正则，跨工具调用边界正确追踪 `<think>` 状态，合并分散的文本片段
+- **修复移动端聊天 UI** — 操作按钮（Copy/Retry/Reply）移动端默认显示；Retry/Re-ask 限制为最新 Agent 消息；重试传递 `isRetry` 标志，服务端裁剪失败交互避免污染 LLM 上下文
+- **修复移动端滚动自动加载历史** — 替代手动"加载更早消息"按钮，滚动到顶部自动触发，浮动加载指示器不受滚动位置影响
+- **修复活动时间线文本溢出** — 长通知内容截断显示，短内容完整展示；移除 `notify_user` outcome 200 字符截断限制
 
-### Breaking Changes
+### Enhancements
 
-- `TaskWorkspace` 接口已移除，请使用 `TaskProjectContext`：
-  ```typescript
-  // Before (已移除)
-  interface TaskWorkspace {
-    worktreePath: string;
-    branch: string;
-    baseBranch: string;
-  }
-  
-  // After
-  interface TaskProjectContext {
-    project: { id: string; name: string; description: string; status: string };
-    repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
-  }
-  ```
+- 人类优先优先级模型：`human_chat` 为唯一 p0 用户交互类型，`system_event` / `task_comment` / `requirement_comment` 降为 p1
+- Mailbox 恢复增强：重启时重载排队项、过期 >3d 旧项、心跳折叠与评论合并去重
+- 任务恢复优化：优先级排序启动恢复、重试抖动（±20%）避免惊群、抢占重排队延迟
+- 活动类型重分类：Chat（human_chat、a2a_message）、Comment（task_comment、requirement_comment）、Mention（mention）
+- EventBus 转发（`forwardAgentEvents`）：agent 事件总线桥接到 manager 层
+- 评论逻辑集中到 TaskService，API Server 去重
+- 新增 `getRequirement` / `getTaskComments` Agent 工具
+- 睡眠看门狗（observational）与宽松处理超时，系统休眠后优雅恢复
 
 ### Stats
 
-- 24 files changed, +137 / −536 lines
+- 42 files changed, +3,043 / −731 lines
+
+---
+
+## v0.4.18
+
+紧急修复 LLM 路由错误处理崩溃与流式气泡动画跨浏览器兼容问题。
+
+### Bug Fixes
+
+- **修复 LLM router enrichError 崩溃** — 部分 SDK Error 子类（OpenAI、Anthropic）将 `message` 定义为 getter-only 属性，直接赋值导致 "Cannot set property message of which has only a getter" 崩溃；改为包装新 Error 对象
+- **修复流式气泡边框动画跨浏览器兼容** — 替换 `mask-composite` 方案（Windows/Chrome 下失效）为 double-background 技术（padding-box 纯色填充 + border-box conic-gradient），无需 mask 支持即可工作
+
+### Stats
+
+- 2 files changed, +17 / −25 lines
+
+---
+
+## v0.4.17
+
+移除 PostgreSQL 支持，全面精简存储层；新增 Main Session 活动上下文与子 Agent 执行可见性；Mailbox 恢复与通知级联抑制；团队创建 UX 与流式动画优化；用户聊天可抢占后台处理。
+
+### New Features
+
+- **Main Session 活动上下文** — 新增 `is_main` 会话概念，非聊天类 mailbox 处理完成后自动注入活动摘要到主会话，Agent 跨任务执行保持叙事连续性
+- **子 Agent 执行可见性** — Work 页任务执行日志展示嵌套子 Agent 时间线，ToolDetailModal 渲染子 Agent 详情，Chat 流式路径透传 subagentLogs
+- **团队创建 UX 优化** — 创建团队后自动滚动高亮，空团队状态优化，Create Team 弹窗增加 Secretary 高级创建提示
+- **流式气泡动画** — Chat 气泡在 Agent 流式输出时显示流动渐变边框动画
+- **Heartbeat 支持创建任务/需求** — heartbeat 场景下允许调用 `task_create` 和 `requirement_propose`
+
+### Bug Fixes
+
+- **修复用户聊天无法抢占后台处理** — `handleMessage` 对自发场景（heartbeat、memory_consolidation、system_event、daily_report）支持抢占，human_chat 消息在下一个 yield point 中断后台工作
+- **修复 notify_user 时序 bug** — `setUserNotifier` 追溯推送给所有已存在 Agent，缺少 notifier 时优雅降级而非硬错误
+- **修复 discover_tools 参数混乱** — 合并 `name` 和 `tool_names` 为单一 `name` 参数，消除 LLM 参数混淆导致的技能激活失败
+- **修复 Hub artifact manifest 写入错误** — `downloadAndInstall` 写入正确的类型文件名（agent.json/team.json/skill.json）而非通用 manifest.json
+- **修复 main session 排序问题** — `getSessionsByAgent` 按 `is_main DESC` 排序，避免多会话 Agent 主会话被淹没
+- **修复评论内容为 undefined** — task_comment/requirement_comment 增加内容校验
+- **抑制审核通知级联** — 活跃审核期间抑制 reviewer→worker/creator 的冗余通知
+- **Mailbox 启动恢复** — 重启时将卡在 processing 状态的 mailbox 项标记为 dropped
+- **修复 agent_broadcast_status schema 枚举不匹配**
+- **修复移动端 Profile 导航缺失 `enterMobileDetail` 调用**
+
+### Refactoring
+
+- **移除 PostgreSQL/Drizzle 支持** — 删除全部 Drizzle schema、repos、migrations 和 PgVectorStore，存储层仅保留 SQLite
+- **存储类型整合** — 新增独立 `types.ts`，定义 `TaskRow` 等类型接口，移除 repo 的 `[key: string]: unknown` 索引签名
+- **合并 A2A 工具组** — `structured-a2a` 和 `group-chat` 合并为 `a2a-extended`
+- **静默状态转换** — blocked↔in_progress 转换不再触发冗余通知
+- **集中 shell 超时限制** — 统一 shell 命令超时配置
+
+### Enhancements
+
+- FSM 感知的 TagPicker，高亮合法状态转换
+- Mailbox 状态过滤器与 requirement_comment 类型支持
+- WebSocket task:update handler 始终刷新看板
+- 消息预览过滤未闭合 `<think>` 标签和工具调用 XML
+- Secretary prompt 更新团队优先创建最佳实践
+- Prompt 工程增加内置工具优先与禁止自动安装规则
+- Manager 招聘指导扩展为 CREATE/INSTALL 两阶段工作流
+- 安装脚本更新
+
+### Stats
+
+- 84 files changed, +1,632 / −4,911 lines
+
+---
+
+## v0.4.16
+
+修复 Agent 动态创建全链路问题（白屏崩溃→数据丢失→事件断路）；修复 pause/resume 实际无效的 bug；移除 token 预算自动暂停机制；新增 heartbeat 完成任务复盘与 SOP 自动注入。
+
+### Bug Fixes
+
+- **修复秘书雇佣员工白屏崩溃** — LLM 调用 `team_hire_agent` 时可能不传 `name`，导致前端 `toLowerCase()` 崩溃；在工具层、`createAgent` 核心层和前端 API 层三重防御
+- **修复新建 Agent 邮箱历史为空** — `start.ts` 监听的事件名 `agent:registered` 与实际 emit 的 `agent:created` 不匹配，导致动态创建的 Agent 未接入 mailbox 持久化
+- **修复新建 Agent 重启后丢失** — 通过 `team_hire_agent` 创建的 Agent 未持久化到 DB，新增 `agent:created` 事件监听写入数据库
+- **修复新建 Agent 无法发送主动消息** — `setUserMessageSender` 和 `setChatSessionsFetcher` 仅在启动时为已有 Agent 注册，重构为事件驱动，动态 Agent 也能即时接入
+- **修复 pause/resume 实际无效** — `pause()` 只改状态标签但不停止 heartbeat、attention controller 和 memory timer，Agent 照常工作；现在真正停止/重启后台进程
+- **修复 `builder_install` / `hub_install` 缺少参数校验** — 与 `team_hire_agent` 同类问题，补充运行时参数验证
+
+### New Features
+
+- **Heartbeat 完成任务复盘** — Agent heartbeat 时自动检查近期完成的任务，提取最佳实践并注入 SOP 上下文
+- **11 个事件消费者接入 WS 广播** — `agent:removed/paused/resumed/started/stopped`、`task:completed/failed`、`system:pause-all/resume-all/emergency-stop/announcement` 全部通过 WebSocket 推送到前端
+- **全局暂停状态 WS 同步** — 侧边栏 Pause/Resume 按钮监听 WS 事件实时同步，多客户端状态一致
+
+### Refactoring
+
+- **移除 token 预算自动暂停机制** — 删除 `maxTokensPerDay` 超限自动 pause 和午夜自动 resume 逻辑，保留 token 计数器供展示
+- **清理冗余事件** — 移除 `agent:status-changed`（与 `stateChangeCallback` 重复）和 `agent:decision`（与 `attention:decision` 重复）
+- **工作区安全策略重构** — 白名单策略替换为 deny-only 跨 Agent 隔离
+- **API 路由加固** — 集中 agent-facing limits，统一前置条件校验
+
+### Stats
+
+- 43 files changed, +706 / −674 lines
 
 ---
 

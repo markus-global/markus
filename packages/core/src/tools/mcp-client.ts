@@ -63,6 +63,7 @@ export class MCPClientManager {
     const proc = spawn(config.command, config.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...config.env },
+      shell: process.platform === 'win32',
     });
 
     proc.on('error', (err) => {

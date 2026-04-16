@@ -1,9 +1,8 @@
-import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
 import { api, wsClient, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
-import { taskLogToStreamEntry } from '../api.ts';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -20,12 +19,11 @@ function resolveActorName(id: string | undefined, agents: AgentInfo[], users: Hu
   if (agent) return agent.name;
   const user = users.find(u => u.id === id);
   if (user) return user.name;
-  if (id === 'anonymous') return 'Admin'; // keep as-is, not user-visible i18n key
+  if (id === 'anonymous') return 'Admin';
   return null;
 }
 
 function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
-  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   const agent = agents.find(a => a.id === agentId);
@@ -59,13 +57,13 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             onClick={() => { setOpen(false); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
             className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
-            {t('work.viewProfile')}
+            View Profile →
           </button>
         </div>
       )}
       {open && !agent && (
         <div className="absolute left-0 bottom-full mb-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-40 w-40 p-2">
-          <div className="text-[10px] text-fg-tertiary">{t('work.agentNotFound', { agentId: agentId.slice(0, 12) })}</div>
+          <div className="text-[10px] text-fg-tertiary">Agent not found: {agentId.slice(0, 12)}…</div>
         </div>
       )}
     </span>
@@ -80,7 +78,6 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
-  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -116,8 +113,8 @@ function InlineEditableText({ value, onSave, className, placeholder }: {
     <span
       onClick={() => setEditing(true)}
       className={`cursor-pointer hover:border-b hover:border-gray-600 transition-colors ${className ?? ''}`}
-      title={t('work.clickToEdit')}
-    >{value || <span className="text-fg-tertiary italic">{placeholder ?? t('work.clickToEdit')}</span>}</span>
+      title="Click to edit"
+    >{value || <span className="text-fg-tertiary italic">{placeholder ?? 'Click to edit'}</span>}</span>
   );
 }
 
@@ -127,7 +124,6 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
   className?: string;
   placeholder?: string;
 }) {
-  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -164,8 +160,8 @@ function InlineEditableTextarea({ value, onSave, className, placeholder }: {
     <p
       onClick={() => setEditing(true)}
       className={`cursor-pointer hover:bg-surface-elevated/50 rounded-lg transition-colors px-2 py-1 -mx-2 -my-1 ${className ?? ''}`}
-      title={t('work.clickToEdit')}
-    >{value || <span className="text-fg-tertiary italic">{placeholder ?? t('work.addDescription')}</span>}</p>
+      title="Click to edit"
+    >{value || <span className="text-fg-tertiary italic">{placeholder ?? 'Add a description…'}</span>}</p>
   );
 }
 
@@ -222,7 +218,6 @@ function authorColor(name: string) {
 }
 
 function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
-  const { t } = useTranslation();
   const parsed = parseNote(note);
   const c = authorColor(parsed.author || 'System');
   const initials = parsed.author
@@ -272,45 +267,69 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
 
 const BOARD_COLUMNS = [
-  { id: 'failed',      label: 'failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
-  { id: 'todo',        label: 'todo',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
-  { id: 'in_progress', label: 'in_progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
-  { id: 'review',      label: 'review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
-  { id: 'done',        label: 'done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
-  { id: 'closed',      label: 'closed',      statuses: ['rejected', 'cancelled'],   accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
+  { id: 'failed',      label: 'Failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
+  { id: 'todo',        label: 'To Do',       statuses: ['pending'],                 accent: 'border-t-amber-500',  dropStatus: 'pending' },
+  { id: 'in_progress', label: 'In Progress', statuses: ['in_progress', 'blocked'],  accent: 'border-t-brand-500',  dropStatus: 'in_progress' },
+  { id: 'review',      label: 'In Review',   statuses: ['review'],                  accent: 'border-t-purple-500', dropStatus: 'review' },
+  { id: 'done',        label: 'Done',        statuses: ['completed'],               accent: 'border-t-green-500',  dropStatus: 'completed' },
+  { id: 'closed',      label: 'Closed',      statuses: ['rejected', 'cancelled', 'archived'], accent: 'border-t-gray-500',   dropStatus: 'cancelled' },
 ] as const;
 
-// COLUMN_LABELS translated via t('work.columnLabels.xxx')
-const SUB_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
-  pending:  { key: 'pending',  cls: 'bg-amber-500/15 text-amber-600' },
-  blocked:  { key: 'blocked',  cls: 'bg-amber-500/15 text-amber-600' },
-  failed:   { key: 'failed',   cls: 'bg-red-500/15 text-red-500' },
-  rejected: { key: 'rejected', cls: 'bg-red-500/15 text-red-500' },
+const COLUMN_LABELS: Record<string, string> = {
+  pending: 'Pending',
+  in_progress: 'In Progress', blocked: 'Blocked',
+  review: 'In Review', completed: 'Completed',
+  failed: 'Failed', rejected: 'Rejected', cancelled: 'Cancelled', archived: 'Archived',
 };
-const TASK_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
-  pending:     { key: 'pending',     cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { key: 'in_progress', cls: 'bg-blue-500/15 text-blue-500' },
-  blocked:     { key: 'blocked',     cls: 'bg-orange-500/15 text-orange-500' },
-  review:      { key: 'review',   cls: 'bg-purple-500/15 text-purple-500' },
-  completed:   { key: 'completed',   cls: 'bg-green-500/15 text-green-600' },
-  failed:      { key: 'failed',      cls: 'bg-red-500/15 text-red-500' },
-  rejected:    { key: 'rejected',    cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { key: 'cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
-  archived:    { key: 'archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+const SUB_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending:  { label: 'Pending',  cls: 'bg-amber-500/15 text-amber-600' },
+  blocked:  { label: 'Blocked',  cls: 'bg-amber-500/15 text-amber-600' },
+  failed:   { label: 'Failed',   cls: 'bg-red-500/15 text-red-500' },
+  rejected: { label: 'Rejected', cls: 'bg-red-500/15 text-red-500' },
+};
+const TASK_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending:     { label: 'Pending',     cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { label: 'In Progress', cls: 'bg-blue-500/15 text-blue-500' },
+  blocked:     { label: 'Blocked',     cls: 'bg-orange-500/15 text-orange-500' },
+  review:      { label: 'In Review',   cls: 'bg-purple-500/15 text-purple-500' },
+  completed:   { label: 'Completed',   cls: 'bg-green-500/15 text-green-600' },
+  failed:      { label: 'Failed',      cls: 'bg-red-500/15 text-red-500' },
+  rejected:    { label: 'Rejected',    cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { label: 'Cancelled',   cls: 'bg-gray-500/15 text-fg-tertiary' },
+  archived:    { label: 'Archived',    cls: 'bg-gray-500/15 text-fg-tertiary' },
 };
 const PRIORITY_COLORS: Record<string, string> = {
   urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
 };
-const PRIORITY_BADGE: Record<string, { key: string; cls: string }> = {
-  low:    { key: 'low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
-  medium: { key: 'medium', cls: 'bg-blue-500/15 text-blue-500' },
-  high:   { key: 'high',   cls: 'bg-amber-500/15 text-amber-600' },
-  urgent: { key: 'urgent', cls: 'bg-red-500/15 text-red-500' },
+const PRIORITY_BADGE: Record<string, { label: string; cls: string }> = {
+  low:    { label: 'Low',    cls: 'bg-gray-500/15 text-fg-tertiary' },
+  medium: { label: 'Medium', cls: 'bg-blue-500/15 text-blue-500' },
+  high:   { label: 'High',   cls: 'bg-amber-500/15 text-amber-600' },
+  urgent: { label: 'Urgent', cls: 'bg-red-500/15 text-red-500' },
 };
 const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
 const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
 
+// Mirror of TASK_TRANSITIONS from @markus/shared — kept in sync manually
+const TASK_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  pending:     new Set(['in_progress', 'blocked', 'rejected', 'cancelled']),
+  in_progress: new Set(['review', 'blocked', 'failed', 'cancelled']),
+  blocked:     new Set(['in_progress', 'cancelled']),
+  review:      new Set(['completed', 'in_progress', 'cancelled']),
+  completed:   new Set(['archived', 'in_progress']),
+  failed:      new Set(['in_progress', 'archived']),
+  rejected:    new Set(['archived']),
+  cancelled:   new Set(['archived']),
+  archived:    new Set([]),
+};
+const REQ_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  pending:     new Set(['in_progress', 'rejected', 'cancelled']),
+  in_progress: new Set(['completed', 'cancelled']),
+  completed:   new Set([]),
+  rejected:    new Set([]),
+  cancelled:   new Set([]),
+};
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400', error: 'bg-red-400', paused: 'bg-amber-400', offline: 'bg-gray-600',
   pending: 'bg-amber-400',
@@ -331,7 +350,6 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   anchorRect: { top: number; left: number };
   onClose: () => void;
 }) {
-  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -342,7 +360,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
   }, [onClose]);
 
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
-  const statusLabel = t(`work.agentStatus.${agent.status === 'idle' ? 'online' : agent.status}` as const);
+  const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
 
   return (
     <div
@@ -367,7 +385,7 @@ function MentionPopover({ agent, anchorRect, onClose }: {
         onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.id }); }}
         className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
       >
-        {t('work.viewProfile')}
+        View Profile →
       </button>
     </div>
   );
@@ -378,12 +396,14 @@ function CommentBubble({ comment, agents, onReply }: {
   agents: AgentInfo[];
   onReply?: (comment: TaskComment | RequirementComment) => void;
 }) {
-  const { t } = useTranslation();
   const isAgent = comment.authorType === 'agent' || comment.authorType === 'system';
   const ts = new Date(comment.createdAt);
   const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const dateStr = ts.toLocaleDateString([], { month: 'short', day: 'numeric' });
   const [mentionPopover, setMentionPopover] = useState<{ agent: AgentInfo; top: number; left: number } | null>(null);
+  const [logExpanded, setLogExpanded] = useState(false);
+  const [logEntries, setLogEntries] = useState<ExecutionStreamEntryUI[]>([]);
+  const [logLoading, setLogLoading] = useState(false);
 
   const handleMentionClick = useCallback((name: string, event: React.MouseEvent) => {
     const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
@@ -400,6 +420,29 @@ function CommentBubble({ comment, agents, onReply }: {
       setMentionPopover({ agent, top: rect.bottom, left: rect.left });
     }
   }, [agents, comment.authorName]);
+
+  const toggleExecutionLog = useCallback(async () => {
+    if (logExpanded) { setLogExpanded(false); return; }
+    const aid = comment.activityId;
+    if (!aid) return;
+    setLogExpanded(true);
+    if (logEntries.length > 0) return;
+    setLogLoading(true);
+    try {
+      const { logs } = await api.agents.getActivityLogs(comment.authorId, aid);
+      const entries = logs
+        .map(l => activityLogToStreamEntry(l, aid, comment.authorId))
+        .filter((e): e is NonNullable<typeof e> => e !== null)
+        .map(e => ({ ...e, ts: new Date(e.createdAt).getTime() }));
+      setLogEntries(entries);
+    } catch { /* ignore */ }
+    setLogLoading(false);
+  }, [logExpanded, logEntries.length, comment]);
+
+  const execEntries = useMemo(
+    () => filterCompletedStarts(logEntries.map(streamEntryToExecEntry).filter((e): e is ExecEntry => e !== null)),
+    [logEntries],
+  );
 
   return (
     <div className="flex gap-2.5 group py-1" id={`comment-${comment.id}`}>
@@ -428,6 +471,14 @@ function CommentBubble({ comment, agents, onReply }: {
               Reply
             </button>
           )}
+          {comment.activityId && isAgent && (
+            <button
+              onClick={toggleExecutionLog}
+              className="text-fg-tertiary hover:text-brand-400 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity ml-1"
+            >
+              {logExpanded ? 'Hide log' : 'View log'}
+            </button>
+          )}
         </div>
         {comment.replyTo && comment.replyToAuthor && (
           <button
@@ -445,6 +496,17 @@ function CommentBubble({ comment, agents, onReply }: {
         {comment.attachments?.map((att, i) => (
           att.type === 'image' ? <img key={i} src={att.url} alt={att.name} className="mt-1 max-w-[200px] rounded" /> : null
         ))}
+        {logExpanded && (
+          <div className="mt-2 border border-border-subtle rounded-lg overflow-hidden bg-surface-secondary/30">
+            {logLoading ? (
+              <div className="p-3 text-xs text-fg-tertiary">Loading execution log...</div>
+            ) : execEntries.length === 0 ? (
+              <div className="p-3 text-xs text-fg-tertiary">No execution log available.</div>
+            ) : (
+              <FullExecutionLog entries={logEntries} isActive={false} onCollapse={() => setLogExpanded(false)} embedded />
+            )}
+          </div>
+        )}
       </div>
       {mentionPopover && (
         <MentionPopover
@@ -467,7 +529,6 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   users: HumanUserInfo[];
   authUser?: { id: string; name: string };
 }) {
-  const { t } = useTranslation();
   const [comments, setComments] = useState<TaskComment[]>([]);
 
   useEffect(() => {
@@ -518,10 +579,10 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 
   return (
     <div className="mt-5">
-      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work.activityAndComments')}</p>
+      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">Activity & Comments</p>
       <div className="space-y-0.5 mb-3">
         {items.length === 0 && (
-          <div className="text-xs text-fg-tertiary text-center py-6">{t('work.noActivityYet')}</div>
+          <div className="text-xs text-fg-tertiary text-center py-6">No activity yet. Post the first comment below.</div>
         )}
         {items.map((item, i) => {
           if (item.type === 'note') {
@@ -538,7 +599,6 @@ function TaskActivitySection({ task, agents, users, authUser }: {
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
 function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: string; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
-  const { t } = useTranslation();
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
   const [roundLogs, setRoundLogs] = useState<Map<number, TaskLogEntry[]>>(new Map());
   const [loadingRounds, setLoadingRounds] = useState<Set<number>>(new Set());
@@ -717,7 +777,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
       <div className="flex gap-2">
         <input type="text" value={commentText} onChange={e => setCommentText(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void submitComment(); } }}
-          placeholder={t('work.addComment')}
+          placeholder="Add a comment or instruction…"
           className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-blue-500 outline-none text-fg-primary placeholder-gray-600" />
         <input type="file" ref={fileInputRef} accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
         <button onClick={() => fileInputRef.current?.click()} className="px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-fg-secondary hover:text-fg-primary text-sm" title="Attach image">📎</button>
@@ -734,7 +794,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center text-fg-tertiary">
             <div className="text-2xl mb-2">📋</div>
-            <div className="text-xs">{t('work.noExecutionLogsYet')}<br />{t('work.clickToStart')}</div>
+            <div className="text-xs">No execution logs yet.<br />Click "Run with Agent" to start.</div>
           </div>
         </div>
         {commentInput}
@@ -745,7 +805,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
   // Single round — render log entries with comments interleaved chronologically
   if (!hasMultipleRounds) {
     const exec = streamEntries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
-    const filtered = filterCompletedStarts(exec);
+    const filtered = attachSubagentLogsToEntries(allLoadedLogs, filterCompletedStarts(exec));
 
     type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
     const timeline: TimelineItem[] = [
@@ -818,7 +878,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
               >
                 <div className="flex items-center gap-2">
                   <span className="text-sm">{statusIcon}</span>
-                  <span className="text-xs text-fg-secondary font-medium">{t('work.round', { round: rs.round })}</span>
+                  <span className="text-xs text-fg-secondary font-medium">Round #{rs.round}</span>
                   {roundComments.length > 0 && (
                     <span className="text-[10px] text-blue-400">💬 {roundComments.length}</span>
                   )}
@@ -830,7 +890,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
                   )}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-[10px] text-fg-tertiary">{rs.toolCount} {rs.toolCount !== 1 ? 'tools' : 'tool'}</span>
+                  <span className="text-[10px] text-fg-tertiary">{rs.toolCount} tool{rs.toolCount !== 1 ? 's' : ''}</span>
                   {elapsedStr && <span className="text-[10px] text-fg-tertiary tabular-nums">{elapsedStr}</span>}
                   <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
@@ -843,7 +903,7 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
                   {logs && (() => {
                     const entries = logs.map(l => taskLogToStreamEntry(l));
                     const exec = entries.map(e => streamEntryToExecEntry(e)).filter((e): e is ExecEntry => e !== null);
-                    const filtered = filterCompletedStarts(exec);
+                    const filtered = attachSubagentLogsToEntries(logs, filterCompletedStarts(exec));
 
                     type TimelineItem = { kind: 'entry'; entry: ExecEntry; ts: number } | { kind: 'comment'; comment: TaskComment; ts: number };
                     const tl: TimelineItem[] = [
@@ -873,7 +933,6 @@ function TaskExecutionLogs({ taskId, isRunning, authUser, agents }: { taskId: st
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
-  const { t } = useTranslation();
   const [data, setData] = useState<{ type: string; name: string; content: string; mimeType?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -925,7 +984,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── Task Detail Modal ──────────────────────────────────────────────────────────
 
 function TaskDetailPanel({
-  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser,
+  task, agents, projects, requirements, allTasks, users, onClose, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
 }: {
   task: TaskInfo;
   agents: AgentInfo[];
@@ -936,15 +995,16 @@ function TaskDetailPanel({
   onClose: () => void;
   onRefresh: () => void;
   authUser?: { id: string; name: string; role: string; orgId: string };
+  scrollToComments?: boolean;
+  onScrollToCommentsDone?: () => void;
 }) {
-  const { t } = useTranslation();
   const [subtasks, setSubtasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [showAllSubtasks, setShowAllSubtasks] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string; status: string } | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState<{ dependentCount: number } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [actionInFlight, setActionInFlight] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
@@ -974,7 +1034,17 @@ function TaskDetailPanel({
     ro.observe(el);
     return () => { el.removeEventListener('scroll', update); ro.disconnect(); };
   }, [activeTab]);
-  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    if (!scrollToComments) return;
+    setActiveTab('details');
+    const timer = setTimeout(() => {
+      const el = scrollContainerRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      onScrollToCommentsDone?.();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [scrollToComments, onScrollToCommentsDone]);
+
   const [runError, setRunError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [editingDesc, setEditingDesc] = useState(false);
@@ -992,10 +1062,10 @@ function TaskDetailPanel({
   useEffect(() => { void loadSubtasks(); }, [loadSubtasks]);
 
   const doUpdate = async (fn: () => Promise<unknown>) => {
-    if (busy) return; setBusy(true);
+    if (actionInFlight) return; setActionInFlight(true);
     try { await fn(); onRefresh(); await loadSubtasks(); } catch (err) {
       setRunError(String(err).replace('Error: ', ''));
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const updateStatus = (taskId: string, status: string) => doUpdate(() => api.tasks.updateStatus(taskId, status));
@@ -1003,31 +1073,19 @@ function TaskDetailPanel({
   const assignAgent = (agentId: string) => doUpdate(() => api.tasks.assign(task.id, agentId || null));
   const updateProject = (projectId: string) => doUpdate(() => api.tasks.update(task.id, { projectId: projectId || null }));
 
-  const startTask = async () => {
-    if (busy) return; setBusy(true);
-    try {
-      if (!task.assignedAgentId) {
-        const idle = agents.find(a => a.status === 'idle');
-        if (idle) await api.tasks.assign(task.id, idle.id);
-      }
-      await api.tasks.updateStatus(task.id, 'in_progress');
-      onRefresh();
-    } finally { setBusy(false); }
-  };
-
   const pauseTask = async () => {
-    if (busy) return; setBusy(true);
+    if (actionInFlight) return; setActionInFlight(true);
     try {
       await api.tasks.pause(task.id);
       onRefresh();
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const resumeTask = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-    } finally { setRunning(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const addSubtask = async () => {
@@ -1052,31 +1110,23 @@ function TaskDetailPanel({
   };
 
   const reopenTask = async () => {
-    if (busy) return; setBusy(true);
-    try { await api.tasks.updateStatus(task.id, 'pending'); onRefresh(); } finally { setBusy(false); }
-  };
-
-  const runWithAgent = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
-    try { await api.tasks.run(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-      onRefresh();
-    } finally { setRunning(false); }
+    if (actionInFlight) return; setActionInFlight(true);
+    try { await api.tasks.updateStatus(task.id, 'in_progress'); onRefresh(); } finally { setActionInFlight(false); }
   };
 
   const retryFresh = async () => {
-    if (busy) return; setBusy(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
-    } finally { setBusy(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const runScheduledNow = async () => {
-    if (running) return; setRunning(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
       setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
       onRefresh();
-    } finally { setRunning(false); }
+    } finally { setActionInFlight(false); }
   };
 
   const onRefreshRef = useRef(onRefresh);
@@ -1097,9 +1147,10 @@ function TaskDetailPanel({
   const isBlocked = task.status === 'blocked';
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
+  const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isCancelled || isArchived;
+  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -1122,7 +1173,7 @@ function TaskDetailPanel({
             {(() => {
               const badge = TASK_STATUS_BADGE[task.status];
               return badge ? (
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${badge.cls}`}>{badge.label}</span>
               ) : (
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap">{task.status.replace(/_/g, ' ')}</span>
               );
@@ -1134,13 +1185,13 @@ function TaskDetailPanel({
 
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 border-b border-border-default shrink-0 bg-surface-secondary">
-          <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work.details')}</button>
+          <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>Details</button>
           <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            {t('work.logs')}
+            Execution Log
             {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            {t('work.deliverables')}
+            Deliverables
             {(() => { const c = (task.deliverables ?? []).filter(d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? <span className="text-[10px] text-fg-tertiary font-normal">{c}</span> : null; })()}
           </button>
         </div>
@@ -1153,7 +1204,7 @@ function TaskDetailPanel({
             <div className="overflow-x-hidden min-w-0">
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
-                  <span className="font-medium">{t('work.failedToStart', { error: '' })}</span> {runError}
+                  <span className="font-medium">Failed to start:</span> {runError}
                 </div>
               )}
               <TaskExecutionLogs taskId={task.id} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
@@ -1177,7 +1228,7 @@ function TaskDetailPanel({
                       <button onClick={() => { setEditingDesc(false); setDescDraft(task.description); }} className="px-2.5 py-1 text-xs border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
                       <button
                         onClick={() => { void doUpdate(() => api.tasks.update(task.id, { description: descDraft })); setEditingDesc(false); }}
-                        disabled={busy}
+                        disabled={actionInFlight}
                         className="px-2.5 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50"
                       >Save</button>
                     </div>
@@ -1197,12 +1248,12 @@ function TaskDetailPanel({
                         )}
                       </div>
                     ) : (
-                      <p className="text-sm text-fg-tertiary italic">{t('work.noDescription')}</p>
+                      <p className="text-sm text-fg-tertiary italic">No description</p>
                     )}
                     <button
                       onClick={() => { setDescDraft(task.description); setEditingDesc(true); }}
                       className="absolute top-0 right-0 text-[10px] text-fg-tertiary hover:text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >{t('work.edit')}</button>
+                    >Edit</button>
                   </div>
                 )}
               </div>
@@ -1212,13 +1263,13 @@ function TaskDetailPanel({
                 <div className="px-6 py-2.5 border-b border-border-default flex flex-wrap items-center gap-2">
                   {taskProject && (
                     <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                      <span className="text-[9px] text-brand-500/60">{t('work.project')}</span>
+                      <span className="text-[9px] text-brand-500/60">Project</span>
                       {taskProject.name}
                     </span>
                   )}
                   {taskRequirement && (
                     <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-brand-500/10 text-brand-500 rounded-full">
-                      <span className="text-[9px] text-brand-500/60">{t('work.req')}</span>
+                      <span className="text-[9px] text-brand-500/60">Req</span>
                       {taskRequirement.title.length > 40 ? taskRequirement.title.slice(0, 40) + '…' : taskRequirement.title}
                     </span>
                   )}
@@ -1228,7 +1279,7 @@ function TaskDetailPanel({
               {/* Dependencies — editable */}
               <div className="px-6 py-2.5 border-b border-border-default">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">{t('work.dependencies')}</span>
+                  <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">Dependencies</span>
                 </div>
                 {task.blockedBy && task.blockedBy.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1255,7 +1306,7 @@ function TaskDetailPanel({
                     })}
                   </div>
                 ) : (
-                  <p className="text-[11px] text-fg-tertiary mb-2">{t('work.noDependencies')}</p>
+                  <p className="text-[11px] text-fg-tertiary mb-2">No dependencies</p>
                 )}
                 {!isTerminal && (
                   <select
@@ -1269,7 +1320,7 @@ function TaskDetailPanel({
                     }}
                     className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus:border-brand-500 outline-none"
                   >
-                    <option value="">+ {t('work.addDependency')}</option>
+                    <option value="">+ Add dependency…</option>
                     {allTasks
                       .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
                       .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
@@ -1281,26 +1332,26 @@ function TaskDetailPanel({
               <div className="px-6 py-4 border-b border-border-default/60 space-y-3">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work.project')}</label>
-                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={busy}
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Project</label>
+                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">{t('work.noProject')}</option>
+                      <option value="">No Project</option>
                       {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work.requirement')}</label>
-                    <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={busy}
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Requirement</label>
+                    <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">{t('work.noRequirement')}</option>
+                      <option value="">No Requirement</option>
                       {requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
                     </select>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work.assignee')}</label>
-                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={busy}
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Assignee</label>
+                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="">Unassigned</option>
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
@@ -1308,14 +1359,14 @@ function TaskDetailPanel({
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Reviewer</label>
-                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={busy}
+                    <select value={task.reviewerAgentId ?? ''} onChange={e => { if (e.target.value && e.target.value !== task.reviewerAgentId) void doUpdate(() => api.tasks.update(task.id, { reviewerAgentId: e.target.value })); }} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work.priority')}</label>
-                    <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={busy}
+                    <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">Priority</label>
+                    <select value={task.priority} onChange={e => void updatePriority(e.target.value)} disabled={actionInFlight}
                       className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
                       <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
                     </select>
@@ -1326,14 +1377,14 @@ function TaskDetailPanel({
               {/* Metadata */}
               <div className="px-6 py-3 border-b border-border-default/60 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-fg-tertiary">
                 {task.createdBy && (
-                  <span>{t('work.createdBy')} <span className="text-fg-secondary">{resolveActorName(task.createdBy, agents, users) ?? task.createdBy}</span></span>
+                  <span>Created by <span className="text-fg-secondary">{resolveActorName(task.createdBy, agents, users) ?? task.createdBy}</span></span>
                 )}
                 {task.updatedBy && (
-                  <span>{t('work.updated')} by <span className="text-fg-secondary">{resolveActorName(task.updatedBy, agents, users) ?? task.updatedBy}</span></span>
+                  <span>Updated by <span className="text-fg-secondary">{resolveActorName(task.updatedBy, agents, users) ?? task.updatedBy}</span></span>
                 )}
                 {task.createdAt && <span>{new Date(task.createdAt).toLocaleDateString()}</span>}
-                {task.startedAt && <span>{t('work.updatedOn')} {new Date(task.startedAt).toLocaleDateString()}</span>}
-                {task.updatedAt && <span>{t('work.updatedOn')} {new Date(task.updatedAt).toLocaleDateString()}</span>}
+                {task.startedAt && <span>Started {new Date(task.startedAt).toLocaleDateString()}</span>}
+                {task.updatedAt && <span>Updated {new Date(task.updatedAt).toLocaleDateString()}</span>}
                 {task.projectId && (
                   <span className="font-mono text-blue-600/70">task/{task.id}</span>
                 )}
@@ -1345,7 +1396,7 @@ function TaskDetailPanel({
               <div className="px-6 py-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">
-                    {t('work.subtasks')} {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
+                    Subtasks {subtasks.length > 0 && <span className="ml-1.5 text-fg-tertiary font-normal normal-case">{completedCount}/{subtasks.length} done</span>}
                   </span>
                   <div className="flex items-center gap-2">
                     {completedCount > 0 && (
@@ -1356,7 +1407,7 @@ function TaskDetailPanel({
                         {showAllSubtasks ? 'Hide completed' : `Show completed (${completedCount})`}
                       </button>
                     )}
-                    <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">+ {t('work.addSubtask')}</button>
+                    <button onClick={() => setAddingSubtask(true)} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">+ Add subtask</button>
                   </div>
                 </div>
                 {(() => {
@@ -1375,14 +1426,14 @@ function TaskDetailPanel({
                     </div>
                   ) : null;
                 })()}
-                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">{t('work.noSubtasksYet')}</div>}
+                {subtasks.length === 0 && !addingSubtask && <div className="text-xs text-fg-tertiary text-center py-4">No subtasks yet.</div>}
                 {addingSubtask && (
                   <div className="flex gap-2 mt-2">
                     <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
-                      placeholder={t('work.addSubtask')} className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
-                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">{t('common.save')}</button>
-                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">{t('common.cancel')}</button>
+                      placeholder="Subtask title..." className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
+                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">Add</button>
+                    <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">Cancel</button>
                   </div>
                 )}
                 {/* Deliverables preview — latest 3 (newest first) */}
@@ -1403,9 +1454,9 @@ function TaskDetailPanel({
                   return (
                     <div className="mt-5">
                       <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('work.deliverables')} <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
+                        <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Deliverables <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
                         {validDeliverables.length > 3 && (
-                          <button onClick={() => switchTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">{t('work.viewAll')} →</button>
+                          <button onClick={() => switchTab('deliverables')} className="text-[10px] text-brand-500 hover:text-brand-500">View all →</button>
                         )}
                       </div>
                       <div className="space-y-1.5">
@@ -1445,7 +1496,7 @@ function TaskDetailPanel({
                 const validDeliverables = (task.deliverables ?? []).filter(
                   d => d.type !== 'branch' && typeof d.reference === 'string' && d.reference.length > 0
                 );
-                if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">{t('work.noDeliverablesYet')}</div>;
+                if (validDeliverables.length === 0) return <div className="flex items-center justify-center py-12 text-xs text-fg-tertiary">No deliverables yet.</div>;
                 const typeColors: Record<string, string> = {
                   file: 'bg-blue-500/15 text-blue-600',
                   document: 'bg-blue-500/15 text-blue-600',
@@ -1459,7 +1510,7 @@ function TaskDetailPanel({
                 return (
                   <>
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('work.deliverables')} <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
+                      <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">Deliverables <span className="text-fg-tertiary font-normal">({validDeliverables.length})</span></p>
                       {totalPages > 1 && (
                         <div className="flex items-center gap-1.5 text-[10px] text-fg-tertiary">
                           <button disabled={deliverablesPage <= 1} onClick={() => setDeliverablesPage(p => p - 1)} className="px-1.5 py-0.5 rounded bg-surface-elevated hover:bg-surface-overlay disabled:opacity-30">‹</button>
@@ -1500,7 +1551,7 @@ function TaskDetailPanel({
           <button
             onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
             className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
-            title={t('work.scrollToTop')}
+            title="Scroll to top"
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
           </button>
@@ -1509,7 +1560,7 @@ function TaskDetailPanel({
           <button
             onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
             className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
-            title={t('work.scrollToBottom')}
+            title="Scroll to bottom"
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
           </button>
@@ -1566,24 +1617,24 @@ function TaskDetailPanel({
             {/* ── Approve / Reject (pending) ── */}
             {task.status === 'pending' && (
               <>
-                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">{t('work.approve')}</button>
-                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={busy} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work.reject')}</button>
+                <button onClick={() => doUpdate(() => api.tasks.approve(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">Approve</button>
+                <button onClick={() => doUpdate(() => api.tasks.reject(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Reject</button>
               </>
             )}
             {/* ── Review actions ── */}
             {task.status === 'review' && (
               <>
-                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ {t('work.approve')}</button>
+                <button onClick={() => void doUpdate(() => api.tasks.accept(task.id, authUser?.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">✓ Approve</button>
                 {!showRevision ? (
-                  <button onClick={() => setShowRevision(true)} disabled={busy} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ {t('work.requestRevision')}</button>
+                  <button onClick={() => setShowRevision(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">↻ Request Revision</button>
                 ) : (
                   <div className="flex items-center gap-1.5">
                     <input type="text" value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter' && revisionReason.trim()) { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim(), authUser?.id)); setShowRevision(false); setRevisionReason(''); } }}
-                      placeholder={t('work.revisionReasonPlaceholder')} autoFocus
+                      placeholder="Revision reason…" autoFocus
                       className="px-2 py-1 text-xs bg-surface-elevated border border-amber-500/40 rounded-lg text-fg-primary focus:border-amber-400 outline-none w-48" />
                     <button onClick={() => { void doUpdate(() => api.tasks.revision(task.id, revisionReason.trim() || 'Revisions needed', authUser?.id)); setShowRevision(false); setRevisionReason(''); }}
-                      disabled={busy} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">{t('common.submit')}</button>
+                      disabled={actionInFlight} className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-500 rounded-lg text-white disabled:opacity-50">Send</button>
                     <button onClick={() => { setShowRevision(false); setRevisionReason(''); }}
                       className="px-1.5 py-1 text-xs text-fg-secondary hover:text-fg-primary">✕</button>
                   </div>
@@ -1593,74 +1644,74 @@ function TaskDetailPanel({
             {/* ── Execution controls (in_progress / blocked / failed) ── */}
             {isRunning && (
               <>
-                <button onClick={() => void pauseTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
-                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>{t('common.pause')}
+                <button onClick={() => void pauseTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><rect x="2" y="1.5" width="3" height="9" rx="0.5"/><rect x="7" y="1.5" width="3" height="9" rx="0.5"/></svg>Pause
                 </button>
-                <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-600 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
-                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>{t('work.retry')}
+                <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-blue-500/30 text-blue-600 rounded-lg hover:bg-blue-500/10 disabled:opacity-50 flex items-center gap-1">
+                  <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
                 </button>
               </>
             )}
             {isBlocked && (
-              <button onClick={() => void resumeTask()} disabled={running} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                {running ? <>{t('work.resuming')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work.resume')}</>}
+              <button onClick={() => void resumeTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                {actionInFlight ? <>Resuming…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Resume</>}
               </button>
             )}
             {isFailed && (
-              <button onClick={() => void retryFresh()} disabled={busy} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
-                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>{t('work.retry')}
+              <button onClick={() => void retryFresh()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1">
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 6a4.5 4.5 0 1 1 1.3 3.2" strokeLinecap="round"/><path d="M1 3.5V6h2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Retry
               </button>
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
             {isScheduled && (isCompleted || isFailed) && (
-              <button onClick={() => void runScheduledNow()} disabled={running} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
-                {running ? <>{t('work.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work.runNow')}</>}
+              <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+                {actionInFlight ? <>Running…</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>Run Now</>}
               </button>
             )}
             {isScheduled && !isRunning && (
               schedPaused
-                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">▶ {t('work.resumeSchedule')}</button>
-                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={busy} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ {t('work.pauseSchedule')}</button>
+                ? <button onClick={() => void doUpdate(() => api.tasks.resumeSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 rounded-lg text-white disabled:opacity-50">▶ Resume Schedule</button>
+                : <button onClick={() => void doUpdate(() => api.tasks.pauseSchedule(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-amber-500/30 text-amber-600 rounded-lg hover:bg-amber-500/10 disabled:opacity-50">⏸ Pause Schedule</button>
             )}
-            {/* ── Archive (completed) ── */}
-            {isCompleted && (
-              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={busy} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">{t('common.archive')}</button>
+            {/* ── Archive (all archivable terminal states) ── */}
+            {(isCompleted || isFailed || isRejected || isCancelled) && (
+              <button onClick={() => doUpdate(() => api.tasks.archive(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-gray-600 hover:bg-gray-500 rounded-lg text-white disabled:opacity-50">Archive</button>
             )}
-            {/* ── Reopen (terminal states) ── */}
-            {isTerminal && (
-              <button onClick={() => void reopenTask()} disabled={busy} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">{t('work.reopen')}</button>
+            {/* ── Reopen (completed/failed only — FSM allows -> in_progress) ── */}
+            {(isCompleted || isFailed) && (
+              <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">Reopen</button>
             )}
             {/* ── Cancel (non-terminal, non-pending) ── */}
             {!isTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
                 if (count > 0) { setCancelConfirm({ dependentCount: count }); } else { void doUpdate(() => api.tasks.cancel(task.id)); }
-              }} disabled={busy} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('common.cancel')}</button>
+              }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">Cancel</button>
             )}
           </div>
         </div>
 
-      {pendingDelete && <ConfirmModal title={t('work.deleteSubtaskTitle')} message={t('work.deleteSubtaskMsg')} confirmLabel={t('common.delete')} onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
+      {pendingDelete && <ConfirmModal title={`Delete subtask "${pendingDelete.title}"?`} message="This subtask will be permanently deleted." confirmLabel="Delete" onConfirm={() => void deleteSubtask(pendingDelete)} onCancel={() => setPendingDelete(null)} />}
       {cancelConfirm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setCancelConfirm(null)}>
           <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work.cancelTask')}</h3>
+            <h3 className="text-base font-semibold text-fg-primary mb-2">Cancel Task</h3>
             <p className="text-sm text-fg-secondary mb-4">
-              {t('work.dependentTaskWarning', { count: cancelConfirm.dependentCount, plural: cancelConfirm.dependentCount > 1 ? 's' : '', are: cancelConfirm.dependentCount > 1 ? 'are' : 'is' })}
+              This task has <span className="text-amber-600 font-medium">{cancelConfirm.dependentCount}</span> dependent task{cancelConfirm.dependentCount > 1 ? 's' : ''} that {cancelConfirm.dependentCount > 1 ? 'are' : 'is'} currently blocked by it.
             </p>
             <div className="flex flex-col gap-2">
               <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, false)); }}
                 className="w-full px-4 py-2.5 text-sm bg-surface-elevated border border-border-default rounded-lg hover:bg-surface-overlay text-fg-primary text-left">
-                <span className="font-medium">{t('work.cancelThisTaskOnly')}</span>
-                <span className="block text-xs text-fg-tertiary mt-0.5">{t('work.cancelThisTaskOnlyDesc')}</span>
+                <span className="font-medium">Cancel this task only</span>
+                <span className="block text-xs text-fg-tertiary mt-0.5">Dependent tasks will start if they have no other blockers</span>
               </button>
               <button onClick={() => { setCancelConfirm(null); void doUpdate(() => api.tasks.cancel(task.id, true)); }}
                 className="w-full px-4 py-2.5 text-sm bg-red-500/10 border border-red-500/30 rounded-lg hover:bg-red-500/20 text-red-500 text-left">
-                <span className="font-medium">{t('work.cancelWithAllDependents')}</span>
-                <span className="block text-xs text-red-500/70 mt-0.5">{t('work.cancelWithAllDependentsDesc', { count: cancelConfirm.dependentCount, plural: cancelConfirm.dependentCount > 1 ? 's' : '' })}</span>
+                <span className="font-medium">Cancel with all dependents</span>
+                <span className="block text-xs text-red-500/70 mt-0.5">Also cancels {cancelConfirm.dependentCount} blocked task{cancelConfirm.dependentCount > 1 ? 's' : ''}</span>
               </button>
               <button onClick={() => setCancelConfirm(null)} className="w-full px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary">
-                {t('work.keepTaskRunning')}
+                Keep task running
               </button>
             </div>
           </div>
@@ -1682,7 +1733,6 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   onUpdateProject: (data: Partial<ProjectInfo>) => Promise<void>;
   onRefresh: () => void;
 }) {
-  const { t } = useTranslation();
   const projTasks = useMemo(() => tasks.filter(t => t.projectId === project.id), [tasks, project.id]);
   const projReqs = useMemo(() => requirements.filter(r => r.projectId === project.id), [requirements, project.id]);
   const stats = useMemo(() => {
@@ -1706,10 +1756,10 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   const [newRepoBranch, setNewRepoBranch] = useState('main');
   const [statusUpdating, setStatusUpdating] = useState(false);
 
-  const PROJECT_STATUSES: Array<{ value: string; labelKey: string; descKey: string }> = [
-    { value: 'active', labelKey: 'work.projectStatuses.active', descKey: 'work.projectStatuses.activeDesc' },
-    { value: 'paused', labelKey: 'work.projectStatuses.paused', descKey: 'work.projectStatuses.pausedDesc' },
-    { value: 'archived', labelKey: 'work.projectStatuses.archived', descKey: 'work.projectStatuses.archivedDesc' },
+  const PROJECT_STATUSES: Array<{ value: string; label: string; desc: string }> = [
+    { value: 'active', label: 'Active', desc: 'Work is ongoing' },
+    { value: 'paused', label: 'Paused', desc: 'Temporarily on hold' },
+    { value: 'archived', label: 'Archived', desc: 'No longer active' },
   ];
 
   const handleStatusChange = async (newStatus: string) => {
@@ -1771,8 +1821,8 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
                   : 'bg-surface-elevated text-fg-tertiary hover:text-fg-secondary hover:bg-surface-overlay'
               } ${statusUpdating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
-              <div>{t(s.labelKey)}</div>
-              <div className="text-[10px] opacity-70 mt-0.5">{t(s.descKey)}</div>
+              <div>{s.label}</div>
+              <div className="text-[10px] opacity-70 mt-0.5">{s.desc}</div>
             </button>
           ))}
         </div>
@@ -1892,7 +1942,6 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
 }
 
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
-  const { t } = useTranslation();
   return (
     <div className="text-center py-2">
       <div className={`text-xl font-bold ${color}`}>{value}</div>
@@ -1903,19 +1952,20 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 
 // ─── Requirement → Board Column Mapping ──────────────────────────────────────
 
-const REQ_STATUS_BADGE: Record<string, { key: string; cls: string }> = {
-  pending:     { key: 'pending',   cls: 'bg-amber-500/15 text-amber-600' },
-  in_progress: { key: 'in_progress', cls: 'bg-brand-500/15 text-brand-500' },
-  completed:   { key: 'completed', cls: 'bg-green-500/15 text-green-600' },
-  rejected:    { key: 'rejected',  cls: 'bg-red-500/15 text-red-500' },
-  cancelled:   { key: 'cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
+const REQ_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
+  pending:     { label: 'Pending',   cls: 'bg-amber-500/15 text-amber-600' },
+  in_progress: { label: 'Active',    cls: 'bg-brand-500/15 text-brand-500' },
+  completed:   { label: 'Done',      cls: 'bg-green-500/15 text-green-600' },
+  rejected:    { label: 'Rejected',  cls: 'bg-red-500/15 text-red-500' },
+  cancelled:   { label: 'Cancelled', cls: 'bg-gray-600/15 text-fg-tertiary' },
+  archived:    { label: 'Archived',  cls: 'bg-gray-600/10 text-fg-tertiary/60' },
 };
 
 const REQ_COLUMN_MAP: Record<string, string> = {
   pending: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
-  rejected: 'closed', cancelled: 'closed',
+  rejected: 'closed', cancelled: 'closed', archived: 'closed',
 };
 
 const REQ_DROP_STATUS: Record<string, string> = {
@@ -1948,7 +1998,7 @@ const GROUP_HEADER_CLS: Record<string, string> = {
   closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
-const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived'] as const;
 
 function taskToGroup(status: string): string {
   for (const col of BOARD_COLUMNS) {
@@ -1972,12 +2022,12 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-function TagPicker({ value, options, onSelect }: {
+function TagPicker({ value, options, onSelect, allowedValues }: {
   value: string;
   options: Array<{ value: string; label: string; cls: string }>;
   onSelect: (val: string) => void;
+  allowedValues?: ReadonlySet<string>;
 }) {
-  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -2006,17 +2056,24 @@ function TagPicker({ value, options, onSelect }: {
       </button>
       {open && (
         <div ref={panelRef} className="absolute top-full left-0 mt-1 w-40 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
-          {options.map(o => (
-            <button
-              key={o.value}
-              onClick={() => { if (o.value !== value) onSelect(o.value); setOpen(false); }}
-              className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 transition-colors ${o.value === value ? 'bg-surface-elevated' : 'hover:bg-surface-elevated/60'}`}
-            >
-              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${o.cls.split(' ')[0]}`} />
-              <span className={`font-medium ${o.value === value ? 'text-fg-primary' : 'text-fg-secondary'}`}>{o.label}</span>
-              {o.value === value && <svg className="w-3 h-3 ml-auto text-brand-500" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
-            </button>
-          ))}
+          {options.map(o => {
+            const isCurrent = o.value === value;
+            const isAllowed = isCurrent || !allowedValues || allowedValues.has(o.value);
+            return (
+              <button
+                key={o.value}
+                disabled={!isAllowed}
+                onClick={() => { if (!isCurrent && isAllowed) onSelect(o.value); setOpen(false); }}
+                className={`w-full text-left px-3 py-1.5 text-[11px] flex items-center gap-2 transition-colors ${
+                  isCurrent ? 'bg-surface-elevated' : isAllowed ? 'hover:bg-surface-elevated/60' : 'opacity-35 cursor-not-allowed'
+                }`}
+              >
+                <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${isAllowed ? o.cls.split(' ')[0] : 'bg-gray-600'}`} />
+                <span className={`font-medium ${isCurrent ? 'text-fg-primary' : isAllowed ? 'text-fg-secondary' : 'text-fg-muted'}`}>{o.label}</span>
+                {isCurrent && <svg className="w-3 h-3 ml-auto text-brand-500" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -2033,7 +2090,6 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   selected?: boolean;
   isMobile?: boolean;
 }) {
-  const { t } = useTranslation();
   const status = row.data.status;
   const priority = row.data.priority;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
@@ -2063,16 +2119,17 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
               value={status}
               options={
                 row.kind === 'task'
-                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.columnLabels.${s}` as const), cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.reqStatus.${s}` as const), cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+                  : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
               }
+              allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
               onSelect={val => void handleStatusChange(row, val)}
             />
           </div>
           <div onClick={e => e.stopPropagation()}>
             <TagPicker
               value={priority}
-              options={PRIORITY_CYCLE.map(p => ({ value: p, label: t(`work.priority.${p}` as const), cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+              options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
               onSelect={val => void handlePriorityChange(row, val)}
             />
           </div>
@@ -2104,16 +2161,17 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
           value={status}
           options={
             row.kind === 'task'
-              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.columnLabels.${s}` as const), cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
-              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: t(`work.reqStatus.${s}` as const), cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: TASK_STATUS_BADGE[s]?.label ?? s, cls: TASK_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
+              : REQ_STATUS_CYCLE.map(s => ({ value: s, label: REQ_STATUS_BADGE[s]?.label ?? s, cls: REQ_STATUS_BADGE[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
           }
+          allowedValues={row.kind === 'task' ? TASK_ALLOWED_TRANSITIONS[status] : REQ_ALLOWED_TRANSITIONS[status]}
           onSelect={val => void handleStatusChange(row, val)}
         />
       </div>
       <div className="w-[100px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={priority}
-          options={PRIORITY_CYCLE.map(p => ({ value: p, label: t(`work.priority.${p}` as const), cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
+          options={PRIORITY_CYCLE.map(p => ({ value: p, label: PRIORITY_BADGE[p]?.label ?? p, cls: PRIORITY_BADGE[p]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))}
           onSelect={val => void handlePriorityChange(row, val)}
         />
       </div>
@@ -2152,7 +2210,6 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   selectedTaskId?: string | null;
   selectedReqId?: string | null;
 }) {
-  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [sortMode, setSortMode] = useState<'status' | 'priority'>('status');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -2312,7 +2369,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   onDragLeave={() => setDragOverGroup(null)}
                   onDrop={e => void onGroupDrop(e, groupId)}
                 >
-                  <span className="text-[11px] font-semibold uppercase tracking-wider">{col ? t(`work.tabs.${col.label}` as const) : groupId}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider">{col?.label ?? groupId}</span>
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
@@ -2338,7 +2395,6 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 // ─── Main Page ──────────────────────────────────────────────────────────────────
 
 export function WorkPage({ authUser }: { authUser?: { id: string; name: string; role: string; orgId: string } }) {
-  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(window.innerWidth * 2 / 3), minWidth: 380, maxWidth: Math.round(window.innerWidth * 0.8), storageKey: 'markus_projects_detail_v3' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
@@ -2499,11 +2555,10 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
   selectedTaskRef.current = selectedTask;
 
   useEffect(() => {
-    // Reduce polling frequency when modal is open (60s vs 15s)
-    const pollMs = selectedTask ? 60000 : 15000;
+    const pollMs = selectedTaskRef.current ? 60000 : 15000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
     const unsub = wsClient.on('task:update', (event) => {
-      if (!selectedTaskRef.current) { refreshBoard(); refreshRequirements(); }
+      refreshBoard();
       const p = event?.payload as Record<string, unknown> | undefined;
       if (p?.taskId) {
         setSelectedTask(prev => {
@@ -2529,7 +2584,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
       wsClient.on(evt, () => { refreshRequirements(); })
     );
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); };
-  }, [refreshBoard, refreshAgents, refreshRequirements, selectedTask]);
+  }, [refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -2546,14 +2601,18 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
     }
   }, []);
 
-  const forceOpenTask = useCallback((task: TaskInfo) => {
+  const [scrollToComments, setScrollToComments] = useState(false);
+
+  const forceOpenTask = useCallback((task: TaskInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedTask(task);
     setSelectedReq(null);
+    if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
   }, [isMobile]);
-  const forceOpenReq = useCallback((req: RequirementInfo) => {
+  const forceOpenReq = useCallback((req: RequirementInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedReq(req);
     setSelectedTask(null);
+    if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
   }, [isMobile]);
 
@@ -2601,23 +2660,38 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
       }
     };
 
-    const handler = (e: Event) => {
+    const handler = async (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
       if (resolvePageId(detail.page) === PAGE.WORK) {
         if (detail.params?.openTask) {
-          const allTasks = Object.values(boardRef.current).flat();
-          const task = allTasks.find(t => t.id === detail.params!.openTask);
+          const taskId = detail.params.openTask;
+          const wantComments = detail.params.scrollToComments === 'true';
+          localStorage.removeItem('markus_nav_openTask');
+          let task = Object.values(boardRef.current).flat().find(t => t.id === taskId);
+          if (!task) {
+            try {
+              const resp = await api.tasks.get(taskId);
+              task = resp.task;
+            } catch { /* ignore */ }
+          }
           if (task) {
             ensureProjectVisible(task.projectId);
-            forceOpenTask(task);
-            localStorage.removeItem('markus_nav_openTask');
+            forceOpenTask(task, { scrollToComments: wantComments });
           }
         }
         if (detail.params?.openRequirement) {
-          const req = allRequirementsRef.current.find(r => r.id === detail.params!.openRequirement);
+          const reqId = detail.params.openRequirement;
+          const wantComments = detail.params.scrollToComments === 'true';
+          let req = allRequirementsRef.current.find(r => r.id === reqId);
+          if (!req) {
+            try {
+              const resp = await api.requirements.get(reqId);
+              req = resp.requirement;
+            } catch { /* ignore */ }
+          }
           if (req) {
             ensureProjectVisible(req.projectId);
-            forceOpenReq(req);
+            forceOpenReq(req, { scrollToComments: wantComments });
           }
         }
         if (detail.params?.projectId) selectProject(detail.params.projectId);
@@ -2799,11 +2873,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
 
   // ── Filter & display helpers ──
 
-  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const isLargerThanOneDay = (t: { updatedAt?: string }) => t.updatedAt && (now - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
-  const isArchived = (t: { status: string; updatedAt?: string }) =>
-    (t.status === 'completed' || t.status === 'cancelled') && isLargerThanOneDay(t);
+  const isArchived = (t: { status: string }) => t.status === 'archived';
 
   const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
     let result = tasks.filter(t => showArchived || includeArchived || !isArchived(t));
@@ -2934,7 +3004,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                 {(['backlog', 'kanban', 'dag'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
                     className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
-                  >t(`work.boardType.${v}` as const)</button>
+                  >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
                 ))}
               </div>
               {archivedCount > 0 && (
@@ -2992,7 +3062,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
             {(['backlog', 'kanban', 'dag'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
                 className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-              >t(`work.boardType.${v}` as const)</button>
+              >{v === 'backlog' ? 'Backlog' : v === 'kanban' ? 'Kanban' : 'DAG'}</button>
             ))}
           </div>
 
@@ -3126,7 +3196,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                     <div className={`flex justify-between items-center px-3 py-2.5 shrink-0 border-b border-border-default/30`}>
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${col.accent.replace('border-t-', 'bg-')}`} />
-                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t(`work.boardColumns.${col.id}` as const)}</span>
+                        <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{col.label}</span>
                       </div>
                       <span className="text-[11px] text-fg-tertiary font-medium tabular-nums">{itemCount}</span>
                     </div>
@@ -3157,7 +3227,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <span className="w-1 h-1 rounded-full bg-purple-500 shrink-0" />
                                   <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">REQ</span>
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ml-auto ${badge.cls}`}>{badge.label}</span>
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{req.title}</div>
                                 {req.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{req.description}</div>}
@@ -3208,7 +3278,7 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
-                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>}
+                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
@@ -3273,6 +3343,8 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
               onClose={handleCloseDetail}
               onRefresh={handleTaskRefresh}
               authUser={authUser}
+              scrollToComments={scrollToComments}
+              onScrollToCommentsDone={() => setScrollToComments(false)}
             />
           ) : selectedReq ? (
             <RequirementDetailPanel
@@ -3288,6 +3360,8 @@ export function WorkPage({ authUser }: { authUser?: { id: string; name: string; 
               onStatusChange={async (id, status) => {
                 try { await api.requirements.updateStatus(id, status); msg(`Requirement status → ${status}`); refreshRequirements(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
               }}
+              scrollToComments={scrollToComments}
+              onScrollToCommentsDone={() => setScrollToComments(false)}
               onRefresh={refreshRequirements}
               authUser={authUser}
             />
@@ -3556,7 +3630,6 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
   agents: AgentInfo[];
   authUser?: { id: string; name: string };
 }) {
-  const { t } = useTranslation();
   const [comments, setComments] = useState<RequirementComment[]>([]);
 
   useEffect(() => {
@@ -3613,7 +3686,7 @@ function RequirementCommentThread({ requirementId, agents, authUser }: {
 // ─── Requirement Detail Modal ────────────────────────────────────────────────────
 
 function RequirementDetailPanel({
-  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser,
+  req, agents, projects, allTasks, users, onClose, onApprove, onReject, onCancel, onStatusChange, onRefresh, authUser, scrollToComments, onScrollToCommentsDone,
 }: {
   req: RequirementInfo;
   agents: AgentInfo[];
@@ -3627,17 +3700,29 @@ function RequirementDetailPanel({
   onStatusChange?: (id: string, status: string) => void;
   onRefresh?: () => void;
   authUser?: { id: string; name: string };
+  scrollToComments?: boolean;
+  onScrollToCommentsDone?: () => void;
 }) {
-  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [editingDesc, setEditingDesc] = useState(false);
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
+  const reqScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!scrollToComments) return;
+    const timer = setTimeout(() => {
+      const el = reqScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      onScrollToCommentsDone?.();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [scrollToComments, onScrollToCommentsDone]);
   const badge = REQ_STATUS_BADGE[req.status] ?? { label: req.status, cls: 'bg-gray-500/15 text-fg-secondary' };
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled';
+  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -3657,7 +3742,7 @@ function RequirementDetailPanel({
           <div className="flex-1 min-w-0 pb-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] font-bold text-brand-500 bg-brand-500/15 px-2 py-0.5 rounded">REQ</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{t(`work.columnLabels.${badge.key}` as const)}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${badge.cls}`}>{badge.label}</span>
               {req.priority === 'high' || req.priority === 'urgent' ? (
                 <span className={`text-[10px] font-medium ${req.priority === 'urgent' ? 'text-red-500' : 'text-amber-600'}`}>{req.priority}</span>
               ) : (
@@ -3671,7 +3756,7 @@ function RequirementDetailPanel({
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div ref={reqScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
           <div>
             <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">Description</label>
             {editingDesc ? (
@@ -3759,13 +3844,13 @@ function RequirementDetailPanel({
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2 block">Linked Tasks ({linkedTasks.length})</label>
               <div className="space-y-1.5">
-                {linkedTasks.map(task => {
-                  const sb = SUB_STATUS_BADGE[task.status];
+                {linkedTasks.map(t => {
+                  const sb = SUB_STATUS_BADGE[t.status];
                   return (
-                    <div key={task.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[task.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
-                      <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
-                      {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{t(`work.subStatus.${sb.key}` as const)}</span>}
+                    <div key={t.id} className="flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_COLORS[t.priority]?.replace('border-l-', 'bg-') ?? 'bg-gray-500'}`} />
+                      <span className="text-xs text-fg-secondary flex-1 truncate">{t.title}</span>
+                      {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
                     </div>
                   );
                 })}
@@ -3793,7 +3878,8 @@ function RequirementDetailPanel({
             >
               {ALL_REQ_STATUSES.map(s => {
                 const b = REQ_STATUS_BADGE[s];
-                return <option key={s} value={s}>{t(`work.reqStatus.${s}` as const)}</option>;
+                const allowed = s === req.status || (REQ_ALLOWED_TRANSITIONS[req.status]?.has(s) ?? false);
+                return <option key={s} value={s} disabled={!allowed}>{b?.label ?? s}</option>;
               })}
             </select>
           )}
@@ -3812,7 +3898,6 @@ function RequirementDetailPanel({
 // ─── Shared mini-components ─────────────────────────────────────────────────────
 
 function StatusPill({ status }: { status: string }) {
-  const { t } = useTranslation();
   const colors: Record<string, string> = {
     active: 'bg-green-500/10 text-green-600', planning: 'bg-blue-500/10 text-blue-600',
     review: 'bg-amber-500/10 text-amber-600', completed: 'bg-surface-overlay text-fg-secondary',

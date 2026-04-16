@@ -42,6 +42,9 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
         <div className="text-xs text-fg-tertiary">
           You can add human and AI members to this team after creating it.
         </div>
+        <div className="text-xs text-fg-tertiary bg-brand-500/5 border border-brand-500/20 rounded-lg px-3 py-2">
+          <span className="text-brand-400 font-medium">Tip:</span> For more advanced team creation (with roles, skills, and auto-hiring), just tell your <span className="text-brand-400">Secretary</span> what kind of team you need.
+        </div>
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">Cancel</button>
           <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white">

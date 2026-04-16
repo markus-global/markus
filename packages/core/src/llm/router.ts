@@ -158,7 +158,14 @@ export class LLMRouter {
     const prefix = `[${provider}:${model}]`;
     if (error instanceof Error) {
       if (!error.message.startsWith(prefix)) {
-        error.message = `${prefix} ${error.message}`;
+        try {
+          error.message = `${prefix} ${error.message}`;
+        } catch {
+          const wrapped = new Error(`${prefix} ${error.message}`);
+          wrapped.stack = error.stack;
+          wrapped.cause = error;
+          return wrapped;
+        }
       }
       return error;
     }

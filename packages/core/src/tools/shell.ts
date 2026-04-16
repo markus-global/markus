@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
-import type { PathAccessPolicy } from '@markus/shared';
+import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 
@@ -94,7 +94,7 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         },
         timeout_ms: {
           type: 'number',
-          description: 'Timeout in milliseconds (default: 60000)',
+          description: `Timeout in milliseconds (default: ${SHELL_TIMEOUT_DEFAULT_MS}, max: ${SHELL_TIMEOUT_MAX_MS})`,
         },
       },
       required: ['command'],
@@ -103,7 +103,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
     async execute(args: Record<string, unknown>, onOutput?: ToolOutputCallback): Promise<string> {
       const command = args['command'] as string;
       const requestedCwd = args['cwd'] as string | undefined;
-      const timeoutMs = (args['timeout_ms'] as number) ?? 60_000;
+      const timeoutMs = Math.min(
+        (args['timeout_ms'] as number) ?? SHELL_TIMEOUT_DEFAULT_MS,
+        SHELL_TIMEOUT_MAX_MS,
+      );
 
       let effectiveCwd = workspacePath;
       if (requestedCwd) {

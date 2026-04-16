@@ -88,7 +88,7 @@ const REQ_GROUP_MAP: Record<string, string> = {
   pending: 'todo',
   in_progress: 'in_progress',
   completed: 'done',
-  rejected: 'done', cancelled: 'done',
+  rejected: 'done', cancelled: 'done', archived: 'done',
 };
 
 function RequirementNode({ data }: { data: { req: RequirementInfo; selected?: boolean } }) {
@@ -256,14 +256,12 @@ const DAG_FILTER_GROUPS = [
   { id: 'todo',        label: 'To Do',       statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
   { id: 'in_progress', label: 'In Progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
   { id: 'review',      label: 'In Review',   statuses: new Set(['review']),                                           color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
-  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
+  { id: 'done',        label: 'Done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled', 'archived']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
 const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const isArchivedTask = (t: TaskInfo) =>
-  t.status === 'completed' && t.updatedAt && (Date.now() - new Date(t.updatedAt).getTime() > ONE_DAY_MS);
+const isArchivedTask = (t: TaskInfo) => t.status === 'archived';
 
 export function TaskDAG({ tasks, requirements = [], agents, showArchived: showArchivedProp, onShowArchivedChange, onTaskClick, onReqClick, onDependencyChange, selectedTaskId, selectedReqId }: TaskDAGProps) {
   const isLight = useIsLight();

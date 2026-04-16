@@ -9,7 +9,7 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string }
 
 type ProfileTab = 'overview' | 'mind' | 'tools' | 'skills' | 'memory' | 'heartbeat' | 'files';
 
@@ -34,7 +34,7 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId }: Props) {
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
@@ -86,7 +86,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack 
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>
+            {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> Chat</button>}
             <button onClick={async () => {
               if (!agent) return;
               try {
@@ -122,7 +122,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack 
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {tab === 'overview' && <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} />}
-        {tab === 'mind' && <MindTab agentId={agentId} />}
+        {tab === 'mind' && <MindTab agentId={agentId} highlightId={highlightMailboxId} />}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <ToolsTab tools={agent.tools ?? []} />}
         {tab === 'skills' && <SkillsTab agent={agent} />}
@@ -1383,7 +1383,7 @@ function TaskLog({ taskId, isLive }: { taskId: string; isLive: boolean }) {
 
 // ─── Activity Log (Heartbeat / A2A) ─────────────────────────────────────────
 
-function ActivityLog({ agentId, activityId }: { agentId: string; activityId: string }) {
+function ActivityLog({ agentId, activityId, isLive = false }: { agentId: string; activityId: string; isLive?: boolean }) {
   const [logs, setLogs] = useState<AgentActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
@@ -1395,6 +1395,26 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
       .catch(() => setLoading(false));
   }, [agentId, activityId]);
 
+  useEffect(() => {
+    if (!isLive) return;
+    const unsub = wsClient.on('agent:activity_log', (event) => {
+      const p = event.payload;
+      if (p.agentId !== agentId || p.activityId !== activityId) return;
+      const entry: AgentActivityLogEntry = {
+        seq: p.seq as number,
+        type: p.type as AgentActivityLogEntry['type'],
+        content: p.content as string,
+        metadata: p.metadata as Record<string, unknown> | undefined,
+        createdAt: p.createdAt as string,
+      };
+      setLogs(prev => {
+        if (prev.some(e => e.seq === entry.seq)) return prev;
+        return [...prev, entry];
+      });
+    });
+    return unsub;
+  }, [agentId, activityId, isLive]);
+
   if (loading) return <div className="px-4 py-3 text-xs text-fg-tertiary">Loading...</div>;
   if (logs.length === 0) return <div className="px-4 py-3 text-xs text-fg-tertiary">No activity logs available.</div>;
 
@@ -1403,9 +1423,9 @@ function ActivityLog({ agentId, activityId }: { agentId: string; activityId: str
   return (
     <div className="px-3 py-2">
       {viewMode === 'compact' ? (
-        <CompactExecutionCard entries={streamEntries} isActive={false} onExpand={() => setViewMode('full')} />
+        <CompactExecutionCard entries={streamEntries} isActive={isLive} onExpand={() => setViewMode('full')} />
       ) : (
-        <FullExecutionLog entries={streamEntries} isActive={false} onCollapse={() => setViewMode('compact')} />
+        <FullExecutionLog entries={streamEntries} isActive={isLive} onCollapse={() => setViewMode('compact')} />
       )}
     </div>
   );
@@ -1468,7 +1488,7 @@ const ATTENTION_COLORS: Record<string, string> = {
 const MAILBOX_TYPE_ICONS: Record<string, string> = {
   system_event: '⚙', human_chat: '💬', task_comment: '💬',
   mention: '@', session_reply: '↩', task_status_update: '📋', a2a_message: '🔗',
-  review_request: '👀', requirement_update: '📝', daily_report: '📊',
+  review_request: '👀', requirement_update: '📝', requirement_comment: '💬', daily_report: '📊',
   heartbeat: '♡', memory_consolidation: '🧠',
 };
 
@@ -1481,8 +1501,8 @@ const CATEGORY_FILTERS: Array<{ key: string; label: string }> = [
 ];
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: 'bg-green-500', processing: 'bg-brand-400 animate-pulse',
-  deferred: 'bg-purple-400', merged: 'bg-blue-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
+  completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
+  deferred: 'bg-purple-400', merged: 'bg-cyan-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
 };
 
 const ACTIVITY_FILTERS: Array<{ key: AgentActivityType | 'all'; label: string }> = [
@@ -1499,12 +1519,170 @@ const ACTIVITY_ICONS: Record<string, string> = {
   task: '☑', chat: '💬', heartbeat: '♡', a2a: '🔗', internal: '⚙', respond_in_session: '↩',
 };
 
-function MindTab({ agentId }: { agentId: string }) {
+const STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  pending: { label: 'Pending', color: 'text-gray-400' },
+  assigned: { label: 'Assigned', color: 'text-blue-400' },
+  in_progress: { label: 'In Progress', color: 'text-brand-400' },
+  completed: { label: 'Completed', color: 'text-green-400' },
+  failed: { label: 'Failed', color: 'text-red-400' },
+  cancelled: { label: 'Cancelled', color: 'text-gray-500' },
+  review: { label: 'Review', color: 'text-amber-400' },
+  approved: { label: 'Approved', color: 'text-green-500' },
+  rejected: { label: 'Rejected', color: 'text-red-500' },
+  draft: { label: 'Draft', color: 'text-gray-400' },
+};
+
+/**
+ * Extract the actual comment text from a mailbox content payload.
+ * The content typically looks like:
+ *   `... Comment from Author: <actual text>\n\n**MANDATORY ...`
+ * We extract just the user-written comment, trimmed to a reasonable preview length.
+ */
+function extractCommentText(content: string): string | undefined {
+  // Pattern: "Comment from AuthorName: actual comment text"
+  const m = content.match(/Comment from .+?:\s*(.+?)(?:\n\n\*\*MANDATORY|\n\n---|\n\n\[|$)/s);
+  if (m?.[1]) {
+    const text = m[1].trim().replace(/\n/g, ' ');
+    if (text.length > 80) return text.slice(0, 80) + '…';
+    return text;
+  }
+  return undefined;
+}
+
+/**
+ * Extract user-friendly display title and optional subtitle from a mailbox item,
+ * replacing raw prompt text with structured information.
+ */
+function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem): { title: string; subtitle?: string; badge?: { label: string; color: string } } {
+  const payload = item.payload;
+  const summary = payload?.summary ?? '';
+  const content = payload?.content ?? '';
+  const sender = item.metadata?.senderName as string | undefined;
+
+  switch (item.sourceType) {
+    case 'task_status_update': {
+      // Extract task title and status transition from summary: `Task "title" status: from → to`
+      const titleMatch = summary.match(/^Task "(.+?)" status:/);
+      const statusMatch = summary.match(/status:\s*(\S+)\s*→\s*(\S+)/);
+      const taskTitle = titleMatch?.[1] ?? summary;
+      if (statusMatch) {
+        const from = statusMatch[1];
+        const to = statusMatch[2];
+        const fromDisplay = STATUS_DISPLAY[from] ?? { label: from, color: 'text-fg-tertiary' };
+        const toDisplay = STATUS_DISPLAY[to] ?? { label: to, color: 'text-fg-secondary' };
+        return {
+          title: taskTitle,
+          subtitle: `${fromDisplay.label} → ${toDisplay.label}`,
+          badge: toDisplay,
+        };
+      }
+      // Fallback for task execution triggers
+      const execMatch = summary.match(/^Task:\s*(.+)/);
+      if (execMatch) return { title: execMatch[1] };
+      return { title: taskTitle };
+    }
+
+    case 'task_comment': {
+      const m = summary.match(/^Comment on task "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const commentText = extractCommentText(content);
+      if (m) {
+        const sub = commentText
+          ? `${m[2]}: ${commentText}`
+          : `Comment from ${m[2]}`;
+        return { title: m[1], subtitle: sub };
+      }
+      return { title: summary };
+    }
+
+    case 'requirement_update': {
+      // Summary: `Requirement "title" status: from → to` or `Requirement "title" rejected/approved`
+      const titleMatch = summary.match(/^Requirement "(.+?)"\s+(.*)/);
+      if (titleMatch) return { title: titleMatch[1], subtitle: titleMatch[2] };
+      return { title: summary };
+    }
+
+    case 'requirement_comment': {
+      const m = summary.match(/^Comment on requirement "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const commentText = extractCommentText(content);
+      if (m) {
+        const sub = commentText
+          ? `${m[2]}: ${commentText}`
+          : `Comment from ${m[2]}`;
+        return { title: m[1], subtitle: sub };
+      }
+      return { title: summary };
+    }
+
+    case 'human_chat': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Chat from ${sender}` : 'Human Chat',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'a2a_message': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Message from ${sender}` : 'Agent Message',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'mention': {
+      const m = summary.match(/from (.+)$/);
+      const commentText = extractCommentText(content);
+      return {
+        title: m ? `Mentioned by ${m[1]}` : 'Mention',
+        subtitle: commentText || undefined,
+      };
+    }
+
+    case 'review_request': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Review request from ${sender}` : 'Review Request',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'session_reply': {
+      const preview = content.slice(0, 120).replace(/\n/g, ' ');
+      return {
+        title: sender ? `Reply in session (${sender})` : 'Session Reply',
+        subtitle: preview + (content.length > 120 ? '…' : ''),
+      };
+    }
+
+    case 'heartbeat':
+      return { title: 'Scheduled heartbeat check-in' };
+
+    case 'daily_report':
+      return { title: 'Daily Report' };
+
+    case 'memory_consolidation':
+      return { title: 'Memory Consolidation' };
+
+    case 'system_event': {
+      // Summary: `[Announcement] title`
+      const annoMatch = summary.match(/^\[Announcement]\s*(.+)/);
+      if (annoMatch) return { title: annoMatch[1], subtitle: 'System Announcement' };
+      return { title: summary || 'System Event' };
+    }
+
+    default:
+      return { title: summary || item.sourceType };
+  }
+}
+
+function MindTab({ agentId, highlightId }: { agentId: string; highlightId?: string }) {
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState<string>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [hasMore, setHasMore] = useState(true);
   const PAGE = 50;
 
@@ -1512,43 +1690,83 @@ function MindTab({ agentId }: { agentId: string }) {
     if (reset) setLoading(true);
     try {
       const catParam = catFilter === 'all' ? undefined : catFilter;
+      const statusParam = statusFilter === 'all' ? undefined : statusFilter;
       const [m, mb] = await Promise.all([
         api.agents.getMindState(agentId),
-        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam }),
+        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam, status: statusParam }),
       ]);
       setMind(m);
       setMailbox(mb);
       setHasMore((mb.history?.length ?? 0) >= PAGE);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [agentId, catFilter]);
+  }, [agentId, catFilter, statusFilter]);
 
   const loadMore = useCallback(async () => {
     if (!mailbox) return;
     const catParam = catFilter === 'all' ? undefined : catFilter;
+    const statusParam = statusFilter === 'all' ? undefined : statusFilter;
     try {
-      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam });
+      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
       setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
       setHasMore((mb.history?.length ?? 0) >= PAGE);
     } catch { /* ignore */ }
-  }, [agentId, mailbox, catFilter]);
+  }, [agentId, mailbox, catFilter, statusFilter]);
 
   useEffect(() => {
-    setExpandedId(null);
+    setExpandedId(highlightId ?? null);
+    setHighlightedId(highlightId ?? null);
     load();
-  }, [load]);
+  }, [load, highlightId]);
+
+  // Auto-load more history until the highlighted item appears, then scroll to it
+  const autoLoadingForHighlightRef = useRef(false);
+  useEffect(() => {
+    if (!highlightedId || loading) return;
+    const found = mailbox?.history?.some(h => h.id === highlightedId);
+    if (found) {
+      autoLoadingForHighlightRef.current = false;
+      const el = document.getElementById(`mbx-${highlightedId}`);
+      if (el) {
+        setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+        const timer = setTimeout(() => setHighlightedId(null), 3000);
+        return () => clearTimeout(timer);
+      }
+    } else if (hasMore && !autoLoadingForHighlightRef.current) {
+      autoLoadingForHighlightRef.current = true;
+      (async () => {
+        let currentHistory = mailbox?.history ?? [];
+        let moreAvailable: boolean = hasMore;
+        while (moreAvailable) {
+          try {
+            const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: currentHistory.length });
+            const newHistory = [...currentHistory, ...mb.history];
+            currentHistory = newHistory;
+            moreAvailable = (mb.history?.length ?? 0) >= PAGE;
+            const itemFound = mb.history.some(h => h.id === highlightedId);
+            setMailbox(prev => prev ? { ...prev, history: newHistory } : mb);
+            setHasMore(moreAvailable);
+            if (itemFound || !moreAvailable) break;
+          } catch { break; }
+        }
+        autoLoadingForHighlightRef.current = false;
+      })();
+    }
+  }, [highlightedId, loading, mailbox, hasMore, agentId]);
 
   useEffect(() => {
-    const unsub1 = wsClient.on('agent:mailbox', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    const unsub2 = wsClient.on('agent:decision', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    const unsub3 = wsClient.on('agent:attention', (evt) => {
-      if ((evt.payload as { agentId?: string }).agentId === agentId) load(false);
-    });
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const refresh = (evt: { payload?: unknown }) => {
+      if ((evt.payload as { agentId?: string })?.agentId === agentId) load(false);
+    };
+    const unsubs = [
+      wsClient.on('agent:mailbox', refresh),
+      wsClient.on('agent:decision', refresh),
+      wsClient.on('agent:attention', refresh),
+      wsClient.on('agent:focus', refresh),
+      wsClient.on('agent:update', refresh),
+      wsClient.on('agent:triage', refresh),
+    ];
+    return () => unsubs.forEach(u => u());
   }, [agentId, load]);
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">Loading agent mind state...</div>;
@@ -1561,15 +1779,29 @@ function MindTab({ agentId }: { agentId: string }) {
           <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[mind?.attentionState ?? 'idle'] ?? 'bg-gray-500/20 text-gray-300'}`}>
             {(mind?.attentionState ?? 'idle').toUpperCase()}
           </span>
-          {mind?.currentFocus ? (
-            <span className="text-sm text-fg-secondary">
-              {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'} <span className="text-fg-primary font-medium">{mind.currentFocus.label}</span>
-              <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
-            </span>
-          ) : (
+          {mind?.currentFocus ? (() => {
+            const focusDisplay = getMailboxItemDisplay({
+              id: mind.currentFocus.mailboxItemId,
+              agentId,
+              sourceType: mind.currentFocus.type,
+              priority: 0,
+              status: 'processing',
+              payload: { summary: mind.currentFocus.label, taskId: mind.currentFocus.taskId },
+              metadata: {},
+              queuedAt: mind.currentFocus.startedAt,
+            } as import('../api.ts').EnrichedMailboxItem);
+            return (
+              <span className="text-sm text-fg-secondary">
+                {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
+                <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
+                {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
+                <span className="text-fg-tertiary ml-2 text-xs">since {new Date(mind.currentFocus.startedAt).toLocaleTimeString()}</span>
+              </span>
+            );
+          })() : (
             <span className="text-sm text-fg-tertiary">Idle — waiting for new mail</span>
           )}
-          <button onClick={() => load()} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary">↻ Refresh</button>
+          <button onClick={() => { load(); }} className="ml-auto text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">↻ Refresh</button>
         </div>
 
         {(mind?.queuedItems?.length ?? 0) > 0 && (
@@ -1590,6 +1822,27 @@ function MindTab({ agentId }: { agentId: string }) {
         )}
       </section>
 
+      {/* ── Last Triage Decision ── */}
+      {mind?.lastTriage && (
+        <section className="bg-surface-2 rounded-lg border border-indigo-500/20 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm">🧠</span>
+            <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">Triage Decision</h4>
+            <span className="text-[10px] text-fg-quaternary ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
+          </div>
+          <p className="text-xs text-fg-secondary leading-relaxed">{mind.lastTriage.reasoning}</p>
+          <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
+            <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">Processing: {mind.lastTriage.processedItemId.slice(0, 12)}…</span>
+            {mind.lastTriage.deferredItemIds.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">Deferred: {mind.lastTriage.deferredItemIds.length}</span>
+            )}
+            {mind.lastTriage.droppedItemIds.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">Dropped: {mind.lastTriage.droppedItemIds.length}</span>
+            )}
+          </div>
+        </section>
+      )}
+
       {/* ── Mailbox History ── */}
       <section>
         <div className="flex items-center gap-2 mb-2">
@@ -1606,6 +1859,25 @@ function MindTab({ agentId }: { agentId: string }) {
             ))}
           </div>
         </div>
+        <div className="flex gap-1 mb-2 flex-wrap">
+          {[
+            { key: 'all', label: 'All', dot: '' },
+            { key: 'queued', label: 'Queued', dot: 'bg-amber-400' },
+            { key: 'processing', label: 'Processing', dot: 'bg-blue-400' },
+            { key: 'completed', label: 'Completed', dot: 'bg-green-500' },
+            { key: 'merged', label: 'Merged', dot: 'bg-cyan-400' },
+            { key: 'deferred', label: 'Deferred', dot: 'bg-purple-400' },
+            { key: 'dropped', label: 'Dropped', dot: 'bg-red-500' },
+          ].map(f => (
+            <button key={f.key} onClick={() => setStatusFilter(f.key)}
+              className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
+                statusFilter === f.key
+                  ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                  : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+              }`}
+            >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{f.label}</button>
+          ))}
+        </div>
 
         {(!mailbox?.history || mailbox.history.length === 0) && !loading && (
           <div className="text-center text-fg-tertiary text-sm py-8">No mailbox history yet</div>
@@ -1615,12 +1887,12 @@ function MindTab({ agentId }: { agentId: string }) {
           {mailbox?.history?.map(item => {
             const isExpanded = expandedId === item.id;
             const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
-            const summary = item.payload?.summary ?? item.id;
-            const fullContent = item.payload?.content;
+            const display = getMailboxItemDisplay(item);
             const senderName = item.metadata?.senderName as string | undefined;
             const senderRole = item.metadata?.senderRole as string | undefined;
+            const isHighlighted = highlightedId === item.id;
             return (
-              <div key={item.id} className="bg-surface-2 rounded-lg border border-border-subtle">
+              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-2 rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
                 <button
                   className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
                   onClick={() => setExpandedId(isExpanded ? null : item.id)}
@@ -1630,9 +1902,15 @@ function MindTab({ agentId }: { agentId: string }) {
                   <span className="text-sm">{icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{summary}</span>
+                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{display.title}</span>
+                      {display.badge && (
+                        <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>
+                      )}
                       <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{PRIORITY_LABELS[item.priority] ?? ''}</span>
                     </div>
+                    {display.subtitle && (
+                      <div className={`text-[11px] text-fg-secondary mt-0.5 ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
+                    )}
                     <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
                       <span>{new Date(item.queuedAt).toLocaleString()}</span>
                       {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
@@ -1649,20 +1927,18 @@ function MindTab({ agentId }: { agentId: string }) {
 
                 {isExpanded && (
                   <div className="border-t border-border-subtle px-3 py-3 space-y-3">
-                    {/* Full content & metadata */}
-                    {(fullContent || senderName) && (
-                      <div className="space-y-1.5">
-                        {senderName && (
-                          <div className="text-[10px] text-fg-tertiary">
-                            From: <span className="text-fg-secondary">{senderName}</span>
-                            {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
-                          </div>
-                        )}
-                        {fullContent && fullContent !== summary && (
-                          <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
-                            {fullContent}
-                          </div>
-                        )}
+                    {/* Sender & contextual metadata */}
+                    {senderName && (
+                      <div className="text-[10px] text-fg-tertiary">
+                        From: <span className="text-fg-secondary">{senderName}</span>
+                        {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
+                      </div>
+                    )}
+
+                    {/* Full content for message-type items (chat, a2a, comments, reviews) */}
+                    {item.payload?.content && ['human_chat', 'a2a_message', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'mention'].includes(item.sourceType) && (
+                      <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+                        {item.payload.content}
                       </div>
                     )}
 
@@ -1694,7 +1970,7 @@ function MindTab({ agentId }: { agentId: string }) {
                         {item.activity.type === 'task' && item.payload?.taskId ? (
                           <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
                         ) : (
-                          <ActivityLog agentId={agentId} activityId={item.activity.id} />
+                          <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
                         )}
                       </div>
                     ) : item.status === 'processing' ? (

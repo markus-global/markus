@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   api, wsClient,
@@ -55,9 +55,36 @@ interface ChatMsg {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  /** Activity log metadata — compact system card instead of bubble */
+  isActivityLog?: boolean;
+  activityType?: string;
+  outcome?: string;
+  mailboxItemId?: string;
+  taskId?: string;
+  requirementId?: string;
 }
 
 type ChatMode = 'channel' | 'direct' | 'dm';
+
+// Mirror of MAILBOX_TYPE_REGISTRY icon/category from @markus/shared — kept in sync manually
+const ACTIVITY_TYPE_META: Record<string, { icon: string; category: string }> = {
+  system_event:         { icon: '⚙',  category: 'System' },
+  human_chat:           { icon: '💬', category: 'Chat' },
+  a2a_message:          { icon: '🔗', category: 'Chat' },
+  task_comment:         { icon: '📝', category: 'Comment' },
+  requirement_comment:  { icon: '📝', category: 'Comment' },
+  mention:              { icon: '@',  category: 'Mention' },
+  session_reply:        { icon: '↩',  category: 'Task' },
+  task_status_update:   { icon: '📋', category: 'Task' },
+  review_request:       { icon: '👀', category: 'Review' },
+  requirement_update:   { icon: '📝', category: 'Notification' },
+  daily_report:         { icon: '📊', category: 'System' },
+  heartbeat:            { icon: '♡',  category: 'System' },
+  memory_consolidation: { icon: '🧠', category: 'System' },
+  notify_user:          { icon: '🔔', category: 'Notification' },
+};
+
+const SCROLL_TO_BOTTOM_ACTIVITY_TYPES = new Set(['task_comment', 'requirement_comment', 'mention', 'notify_user']);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +111,20 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.images?.length) {
     base.images = m.metadata.images;
+  }
+  if (m.metadata?.activityLog) {
+    base.isActivityLog = true;
+    base.activityType = m.metadata.activityType;
+    base.outcome = m.metadata.outcome;
+    base.mailboxItemId = m.metadata.mailboxItemId;
+    base.taskId = m.metadata.taskId;
+    base.requirementId = m.metadata.requirementId;
+    // Legacy compat: old rows have [ACTIVITY: type] prefix and outcome baked into content
+    if (!base.outcome && base.text.startsWith('[ACTIVITY:')) {
+      const arrowIdx = base.text.lastIndexOf(' → ');
+      if (arrowIdx !== -1) base.outcome = base.text.slice(arrowIdx + 3);
+      base.text = base.text.replace(/^\[ACTIVITY:\s*\w+\]\s*/, '');
+    }
   }
   return base;
 }
@@ -194,10 +235,22 @@ function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   const statusColor = agent.status === 'idle' ? 'bg-green-400' : agent.status === 'working' ? 'bg-blue-400 animate-pulse' : agent.status === 'error' ? 'bg-red-400' : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? 'Online' : agent.status === 'working' ? 'Working' : agent.status === 'error' ? 'Error' : agent.status === 'paused' ? 'Paused' : 'Offline';
 
+  const adjustRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    (ref as React.MutableRefObject<HTMLDivElement | null>).current = el;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const pad = 8;
+    if (rect.right > vw - pad) el.style.left = `${Math.max(pad, vw - rect.width - pad)}px`;
+    if (rect.left < pad) el.style.left = `${pad}px`;
+    if (rect.bottom > vh - pad) el.style.top = `${Math.max(pad, vh - rect.height - pad)}px`;
+  }, []);
+
   return (
     <div
-      ref={ref}
-      className="fixed z-50 w-64 bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
+      ref={adjustRef}
+      className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-xl shadow-2xl p-4 space-y-3"
       style={{ top: anchorRect.top + 40, left: anchorRect.left }}
     >
       <div className="flex items-center gap-3">
@@ -264,16 +317,19 @@ function friendlyAgentError(err: unknown): string {
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
-  msg, onCopy, onRetry, onReply, isCopied,
+  msg, onCopy, onRetry, onReply, isCopied, isLastAgentMsg,
 }: {
   msg: ChatMsg;
   onCopy: (msg: ChatMsg) => void;
   onRetry?: (msg: ChatMsg) => void;
   onReply?: (msg: ChatMsg) => void;
   isCopied: boolean;
+  /** Only the most recent agent message should offer Retry/Re-ask */
+  isLastAgentMsg?: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
   const isStopped = msg.isStopped;
+  const canRetry = isLastAgentMsg !== false;
   return (
     <div className="flex items-center gap-0.5 mt-1">
       {/* Copy */}
@@ -289,8 +345,8 @@ function MessageActions({
         )}
         {isCopied ? 'Copied' : 'Copy'}
       </button>
-      {/* Re-ask — for stopped messages */}
-      {isStopped && onRetry && (
+      {/* Re-ask — for stopped messages (only on latest agent msg) */}
+      {canRetry && isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-brand-500 hover:text-brand-500 hover:bg-brand-500/10 transition-colors"
@@ -300,8 +356,8 @@ function MessageActions({
           Re-ask
         </button>
       )}
-      {/* Retry — for error messages */}
-      {isError && !isStopped && onRetry && (
+      {/* Retry — for error messages (only on latest agent msg) */}
+      {canRetry && isError && !isStopped && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 transition-colors"
@@ -311,8 +367,8 @@ function MessageActions({
           Retry
         </button>
       )}
-      {/* Retry — for normal agent messages (re-generate response) */}
-      {!isError && !isStopped && msg.sender === 'agent' && onRetry && (
+      {/* Retry — for normal agent messages (only on latest agent msg) */}
+      {canRetry && !isError && !isStopped && msg.sender === 'agent' && onRetry && (
         <button
           onClick={() => onRetry(msg)}
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors"
@@ -337,14 +393,87 @@ function MessageActions({
   );
 }
 
+/**
+ * Convert message segments to execution stream entries for the timeline.
+ *
+ * Uses a stateful parser that tracks whether we are inside a `<think>` block
+ * across segment and tool-call boundaries. This ensures:
+ * - `<think>` blocks that span multiple segments are properly merged
+ * - Real (non-thinking) text between tool calls is shown at its natural position
+ * - Thinking content that spans a tool call is preserved across the gap
+ */
 function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
   if (!segments) return [];
   const entries: ExecutionStreamEntryUI[] = [];
   let seq = 0;
   const now = new Date().toISOString();
   const aid = agentId ?? '';
+
+  let insideThink = false;
+  let thinkBuf = '';
+  let textBuf = '';
+
+  const emitThinking = () => {
+    const t = thinkBuf.trim();
+    if (t) {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'text', content: t, createdAt: now,
+        metadata: { isThinking: true },
+      });
+    }
+    thinkBuf = '';
+  };
+
+  const emitText = () => {
+    const t = textBuf.trim();
+    if (t) {
+      entries.push({
+        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+        seq: seq++, type: 'text', content: t, createdAt: now,
+      });
+    }
+    textBuf = '';
+  };
+
+  const OPEN_TAG = '<think>';
+  const CLOSE_TAG = '</think>';
+
+  /** Parse text content, tracking <think> state across calls */
+  const processText = (content: string) => {
+    let pos = 0;
+    while (pos < content.length) {
+      if (insideThink) {
+        const closeIdx = content.indexOf(CLOSE_TAG, pos);
+        if (closeIdx === -1) {
+          thinkBuf += content.slice(pos);
+          pos = content.length;
+        } else {
+          thinkBuf += content.slice(pos, closeIdx);
+          insideThink = false;
+          emitThinking();
+          pos = closeIdx + CLOSE_TAG.length;
+        }
+      } else {
+        const openIdx = content.indexOf(OPEN_TAG, pos);
+        if (openIdx === -1) {
+          textBuf += content.slice(pos);
+          pos = content.length;
+        } else {
+          textBuf += content.slice(pos, openIdx);
+          emitText();
+          insideThink = true;
+          pos = openIdx + OPEN_TAG.length;
+        }
+      }
+    }
+  };
+
   for (const seg of segments) {
     if (seg.type === 'tool') {
+      // Flush pending regular text before the tool (thinking stays open across tools)
+      if (!insideThink) emitText();
+
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
         seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: now,
@@ -353,16 +482,30 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
         entries.push({
           id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
           seq: seq++, type: 'tool_end', content: seg.tool,
-          metadata: { arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs, success: seg.status !== 'error' },
+          metadata: {
+            arguments: seg.args, result: seg.result, error: seg.error, durationMs: seg.durationMs,
+            success: seg.status !== 'error',
+            ...(seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
+          },
           createdAt: now,
         });
       }
-    } else if (seg.content) {
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: seg.content, createdAt: now,
-      });
+    } else {
+      // Handle client-side extracted thinking (from streaming)
+      if (seg.thinking) {
+        if (!insideThink) emitText();
+        thinkBuf += seg.thinking;
+        emitThinking();
+      }
+      processText(seg.content);
     }
+  }
+
+  // Flush whatever remains
+  if (insideThink) {
+    emitThinking();
+  } else {
+    emitText();
   }
   return entries;
 }
@@ -386,14 +529,20 @@ function AgentMessageBody({
     const hasTools = segments.some(s => s.type === 'tool');
     const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
     const streamingText = isStreaming
-      ? segments.filter(s => s.type === 'text').map(s => s.content).join('').slice(-200)
+      ? (() => {
+          const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
+          const cleaned = raw
+            .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+            .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+            .trim();
+          return cleaned ? cleaned.slice(-200) : undefined;
+        })()
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const lastText = !isStreaming && textSegments.length > 0
-      ? textSegments[textSegments.length - 1]!.content
-      : null;
-    const displayText = viewMode === 'compact' ? lastText : allText;
+    // Always use allText so MarkdownMessage can properly extract think blocks
+    // that span across text segments (split by tool-call segments in between).
+    const displayText = allText;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
@@ -462,7 +611,7 @@ function AgentMessageBody({
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-          <span>{t("team.stopped")}</span>
+          <span>Stopped</span>
         </div>
       )}
     </>
@@ -523,9 +672,11 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
   const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | 'mind' | undefined>();
+  const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
-  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind') => {
+  const switchToProfile = useCallback((defaultTab?: 'overview' | 'mind', highlightMailboxId?: string) => {
     setProfileDefaultTab(defaultTab);
+    setProfileHighlightMailboxId(highlightMailboxId);
     setMainTab('profile');
     if (isMobile) history.pushState({ mobileProfile: true }, '', window.location.hash);
   }, [isMobile]);
@@ -537,13 +688,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind' }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'mind'; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
-    switchToProfile(opts?.tab);
+    if (isMobile) enterMobileDetail();
+    switchToProfile(opts?.tab, opts?.highlightMailboxId);
     setAvatarPopover(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [switchToProfile]);
+  }, [isMobile, enterMobileDetail, switchToProfile]);
 
   // Mode & target
   const [chatMode, setChatMode] = useState<ChatMode>(
@@ -574,6 +726,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
 
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
@@ -625,6 +778,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
   const userAtBottomRef = useRef(true);
+  /** Stable ref to loadMore for use in IntersectionObserver callback */
+  const loadMoreRef = useRef<() => Promise<void>>(undefined);
 
   // Close history panel on click outside
   useEffect(() => {
@@ -750,6 +905,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-select secretary agent when no agent is selected and agents have loaded
+  useEffect(() => {
+    if (selectedAgent || agents.length === 0) return;
+    const secretary = agents.find(a => a.role === 'secretary');
+    if (secretary) {
+      setChatMode('direct');
+      setSelectedAgent(secretary.id);
+    }
+  }, [agents, selectedAgent]);
+
   // Track whether the user is at the bottom of the chat scroll container.
   // Uses wheel/touch events to detect genuine user interaction (not programmatic scrolls),
   // and the scroll event to detect when the user scrolls back to the bottom.
@@ -787,21 +952,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
   }, [messages, activities]);
 
-  const savedScrollTopRef = useRef<number | null>(null);
   useEffect(() => {
     if (mainTab === 'chat') {
       requestAnimationFrame(() => {
-        const el = chatScrollRef.current;
-        if (!el) return;
-        if (savedScrollTopRef.current != null) {
-          el.scrollTop = savedScrollTopRef.current;
-          savedScrollTopRef.current = null;
-        } else if (userAtBottomRef.current) {
-          messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
-        }
+        messagesEnd.current?.scrollIntoView({ behavior: 'instant' });
+        userAtBottomRef.current = true;
       });
-    } else {
-      savedScrollTopRef.current = chatScrollRef.current?.scrollTop ?? null;
     }
   }, [mainTab]);
 
@@ -865,21 +1021,22 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     } catch { setSessions([]); return []; }
   }, []);
 
-  // Load more (pagination)
+  // Load more (pagination) — preserves scroll position after prepending
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || !oldestMsgId.current) return;
     setLoadingMore(true);
+    const scrollEl = chatScrollRef.current;
+    const prevScrollHeight = scrollEl?.scrollHeight ?? 0;
     try {
       const convKey = currentConvKeyRef.current;
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
         const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
         const newMsgs = result.messages.map(channelMsgToChat);
-        // Suppress scroll-to-bottom — prepending old messages must not jump the viewport
         skipScrollRef.current = true;
         setMessages(prev => {
           const combined = [...newMsgs, ...prev];
-          msgBuffers.current.set(convKey, combined); // keep buffer in sync
+          msgBuffers.current.set(convKey, combined);
           return combined;
         });
         setHasMore(result.hasMore);
@@ -896,8 +1053,34 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         setHasMore(result.hasMore);
         if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
       }
-    } catch { /* ignore */ } finally { setLoadingMore(false); }
+    } catch { /* ignore */ } finally {
+      setLoadingMore(false);
+      // Restore scroll position after React re-render
+      requestAnimationFrame(() => {
+        if (scrollEl) {
+          const newScrollHeight = scrollEl.scrollHeight;
+          scrollEl.scrollTop += newScrollHeight - prevScrollHeight;
+        }
+      });
+    }
   }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId, authUser?.id, activeDmUserId]);
+
+  loadMoreRef.current = loadMore;
+
+  // Auto-load earlier messages when user scrolls near the top.
+  // Uses a React onScroll handler instead of addEventListener so it works
+  // on mobile where the chat container is conditionally mounted.
+  const scrollTickingRef = useRef(false);
+  const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (scrollTickingRef.current) return;
+    scrollTickingRef.current = true;
+    requestAnimationFrame(() => {
+      scrollTickingRef.current = false;
+      if ((e.target as HTMLDivElement).scrollTop < 100) {
+        loadMoreRef.current?.();
+      }
+    });
+  }, []);
 
   // When mode/target changes: switch to the new conversation's buffer.
   // If the new conv is already streaming or has buffered messages, show them immediately.
@@ -959,8 +1142,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         loadSessions(selectedAgent).then(s => {
           if (currentConvKeyRef.current !== newKey) return;
           if (s.length > 0) {
-            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : s.slice(0, 5);
-            const restoreId = savedActiveSession !== undefined ? savedActiveSession : initialTabs[0]!.id;
+            // Ensure main session is always first in the default tab list
+            const mainSession = s.find(ss => ss.isMain);
+            const defaultTabs = mainSession
+              ? [mainSession, ...s.filter(ss => !ss.isMain).slice(0, 4)]
+              : s.slice(0, 5);
+            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
+            const restoreId = savedActiveSession !== undefined ? savedActiveSession : (mainSession?.id ?? initialTabs[0]!.id);
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
             setOpenSessionTabs(initialTabs);
@@ -1049,9 +1237,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const agentName = (p['agentName'] as string) ?? 'Agent';
       const message = (p['message'] as string) ?? '';
       const sessionId = (p['sessionId'] as string) ?? '';
+      const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       if (!agentId || !message) return;
 
-      // Only append to display if we're viewing this agent's direct chat
+      const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
+
+      // Append to display if we're viewing this agent's direct chat
       if (chatMode === 'direct' && selectedAgent === agentId) {
         const newMsg: ChatMsg = {
           id: `proactive_${Date.now()}`,
@@ -1060,14 +1251,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           time: new Date().toLocaleTimeString(),
           agentName,
           agentId,
+          ...(isActivity ? {
+            isActivityLog: true,
+            activityType: meta.activityType as string | undefined,
+            outcome: meta.outcome as string | undefined,
+            mailboxItemId: meta.mailboxItemId as string | undefined,
+            taskId: meta.taskId as string | undefined,
+            requirementId: meta.requirementId as string | undefined,
+          } : {}),
         };
         const key = makeConvKey('direct', agentId, activeChannel, activeDmUserId);
         updateConvMsgs(key, prev => [...prev, newMsg]);
-
-        // Update the active session if the proactive message came with a session ID
-        if (sessionId && activeSessionId !== sessionId) {
-          setActiveSessionId(sessionId);
-        }
       }
     });
     return unsub;
@@ -1108,7 +1302,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setActivities([]);
   };
 
-  const send = async (retryText?: string) => {
+  const send = async (retryText?: string, options?: { isRetry?: boolean }) => {
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
@@ -1235,6 +1429,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
       ]);
 
+      /** Track whether we're inside a <think> block across streaming chunks */
+      let insideThink = false;
+
       /** Append a text chunk to the segment stream */
       const appendTextChunk = (chunk: string) => {
         updateConvMsgs(sendKey, prev => {
@@ -1243,21 +1440,43 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           if (idx < 0) return prev;
           const segs = u[idx]!.segments ?? [];
           const last = segs[segs.length - 1];
+          const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
 
-          // Extract thinking content from chunk (between <think> and </think> tags)
-          let thinking: string | undefined;
-          let content = chunk;
+          let thinking = '';
+          let content = '';
+          let remaining = chunk;
 
-          // Check for standard format <think>...</think>
-          const thinkingMatch = chunk.match(/<think>([\s\S]*?)<\/think>/);
-          if (thinkingMatch) {
-            thinking = (last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '') + thinkingMatch[1];
-            content = chunk.replace(/<think>[\s\S]*?<\/think>/, '');
+          // Process the chunk character-by-character tracking think state.
+          // Handles <think>...</think> that may span across multiple chunks.
+          while (remaining.length > 0) {
+            if (insideThink) {
+              const closeIdx = remaining.indexOf('</think>');
+              if (closeIdx >= 0) {
+                thinking += remaining.slice(0, closeIdx);
+                remaining = remaining.slice(closeIdx + '</think>'.length);
+                insideThink = false;
+              } else {
+                thinking += remaining;
+                remaining = '';
+              }
+            } else {
+              const openIdx = remaining.indexOf('<think>');
+              if (openIdx >= 0) {
+                content += remaining.slice(0, openIdx);
+                remaining = remaining.slice(openIdx + '<think>'.length);
+                insideThink = true;
+              } else {
+                content += remaining;
+                remaining = '';
+              }
+            }
           }
 
+          const mergedThinking = (prevThinking + thinking) || undefined;
+
           const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: thinking ?? (last as { thinking?: string }).thinking }]
-            : [...segs, { type: 'text', content, thinking }];
+            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking }]
+            : [...segs, { type: 'text', content, thinking: mergedThinking }];
           u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
           return u;
         });
@@ -1359,6 +1578,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           abortCtrl.signal,
           imagesToSend,
           effectiveSessionId,
+          options?.isRetry,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {
@@ -1519,7 +1739,14 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
-  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  const [, setExpandedMsgIds] = useState<Set<string>>(new Set());
+
+  const lastAgentMsgId = useMemo(() => {
+    for (let j = messages.length - 1; j >= 0; j--) {
+      if (messages[j]?.sender === 'agent' && !messages[j]?.isActivityLog) return messages[j]!.id;
+    }
+    return null;
+  }, [messages]);
 
   const handleCopy = useCallback((msg: ChatMsg) => {
     const text = msg.segments
@@ -1555,7 +1782,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    void send(retryText);
+    void send(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -1777,7 +2004,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   }`}
                 >{chatMode === 'channel' ? 'Team' : 'Profile'}</button>
                 <div className="flex-1" />
-                {chatMode === 'direct' && (
+                {chatMode === 'direct' && mainTab !== 'profile' && (
                   <>
                     <button
                       onClick={newConversation}
@@ -1839,7 +2066,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 
             {/* Right side buttons */}
             <div className="ml-auto flex items-center gap-2">
-            {chatMode === 'direct' && currentAgent && (
+            {chatMode === 'direct' && currentAgent && mainTab !== 'profile' && (
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={newConversation}
@@ -1851,7 +2078,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                   ref={historyBtnRef}
                   onClick={() => setShowSessions(!showSessions)}
                   className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                  title={t('team.history')}
+                  title="History"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -1885,13 +2112,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                     }
                   }}
                 >
-                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.title || 'Conversation')}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
-                    className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
-                  >
-                    ✕
-                  </button>
+                  {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
+                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? 'New Chat' : (s.isMain ? 'Main' : (s.title || 'Conversation'))}</span>
+                  {!s.isMain && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
+                      className="opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-fg-secondary transition-opacity shrink-0"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1904,12 +2134,12 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               className="absolute right-4 top-full mt-1 w-72 max-h-[420px] bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40 z-50 flex flex-col overflow-hidden"
             >
               <div className="px-4 py-3 border-b border-border-default flex items-center justify-between">
-                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('team.history')}</span>
+                <span className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">History</span>
                 <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {sessions.length === 0 && (
-                  <div className="text-xs text-fg-tertiary text-center py-6">{t("team.noConversationsYet")}</div>
+                  <div className="text-xs text-fg-tertiary text-center py-6">No conversations yet</div>
                 )}
                 {(() => {
                   const now = new Date();
@@ -1943,7 +2173,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                             s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
                           }`}
                         >
-                          <div className="truncate font-medium">{s.title || 'Conversation'}</div>
+                          <div className="truncate font-medium flex items-center gap-1">
+                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-60">●</span>}
+                            {s.isMain ? 'Main' : (s.title || 'Conversation')}
+                          </div>
                           <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
                         </button>
                       ))}
@@ -1963,6 +2196,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               onBack={() => setMainTab('chat')}
               inline
               defaultTab={profileDefaultTab}
+              highlightMailboxId={profileHighlightMailboxId}
               onSwipeBack={() => { if (mainTabRef.current === 'profile') history.back(); else setMainTab('chat'); }}
             />
           </div>
@@ -1978,18 +2212,17 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
         )}
 
         {/* Chat Tab: Messages */}
-        <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'} ${mainTab !== 'chat' ? 'hidden' : ''}`} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
-          {hasMore && (
-            <div className="flex justify-center py-2">
-              <button
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                className="text-xs text-brand-500 hover:text-brand-500 disabled:opacity-50 px-4 py-1.5 border border-brand-500/30 rounded-lg"
-              >
-                {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
-              </button>
+        <div className={`flex-1 overflow-hidden flex flex-col relative ${mainTab !== 'chat' ? 'hidden' : ''}`}>
+          {loadingMore && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center items-center gap-2 py-2 bg-gradient-to-b from-surface-primary/90 to-transparent pointer-events-none">
+              <svg className="animate-spin h-3.5 w-3.5 text-brand-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-xs text-fg-tertiary">Loading earlier messages…</span>
             </div>
           )}
+          <div ref={chatScrollRef} className={`flex-1 overflow-y-auto space-y-3 ${isMobile ? 'p-2.5' : 'p-5'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {messages.length === 0 && !sending && (
             <div className="flex flex-col items-center justify-center h-full text-fg-tertiary text-sm space-y-2">
@@ -2002,8 +2235,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 </svg>
               </div>
               {chatMode === 'channel' && <div>No messages in {activeGroupChat?.name ?? activeChannel} yet.</div>}
-              {chatMode === 'direct' && !selectedAgent && <div>{t('team.selectAgentToStart')}</div>}
-              {chatMode === 'direct' && selectedAgent && <div>{t('team.startNewConversation', { name: currentAgent?.name })}</div>}
+              {chatMode === 'direct' && !selectedAgent && <div>Select an agent from the sidebar to start.</div>}
+              {chatMode === 'direct' && selectedAgent && <div>Start a new conversation with {currentAgent?.name}.</div>}
             </div>
           )}
 
@@ -2060,8 +2293,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           </div>
                       }
                     </div>
-                    <div className="opacity-0 group-hover/msg:opacity-100 transition-opacity">
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
+                    <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                     </div>
                   </div>
                 </div>
@@ -2071,13 +2304,70 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 const isStreamingMsg = isPending && sending;
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
+
+                // Activity log → compact inline card rendered from metadata
+                if (msg.isActivityLog) {
+                  // Collapse consecutive heartbeats: only show the last one in a run
+                  if (msg.activityType === 'heartbeat') {
+                    const next = messages[i + 1];
+                    if (next?.isActivityLog && next.activityType === 'heartbeat') return null;
+                  }
+                  const meta = ACTIVITY_TYPE_META[msg.activityType ?? ''];
+                  const icon = meta?.icon ?? '•';
+                  const category = meta?.category;
+                  const navToWork = !!(msg.taskId || msg.requirementId);
+                  const navToMind = !navToWork && !!msg.mailboxItemId;
+                  const canNavigate = navToWork || navToMind;
+                  const isCommentType = SCROLL_TO_BOTTOM_ACTIVITY_TYPES.has(msg.activityType ?? '');
+                  const isExpanded = expandedActivities.has(msg.id);
+                  const fullText = msg.text + (msg.outcome ? `\n→ ${msg.outcome}` : '');
+                  const handleActivityClick = () => {
+                    if (canNavigate) {
+                      if (msg.taskId) {
+                        navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                      } else if (msg.requirementId) {
+                        navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
+                      } else if (msg.mailboxItemId && selectedAgent) {
+                        handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
+                      }
+                    } else {
+                      setExpandedActivities(prev => {
+                        const next = new Set(prev);
+                        if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                        return next;
+                      });
+                    }
+                  };
+                  return (
+                    <div key={msg.id} id={`msg-${msg.id}`} className={`flex justify-start ${isMobile ? 'max-w-[95%]' : 'max-w-[85%]'}`}>
+                      <div className="min-w-0 w-full">
+                        <div
+                          className="group/act flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full overflow-hidden cursor-pointer"
+                          onClick={handleActivityClick}
+                          title={canNavigate ? undefined : fullText}
+                        >
+                          <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
+                          <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
+                          {category && <span className="shrink-0 text-[9px] font-medium rounded py-px bg-surface-elevated text-fg-quaternary inline-flex items-center justify-center overflow-hidden" style={{ width: 68 }}>{category}</span>}
+                          <span className={`text-xs text-fg-tertiary truncate min-w-0 flex-1 ${canNavigate ? 'group-hover/act:text-brand-500 transition-colors' : ''}`}>{msg.text}</span>
+                          {msg.outcome && !isExpanded && <span className="text-[10px] text-fg-quaternary shrink-0 truncate max-w-[50%]">→ {msg.outcome}</span>}
+                        </div>
+                        {isExpanded && msg.outcome && (
+                          <div className="ml-10 mr-4 mt-1 mb-2 py-2 px-3 rounded-md bg-surface-elevated/40 text-[11px] text-fg-tertiary whitespace-pre-wrap break-words leading-relaxed max-h-[240px] overflow-y-auto">
+                            {msg.outcome}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={
-                      msg.sender === 'agent' && expandedMsgIds.has(msg.id)
-                        ? 'max-w-full w-full'
-                        : isMobile ? 'max-w-[95%]' : 'max-w-[75%]'
-                    }>
+                    <div className={[
+                      isMobile ? 'max-w-[95%]' : 'max-w-[85%]',
+                      msg.sender === 'agent' ? (isMobile ? 'min-w-[200px]' : 'min-w-[280px]') : '',
+                    ].join(' ')}>
                       <div className="text-xs text-fg-tertiary mb-1">
                         {msg.sender === 'user'
                           ? (currentUserName ?? 'You')
@@ -2107,7 +2397,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                             ? 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm border-b-2 border-red-500/60'
                             : 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm'
-                      }`}>
+                      } ${isStreamingMsg && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
                           ? <>
                               {msg.images && msg.images.length > 0 && (
@@ -2132,8 +2422,8 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                         }
                       </div>
                       {showActions && (
-                        <div className={`transition-opacity ${msg.isStopped ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} />
+                        <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>
                       )}
                     </div>
@@ -2142,9 +2432,10 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               })
           }
           {chatMode === 'channel' && sending && (
-            <div className="text-xs text-fg-tertiary animate-pulse ml-11">{t("team.agentThinking")}</div>
+            <div className="text-xs text-fg-tertiary animate-pulse ml-11">Agent is thinking…</div>
           )}
           <div ref={messagesEnd} />
+        </div>
         </div>
 
         {/* Avatar popover */}
@@ -2295,6 +2586,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
 function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'mind' }) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const isWorking = agent.status === 'working';
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
@@ -2308,6 +2600,25 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !popoverRef.current) return;
+    const el = popoverRef.current;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    if (rect.right > vw - 8) {
+      el.style.left = 'auto';
+      el.style.right = '0';
+    }
+    if (rect.left < 8) {
+      el.style.left = '0';
+      el.style.right = 'auto';
+    }
+    const maxW = vw - 16;
+    if (rect.width > maxW) {
+      el.style.width = `${maxW}px`;
+    }
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse' : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
@@ -2338,8 +2649,8 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       </button>
 
       {open && isError && (
-        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-red-500 uppercase font-semibold">{t("team.errorDetails")}</p>
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-red-500/30 rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-red-500 uppercase font-semibold">Error Details</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
               {agent.lastError || 'Agent encountered an error. Check profile for details.'}
@@ -2356,8 +2667,8 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       )}
 
       {open && isWorking && (
-        <div className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 p-3 space-y-2">
-          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t("team.currentActivity")}</p>
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">Current Activity</p>
           {currentTask ? (
             <div
               className="flex items-center gap-2 p-2 rounded-lg bg-brand-500/10 border border-brand-500/30 cursor-pointer hover:bg-brand-500/10 transition-colors"
@@ -2366,7 +2677,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
               <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-brand-500 truncate">{currentTask.title}</div>
-                <div className="text-[10px] text-fg-tertiary">{t("team.workingOnTask")}</div>
+                <div className="text-[10px] text-fg-tertiary">Working on task · Click to view</div>
               </div>
               <span className="text-[10px] text-fg-tertiary">→</span>
             </div>

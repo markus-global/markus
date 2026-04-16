@@ -3,7 +3,7 @@ import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
+import { createLogger, generateId, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -355,7 +355,7 @@ export class APIServer {
             writeFileSync(filePath, content, 'utf-8');
           }
         } else if (data.config) {
-          writeFileSync(join(artDir, 'manifest.json'), JSON.stringify(data.config, null, 2), 'utf-8');
+          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(data.config, null, 2), 'utf-8');
         }
         return self.builderService!.installArtifact(mode, slug);
       },
@@ -1305,6 +1305,7 @@ export class APIServer {
         const senderId = body['senderId'] as string | undefined;
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+        const isRetry = body['isRetry'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -1315,10 +1316,14 @@ export class APIServer {
           // Restore agent memory context from DB session history so the agent
           // has full conversation context when replying to an existing chat.
           try {
+            if (isRetry) {
+              this.storage.chatSessionRepo.deleteLastExchange(sessionId);
+            }
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
               histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
+              { isRetry: !!isRetry },
             );
           } catch (err) {
             log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
@@ -2161,106 +2166,25 @@ export class APIServer {
     // Task comments — add a comment (text + optional image attachments + @mentions)
     if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
       const taskId = path.split('/')[3]!;
-      if (!this.storage?.taskCommentRepo) {
-        this.json(res, 500, { error: 'Storage not available' });
-        return;
-      }
       try {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
-        let resolvedTaskAuthorName = (body['authorName'] as string | undefined);
-        if (!resolvedTaskAuthorName && authUser?.userId && this.storage.userRepo) {
+        let resolvedAuthorName = (body['authorName'] as string | undefined);
+        if (!resolvedAuthorName && authUser?.userId && this.storage?.userRepo) {
           const userRow = await this.storage.userRepo.findById(authUser.userId);
-          resolvedTaskAuthorName = userRow?.name;
+          resolvedAuthorName = userRow?.name;
         }
-        const comment = await this.storage.taskCommentRepo.add({
-          taskId,
-          authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
-          authorName: resolvedTaskAuthorName ?? 'User',
-          authorType: (body['authorType'] as string) ?? 'human',
-          content: body['content'] as string,
-          attachments: body['attachments'] as unknown[] | undefined,
-          mentions,
-        });
-        // Broadcast real-time comment event via WS
-        this.ws?.broadcast({
-          type: 'task:comment',
-          payload: {
-            taskId,
-            comment: {
-              id: comment.id,
-              taskId: comment.taskId,
-              authorId: comment.authorId,
-              authorName: comment.authorName,
-              authorType: comment.authorType,
-              content: comment.content,
-              attachments: comment.attachments,
-              mentions: comment.mentions,
-              createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
-            },
-          },
-          timestamp: new Date().toISOString(),
-        });
-        // Inject live comment into running agent's context
-        this.taskService.injectCommentIntoRunningTask(
-          taskId,
-          resolvedTaskAuthorName ?? 'User',
-          body['content'] as string
+        const authorId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
+        const authorName = resolvedAuthorName ?? 'User';
+        // Single entry point: DB write + WS broadcast + inject into running task + agent notifications
+        const result = await this.taskService.postTaskComment(
+          taskId, authorId, authorName,
+          body['content'] as string,
+          mentions, undefined,
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
         );
-        // Notify agents about the comment
-        {
-          const authorName = resolvedTaskAuthorName ?? 'User';
-          const commenterId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
-          const task = this.taskService.getTask(taskId);
-          const taskTitle = task?.title ?? taskId;
-          const taskStatus = task?.status ?? 'unknown';
-          const agentMgr = this.orgService.getAgentManager();
-          const notified = new Set<string>();
-
-          const notifyAgent = (agentId: string, reason: string) => {
-            if (notified.has(agentId) || agentId === commenterId) return;
-            if (task?.status === 'in_progress' && task.assignedAgentId === agentId) return;
-            notified.add(agentId);
-            try {
-              const agent = agentMgr.getAgent(agentId);
-              if (!agent) return;
-              const notif = [
-                `${reason} on task "${taskTitle}" (ID: ${taskId}, status: ${taskStatus}).`,
-                ``,
-                `Comment from ${authorName}: ${body['content'] as string}`,
-                ``,
-                `**MANDATORY before replying**: You MUST first understand the full context:`,
-                `1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`,
-                `2. Read ALL previous comments on this task to understand the conversation thread`,
-                `3. Only THEN formulate your response using \`task_comment\``,
-                `Do NOT reply based solely on the comment above — you need the full picture.`,
-              ].join('\n');
-              agent.enqueueToMailbox('task_comment', {
-                summary: `Comment on task "${taskTitle}" from ${authorName}`,
-                content: notif,
-                taskId,
-              }, {
-                metadata: { senderName: authorName, senderRole: 'user', taskId },
-              });
-            } catch { /* agent not found */ }
-          };
-
-          // 1. Notify @mentioned agents
-          for (const mid of mentions) {
-            notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
-          }
-
-          // 2. Always notify task assignee (even without @mention)
-          if (task?.assignedAgentId) {
-            notifyAgent(task.assignedAgentId, `New comment from ${authorName} on your assigned task`);
-          }
-          // 3. Notify creator only when task is NOT in_progress (assignee handles it during execution)
-          if (task?.createdBy && task.status !== 'in_progress') {
-            notifyAgent(task.createdBy, `New comment from ${authorName} on a task you created`);
-          }
-        }
-        this.json(res, 201, { comment });
+        this.json(res, 201, { comment: result.comment });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
       }
@@ -4667,6 +4591,7 @@ export class APIServer {
         body['approved'] as boolean,
         (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous',
         body['comment'] as string | undefined,
+        body['selectedOption'] as string | undefined,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
@@ -6089,11 +6014,20 @@ export class APIServer {
 
     // Health
     if (path === '/api/health') {
-      this.json(res, 200, {
+      const health: Record<string, unknown> = {
         status: 'ok',
         version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
-      });
+      };
+      // Non-blocking update check — cached, so normally instant after first call
+      try {
+        const update = await checkForUpdate();
+        if (update.updateAvailable) {
+          health.latestVersion = update.latestVersion;
+          health.updateAvailable = true;
+        }
+      } catch { /* never fail health check for this */ }
+      this.json(res, 200, health);
       return;
     }
 
@@ -6507,94 +6441,25 @@ export class APIServer {
 
     if (path.match(/^\/api\/requirements\/[^/]+\/comments$/) && req.method === 'POST') {
       const reqId = path.split('/')[3]!;
-      if (!this.storage?.requirementCommentRepo) {
-        this.json(res, 500, { error: 'Storage not available' });
-        return;
-      }
       try {
         const authUser = await this.getAuthUser(req);
         const body = await this.readBody(req);
         const mentions = (body['mentions'] as string[] | undefined) ?? [];
         let resolvedAuthorName = (body['authorName'] as string | undefined);
-        if (!resolvedAuthorName && authUser?.userId && this.storage.userRepo) {
+        if (!resolvedAuthorName && authUser?.userId && this.storage?.userRepo) {
           const userRow = await this.storage.userRepo.findById(authUser.userId);
           resolvedAuthorName = userRow?.name;
         }
-        const comment = await this.storage.requirementCommentRepo.add({
-          requirementId: reqId,
-          authorId: (body['authorId'] as string) ?? authUser?.userId ?? 'human',
-          authorName: resolvedAuthorName ?? 'User',
-          authorType: (body['authorType'] as string) ?? 'human',
-          content: body['content'] as string,
-          attachments: body['attachments'] as unknown[] | undefined,
-          mentions,
-        });
-        this.ws?.broadcast({
-          type: 'requirement:comment',
-          payload: {
-            requirementId: reqId,
-            comment: {
-              id: comment.id,
-              requirementId: comment.requirementId,
-              authorId: comment.authorId,
-              authorName: comment.authorName,
-              authorType: comment.authorType,
-              content: comment.content,
-              attachments: comment.attachments,
-              mentions: comment.mentions,
-              createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
-            },
-          },
-          timestamp: new Date().toISOString(),
-        });
-        // Notify agents about the comment
-        {
-          const authorName = resolvedAuthorName ?? 'User';
-          const commenterId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
-          const req_ = this.requirementService?.getRequirement(reqId);
-          const reqTitle = req_?.title ?? reqId;
-          const reqStatus = req_?.status ?? 'unknown';
-          const agentMgr = this.orgService.getAgentManager();
-          const notified = new Set<string>();
-
-          const notifyAgent = (agentId: string, reason: string) => {
-            if (notified.has(agentId) || agentId === commenterId) return;
-            notified.add(agentId);
-            try {
-              const agent = agentMgr.getAgent(agentId);
-              if (!agent) return;
-              const notif = [
-                `${reason} on requirement "${reqTitle}" (ID: ${reqId}, status: ${reqStatus}).`,
-                ``,
-                `Comment from ${authorName}: ${body['content'] as string}`,
-                ``,
-                `**MANDATORY before replying**: You MUST first understand the full context:`,
-                `1. Call \`requirement_list\` to get the full requirement details and linked tasks`,
-                `2. Read ALL previous comments to understand the conversation thread`,
-                `3. Only THEN formulate your response using \`requirement_comment\``,
-                `Do NOT reply based solely on the comment above — you need the full picture.`,
-              ].join('\n');
-              agent.enqueueToMailbox('requirement_update', {
-                summary: `Comment on requirement "${reqTitle}" from ${authorName}`,
-                content: notif,
-                requirementId: reqId,
-              }, {
-                metadata: { senderName: authorName, senderRole: 'user' },
-              });
-            } catch { /* agent not found */ }
-          };
-
-          // 1. Notify @mentioned agents
-          for (const mid of mentions) {
-            notifyAgent(mid, `You were mentioned by ${authorName} in a comment`);
-          }
-
-          // 2. Always notify requirement creator (even without @mention)
-          if (req_?.createdBy) {
-            notifyAgent(req_.createdBy, `New comment from ${authorName} on a requirement you created`);
-          }
-        }
-        this.json(res, 201, { comment });
+        const authorId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
+        const authorName = resolvedAuthorName ?? 'User';
+        // Single entry point: DB write + WS broadcast + agent notifications
+        const result = await this.taskService.postRequirementComment(
+          reqId, authorId, authorName,
+          body['content'] as string,
+          mentions, undefined,
+          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined },
+        );
+        this.json(res, 201, { comment: result.comment });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
       }

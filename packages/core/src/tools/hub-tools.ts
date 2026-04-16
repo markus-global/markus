@@ -48,7 +48,9 @@ export function createHubTools(ctx: HubToolsContext): AgentToolHandler[] {
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
-          const result = await ctx.downloadAndInstall(args['item_id'] as string);
+          const itemId = (args['item_id'] as string | undefined)?.trim();
+          if (!itemId) return JSON.stringify({ status: 'error', error: 'item_id is required — use hub_search to find available items first' });
+          const result = await ctx.downloadAndInstall(itemId);
           const isAgentOrTeam = result.type === 'agent' || result.type === 'team';
           return JSON.stringify({
             status: 'success',

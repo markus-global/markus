@@ -169,7 +169,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | `git_*` | Git operations |
 | `agent_send_message` | Send message to another Agent (A2A via mailbox) |
 | `notify_user` | Send one-way notification to user notification bell |
-| `request_user_chat` | Request interactive chat with user (creates notification + chat message) |
+| `request_user_approval` | Request user decision/approval (blocks until user responds; supports custom options + freeform) |
 | `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
 | `task_submit_review` | Submit delivery for review |
 | `requirement_propose` / `requirement_list` | Requirement management |
@@ -373,9 +373,9 @@ The `BuilderService` (`packages/org-manager/src/builder-service.ts`) encapsulate
 -- Users
 users (id, org_id, name, email, role, password_hash, created_at, last_login_at)
 
--- Agent chat
-chat_sessions (id, agent_id, user_id, title, created_at, last_message_at)
-chat_messages (id, session_id, agent_id, role, content, tokens_used, created_at)
+-- Agent chat (each agent has one main session for activity log + optional conversation sessions)
+chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at)
+chat_messages (id, session_id, agent_id, role, content, metadata, tokens_used, created_at)
 
 -- Channel messages
 channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, created_at)
@@ -449,19 +449,27 @@ Connection: `ws://localhost:8056`
 |-------|---------|
 | `agent:update` | Agent state change (idle/working/offline/paused) |
 | `agent:mailbox` | New item enqueued to an agent's mailbox |
-| `agent:decision` | Agent attention decision (pick/defer/drop) |
-| `agent:attention` | Agent focus change (current activity) |
+| `agent:decision` | Agent attention decision (pick/defer/drop/triage) |
+| `agent:attention` | Attention controller state change |
 | `agent:focus` | Agent switches to a new mailbox item |
+| `agent:triage` | Agent triage deliberation result (reasoning, process/defer/drop) |
+| `agent:started` | Agent process started |
+| `agent:stopped` | Agent process stopped |
+| `agent:paused` | Agent paused |
+| `agent:resumed` | Agent resumed |
 | `task:update` | Task state update (including review/accepted/archived) |
 | `task:create` | New task created |
 | `requirement:created` | Requirement proposed |
 | `requirement:approved` / `rejected` / `updated` / `completed` / `cancelled` | Requirement lifecycle |
 | `notification` | User notification (triggers NotificationBell refresh) |
-| `chat:proactive_message` | Agent proactively messages user |
+| `chat:proactive_message` | Agent activity log or proactive message (main session) |
 | `chat` | Agent sends message in channel |
 | `system:announcement` | System announcement broadcast |
 | `system:pause-all` | Global pause event |
+| `system:resume-all` | Global resume event |
 | `system:emergency-stop` | Emergency stop event |
+
+**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See `docs/MAILBOX-SYSTEM.md` §19 for the full forwarding table.
 
 ---
 

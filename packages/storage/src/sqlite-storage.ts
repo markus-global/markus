@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   user_id TEXT,
   title TEXT,
+  is_main INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -474,7 +475,8 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   started_at TEXT,
   completed_at TEXT,
   deferred_until TEXT,
-  merged_into TEXT
+  merged_into TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
@@ -544,7 +546,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'artifact_data', sql: "ALTER TABLE deliverables ADD COLUMN artifact_data TEXT" },
     { table: 'organizations', column: 'manager_agent_id', sql: "ALTER TABLE organizations ADD COLUMN manager_agent_id TEXT" },
     { table: 'task_comments', column: 'mentions', sql: "ALTER TABLE task_comments ADD COLUMN mentions TEXT DEFAULT '[]'" },
+    { table: 'task_comments', column: 'activity_id', sql: "ALTER TABLE task_comments ADD COLUMN activity_id TEXT" },
+    { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
+    { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
+    { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1424,14 +1430,15 @@ export class SqliteTaskCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }) {
     const id = generateId('tc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
+      .run(id, data.taskId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
     return {
       id,
       taskId: data.taskId,
@@ -1441,6 +1448,7 @@ export class SqliteTaskCommentRepo {
       content: data.content,
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
+      activityId: data.activityId,
       createdAt: new Date(ts),
     };
   }
@@ -1459,6 +1467,7 @@ export class SqliteTaskCommentRepo {
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      activityId: r['activity_id'] as string | undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -1479,14 +1488,15 @@ export class SqliteRequirementCommentRepo {
     content: string;
     attachments?: unknown[];
     mentions?: string[];
+    activityId?: string;
   }) {
     const id = generateId('rc');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), ts);
+      .run(id, data.requirementId, data.authorId, data.authorName, data.authorType, data.content, toJson(data.attachments ?? []), toJson(data.mentions ?? []), data.activityId ?? null, ts);
     return {
       id,
       requirementId: data.requirementId,
@@ -1496,6 +1506,7 @@ export class SqliteRequirementCommentRepo {
       content: data.content,
       attachments: data.attachments ?? [],
       mentions: data.mentions ?? [],
+      activityId: data.activityId,
       createdAt: new Date(ts),
     };
   }
@@ -1514,6 +1525,7 @@ export class SqliteRequirementCommentRepo {
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
       mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      activityId: r['activity_id'] as string | undefined,
       createdAt: toDate(r['created_at'] as string)!,
     }));
   }
@@ -1593,16 +1605,42 @@ export class SqliteChatSessionRepo {
       agentId,
       userId: userId ?? null,
       title: null,
+      isMain: false,
       createdAt: new Date(ts),
       lastMessageAt: new Date(ts),
     };
+  }
+
+  getOrCreateMainSession(agentId: string) {
+    const existing = this.db
+      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? AND is_main = 1 LIMIT 1')
+      .get(agentId) as Record<string, unknown> | undefined;
+    if (existing) return this._mapSession(existing);
+    // Promote the oldest existing session to main instead of creating a duplicate
+    const oldest = this.db
+      .prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1')
+      .get(agentId) as Record<string, unknown> | undefined;
+    if (oldest) {
+      const title = (oldest['title'] as string) || 'Main';
+      this.db.prepare('UPDATE chat_sessions SET is_main = 1, title = ? WHERE id = ?')
+        .run(title, oldest['id'] as string);
+      oldest['is_main'] = 1;
+      oldest['title'] = title;
+      return this._mapSession(oldest);
+    }
+    const id = generateId('cs');
+    const ts = now();
+    this.db
+      .prepare('INSERT INTO chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at) VALUES (?,?,?,?,1,?,?)')
+      .run(id, agentId, null, 'Main', ts, ts);
+    return { id, agentId, userId: null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
   }
 
   getSessionsByAgent(agentId: string, limit = 50) {
     return (
       this.db
         .prepare(
-          'SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY last_message_at DESC LIMIT ?'
+          'SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY is_main DESC, last_message_at DESC LIMIT ?'
         )
         .all(agentId, limit) as Record<string, unknown>[]
     ).map(r => this._mapSession(r));
@@ -1690,12 +1728,32 @@ export class SqliteChatSessionRepo {
     return r.cnt;
   }
 
+  /**
+   * Remove the last user+assistant exchange from a session (for retry).
+   * Deletes from the end backwards through the last assistant message
+   * and its preceding user message.
+   */
+  deleteLastExchange(sessionId: string): void {
+    const rows = this.db.prepare(
+      'SELECT id, role FROM chat_messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 10'
+    ).all(sessionId) as Array<Record<string, unknown>>;
+    let foundAssistant = false;
+    for (const row of rows) {
+      const role = row['role'] as string;
+      const id = row['id'] as string;
+      this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+      if (role === 'assistant') foundAssistant = true;
+      if (role === 'user' && foundAssistant) break;
+    }
+  }
+
   private _mapSession(r: Record<string, unknown>) {
     return {
       id: r['id'],
       agentId: r['agent_id'],
       userId: r['user_id'],
       title: r['title'],
+      isMain: !!(r['is_main']),
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
@@ -3116,6 +3174,7 @@ export interface MailboxItemRow {
   completedAt: string | null;
   deferredUntil: string | null;
   mergedInto: string | null;
+  retryCount: number;
 }
 
 export class SqliteMailboxRepo {
@@ -3149,8 +3208,16 @@ export class SqliteMailboxRepo {
     if (extra?.completedAt) { parts.push('completed_at = ?'); params.push(extra.completedAt as string); }
     if (extra?.deferredUntil !== undefined) { parts.push('deferred_until = ?'); params.push((extra.deferredUntil as string) ?? null); }
     if (extra?.mergedInto !== undefined) { parts.push('merged_into = ?'); params.push((extra.mergedInto as string) ?? null); }
+    if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  markStaleProcessingAsDropped(agentId: string): number {
+    const result = this.db
+      .prepare("UPDATE mailbox_items SET status = 'dropped' WHERE agent_id = ? AND status = 'processing'")
+      .run(agentId);
+    return (result as { changes?: number }).changes ?? 0;
   }
 
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
@@ -3200,6 +3267,7 @@ export class SqliteMailboxRepo {
       completedAt: r['completed_at'] as string | null,
       deferredUntil: r['deferred_until'] as string | null,
       mergedInto: r['merged_into'] as string | null,
+      retryCount: (r['retry_count'] as number) ?? 0,
     };
   }
 }

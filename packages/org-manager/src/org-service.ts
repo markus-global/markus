@@ -811,10 +811,10 @@ export class OrganizationService {
    * Call this AFTER the HTTP server is already listening and all handlers are wired.
    * Returns immediately — agents start asynchronously.
    */
-  startRestoredAgentsInBackground(): void {
+  startRestoredAgentsInBackground(): Promise<void> {
     const ids = this.pendingAgentStartIds;
     this.pendingAgentStartIds = [];
-    if (ids.length === 0) return;
+    if (ids.length === 0) return Promise.resolve();
 
     const STAGGER_MS = 1_000;
     const DEFAULT_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
@@ -840,9 +840,10 @@ export class OrganizationService {
       log.info(`Background agent startup complete: ${started}/${ids.length} agents started`);
     };
 
-    startAll().catch(err => {
+    const p = startAll().catch(err => {
       log.error('Background agent startup failed', { error: String(err) });
     });
+    return p;
   }
 
   /**

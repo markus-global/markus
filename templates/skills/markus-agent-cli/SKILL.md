@@ -5,6 +5,8 @@ description: Manage agents via markus CLI — lifecycle, messaging, config, memo
 
 # Agent Management via CLI
 
+> **IMPORTANT**: Prefer built-in tools (`team_hire_agent`, `builder_install`, `agent_send_message`, `task_create`, `task_assign`, `memory_save`, etc.) over CLI commands. Only use CLI when no built-in tool provides the needed operation (e.g., `agent delete`, `agent config`, `agent role-sync`).
+
 Operate agents through `shell_execute` with `markus agent` commands. Always use `--json` for parseable output.
 
 ## Quick examples

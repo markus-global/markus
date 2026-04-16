@@ -75,7 +75,7 @@ function actionHint(n: NotificationInfo): string | null {
     case 'agent_chat_request':
       return 'Open chat →';
     case 'agent_alert': case 'agent_escalation': case 'agent_notification':
-      return meta.agentId ? 'View agent →' : null;
+      return meta.agentId ? 'Open chat →' : null;
     case 'approval_request':
       return 'View approval →';
     default:
@@ -86,6 +86,28 @@ function actionHint(n: NotificationInfo): string | null {
   }
 }
 
+function playNotificationSound() {
+  try {
+    const ctx = new AudioContext();
+    const now = ctx.currentTime;
+
+    const g = ctx.createGain();
+    g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.15, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+
+    const o1 = ctx.createOscillator();
+    o1.type = 'sine';
+    o1.frequency.setValueAtTime(880, now);
+    o1.frequency.setValueAtTime(1174.66, now + 0.15);
+    o1.connect(g);
+    o1.start(now);
+    o1.stop(now + 0.6);
+
+    o1.onended = () => ctx.close();
+  } catch { /* audio not available */ }
+}
+
 export function NotificationBell({ collapsed, userId }: Props) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
@@ -94,10 +116,12 @@ export function NotificationBell({ collapsed, userId }: Props) {
   const [responding, setResponding] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectComment, setRejectComment] = useState('');
+  const [freeformText, setFreeformText] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
+  const prevPendingRef = useRef<number | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -119,11 +143,33 @@ export function NotificationBell({ collapsed, userId }: Props) {
     return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); };
   }, [fetchData]);
 
-  useLayoutEffect(() => {
-    if (!open || !btnRef.current) return;
+  const reposition = useCallback(() => {
+    if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
-    setPos({ top: rect.top, left: rect.right + 8 });
-  }, [open]);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const panelW = Math.min(448, vw - 16);
+    const panelMaxH = Math.min(576, vh - 16);
+
+    let left = rect.right + 8;
+    let top = rect.top;
+
+    if (left + panelW > vw - 8) left = Math.max(8, vw - panelW - 8);
+    if (top + panelMaxH > vh - 8) top = Math.max(8, vh - panelMaxH - 8);
+
+    setPos({ top, left, width: panelW, maxHeight: panelMaxH });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    reposition();
+  }, [open, reposition]);
+
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener('resize', reposition);
+    return () => window.removeEventListener('resize', reposition);
+  }, [open, reposition]);
 
   useEffect(() => {
     if (!open) return;
@@ -148,6 +194,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
 
   const pendingApprovals = approvals.filter(a => a.status === 'pending').length;
   const badgeCount = unreadCount + pendingApprovals;
+
+  useEffect(() => {
+    if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {
+      playNotificationSound();
+    }
+    prevPendingRef.current = pendingApprovals;
+  }, [pendingApprovals]);
 
   const handleMarkRead = async (id: string) => {
     await api.notifications.markRead(id);
@@ -218,10 +271,16 @@ export function NotificationBell({ collapsed, userId }: Props) {
       }
       case 'agent_notification':
       case 'agent_alert':
-      case 'agent_escalation':
-        if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
-        else navBus.navigate(PAGE.TEAM);
+      case 'agent_escalation': {
+        if (meta.agentId) {
+          const params: Record<string, string> = { agentId: meta.agentId as string };
+          if (meta.sessionId) params.sessionId = meta.sessionId as string;
+          navBus.navigate(PAGE.TEAM, params);
+        } else {
+          navBus.navigate(PAGE.TEAM);
+        }
         break;
+      }
       case 'bounty_posted':
         navBus.navigate(PAGE.SETTINGS);
         break;
@@ -229,7 +288,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
         if (meta.taskId) navBus.navigate(PAGE.WORK, { openTask: meta.taskId as string });
         else if (meta.requirementId) navBus.navigate(PAGE.WORK, { openRequirement: meta.requirementId as string });
         else if (meta.projectId) navBus.navigate(PAGE.WORK, { projectId: meta.projectId as string });
-        else if (meta.agentId) navBus.navigate(PAGE.TEAM, { selectAgent: meta.agentId as string });
+        else if (meta.agentId) navBus.navigate(PAGE.TEAM, { agentId: meta.agentId as string });
         break;
     }
   };
@@ -250,13 +309,14 @@ export function NotificationBell({ collapsed, userId }: Props) {
     navigateForNotification(n);
   };
 
-  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string) => {
+  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string) => {
     setResponding(id);
     try {
-      const { approval } = await api.approvals.respond(id, approved, userId, comment);
+      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
       setRejectingId(null);
       setRejectComment('');
+      setFreeformText('');
 
       const relatedNotif = notifications.find(
         n => n.type === 'approval_request' && n.metadata?.approvalId === id
@@ -287,7 +347,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
     const taskId = a.details?.taskId as string | undefined;
     const agentId = a.details?.agentId as string | undefined;
     if (taskId) navBus.navigate(PAGE.WORK, { openTask: taskId });
-    else if (agentId) navBus.navigate(PAGE.TEAM, { selectAgent: agentId });
+    else if (agentId) navBus.navigate(PAGE.TEAM, { agentId });
     else navBus.navigate(PAGE.WORK);
   };
 
@@ -313,7 +373,7 @@ export function NotificationBell({ collapsed, userId }: Props) {
       </button>
 
       {open && createPortal(
-        <div ref={panelRef} className="fixed w-[28rem] max-h-[36rem] bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left }}>
+        <div ref={panelRef} className="fixed bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-[9999] flex flex-col overflow-hidden" style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}>
           {/* Tabs + Close */}
           <div className="flex border-b border-border-default shrink-0">
             <button
@@ -381,7 +441,38 @@ export function NotificationBell({ collapsed, userId }: Props) {
                       <button onClick={() => navigateForApproval(a)} className="text-[11px] text-brand-500 hover:text-brand-400 transition-colors">
                         View execution context →
                       </button>
-                      {rejectingId === a.id ? (
+                      {a.options && a.options.length > 0 ? (
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap gap-1.5">
+                            {a.options.map(opt => (
+                              <button
+                                key={opt.id}
+                                disabled={responding === a.id}
+                                onClick={() => handleApprovalResponse(a.id, true, undefined, opt.id)}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                                title={opt.description}
+                              >{opt.label}</button>
+                            ))}
+                          </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
+                        </div>
+                      ) : rejectingId === a.id ? (
                         <div className="space-y-1.5">
                           <input
                             type="text"
@@ -389,13 +480,13 @@ export function NotificationBell({ collapsed, userId }: Props) {
                             placeholder="Reason for rejection (optional, Enter to submit)"
                             value={rejectComment}
                             onChange={e => setRejectComment(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
+                            onKeyDown={e => { if (e.key === 'Enter') handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject'); if (e.key === 'Escape') { setRejectingId(null); setRejectComment(''); } }}
                             className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
                           />
                           <div className="flex gap-2">
                             <button
                               disabled={responding === a.id}
-                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined)}
+                              onClick={() => handleApprovalResponse(a.id, false, rejectComment || undefined, 'reject')}
                               className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 transition-colors"
                             >Confirm Reject</button>
                             <button
@@ -403,19 +494,55 @@ export function NotificationBell({ collapsed, userId }: Props) {
                               className="px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
                             >Cancel</button>
                           </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5 mt-1">
+                              <input
+                                type="text"
+                                placeholder="Or type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <div className="flex gap-2">
-                          <button
-                            disabled={responding === a.id}
-                            onClick={() => handleApprovalResponse(a.id, true)}
-                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
-                          >Approve</button>
-                          <button
-                            disabled={responding === a.id}
-                            onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
-                            className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
-                          >Reject</button>
+                        <div className="space-y-1.5">
+                          <div className="flex gap-2">
+                            <button
+                              disabled={responding === a.id}
+                              onClick={() => handleApprovalResponse(a.id, true, undefined, 'approve')}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 transition-colors"
+                            >Approve</button>
+                            <button
+                              disabled={responding === a.id}
+                              onClick={() => { setRejectingId(a.id); setRejectComment(''); }}
+                              className="flex-1 px-2.5 py-1.5 text-[11px] font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay disabled:opacity-50 transition-colors"
+                            >Reject</button>
+                          </div>
+                          {a.allowFreeform && (
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                placeholder="Or type your response..."
+                                value={freeformText}
+                                onChange={e => setFreeformText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && freeformText.trim()) handleApprovalResponse(a.id, true, freeformText.trim(), 'custom'); }}
+                                className="flex-1 px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                disabled={responding === a.id || !freeformText.trim()}
+                                onClick={() => handleApprovalResponse(a.id, true, freeformText.trim(), 'custom')}
+                                className="px-2.5 py-1.5 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                              >Send</button>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

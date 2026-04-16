@@ -225,3 +225,25 @@ body {
 .card-shine:hover::before {
   left: 100%;
 }
+
+/* Streaming chat bubble: flowing gradient border (cross-browser) */
+.streaming-bubble {
+  border: 1.5px solid transparent !important;
+  background:
+    linear-gradient(var(--color-surface-chat-bubble), var(--color-surface-chat-bubble)) padding-box,
+    conic-gradient(from var(--border-angle), #a855f7, #3b82f6 30%, transparent 50%, transparent 80%, #ec4899 90%, #a855f7) border-box !important;
+  animation: border-rotate 2.5s linear infinite;
+  position: relative;
+}
+.streaming-bubble::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--border-angle), #a855f7, #3b82f6 30%, transparent 50%, transparent 80%, #ec4899 90%, #a855f7);
+  animation: border-rotate 2.5s linear infinite;
+  filter: blur(8px);
+  opacity: 0.4;
+  z-index: -1;
+  pointer-events: none;
+}

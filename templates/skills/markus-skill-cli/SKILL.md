@@ -5,6 +5,8 @@ description: Manage skills via markus CLI — list, install, uninstall, search, 
 
 # Skill Management via CLI
 
+> **IMPORTANT**: Prefer built-in tools (`discover_tools` for listing/activating/installing skills) over CLI commands. Only use CLI when no built-in tool provides the needed operation (e.g., `skill uninstall`, `skill init`).
+
 Operate the skill registry through `shell_execute` with `markus skill` commands. Always use `--json` for parseable output.
 
 ## Quick examples

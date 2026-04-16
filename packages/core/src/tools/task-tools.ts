@@ -108,6 +108,30 @@ export interface AgentTaskContext {
       taskIds: string[];
     }>
   >;
+  /** Get a single requirement by ID with full details and comments */
+  getRequirement?: (id: string) => Promise<{
+    id: string;
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    source: string;
+    createdBy?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    rejectedReason?: string;
+    taskIds: string[];
+    tags?: string[];
+    createdAt: string;
+    updatedAt: string;
+    comments: Array<{
+      id: string;
+      authorId: string;
+      authorName: string;
+      content: string;
+      createdAt: string;
+    }>;
+  } | null>;
   /** Submit completed work for review — system auto-fills task_id, reviewer, and branch */
   submitForReview?: (
     summary: string,
@@ -135,10 +159,14 @@ export interface AgentTaskContext {
     id: string,
     updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
   ) => Promise<{ id: string; title: string; status: string }>;
+  /** Get structured comments on a task */
+  getTaskComments?: (taskId: string) => Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
   /** Post a structured comment on a task (with @mention support) */
-  postTaskComment?: (taskId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
+  postTaskComment?: (taskId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
   /** Post a structured comment on a requirement (with @mention support) */
-  postRequirementComment?: (requirementId: string, content: string, mentions?: string[]) => Promise<{ id: string }>;
+  postRequirementComment?: (requirementId: string, content: string, mentions?: string[], activityId?: string) => Promise<{ id: string }>;
+  /** Returns the ID of the agent's currently executing activity (for traceability) */
+  getCurrentActivityId?: () => string | undefined;
 }
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
@@ -589,20 +617,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
 
     {
       name: 'task_get',
-      description: 'Get detailed information about a specific task by its ID. By default returns the latest 10 notes and 10 deliverables. Set full=true to get everything.',
+      description: `Get detailed information about a specific task by its ID. By default returns the latest ${TASK_GET_NOTES_DEFAULT} notes and ${TASK_GET_DELIVERABLES_DEFAULT} deliverables. Set full=true to get everything.`,
       inputSchema: {
         type: 'object',
         properties: {
           task_id: { type: 'string', description: 'The task ID to look up' },
-          full: { type: 'boolean', description: 'If true, return all notes and deliverables. Default false (latest 10 each).' },
+          full: { type: 'boolean', description: `If true, return all notes and deliverables. Default false (latest ${TASK_GET_NOTES_DEFAULT} notes, ${TASK_GET_DELIVERABLES_DEFAULT} deliverables).` },
         },
         required: ['task_id'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         try {
-          const task = await ctx.getTask(args['task_id'] as string);
+          const taskId = args['task_id'] as string;
+          const task = await ctx.getTask(taskId);
           if (!task) {
-            return JSON.stringify({ status: 'error', error: `Task not found: ${args['task_id']}` });
+            return JSON.stringify({ status: 'error', error: `Task not found: ${taskId}` });
           }
           const full = args['full'] === true;
           const taskObj = task as Record<string, unknown>;
@@ -617,6 +646,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               taskObj['deliverables'] = deliverables.slice(0, TASK_GET_DELIVERABLES_DEFAULT);
               taskObj['_deliverablesTruncated'] = { total: deliverables.length, showing: TASK_GET_DELIVERABLES_DEFAULT, hint: 'Use full=true to see all' };
             }
+          }
+          if (ctx.getTaskComments) {
+            try { taskObj['comments'] = await ctx.getTaskComments(taskId); } catch { /* non-fatal */ }
           }
           return JSON.stringify({ status: 'success', task: taskObj });
         } catch (error) {
@@ -944,7 +976,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                     'rejected',
                     'cancelled',
                   ],
-                  description: 'Filter by status (default: shows in_progress)',
+                  description: 'Filter by status (default: shows all statuses)',
                 },
                 project_id: {
                   type: 'string',
@@ -969,13 +1001,49 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   requirements: reqs.map(r => ({
                     id: r.id,
                     title: r.title,
+                    description: r.description?.slice(0, 300),
                     status: r.status,
                     priority: r.priority,
                     source: r.source,
                     createdBy: r.createdBy,
+                    taskIds: r.taskIds,
                     taskCount: r.taskIds.length,
                   })),
                 });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.getRequirement
+      ? [
+          {
+            name: 'requirement_get',
+            description: [
+              'Get full details of a single requirement (需求) by ID.',
+              'Returns description, status, linked tasks, comments, and metadata.',
+              'Use this when you need the complete context for a requirement — requirement_list only returns summaries.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                requirement_id: {
+                  type: 'string',
+                  description: 'The requirement ID to look up',
+                },
+              },
+              required: ['requirement_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const req = await ctx.getRequirement!(args['requirement_id'] as string);
+                if (!req) {
+                  return JSON.stringify({ status: 'error', error: 'Requirement not found' });
+                }
+                return JSON.stringify({ status: 'success', requirement: req });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
@@ -1195,9 +1263,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const taskId = args['task_id'] as string;
-                const content = args['content'] as string;
+                const content = args['content'] as string | undefined;
+                if (!content?.trim()) {
+                  return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
+                }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
-                const result = await ctx.postTaskComment!(taskId, content, mentions);
+                const activityId = ctx.getCurrentActivityId?.();
+                const result = await ctx.postTaskComment!(taskId, content, mentions, activityId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,
@@ -1236,9 +1308,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const requirementId = args['requirement_id'] as string;
-                const content = args['content'] as string;
+                const content = args['content'] as string | undefined;
+                if (!content?.trim()) {
+                  return JSON.stringify({ status: 'error', error: 'content is required and must be a non-empty string' });
+                }
                 const mentions = (args['mentions'] as string[] | undefined) ?? [];
-                const result = await ctx.postRequirementComment!(requirementId, content, mentions);
+                const activityId = ctx.getCurrentActivityId?.();
+                const result = await ctx.postRequirementComment!(requirementId, content, mentions, activityId);
                 return JSON.stringify({
                   status: 'success',
                   commentId: result.id,

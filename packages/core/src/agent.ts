@@ -20,8 +20,12 @@ import {
   type AttentionDecision,
   type DecisionType,
   type AgentMindState,
+  type TriageResult,
   MailboxPriorityLevel,
+  MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
+  COMPLETION_MARKER_INSTRUCTION,
+  COMPLETION_MARKER,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -72,6 +76,53 @@ import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 
 const log = createLogger('agent');
+
+/**
+ * Strip raw XML tool-call markup from LLM replies.  The completion marker
+ * is NOT removed here — it must survive until `detectAbnormalCompletion`
+ * inspects the reply; stripping happens later in `stripCompletionMarker`.
+ */
+const RAW_TOOL_XML_RE =
+  /(?:minimax:tool_call\s*)?<invoke\s+name="[^"]*">\s*(?:<parameter\s+name="[^"]*">[^<]*<\/parameter>\s*)*<\/invoke>\s*(?:<\/minimax:tool_call>)?/gi;
+
+function sanitizeLLMReply(reply: string): string {
+  const cleaned = reply.replace(RAW_TOOL_XML_RE, '').trim();
+  return cleaned || reply;
+}
+
+/**
+ * Remove the completion marker from a reply so it is never stored in
+ * memory or shown to users.  Called after abnormal-completion detection.
+ */
+function stripCompletionMarker(reply: string): string {
+  return reply.replaceAll(COMPLETION_MARKER, '').trim();
+}
+
+/**
+ * Create a streaming delta emitter that buffers the tail to strip
+ * the completion marker from real-time output. The marker may arrive
+ * split across multiple chunks, so we hold back enough characters.
+ */
+function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
+  const markerLen = COMPLETION_MARKER.length;
+  let tail = '';
+
+  const emit = (chunk: string) => {
+    tail += chunk;
+    if (tail.length <= markerLen) return;
+    const safe = tail.slice(0, tail.length - markerLen);
+    tail = tail.slice(safe.length);
+    if (safe) rawEmit(safe);
+  };
+
+  const flush = () => {
+    const cleaned = tail.replaceAll(COMPLETION_MARKER, '');
+    tail = '';
+    if (cleaned) rawEmit(cleaned);
+  };
+
+  return { emit, flush };
+}
 
 /** Returns true when a tool returned a structured error (status: 'error' | 'denied'). */
 function isErrorResult(result: string): boolean {
@@ -154,9 +205,12 @@ export class Agent {
   ) => Promise<AgentToolHandler[]>;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSender?: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>;
+  private userApprovalRequester?: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
-  private chatSessionsFetcher?: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>;
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private dbSessionMap = new Map<string, string>();
@@ -200,6 +254,13 @@ export class Agent {
   private activeStreamToken?: { cancelled: boolean };
   /** The mailbox item ID currently being processed – threaded into activity records. */
   private processingMailboxItemId?: string;
+  /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
+  private lastInjectedActivityType?: string;
+  /** Persistent situational awareness from the latest triage deliberation. */
+  private currentCognition?: string;
+  /** Ring buffer of recent activity summaries for triage context. */
+  private recentActivityRing: string[] = [];
+  private static readonly ACTIVITY_RING_SIZE = 8;
   /** Task executor for concurrent task management */
   private taskExecutor?: TaskExecutor;
   /** State manager for synchronizing task and agent states */
@@ -223,7 +284,7 @@ export class Agent {
   private dynamicContextProviders = new Map<string, () => string>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
-  private static readonly MAX_CONCURRENT_TASKS = 5;
+  private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
@@ -323,7 +384,7 @@ export class Agent {
     // Initialize task executor
     this.taskExecutor = new TaskExecutor({
       agentId: this.id,
-      maxConcurrentTasks: Agent.MAX_CONCURRENT_TASKS,
+      maxConcurrentTasks: this.config.profile?.maxConcurrentTasks ?? Agent.MAX_CONCURRENT_TASKS,
       defaultPriority: TaskPriority.MEDIUM,
     });
 
@@ -390,13 +451,6 @@ export class Agent {
     }
 
     this.notifyStateChange();
-
-    this.eventBus.emit('agent:status-changed', {
-      agentId: this.id,
-      oldStatus,
-      newStatus: status,
-      state: this.getState(),
-    });
   }
 
   async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
@@ -416,6 +470,14 @@ export class Agent {
       log.info(
         `Resumed session ${latestSession.id} with ${latestSession.messages.length} messages`
       );
+    }
+
+    // Ensure currentSessionId is always set so activity injection works
+    // even if the agent has never chatted with anyone.
+    if (!this.currentSessionId) {
+      const fallback = this.memory.createSession(this.id);
+      this.currentSessionId = fallback.id;
+      log.info(`Created fallback session for activity injection: ${fallback.id}`);
     }
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
@@ -550,7 +612,7 @@ export class Agent {
 
     return new Promise<string>((resolve, reject) => {
       this.mailbox.enqueue('human_chat', payload, {
-        priority: 1,
+        priority: 0,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -644,6 +706,11 @@ export class Agent {
     return this.mailbox;
   }
 
+  /** Drop queued informational status-update items for a task (used before retry). */
+  dropStaleStatusUpdates(taskId: string): number {
+    return this.mailbox.dropStatusUpdatesByTaskId(taskId);
+  }
+
   /** Get the attention controller (for persistence wiring). */
   getAttentionController(): AttentionController {
     return this.attentionController;
@@ -671,7 +738,6 @@ export class Agent {
         return this.processMailboxItemInternal(item);
       },
       onDecisionMade: (decision: AttentionDecision) => {
-        this.eventBus.emit('agent:decision', { agentId: this.id, decision });
         log.debug('Attention decision', {
           agentId: this.id,
           type: decision.decisionType,
@@ -699,6 +765,20 @@ export class Agent {
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
         return this.attentionController.heuristicDecision(currentItem, newItem);
       },
+      getTriageContext: async () => {
+        const messages = this.currentSessionId
+          ? this.memory.getRecentMessages(this.currentSessionId, 10)
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .slice(-6)
+              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 200) : String(m.content).slice(0, 200) }))
+          : [];
+        const activities = this.recentActivitySummaries();
+        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities };
+      },
+      onTriageCompleted: (result) => {
+        if (!result) return;
+        this.updateCognition(result);
+      },
     };
   }
 
@@ -714,13 +794,17 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
       : undefined;
     const resolveResponse = (reply: string) => {
-      item.metadata?.responsePromise?.resolve(reply);
+      item.metadata?.responsePromise?.resolve(stripCompletionMarker(reply));
     };
     const rejectResponse = (err: unknown) => {
       item.metadata?.responsePromise?.reject(err);
     };
 
     const ts = Date.now();
+
+    const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
+    const needsMarker = !!registry?.invokesLLM;
+    const markerSuffix = needsMarker ? COMPLETION_MARKER_INSTRUCTION : '';
 
     const buildHandleOpts = (defaults: Record<string, unknown> = {}) => {
       const opts: Record<string, unknown> = { ...defaults };
@@ -741,7 +825,7 @@ export class Agent {
         case 'a2a_message': {
           if (extra.stream && typeof extra.onEvent === 'function') {
             const reply = await this.handleMessageStream(
-              item.payload.content,
+              item.payload.content + markerSuffix,
               extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
               item.metadata?.senderId,
               senderInfo,
@@ -755,7 +839,7 @@ export class Agent {
             ? { sessionId: `a2a_${this.id}_${ts}`, scenario: 'a2a' as const }
             : {};
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts(defaults),
@@ -780,19 +864,16 @@ export class Agent {
             resolveResponse('');
             return;
           }
-          const statusReply = await this.handleMessage(
-            item.payload.content,
-            item.metadata?.senderId,
-            senderInfo,
-            buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
-          );
-          resolveResponse(statusReply);
-          return statusReply;
+          log.info('Task status update (informational, no LLM)', {
+            agentId: this.id, summary: item.payload.summary,
+          });
+          resolveResponse('');
+          return;
         }
 
         case 'mention': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'a2a' }),
@@ -802,9 +883,28 @@ export class Agent {
         }
 
         case 'requirement_update': {
+          if (extra.actionRequired) {
+            const reqId = item.payload.requirementId ?? 'unknown';
+            const reply = await this.handleMessage(
+              item.payload.content + markerSuffix,
+              item.metadata?.senderId,
+              senderInfo,
+              buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+            );
+            resolveResponse(reply);
+            return reply;
+          }
+          log.info('Requirement update (informational, no LLM)', {
+            agentId: this.id, summary: item.payload.summary,
+          });
+          resolveResponse('');
+          return;
+        }
+
+        case 'requirement_comment': {
           const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
@@ -822,7 +922,7 @@ export class Agent {
           } else {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
-              item.payload.content,
+              item.payload.content + markerSuffix,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
@@ -834,7 +934,7 @@ export class Agent {
 
         case 'review_request': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
@@ -857,7 +957,7 @@ export class Agent {
         case 'system_event':
         case 'daily_report': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'heartbeat' }),
@@ -868,7 +968,7 @@ export class Agent {
 
         case 'memory_consolidation': {
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}`, scenario: 'memory_consolidation' }),
@@ -881,12 +981,12 @@ export class Agent {
           const sessionId = extra.sessionId as string | undefined;
           const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
           if (sessionId) {
-            const reply = await this.respondInSession(sessionId, item.payload.content, onLog);
+            const reply = await this.respondInSession(sessionId, item.payload.content + markerSuffix, onLog);
             resolveResponse(reply);
             return reply;
           }
           const reply = await this.handleMessage(
-            item.payload.content,
+            item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: `sys_${this.id}_${ts}` }),
@@ -900,6 +1000,57 @@ export class Agent {
       throw err;
     } finally {
       this.processingMailboxItemId = undefined;
+
+      // Inject concise activity summary into main session for non-chat items
+      // so the agent maintains narrative continuity across processing contexts.
+      if (item.sourceType !== 'human_chat' && this.currentSessionId) {
+        try {
+          const outcome = this.buildActivityOutcome(item);
+          if (outcome) {
+            this.injectActivityToMainSession({
+              type: item.sourceType,
+              summary: item.payload.summary?.slice(0, 120) ?? item.sourceType,
+              outcome,
+              mailboxItemId: item.id,
+              taskId: item.payload.taskId ?? item.metadata?.taskId as string | undefined,
+              requirementId: item.payload.requirementId,
+            });
+          }
+        } catch { /* never fail the main flow */ }
+      }
+    }
+  }
+
+  /** Derive a short outcome string for the activity log based on item type. */
+  private buildActivityOutcome(item: MailboxItem): string | undefined {
+    const extra = item.payload.extra ?? {};
+    switch (item.sourceType) {
+      case 'task_status_update':
+        return extra.triggerExecution ? 'executed' : 'noted (informational)';
+      case 'review_request':
+        return 'reviewed';
+      case 'a2a_message':
+        return 'responded';
+      case 'mention':
+        return 'responded to mention';
+      case 'task_comment':
+        return item.payload.taskId && this.activeTasks.has(item.payload.taskId)
+          ? 'injected into active task session'
+          : 'responded to comment';
+      case 'requirement_comment':
+        return 'responded to requirement comment';
+      case 'requirement_update':
+        return (extra.actionRequired) ? 'processed (action required)' : 'noted (informational)';
+      case 'heartbeat':
+        return 'heartbeat processed';
+      case 'session_reply':
+        return 'replied in session';
+      case 'system_event':
+      case 'daily_report':
+      case 'memory_consolidation':
+        return 'processed';
+      default:
+        return 'processed';
     }
   }
 
@@ -957,16 +1108,31 @@ export class Agent {
    * Restore the agent's memory context for an existing DB session.
    * If a mapping exists to a live memory session, switch to it.
    * Otherwise, create a new memory session populated with the DB messages.
+   *
+   * When `isRetry` is true, the last assistant reply (and preceding user
+   * message) are stripped from the memory context so the retried message
+   * doesn't see the old failed response.
    */
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
+    options?: { isRetry?: boolean },
   ): void {
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
       if (session) {
         this.currentSessionId = existingMemorySessionId;
+        if (options?.isRetry) {
+          // Strip last assistant reply + preceding user msg from memory
+          while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
+            session.messages.pop();
+          }
+          if (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'user') {
+            session.messages.pop();
+          }
+          log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
+        }
         log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
         return;
       }
@@ -994,6 +1160,12 @@ export class Agent {
   pause(reason?: string): void {
     if (this.state.status === 'offline') return;
     this.pauseReason = reason;
+    this.heartbeat.stop();
+    this.attentionController.stop();
+    if (this.memoryConsolidationTimer) {
+      clearInterval(this.memoryConsolidationTimer);
+      this.memoryConsolidationTimer = undefined;
+    }
     this.setStatus('paused');
     this.eventBus.emit('agent:paused', { agentId: this.id, reason });
     log.info(`Agent paused: ${this.config.name}`, { reason });
@@ -1002,6 +1174,15 @@ export class Agent {
   resume(): void {
     if (this.state.status !== 'paused') return;
     this.pauseReason = undefined;
+    this.heartbeat.start();
+    this.attentionController.start();
+    if (!this.memoryConsolidationTimer) {
+      this.memoryConsolidationTimer = setInterval(() => {
+        this.consolidateMemory().catch(e =>
+          log.warn('Memory consolidation failed', { error: String(e) })
+        );
+      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
+    }
     this.setStatus(this.activeTasks.size > 0 ? 'working' : 'idle');
     this.eventBus.emit('agent:resumed', { agentId: this.id });
     log.info(`Agent resumed: ${this.config.name}`);
@@ -1363,20 +1544,6 @@ export class Agent {
       this.stateManager.updateTokensUsed(tokens);
     }
     this.notifyStateChange();
-    // Enforce daily token budget — pause agent if exceeded
-    const profile = this.config.profile;
-    if (
-      profile?.maxTokensPerDay !== undefined &&
-      profile.maxTokensPerDay !== null &&
-      this.state.tokensUsedToday >= profile.maxTokensPerDay
-    ) {
-      this.setStatus('paused');
-      log.warn('Agent paused: daily token budget exceeded', {
-        agentId: this.id,
-        tokensUsedToday: this.state.tokensUsedToday,
-        maxTokensPerDay: profile.maxTokensPerDay,
-      });
-    }
   }
 
   /**
@@ -1398,25 +1565,13 @@ export class Agent {
 
   /**
    * Reset daily token counter (called at midnight by scheduler).
-   * If agent was paused due to budget exceeded, resume to idle.
    */
   resetDailyTokens(): void {
-    const wasPausedByBudget =
-      this.state.status === 'paused' &&
-      this.config.profile?.maxTokensPerDay !== undefined &&
-      this.config.profile.maxTokensPerDay !== null &&
-      this.state.tokensUsedToday >= this.config.profile.maxTokensPerDay;
-
     this.state.tokensUsedToday = 0;
     if (this.stateManager) {
       this.stateManager.resetTokensUsed();
     }
     this.notifyStateChange();
-
-    if (wasPausedByBudget) {
-      this.setStatus('idle');
-      log.info('Agent resumed after daily token reset', { agentId: this.id });
-    }
   }
 
 
@@ -1504,29 +1659,96 @@ export class Agent {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
-    this.userMessageSender = cb;
+  setUserApprovalRequester(cb: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+    this.userApprovalRequester = cb;
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
   }
 
-  setChatSessionsFetcher(cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
-    this.chatSessionsFetcher = cb;
+  /**
+   * Inject a concise activity summary into the main chat session.
+   * This keeps the agent aware of what it has done across different processing
+   * contexts (task execution, review, A2A, etc.) and surfaces the activity
+   * in the frontend chat timeline.
+   */
+  injectActivityToMainSession(opts: {
+    type: string;
+    summary: string;
+    outcome?: string;
+    mailboxItemId?: string;
+    taskId?: string;
+    requirementId?: string;
+  }): void {
+    if (!this.currentSessionId) return;
+
+    // Collapse consecutive heartbeats: skip if previous injection was also a heartbeat
+    if (opts.type === 'heartbeat' && this.lastInjectedActivityType === 'heartbeat') {
+      return;
+    }
+    this.lastInjectedActivityType = opts.type;
+
+    const text = opts.summary;
+    this.recentActivityRing.push(`[${opts.type}] ${text}${opts.outcome ? ' → ' + opts.outcome : ''}`);
+    if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+      this.recentActivityRing.shift();
+    }
+    this.memory.appendMessage(this.currentSessionId, {
+      role: 'assistant',
+      content: text,
+    });
+    this.eventBus.emit('agent:activity-log', {
+      agentId: this.id,
+      sessionId: this.currentSessionId,
+      message: text,
+      metadata: {
+        activityLog: true,
+        activityType: opts.type,
+        ...(opts.outcome ? { outcome: opts.outcome } : {}),
+        ...(opts.mailboxItemId ? { mailboxItemId: opts.mailboxItemId } : {}),
+        ...(opts.taskId ? { taskId: opts.taskId } : {}),
+        ...(opts.requirementId ? { requirementId: opts.requirementId } : {}),
+      },
+    });
   }
 
-  private async fetchChatSessions(): Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }> | undefined> {
-    if (!this.chatSessionsFetcher) return undefined;
-    try {
-      return await this.chatSessionsFetcher();
-    } catch { return undefined; }
+  /**
+   * Get the last N activity summaries for triage context.
+   */
+  private recentActivitySummaries(count = 5): string[] {
+    return this.recentActivityRing.slice(-count);
+  }
+
+  /**
+   * Update the agent's persistent situational awareness from a triage result.
+   * This cognition is injected into all subsequent system prompts via getDynamicContext().
+   */
+  private updateCognition(result: TriageResult): void {
+    const lines: string[] = [];
+    lines.push('## Current Situational Awareness (latest triage)');
+    lines.push(`Decision: Processing item [${result.processItemId}]`);
+    if (result.deferItemIds.length > 0) {
+      lines.push(`Deferred ${result.deferItemIds.length} item(s)`);
+    }
+    if (result.dropItemIds.length > 0) {
+      lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
+    }
+    lines.push(`Reasoning: ${result.reasoning}`);
+    this.currentCognition = lines.join('\n');
   }
 
   private getDynamicContext(): string | undefined {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
+    }
+    if (this.currentCognition) {
+      parts.push(this.currentCognition);
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -1735,6 +1957,11 @@ export class Agent {
   }
 
   private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
+    // Defensive: strip completion marker from all log content regardless of caller
+    const cleanContent = (type === 'text' || type === 'status')
+      ? stripCompletionMarker(content)
+      : content;
+
     let logs = this.activityLogs.get(activityId);
     if (!logs) {
       logs = [];
@@ -1747,7 +1974,7 @@ export class Agent {
     const entry: AgentActivityLogEntry = {
       seq,
       type,
-      content,
+      content: cleanContent,
       metadata,
       createdAt: new Date().toISOString(),
     };
@@ -1757,7 +1984,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content, metadata }); } catch { /* best effort */ }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch { /* best effort */ }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -1772,6 +1999,10 @@ export class Agent {
 
   getCurrentActivity(): AgentActivity | undefined {
     return this.state.currentActivity;
+  }
+
+  getCurrentActivityId(): string | undefined {
+    return this.state.currentActivity?.id;
   }
 
   /** Return summary of currently-live in-memory activities */
@@ -1875,6 +2106,8 @@ export class Agent {
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+    const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
+    const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
@@ -1884,7 +2117,7 @@ export class Agent {
       switch (scenario) {
         case 'a2a':
           actType = 'a2a';
-          actLabel = `A2A: Chat with ${senderInfo?.name ?? senderId}`;
+          actLabel = `Chat from ${senderInfo?.name ?? senderId}`;
           break;
         case 'heartbeat':
           actType = 'internal';
@@ -1954,7 +2187,6 @@ export class Agent {
       await counter.ensureReady();
     }
 
-    const chatSessions = isLightweight ? undefined : await this.fetchChatSessions();
     const systemPrompt = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
@@ -1978,7 +2210,6 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
-      chatSessions,
       ...this.getTeamContextParams(),
     });
 
@@ -2147,9 +2378,17 @@ export class Agent {
           }
         }
 
-        // Attention yield point (merge only — no preemption during chat,
-        // since the caller is awaiting a response).
+        // Attention yield point — preemptable scenarios (heartbeat, memory
+        // consolidation, etc.) allow full preemption; user-facing chat only
+        // allows merge since the caller is awaiting a response.
         const chatYield = await this.checkAttentionYieldPoint();
+        if (chatYield.decision === 'preempt' && isPreemptable) {
+          log.info('handleMessage preempted by higher-priority item', {
+            agentId: this.id, scenario,
+            preemptedBy: chatYield.item?.sourceType,
+          });
+          return '[preempted]';
+        }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
@@ -2191,22 +2430,23 @@ export class Agent {
         });
       }
 
-      const reply = response.content;
-      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
         this.memory.appendMessage(sessionId, { role: 'assistant', content: filtered });
         return filtered;
       }
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: reply });
-      if (!isLightweight && reply.length > 50 && senderId) {
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      if (!isLightweight && displayReply.length > 50 && senderId) {
         this.memory.writeDailyLog(
           this.id,
-          `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${reply.slice(0, 300)}`
+          `[Chat with ${senderInfo?.name ?? senderId}] Q: ${userMessage.slice(0, 150)}... A: ${displayReply.slice(0, 300)}`
         );
       }
-      if (chatActivityId && reply.trim()) {
-        this.emitActivityLog(chatActivityId, 'text', reply);
+      if (chatActivityId && displayReply.trim()) {
+        this.emitActivityLog(chatActivityId, 'text', displayReply);
       }
       if (chatActivityId) this.endActivity(chatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -2215,11 +2455,11 @@ export class Agent {
         agentId: this.id,
         senderId,
         userMessage,
-        reply,
+        reply: displayReply,
         tokensUsed: this.getTokensUsed(),
       });
 
-      return reply;
+      return rawReply;
     } catch (error) {
       if (chatActivityId) this.endActivity(chatActivityId);
 
@@ -2338,9 +2578,16 @@ export class Agent {
 
     let lastResponseContent = '';
     let thinkingBuffer = '';
+    const streamMarkerDelta = createMarkerStrippingDelta((text) => {
+      onEvent({ type: 'text_delta', text });
+    });
     const wrappedOnEvent = (event: LLMStreamEvent & { agentEvent?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
         thinkingBuffer += event.thinking;
+      }
+      if (event.type === 'text_delta' && event.text) {
+        streamMarkerDelta.emit(event.text);
+        return;
       }
       onEvent(event);
     };
@@ -2534,19 +2781,21 @@ export class Agent {
         });
       }
 
-      const reply = response.content;
-      const outputCheck = await this.guardrails.checkOutput(reply, { agentId: this.id });
+      streamMarkerDelta.flush();
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      const outputCheck = await this.guardrails.checkOutput(displayReply, { agentId: this.id });
       if (!outputCheck.passed) {
         const filtered = `[Response filtered: ${outputCheck.reason}]`;
         this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: filtered });
         return filtered;
       }
-      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: reply });
+      this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: displayReply });
       if (streamChatActivityId && thinkingBuffer.trim()) {
         this.emitActivityLog(streamChatActivityId, 'text', thinkingBuffer, { isThinking: true });
       }
-      if (streamChatActivityId && reply.trim()) {
-        this.emitActivityLog(streamChatActivityId, 'text', reply);
+      if (streamChatActivityId && displayReply.trim()) {
+        this.emitActivityLog(streamChatActivityId, 'text', displayReply);
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
       if (this.activeTasks.size === 0) this.setStatus('idle');
@@ -2555,12 +2804,13 @@ export class Agent {
         agentId: this.id,
         senderId,
         userMessage,
-        reply,
+        reply: displayReply,
         tokensUsed: this.getTokensUsed(),
       });
 
-      return reply;
+      return rawReply;
     } catch (error) {
+      streamMarkerDelta.flush();
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.cancelled });
       if (cancelToken?.cancelled) {
         if (lastResponseContent && this.currentSessionId) {
@@ -2722,9 +2972,11 @@ export class Agent {
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
-    const emitDelta = (text: string) => {
+    const rawEmitDelta = (text: string) => {
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
     };
+    const markerDelta = createMarkerStrippingDelta(rawEmitDelta);
+    const emitDelta = markerDelta.emit;
 
     // Wire subagent progress events into task execution logs so the frontend
     // can render subagent steps (tool calls, thinking, completion) in real-time.
@@ -2862,6 +3114,7 @@ export class Agent {
     let taskToolIterations = 0;
 
     const flushText = () => {
+      markerDelta.flush();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
@@ -3069,7 +3322,7 @@ export class Agent {
       }
 
       flushText();
-      const finalReply = response.content;
+      const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
       this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
       emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
@@ -3159,9 +3412,11 @@ export class Agent {
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
     };
-    const emitDelta = (text: string) => {
+    const rawEmitDeltaRIS = (text: string) => {
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
     };
+    const markerDeltaRIS = createMarkerStrippingDelta(rawEmitDeltaRIS);
+    const emitDelta = markerDeltaRIS.emit;
 
     this.memory.getOrCreateSession(this.id, sessionId);
     this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
@@ -3195,6 +3450,7 @@ export class Agent {
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
     const flushText = () => {
+      markerDeltaRIS.flush();
       if (textBuffer.trim()) {
         emit('text', textBuffer);
         textBuffer = '';
@@ -3305,9 +3561,10 @@ export class Agent {
       }
 
       flushText();
-      const finalReply = response.content;
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
-      return finalReply;
+      const rawReply = sanitizeLLMReply(response.content);
+      const displayReply = stripCompletionMarker(rawReply);
+      this.memory.appendMessage(sessionId, { role: 'assistant', content: displayReply });
+      return rawReply;
     } catch (error) {
       if (textBuffer.trim()) {
         this.memory.appendMessage(sessionId, { role: 'assistant', content: textBuffer + '\n\n[interrupted by error]' });
@@ -3440,8 +3697,8 @@ export class Agent {
   /**
    * Handle the discover_tools meta-tool. Supports:
    * - mode="list_skills": list all available skills (prompt-based instruction packages, optionally with MCP tools)
-   * - tool_names with skill names: activate skill by injecting its instructions and connecting its MCP servers
-   * - tool_names with tool names: activate individual tools already registered on the agent
+   * - name with skill names: activate skill by injecting its instructions and connecting its MCP servers
+   * - name with tool names: activate individual tools already registered on the agent
    */
   private async handleDiscoverTools(args: Record<string, unknown>): Promise<string> {
     const mode = (args.mode as string) ?? 'activate';
@@ -3465,7 +3722,7 @@ export class Agent {
       return JSON.stringify({
         status: 'ok',
         skills: catalog,
-        message: `${catalog.length} skills available. Use discover_tools with tool_names to activate a skill (loads its instructions and MCP tools into your context).`,
+        message: `${catalog.length} skills available. Use discover_tools({ name: ["skill-name"] }) to activate a skill (loads its instructions and MCP tools into your context).`,
       });
     }
 
@@ -3492,9 +3749,20 @@ export class Agent {
       }
     }
 
+    // Normalize `name` — accept string, array, or legacy `tool_names` for backward compat
+    const resolvedNames: string[] = [];
+    const nameArg = args.name ?? args.tool_names;
+    if (Array.isArray(nameArg)) {
+      for (const n of nameArg as string[]) {
+        if (typeof n === 'string' && n.trim()) resolvedNames.push(n.trim());
+      }
+    } else if (typeof nameArg === 'string' && nameArg.trim()) {
+      resolvedNames.push(nameArg.trim());
+    }
+
     // Install a skill from a remote registry
     if (mode === 'install') {
-      const skillName = args.name as string;
+      const skillName = resolvedNames[0];
       if (!skillName) {
         return JSON.stringify({ status: 'error', message: 'name is required for install mode.' });
       }
@@ -3502,13 +3770,14 @@ export class Agent {
         return JSON.stringify({ status: 'error', message: 'Skill installation is not available.' });
       }
       try {
-        const result = await this.skillInstaller(args);
+        const installArgs = { ...args, name: skillName };
+        const result = await this.skillInstaller(installArgs);
         log.info('Skill installed via discover_tools', { agentId: this.id, skill: skillName, method: result.method });
         return JSON.stringify({
           status: 'ok',
           installed: result.name,
           method: result.method,
-          message: `Skill "${result.name}" installed successfully. Use discover_tools({ tool_names: ["${result.name}"] }) to activate it.`,
+          message: `Skill "${result.name}" installed successfully. Use discover_tools({ name: ["${result.name}"] }) to activate it.`,
         });
       } catch (err) {
         return JSON.stringify({ status: 'error', message: `Install failed: ${String(err instanceof Error ? err.message : err)}` });
@@ -3516,7 +3785,7 @@ export class Agent {
     }
 
     // mode === 'activate' (default)
-    const requested = (args.tool_names as string[]) ?? [];
+    const requested = resolvedNames;
     const activated: string[] = [];
     const unknown: string[] = [];
 
@@ -3600,22 +3869,28 @@ export class Agent {
       if (!title || !body) {
         return JSON.stringify({ status: 'error', message: 'title and body are required' });
       }
-      if (!this.userNotifier) {
-        return JSON.stringify({ status: 'error', message: 'User notifications are not available.' });
-      }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
         const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
         const actionType = relatedTaskId ? 'navigate' : 'none';
         const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
-        this.userNotifier({
-          type: 'agent_report',
-          title,
-          body,
-          priority,
-          actionType,
-          actionTarget,
-          metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+        // Send to notification bell
+        if (this.userNotifier) {
+          this.userNotifier({
+            type: 'agent_report',
+            title,
+            body,
+            priority,
+            actionType,
+            actionTarget,
+            metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+          });
+        }
+        // Also post to main session so it appears in the chat timeline
+        this.injectActivityToMainSession({
+          type: 'notify_user',
+          summary: title,
+          outcome: body,
         });
         log.info('User notification sent', { agentId: this.id, title });
         return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });
@@ -3624,35 +3899,47 @@ export class Agent {
       }
     }
 
-    // Handle request_user_chat: interactive chat request with notification
-    if (toolCall.name === 'request_user_chat') {
-      const topic = (toolCall.arguments.topic as string) ?? '';
-      const message = (toolCall.arguments.message as string) ?? '';
-      if (!topic || !message) {
-        return JSON.stringify({ status: 'error', message: 'topic and message are required' });
+    // Handle request_user_approval: blocking approval/decision request
+    if (toolCall.name === 'request_user_approval') {
+      const title = (toolCall.arguments.title as string) ?? '';
+      const description = (toolCall.arguments.description as string) ?? '';
+      if (!title || !description) {
+        return JSON.stringify({ status: 'error', message: 'title and description are required' });
       }
-      if (!this.userMessageSender) {
-        return JSON.stringify({ status: 'error', message: 'User messaging is not available.' });
+      if (!this.userApprovalRequester) {
+        return JSON.stringify({ status: 'error', message: 'User approval is not available.' });
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
-        const requestedSessionId = toolCall.arguments.session_id as string | undefined;
-        const result = await this.userMessageSender(message, { sessionId: requestedSessionId });
-        if (this.userNotifier) {
-          this.userNotifier({
-            type: 'agent_chat_request',
-            title: `${this.config.name} wants to discuss: ${topic}`,
-            body: message.slice(0, 200),
+        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const options = toolCall.arguments.options as Array<{ id: string; label: string; description?: string }> | undefined;
+        const allowFreeform = (toolCall.arguments.allow_freeform as boolean) ?? false;
+
+        this.attentionController.setWaitingForApproval(true);
+        try {
+          const result = await this.userApprovalRequester({
+            agentId: this.id,
+            agentName: this.config.name,
+            title,
+            description,
+            options,
+            allowFreeform,
             priority,
-            actionType: 'open_chat',
-            actionTarget: JSON.stringify({ agentId: this.id, sessionId: result.sessionId }),
-            metadata: { agentId: this.id, agentName: this.config.name, sessionId: result.sessionId, topic },
+            relatedTaskId,
           });
+
+          log.info('User approval response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption });
+          return JSON.stringify({
+            status: 'ok',
+            approved: result.approved,
+            selected_option: result.selectedOption ?? (result.approved ? 'approve' : 'reject'),
+            comment: result.comment ?? '',
+          });
+        } finally {
+          this.attentionController.setWaitingForApproval(false);
         }
-        log.info('Chat request sent to user', { agentId: this.id, sessionId: result.sessionId, topic });
-        return JSON.stringify({ status: 'ok', sessionId: result.sessionId, messageId: result.messageId });
       } catch (err) {
-        return JSON.stringify({ status: 'error', message: `Failed to send chat request: ${String(err)}` });
+        return JSON.stringify({ status: 'error', message: `Failed to get user approval: ${String(err)}` });
       }
     }
 
@@ -4004,8 +4291,8 @@ export class Agent {
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Notify user**: `notify_user` — send status updates, reports, alerts to the user notification bell',
-      '- **Request user chat**: `request_user_chat` — when you need user input or a decision',
+      '- **Notify user**: `notify_user` — send pure FYI status updates, reports, alerts (no response expected)',
+      '- **Request user approval**: `request_user_approval` — when you need a user decision, approval, or input (blocks until user responds)',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
@@ -4018,7 +4305,7 @@ export class Agent {
       '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
       '- If you identify something complex that needs doing:',
       '  1. Notify the user via `notify_user` explaining what you found and why it matters',
-      '     (Use `request_user_chat` only if you need the user to make a decision or provide input)',
+      '     (Use `request_user_approval` if you need the user to make a decision or provide input)',
       '  2. Create a task via `task_create` with clear description and acceptance criteria',
       '  3. The user will approve and the task system handles execution',
       '',
@@ -4041,12 +4328,13 @@ export class Agent {
       'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
-      'discover_tools', 'notify_user', 'request_user_chat',
+      'discover_tools', 'notify_user', 'request_user_approval',
     ];
     if (isManager) {
       baseTools.push(
         'task_board_health', 'task_cleanup_duplicates', 'task_assign',
         'team_status', 'deliverable_create', 'deliverable_search',
+        'team_hire_agent', 'team_list_templates', 'builder_install', 'builder_list',
       );
     }
     const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);
@@ -4075,10 +4363,11 @@ export class Agent {
           });
         }
 
-        const isOk = reply?.trim() === 'HEARTBEAT_OK';
-        if (reply && !isOk && reply.length > 20) {
-          this.emitActivityLog(activityId, 'text', reply);
-          this.memory.writeDailyLog(this.id, `[Heartbeat] ${reply}`);
+        const cleanReply = reply ? stripCompletionMarker(reply) : '';
+        const isOk = cleanReply.trim() === 'HEARTBEAT_OK';
+        if (cleanReply && !isOk && cleanReply.length > 20) {
+          this.emitActivityLog(activityId, 'text', cleanReply);
+          this.memory.writeDailyLog(this.id, `[Heartbeat] ${cleanReply}`);
         }
         this.endActivity(activityId);
         return;

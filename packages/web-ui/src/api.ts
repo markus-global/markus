@@ -31,6 +31,7 @@ export interface ChatSessionInfo {
   agentId: string;
   userId: string | null;
   title: string | null;
+  isMain?: boolean;
   createdAt: string;
   lastMessageAt: string;
 }
@@ -45,7 +46,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -131,6 +132,9 @@ export interface ApprovalInfo {
   respondedAt?: string;
   respondedBy?: string;
   responseComment?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  allowFreeform?: boolean;
+  selectedOption?: string;
 }
 
 export interface CodeReviewCheckInfo {
@@ -301,7 +305,7 @@ export interface AgentActivityInfo {
 
 export interface AgentActivityLogEntry {
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
@@ -352,6 +356,13 @@ export interface AgentMindState {
     reasoning: string;
     createdAt: string;
   }>;
+  lastTriage?: {
+    reasoning: string;
+    processedItemId: string;
+    deferredItemIds: string[];
+    droppedItemIds: string[];
+    timestamp: string;
+  };
 }
 
 export interface MailboxHistoryDecision {
@@ -566,6 +577,7 @@ export interface TaskComment {
   content: string;
   attachments?: Array<{ type: string; url: string; name: string }>;
   mentions?: string[];
+  activityId?: string;
   replyTo?: string;
   replyToAuthor?: string;
   replyToContent?: string;
@@ -581,6 +593,7 @@ export interface RequirementComment {
   content: string;
   attachments?: Array<{ type: string; url: string; name: string }>;
   mentions?: string[];
+  activityId?: string;
   replyTo?: string;
   replyToAuthor?: string;
   replyToContent?: string;
@@ -740,7 +753,7 @@ export interface AgentUsageInfo {
 
 export const api = {
   agents: {
-    list: () => request<{ agents: AgentInfo[] }>('/agents'),
+    list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
     create: (name: string, roleName: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
       request('/agents', { method: 'POST', body: JSON.stringify({ name, roleName, agentRole, teamId }) }),
@@ -791,12 +804,13 @@ export const api = {
       return request<{ activities: ActivityRecord[] }>(`/agents/${id}/activities${qs ? '?' + qs : ''}`);
     },
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
+      if (opts?.status) params.set('status', opts.status);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
     },
@@ -804,7 +818,7 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null): Promise<{ content: string; sessionId?: string }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -813,7 +827,7 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined }),
+            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -1047,7 +1061,7 @@ export const api = {
     agents: (orgId = 'default') =>
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
   },
-  health: () => request<{ status: string; version: string; agents: number }>('/health'),
+  health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
   system: {
     openPath: (path: string) =>
       request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),
@@ -1166,8 +1180,8 @@ export const api = {
       const qs = status ? `?status=${status}` : '';
       return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
     },
-    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string) =>
-      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment }) }),
+    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string) =>
+      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption }) }),
   },
   notifications: {
     list: (userId?: string, unread?: boolean, opts?: { type?: string; limit?: number; offset?: number }) => {
@@ -1283,7 +1297,7 @@ export interface ExecutionStreamEntryAPI {
   sourceId: string;
   agentId: string;
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   executionRound?: number;

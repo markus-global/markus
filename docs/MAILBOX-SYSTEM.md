@@ -31,12 +31,12 @@ External Events                    Agent Internals
 ─────────────                      ───────────────
   human_chat ──┐
   a2a_message ──┤                  ┌──────────────┐
-  task_status ──┤  enqueue()       │  AgentMailbox │ priority queue
+  task_status ──┤  enqueue()       │  AgentMailbox │ priority queue + dedup
   task_comment ──┼────────────────►│  (per agent)  │ sorted by priority + FIFO
-  review_req ──┤                   └──────┬───────┘
-  system_event──┤                        │ dequeueAsync()
-  heartbeat ────┤                         ▼
-  system_event ──┤               ┌──────────────────┐
+  req_comment ──┤                  └──────┬───────┘
+  review_req ──┤                         │ dequeueAsync()
+  system_event──┤                         ▼
+  heartbeat ────┤               ┌──────────────────┐
   session_reply──┤               │ AttentionController│ event-driven loop
   daily_report ──┤               │  state: idle →    │
   memory_consol──┘               │  focused → idle   │
@@ -61,18 +61,19 @@ All mailbox item types, their metadata, and their processing behaviour are defin
 // @markus/shared — packages/shared/src/types/mailbox.ts
 
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
-  system_event:         { label: 'System Event',        defaultPriority: 0, category: 'system',       icon: '⚙', createsActivity: true,  invokesLLM: true  },
-  human_chat:           { label: 'Chat',                defaultPriority: 0, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
-  task_comment:         { label: 'Task Comment',        defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
-  mention:              { label: 'Mention',             defaultPriority: 1, category: 'interaction',   icon: '@', createsActivity: true,  invokesLLM: true  },
-  session_reply:        { label: 'Session Reply',       defaultPriority: 1, category: 'task',          icon: '↩', createsActivity: true,  invokesLLM: true  },
-  task_status_update:   { label: 'Task Status',         defaultPriority: 2, category: 'task',          icon: '📋', createsActivity: true,  invokesLLM: true  },
-  a2a_message:          { label: 'Agent Message',       defaultPriority: 2, category: 'interaction',   icon: '🔗', createsActivity: true,  invokesLLM: true  },
-  review_request:       { label: 'Review Request',      defaultPriority: 2, category: 'task',          icon: '👀', createsActivity: true,  invokesLLM: true  },
-  requirement_update:   { label: 'Requirement Update',  defaultPriority: 2, category: 'notification',  icon: '📝', createsActivity: true,  invokesLLM: true  },
-  daily_report:         { label: 'Daily Report',        defaultPriority: 2, category: 'system',        icon: '📊', createsActivity: true,  invokesLLM: true  },
-  heartbeat:            { label: 'Heartbeat',           defaultPriority: 3, category: 'system',        icon: '♡', createsActivity: true,  invokesLLM: true  },
-  memory_consolidation: { label: 'Memory Consolidation',defaultPriority: 4, category: 'system',        icon: '🧠', createsActivity: true,  invokesLLM: true  },
+  system_event:          { label: 'System Event',         defaultPriority: 0, category: 'system',       icon: '⚙', createsActivity: true,  invokesLLM: true  },
+  human_chat:            { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', createsActivity: true,  invokesLLM: true  },
+  task_comment:          { label: 'Task Comment',         defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: false, invokesLLM: false },
+  requirement_comment:   { label: 'Requirement Comment',  defaultPriority: 0, category: 'task',          icon: '💬', createsActivity: true,  invokesLLM: true  },
+  mention:               { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@', createsActivity: true,  invokesLLM: true  },
+  session_reply:         { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩', createsActivity: true,  invokesLLM: true  },
+  task_status_update:    { label: 'Task Status',          defaultPriority: 2, category: 'task',          icon: '📋', createsActivity: true,  invokesLLM: false },
+  a2a_message:           { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', createsActivity: true,  invokesLLM: true  },
+  review_request:        { label: 'Review Request',       defaultPriority: 2, category: 'task',          icon: '👀', createsActivity: true,  invokesLLM: true  },
+  requirement_update:    { label: 'Requirement Update',   defaultPriority: 2, category: 'notification',  icon: '📝', createsActivity: true,  invokesLLM: false },
+  daily_report:          { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', createsActivity: true,  invokesLLM: true  },
+  heartbeat:             { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡', createsActivity: true,  invokesLLM: true  },
+  memory_consolidation:  { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', createsActivity: true,  invokesLLM: true  },
 };
 ```
 
@@ -98,23 +99,44 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 | Category | Types | Description |
 |----------|-------|-------------|
 | `interaction` | `human_chat`, `a2a_message`, `mention` | Direct conversations with humans or agents |
-| `task` | `task_status_update`, `task_comment`, `review_request`, `session_reply` | Task lifecycle events (including execution triggers) |
+| `task` | `task_status_update`, `task_comment`, `requirement_comment`, `review_request`, `session_reply` | Task & requirement lifecycle events (including execution triggers) |
 | `notification` | `requirement_update` | Status change notifications |
 | `system` | `system_event`, `heartbeat`, `daily_report`, `memory_consolidation` | Internal agent processes |
 
 ### 3.4 Special Processing Rules
 
-**`task_status_update` — Dual-Mode Processing**
+**`task_status_update` — Execution vs. Informational**
 
 `task_status_update` serves as the **unified trigger for all task lifecycle events**. It operates in two modes:
 
 1. **Execution mode** (`extra.triggerExecution = true`): When a task transitions to `in_progress` and needs execution, `TaskService.runTask()` sends a `task_status_update` with execution context (onLog, cancelToken, workspace, executionRound) via `agent.sendTaskExecution()`. The agent processes this by calling `executeTask()` — the full task execution loop. Priority is set to 1 (high).
 
-2. **Notification mode** (default): For non-execution status changes (e.g., cancelled, blocked, completed), the item is processed via `handleMessage()` as a lightweight LLM call. The notification includes action guidance (e.g., "Task cancelled. Stop any related work.").
+2. **Informational mode** (default, `invokesLLM: false`): For non-execution status changes (e.g., cancelled, blocked, completed), the item is **auto-completed without LLM invocation**. The agent logs the status change for awareness but does not spend tokens processing it. These transitions are handled by the system (FSM side-effects) and need no agent action.
 
-When `updateTaskStatus()` triggers auto-start execution, the separate notification is **skipped** to avoid redundant LLM calls. The execution-mode `task_status_update` serves as both trigger and notification.
+When `updateTaskStatus()` triggers auto-start execution, the separate notification is **skipped** to avoid redundant processing. The execution-mode `task_status_update` serves as both trigger and notification.
 
 Similarly, when a task transitions from `in_progress` to `review` (via `task_submit_review`), the assignee notification is skipped — the assignee itself initiated the submission and already knows the state change. Only the reviewer receives a `review_request` notification.
+
+**Silent Transitions**: Certain system-managed transitions never produce a `task_status_update` notification because the real mechanism (cancel token or auto-start) already handles the work:
+
+| Transition | Reason suppressed |
+|-----------|-------------------|
+| `blocked -> in_progress` | Auto-start fires a separate execution-mode item |
+| `in_progress -> blocked` | Cancel token stops execution; notification is redundant |
+
+These are defined in `TaskService.SILENT_TRANSITIONS` and checked early in `maybeNotifyAssignee()`.
+
+**`requirement_update` — Conditional LLM Processing**
+
+`requirement_update` is `invokesLLM: false` by default. Most requirement status transitions (approved, in_progress, etc.) are informational — the agent is auto-notified without an LLM call.
+
+The exception is **rejection** (`extra.actionRequired = true`): when a requirement is rejected, the enqueue call sets `actionRequired` and a higher priority (1). The agent processing code checks for this flag and invokes LLM only when present, allowing the agent to decide whether to update and resubmit or abandon the requirement.
+
+**`requirement_comment` — Direct Discussion on Requirements**
+
+`requirement_comment` is a new type dedicated to threaded comments on requirements (analogous to `task_comment` for tasks). Unlike `requirement_update` (which covers status/decision notifications), `requirement_comment` represents interactive dialogue — questions, feedback, coordination.
+
+Processing: always invokes LLM via `handleMessage()` with `scenario: 'comment_response'`, following the context-first protocol (§3.5).
 
 **`task_comment` — Live Session Injection**
 
@@ -137,6 +159,17 @@ Only after completing these steps does the agent formulate its reply. This preve
 The notification text sent to agents also includes explicit MANDATORY instructions reinforcing this protocol.
 
 Priorities can be overridden per-item when enqueuing.
+
+### 3.6 Review Comment Cascade Suppression
+
+When a reviewer agent posts `task_comment` during an active review (`task.status === 'review'` and `authorId === task.reviewerAgentId`), the automatic `task_comment` notifications to the worker and creator agents are suppressed. Only explicit `@mention` notifications are delivered.
+
+**Rationale**: Without this guard, the reviewer's intermediate comments trigger a notification cascade:
+1. Reviewer posts comment → worker/creator receive `task_comment`
+2. Worker processes notification with full LLM → may send A2A message back to reviewer
+3. Reviewer processes A2A message → posts redundant second review
+
+The review outcome is properly communicated through the status transition (`completed` or `in_progress` revision), not intermediate comments.
 
 ---
 
@@ -178,9 +211,9 @@ There is **no polling**. When a new item arrives while the agent is focused:
 
 ### Priority Invariant: User Interactions First
 
-User chat (`human_chat`) and task comments (`task_comment`) are assigned **priority 0 (critical)** — the highest possible level. The heuristic rules enforce:
+User chat (`human_chat`), task comments (`task_comment`), and requirement comments (`requirement_comment`) are assigned **priority 0 (critical)** — the highest possible level. The heuristic rules enforce:
 
-1. **R1**: If a new `human_chat` or `task_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
+1. **R1**: If a new `human_chat`, `task_comment`, or `requirement_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
 2. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
 3. The agent's system prompt includes the **full mailbox queue** (not a truncated view), so the agent is always aware of everything waiting for its attention.
 
@@ -189,7 +222,9 @@ User chat (`human_chat`) and task comments (`task_comment`) are assigned **prior
 Yield points are inserted at natural pauses in the agent's processing pipeline:
 
 - **Task execution** (`_executeTaskInternal`): After all tool calls complete and before the next LLM turn. If preempted, the task session state is fully saved and execution is **automatically re-queued** via `TaskService.runTask()` — the task stays `in_progress` and a new `task_status_update` (execution mode) is enqueued to the mailbox. The re-queued item sits behind any higher-priority items and resumes with full session context when the agent is available.
-- **Chat/message handling** (`handleMessage`): After tool results are recorded. Only merge decisions are honoured here (no preemption, since the caller is awaiting a response).
+- **Chat/message handling** (`handleMessage`): After tool results are recorded. The preemption behaviour depends on the **scenario**:
+  - **Preemptable scenarios** (`heartbeat`, `memory_consolidation`): Full preemption is allowed. If a higher-priority item arrives (e.g., user chat), the current processing is abandoned and the agent immediately switches to the new item. Since these are self-initiated periodic processes with no external caller waiting, abandoning them is safe — the next scheduled cycle will retry.
+  - **Non-preemptable scenarios** (`chat`, `a2a`, `comment_response`): Only merge decisions are honoured (no preemption), since an external caller is awaiting a response. The `system_event` and `daily_report` types use scenario `heartbeat` internally, so they are also preemptable.
 
 ---
 
@@ -405,8 +440,9 @@ The `agent_activities.type` field is **not an independent enum**. It is determin
 | `human_chat` | `chat` | |
 | `a2a_message` | `a2a` | |
 | `task_comment` | *(none or `chat`)* | Active task → inject only (no activity); inactive → `chat` |
-| `task_status_update` | `task` or `internal` | Execution mode (`extra.triggerExecution`) → `task`; notification mode → `internal` |
-| `requirement_update` | `internal` | Lightweight LLM call (scenario: `comment_response`) |
+| `requirement_comment` | `chat` | Always invokes LLM (scenario: `comment_response`) |
+| `task_status_update` | `task` or *(none)* | Execution mode → `task`; informational → auto-completed (no activity) |
+| `requirement_update` | `internal` or *(none)* | `actionRequired` → LLM call; otherwise auto-completed (no activity) |
 | `mention` | `chat` | |
 | `review_request` | `chat` | |
 | `session_reply` | `respond_in_session` | Has `task_id` |
@@ -639,54 +675,351 @@ Fire-and-forget informational updates. Creates a persistent notification in the 
 
 **Flow**: `agent.executeTool('notify_user')` → `agent.userNotifier(title, message, priority)` → `HITLService.notify()` → SQLite + WebSocket → NotificationBell
 
-### 13.2 `request_user_chat` — Interactive Chat Request
+### 13.2 `request_user_approval` — Blocking Decision Request
 
-Opens (or continues) a two-way chat conversation. Creates both a notification AND a chat message.
+Requests a decision or approval from the user. The tool **blocks** until the user responds — no timeout. Supports default Approve/Reject options, custom options, and optional freeform text input.
 
 ```typescript
 // Tool schema
 {
-  name: 'request_user_chat',
+  name: 'request_user_approval',
   parameters: {
-    message: string,      // The chat message to send
-    reason: string,       // Why the agent needs user input (shown in notification)
-    session_id?: string   // Optional: continue an existing chat session
+    title: string,           // Short headline
+    description: string,     // Detailed context
+    options?: Array<{        // Custom options (defaults to Approve/Reject)
+      id: string,
+      label: string,
+      description?: string
+    }>,
+    allow_freeform?: boolean, // Allow user to type custom text
+    related_task_id?: string,
+    priority?: 'normal' | 'high' | 'urgent'
   }
 }
+// Returns: { status: 'ok', approved: boolean, selected_option: string, comment: string }
 ```
 
-**When to use**: Blocking questions, approval requests, design decisions, anything requiring user response.
+**When to use**: Approval requests, design decisions, choosing between approaches, anything requiring user input or decision.
 
-**Flow**: `agent.executeTool('request_user_chat')` → `agent.userMessageSender(message, sessionId)` → chat session created/reused → `HITLService.notify('agent_chat_request', ...)` → WebSocket `notification` + `chat:proactive_message`
+**Flow**: `agent.executeTool('request_user_approval')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
 
-### 13.3 Session Awareness
+The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 10-minute backstop while waiting for approval, preventing the mailbox item from being requeued prematurely.
 
-Agents are given context about their recent chat sessions in the system prompt:
-
-```
-## Recent user conversations
-- Session abc123: "API design discussion" (last: 2h ago) — "Should we use REST or..."
-- Session def456: "Bug report follow-up" (last: 1d ago) — "The fix has been deployed..."
-```
-
-This enables agents to continue existing conversations by passing `session_id` to `request_user_chat`, rather than always creating new sessions.
-
-### 13.4 Prompt Guidance
+### 13.3 Prompt Guidance
 
 The system prompt includes scenario-specific guidance on which tool to use:
 
 | Situation | Tool |
 |-----------|------|
-| Task completed, just informing | `notify_user` |
-| Need approval or clarification | `request_user_chat` |
-| Encountered an error, FYI | `notify_user` |
-| Design question, need answer | `request_user_chat` |
-| Progress update | `notify_user` |
-| Continuing a previous conversation | `request_user_chat` with `session_id` |
+| Status report, progress update, FYI alert | `notify_user` |
+| Task completed notification | `notify_user` with `related_task_id` |
+| Need user to approve/reject something | `request_user_approval` (default options) |
+| Need user to choose between approaches | `request_user_approval` with custom `options` |
+| Need user freeform input | `request_user_approval` with `allow_freeform: true` |
+| Want to discuss interactively | Mention user via task/requirement comment |
 
 ---
 
-## 14. Future Work
+## 14. Enqueue-Time Deduplication
+
+When multiple messages for the same entity arrive before the agent can process them, the mailbox merges them at enqueue time to prevent redundant processing:
+
+### Dedup Groups
+
+| Group | Dedup Key | Eligible Types |
+|-------|-----------|---------------|
+| Task comments | `payload.taskId` | `task_comment` |
+| Requirement comments | `payload.requirementId` | `requirement_comment` |
+
+**Why status updates are excluded**: `task_status_update` and `requirement_update` represent distinct state transitions with different processing semantics. Merging a "task blocked" notification with a "task resumed" notification would lose critical state information. Only comments — which are additive human/agent text — are safe to merge.
+
+### Merge Behaviour
+
+When a new item matches an existing **queued** (not yet processing) item in the same dedup group:
+
+1. The new item's `content` is appended to the existing item (separated by `\n\n---\n\n`)
+2. The existing item's `summary` gains a `(+1)` suffix
+3. The new item is **not** inserted into the queue — the existing item serves both
+4. The merge is logged for traceability
+
+This prevents scenarios where 5 rapid-fire comments on the same task each trigger separate LLM calls. Instead, the agent sees one consolidated item with all 5 comments.
+
+**Execution-trigger safety**: Items with `extra.triggerExecution` (task execution triggers) are **never merged** — neither as the incoming item nor as the merge target. Execution items carry critical callbacks (`onLog`, `cancelToken`, `taskProjectContext`) in their `extra` field that would be lost during a content merge. They must always remain standalone queue entries.
+
+### Complementary: Attention Controller Merge (R2/R3)
+
+Enqueue-time dedup handles items that arrive while the queue is idle. The attention controller's R2 (same-task comment merge) and R3 (same-requirement comment/update merge) handle items that arrive **while the agent is focused** — merging them into the current work if they relate to the same entity.
+
+---
+
+## 15. Comment Activity Traceability
+
+Agent-generated comments on tasks and requirements carry an `activityId` linking them to the execution context that produced them. This enables users to expand a comment in the UI and see the full execution log — every tool call, LLM turn, and reasoning step that led to the comment.
+
+### Data Flow
+
+```
+Agent executing activity (activityId = "act-agent1-1234...")
+  └─ calls task_comment / requirement_comment tool
+       └─ tool reads getCurrentActivityId() → "act-agent1-1234..."
+            └─ passes activityId to postTaskComment() / postRequirementComment()
+                 └─ persisted in task_comments.activity_id / requirement_comments.activity_id
+```
+
+### Schema
+
+Both `task_comments` and `requirement_comments` tables have an `activity_id` column (nullable, TEXT). Human-authored comments have `activity_id = NULL`.
+
+### Frontend
+
+The `CommentBubble` component checks for `activityId` on agent comments. When present, a "View log" button appears on hover. Clicking it fetches execution logs via `GET /api/agents/:id/activity-logs?activityId=...` and renders them inline using the `FullExecutionLog` component.
+
+---
+
+## 16. Mailbox Status Filters
+
+The frontend Agent Mind view supports filtering by both **category** and **status**:
+
+| Status | Color Indicator | Description |
+|--------|----------------|-------------|
+| `queued` | Amber | Waiting in queue |
+| `processing` | Blue (pulse) | Currently being processed |
+| `completed` | Green | Successfully processed |
+| `merged` | Blue | Absorbed into another item |
+| `deferred` | Purple | Postponed for later |
+| `dropped` | Red | Discarded |
+
+Both category and status filters are passed as query parameters to the mailbox API endpoint.
+
+---
+
+## 17. Restart Recovery
+
+After a server crash or restart, mailbox items that were in `processing` status at the time of shutdown become stale — the in-flight LLM call and callbacks are lost. These items appear as permanent zombies in the mailbox history.
+
+### Recovery Mechanism
+
+On agent startup, `AgentMailbox.recoverStaleItems()` is called immediately after persistence is wired. It delegates to `MailboxPersistence.markStaleProcessingAsDropped(agentId)`, which executes:
+
+```sql
+UPDATE mailbox_items SET status = 'dropped' WHERE agent_id = ? AND status = 'processing'
+```
+
+This is safe because:
+- `resumeInProgressTasks()` already re-creates execution items for any tasks that need to continue.
+- The stale items' callbacks (`onLog`, `cancelToken`, etc.) are garbage-collected references that cannot be resumed.
+- Marking as `dropped` (not `completed`) preserves the audit trail — these items did not complete successfully.
+
+### Post-Recovery Deduplication
+
+After all queued items are restored from the database, `recoverStaleItems()` runs `deduplicateQueue()` to collapse redundant entries that accumulated before the restart:
+
+1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `dropped`.
+2. **Comment merging**: `task_comment` items with the same `taskId` are merged (content appended, summary updated with `(+1)`). Same for `requirement_comment` by `requirementId`.
+3. **Priority escalation**: When merging, the survivor inherits the highest priority of all merged items.
+4. **Execution-trigger safety**: Items with `extra.triggerExecution` are never merged — they carry critical callbacks that must remain standalone.
+
+This prevents scenarios where a restart causes the agent to process 10 redundant heartbeats or 5 separate comment notifications for the same task.
+
+### Startup Sequence
+
+```
+1. wireMailboxPersistence(agentId)   — sets save/updateStatus/markStaleProcessingAsDropped/loadQueued
+2. mailbox.recoverStaleItems()       — drops stale processing, restores queued, deduplicates
+3. resumeInProgressTasks()           — re-creates execution items for active tasks
+```
+
+---
+
+## 18. Retry Cleanup
+
+When a task is retried (`retryTaskFresh`) or a scheduled task is reset for rerun (`resetTaskForRerun`), any queued informational `task_status_update` items for that task are dropped from the mailbox. This prevents stale notifications (e.g., "Task blocked" from before the retry) from being processed alongside the fresh execution.
+
+### What is dropped
+
+Only `task_status_update` items that meet **all** conditions:
+- Status is `queued` (not yet processing)
+- `sourceType` is `task_status_update`
+- `extra.triggerExecution` is **not** set (execution-trigger items are real work, never dropped)
+- `taskId` matches the retried task
+
+### What is preserved
+
+- `task_comment` — genuine human/agent interactions
+- `mention` — explicit @mention notifications
+- `a2a_message` — inter-agent messages
+- All items already in `processing` state
+
+### Implementation
+
+`AgentMailbox.dropStatusUpdatesByTaskId(taskId)` iterates the queue in reverse, splicing matching items and marking them as `dropped` in persistence. Called from `retryTaskFresh()` and `resetTaskForRerun()` in `TaskService`, before the fresh execution is enqueued.
+
+---
+
+## 19. EventBus Architecture
+
+Each `Agent` creates its own private `EventBus` instance. The `AgentManager` has a separate manager-level `EventBus`. External listeners (e.g., WebSocket broadcast handlers in `start.ts`) register on the **manager's** EventBus.
+
+### Event Forwarding
+
+To bridge the gap, `AgentManager.forwardAgentEvents()` is called when each agent is created or restored. It subscribes to key events on the agent's private bus and re-emits them on the manager's bus:
+
+```
+Agent's Private EventBus          Manager's EventBus          start.ts (WS broadcast)
+─────────────────────              ──────────────────          ───────────────────────
+agent:activity-log  ──────────►  agent:activity-log  ──────►  Persist to main session DB
+agent:activity_log  ──────────►  agent:activity_log  ──────►  Stream to frontend Activity tab
+agent:started       ──────────►  agent:started       ──────►  agent:started WS event
+agent:stopped       ──────────►  agent:stopped       ──────►  agent:stopped WS event
+agent:paused        ──────────►  agent:paused        ──────►  agent:paused WS event
+agent:resumed       ──────────►  agent:resumed       ──────►  agent:resumed WS event
+agent:focus-changed ──────────►  agent:focus-changed ──────►  agent:focus WS event
+agent:message       ──────────►  agent:message
+task:completed      ──────────►  task:completed      ──────►  task update WS event
+task:failed         ──────────►  task:failed         ──────►  task update WS event
+mailbox:new-item    ──────────►  mailbox:new-item    ──────►  agent:mailbox WS event
+attention:decision  ──────────►  attention:decision  ──────►  agent:decision WS event
+attention:state-changed ──────►  attention:state-changed ──►  agent:attention WS event
+attention:triage    ──────────►  attention:triage    ──────►  agent:triage WS event
+```
+
+Events emitted directly on the manager's bus (no forwarding needed):
+- `agent:created` — emitted by `AgentManager.createAgent()` / `restoreFromDB()`
+- `agent:removed` — emitted by `AgentManager.removeAgent()`
+- `system:*` — emitted by `AgentManager` global operations
+
+### Why Two Buses?
+
+The agent's private bus provides internal encapsulation — the agent, its mailbox, and its attention controller communicate without coupling to the manager. The manager's bus provides a single subscription point for infrastructure concerns (persistence, WS broadcast, monitoring).
+
+---
+
+## 20. Main Session Activity Injection
+
+Each agent has a **main session** — a persistent chat session that serves as the agent's chronological activity log. Every mailbox item the agent processes (except `human_chat`) generates a concise activity summary in this session.
+
+### Purpose
+
+Without the main session, the agent loses narrative continuity across processing contexts. For example: a user creates a task via chat, the task completes via heartbeat-triggered execution, but the agent's chat session has no record of the completion. The main session bridges this gap by recording all mailbox-driven activity.
+
+### Data Flow
+
+```
+Agent processes mailbox item
+  └─ finally block in processMailboxItemInternal()
+       └─ buildActivityOutcome(item) → outcome string
+            └─ injectActivityToMainSession({type, summary, outcome, mailboxItemId})
+                 ├─ memory.appendMessage() → in-memory context for next LLM turn
+                 └─ eventBus.emit('agent:activity-log', {agentId, sessionId, message, metadata})
+                      └─ [forwarded to manager's EventBus]
+                           └─ start.ts listener:
+                                ├─ chatSessionRepo.getOrCreateMainSession(agentId)
+                                ├─ chatSessionRepo.appendMessage() → DB persistence
+                                ├─ chatSessionRepo.updateLastMessage() → session sort order
+                                └─ ws.broadcastProactiveMessage() → real-time frontend update
+```
+
+### Message Format
+
+```
+[ACTIVITY: <sourceType>] <summary> → <outcome>
+```
+
+Examples:
+- `[ACTIVITY: heartbeat] Heartbeat check-in → heartbeat processed`
+- `[ACTIVITY: review_request] Review task "Fix login bug" → reviewed`
+- `[ACTIVITY: task_status_update] Task assigned: implement API → executed`
+
+### Frontend Rendering
+
+Activity messages are rendered as compact system-style cards (colored dot + text) rather than full chat bubbles. The `[ACTIVITY: type]` prefix is stripped for display. Messages with a `mailboxItemId` show a "Details" button on hover.
+
+When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and activity entries, displayed chronologically.
+
+### Completion Marker
+
+Agent responses include a `<<HANDLE_COMPLETE>>` completion marker to detect abnormal termination. This marker is:
+- Required in the agent's prompt instructions for non-chat processing
+- Stripped from all output before display (streaming `text_delta`, SSE segment fallback, heartbeat daily log)
+- Detected by `detectAbnormalCompletion()` — if absent, the mailbox item is requeued for retry
+
+---
+
+## 21. Mailbox Triage System
+
+When an agent dequeues a mailbox item and additional items remain in the queue, the Attention Controller triggers an LLM-driven **triage phase** before processing. This ensures the agent considers all pending work holistically rather than blindly following priority order.
+
+### Pre-Triage Entity Consolidation
+
+Before triage (or processing), the system automatically consolidates queued items that share the same `taskId` or `requirementId` — regardless of `sourceType`. This is a cross-type merge: a `task_status_update`, `a2a_message`, `mention`, and `task_comment` all referencing `tsk_abc123` are collapsed into a single rich-context item.
+
+This differs from enqueue-time dedup (which only merges same-type comments):
+- **Enqueue-time**: `task_comment` + `task_comment` for same task → merged (fast, prevents accumulation)
+- **Pre-triage**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
+
+The headItem is temporarily put back into the queue so it participates in consolidation, then re-dequeued.
+
+### Fast Path vs Deep Path
+
+- **Fast path** (queue depth = 0 after consolidation): No triage needed — process the single item immediately.
+- **Deep path** (queue depth > 0): The `TriageJudge` LLM callback is invoked with all candidate items, recent conversation context, and recent activity summaries.
+
+### Triage Flow
+
+```
+dequeueAsync() → headItem
+  │
+  ├─ queue empty? → FAST PATH: record 'pick' → process(headItem)
+  │
+  └─ queue non-empty?
+       ├─ CONSOLIDATION: putBack(headItem) → consolidateByEntity() → dequeue()
+       │    (items sharing same taskId/requirementId merged cross-type)
+       │
+       ├─ queue empty after consolidation? → FAST PATH
+       │
+       └─ triageJudge configured?
+            → performTriage(headItem)
+                 ├─ Build prompt (all candidates + agent context)
+                 ├─ TriageJudge returns JSON: { processItemId, deferItemIds, dropItemIds, reasoning }
+                 ├─ Validate IDs against candidate set
+                 ├─ If chosen ≠ headItem: putBack(headItem), dequeueById(chosen)
+                 ├─ Apply defer/drop decisions
+                 ├─ Notify delegate → updateCognition
+                 ├─ Emit 'attention:triage' → WS → frontend
+                 └─ Record 'triage' decision
+```
+
+### Cognition Injection
+
+The triage reasoning becomes the agent's **persistent situational awareness** — stored as `currentCognition` and injected into all subsequent LLM system prompts via `getDynamicContext()`. This ensures the agent maintains behavioral consistency across different processing contexts (chat, task execution, A2A communication).
+
+```
+TriageResult.reasoning
+  → Agent.updateCognition()
+    → this.currentCognition = "## Current Situational Awareness ..."
+      → getDynamicContext() includes currentCognition
+        → injected into every LLM call's system prompt
+```
+
+### Key Methods
+
+| Method | Location | Purpose |
+|--------|----------|---------|
+| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
+| `performTriage()` | `attention.ts` | Builds prompt, calls TriageJudge, parses/validates result |
+| `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
+| `putBack()` | `mailbox.ts` | Returns a dequeued item to queue (no retryCount increment) |
+| `dequeueById()` | `mailbox.ts` | Dequeues a specific item by ID (for triage swap) |
+| `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
+| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity |
+
+### Triage Prompt Identity
+
+The triage prompt uses first-person perspective: "You are {agentName}." The agent deliberates **as itself**, not as an external "attention manager." This is consistent with the agent's self-identity across all LLM interactions.
+
+---
+
+## 22. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.

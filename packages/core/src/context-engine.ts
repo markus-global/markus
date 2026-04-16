@@ -16,7 +16,6 @@ import {
   SYSTEM_DAILY_LOG_CHARS,
   SYSTEM_DAILY_LOG_DAYS,
   SYSTEM_USER_PROFILE_CHARS,
-  SYSTEM_CHAT_SESSIONS_MAX,
   SYSTEM_PROJECT_DESC_CHARS,
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
@@ -172,7 +171,6 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
-    chatSessions?: Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -471,8 +469,8 @@ export class ContextEngine {
       parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
       parts.push('');
       parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — one-way status updates, progress reports, findings (no response expected)');
-      parts.push('- `request_user_chat` — ONLY when genuinely blocked and need a human decision (e.g., unclear requirements, conflicting constraints). Do NOT use for routine updates.');
+      parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
+      parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
     }
 
     if (opts.environment) {
@@ -505,24 +503,13 @@ export class ContextEngine {
       parts.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
       parts.push('**Error handling**: If a tool call fails, analyze the error and try a different approach — do NOT repeat the same failing action.');
       parts.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      parts.push('**Built-in tools over CLI**: ALWAYS prefer built-in tools (`task_create`, `task_assign`, `team_hire_agent`, `builder_install`, `agent_send_message`, `memory_save`, etc.) over running `markus` CLI commands via `shell_execute`. The CLI is for human operators — agents must use their native tool interface. Only fall back to CLI if no built-in tool exists for the operation.');
+      parts.push('**No auto-install/deploy**: NEVER automatically install or deploy agents, teams, or skills via `builder_install`, `team_hire_agent`, or `hub_install` unless the user explicitly requests it (e.g., "install", "deploy", "hire", "start"). Creating an artifact (writing files to `builder-artifacts/`) is separate from deploying it into the live organization.');
     }
 
     // --- Mailbox & attention context ---
     if (!isDream && opts.mailboxContext) {
       parts.push(this.buildMailboxSection(opts.mailboxContext));
-    }
-
-    // --- Chat session context for session-aware user communication ---
-    if (!isDream && opts.chatSessions && opts.chatSessions.length > 0) {
-      const sessionLines = ['\n## Your Chat Sessions with the User'];
-      for (const s of opts.chatSessions.slice(0, SYSTEM_CHAT_SESSIONS_MAX)) {
-        const preview = s.lastMessagePreview ? `: "${s.lastMessagePreview}"` : '';
-        const title = s.title ? ` (${s.title})` : '';
-        sessionLines.push(`- Session ${s.id}${title} (last active: ${s.lastMessageAt})${preview}`);
-      }
-      sessionLines.push('');
-      sessionLines.push('When using `request_user_chat`, you can provide the `session_id` of an existing session to continue that conversation thread.');
-      parts.push(sessionLines.join('\n'));
     }
 
     // --- Scenario-specific behavioral guidance ---
@@ -621,7 +608,9 @@ export class ContextEngine {
         lines.push('3. **Failed task recovery**: Retry `failed` tasks via `task_update(status:"in_progress", note:"...")` — auto-restarts execution.');
         lines.push('4. **Daily report (managers, after 20:00)**: If prompted, produce the report as top priority after reviews.');
         lines.push('5. **Self-evolution**: Record specific, actionable lessons learned since last heartbeat.');
-        lines.push('6. **Do NOT** create new tasks, start work, or do research (exception: daily report and failed task retry).');
+        lines.push('6. **Do NOT** start complex implementation work or do deep research in heartbeat.');
+        lines.push('   - You MAY create tasks via `task_create` if you spot something that needs doing, and propose requirements via `requirement_propose`.');
+        lines.push('   - You MUST NOT execute the work yourself — just triage, create/assign, and move on.');
         lines.push('');
         lines.push('If nothing needs attention, respond with exactly: HEARTBEAT_OK');
         break;
@@ -645,7 +634,7 @@ export class ContextEngine {
         lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
         lines.push('');
         lines.push('**MANDATORY context-gathering protocol (do this BEFORE writing any reply):**');
-        lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_list` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, and all fields');
+        lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_get` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, comments, and all fields');
         lines.push('2. **Read ALL previous comments**: Review the entire comment thread to understand the conversation history, who said what, and what has already been discussed or decided');
         lines.push('3. **Identify the commenter\'s intent**: Is it a question? A request for action? Feedback? A status inquiry? An objection?');
         lines.push('4. **Check related context**: If the comment references other tasks, requirements, or files, look them up too');
@@ -659,7 +648,7 @@ export class ContextEngine {
         lines.push('- If the comment is unclear, ask a clarifying question rather than guessing');
         lines.push('');
         lines.push('**NEVER do this:**');
-        lines.push('- Reply immediately without calling `task_get`/`requirement_list` first');
+        lines.push('- Reply immediately without calling `task_get`/`requirement_get` first');
         lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
         lines.push('- Ignore prior comments that provide important context for the current discussion');
         lines.push('');
@@ -719,7 +708,7 @@ export class ContextEngine {
         if (filtered.length < opts.availableSkills.length) {
           lines.push(`  _(${opts.availableSkills.length - filtered.length} more skills installed — use \`discover_tools({ mode: "list_skills" })\` to see all)_`);
         }
-        lines.push(`  Use \`discover_tools({ tool_names: ["skill-name"] })\` to load a skill's full instructions when needed.`);
+        lines.push(`  Use \`discover_tools({ name: ["skill-name"] })\` to load a skill's full instructions when needed.`);
       } else if (self.skills.length > 0) {
         lines.push(`- Active Skills: ${self.skills.join(', ')}`);
       }
@@ -766,7 +755,14 @@ export class ContextEngine {
         lines.push('3. **Reporting** — Report your team\'s progress to human stakeholders');
         lines.push('4. **Cross-team** — Coordinate with other team managers via `agent_send_message` when work crosses team boundaries');
         lines.push('5. **Escalation** — Escalate issues that require human decision to the Owner');
-        lines.push('6. **Hiring** — Use `team_list_templates` + `team_hire_agent` to recruit agents; use `builder_install` to deploy custom-built or Hub-sourced artifacts');
+        lines.push('6. **Hiring & Team Building** — Two phases: CREATE then INSTALL (only when user requests).');
+        lines.push('   a) *Creating* (design the artifact): activate `agent-building` or `team-building` skill → write artifact files. Or `hub_search` to browse community packages.');
+        lines.push('   b) *Installing* (deploy into org — ONLY when user explicitly asks to install/deploy/hire):');
+        lines.push('      - Quick hire from template: `team_list_templates` → `team_hire_agent`');
+        lines.push('      - Install artifact: `builder_install` (for custom-built or Hub-downloaded packages)');
+        lines.push('      - Hub one-step: `hub_install` (download + install)');
+        lines.push('   c) After install: onboard via `agent_send_message` (project context) → `task_create` (initial work)');
+        lines.push('   **IMPORTANT**: NEVER auto-install. Creating an artifact does NOT mean deploying it. Wait for explicit user request.');
       }
     } else {
       lines.push(`- Name: ${opts.agentName}`);

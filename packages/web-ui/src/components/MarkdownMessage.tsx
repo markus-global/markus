@@ -9,15 +9,18 @@ interface Props {
   onMentionClick?: (name: string, event: React.MouseEvent) => void;
 }
 
-const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+const thinkRegex = /<think>([\s\S]*?)(<\/think>|$)/g;
 
 function extractThinkBlocks(text: string): { thinking: string[]; rest: string } {
   const thinking: string[] = [];
-  const rest = text.replace(thinkRegex, (_match, inner: string) => {
+  let rest = text.replace(thinkRegex, (_match, inner: string) => {
     const trimmed = inner.trim();
     if (trimmed) thinking.push(trimmed);
     return '';
   });
+  // Strip orphaned closing/opening think tags that can occur when
+  // think blocks span across message segments (split by tool calls)
+  rest = rest.replace(/<\/think>/g, '').replace(/<think>/g, '');
   return { thinking, rest: rest.trim() };
 }
 
@@ -120,7 +123,7 @@ export function MarkdownMessage({ content, className = '', onMentionClick }: Pro
               <svg className="w-3 h-3 shrink-0 transition-transform group-open/think:rotate-90" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
               </svg>
-              <span className="shrink-0">思考过程</span>
+              <span className="shrink-0">Thinking</span>
               <span className="truncate text-fg-tertiary ml-1 group-open/think:hidden">{preview}</span>
             </summary>
             <div className="px-3 pb-3 border-t border-border-default/50">

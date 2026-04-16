@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import type { Agent } from '@markus/core';
-import { createLogger, type LLMStreamEvent } from '@markus/shared';
+import { createLogger, COMPLETION_MARKER, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 
 const log = createLogger('sse-handler');
@@ -116,6 +116,8 @@ export class SSEHandler {
           .join('');
         if (segText) persistReply = segText;
       }
+      // Strip completion marker from persisted/displayed reply
+      persistReply = persistReply.replaceAll(COMPLETION_MARKER, '').trim() || persistReply;
 
       if (this.sseDisconnected) {
         log.info('Agent finished but SSE was disconnected — delivering reply via WebSocket fallback', {

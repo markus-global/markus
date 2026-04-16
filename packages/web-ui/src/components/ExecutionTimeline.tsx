@@ -63,6 +63,7 @@ export function StreamingText({ content, className }: { content: string; classNa
 function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () => void }) {
   const meta = getToolMeta(info.tool);
   const argEntries = formatArgsDetail(info.args);
+  const isRunning = info.status === 'running';
   const success = info.status !== 'error';
 
   useEffect(() => {
@@ -79,9 +80,9 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
         <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <span className="opacity-60 text-sm">{meta.icon}</span>
-            <span className={`text-sm font-semibold ${success ? 'text-fg-primary' : 'text-red-500'}`}>{meta.label}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded ${success ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
-              {success ? 'Success' : 'Failed'}
+            <span className={`text-sm font-semibold ${isRunning ? 'text-brand-500' : success ? 'text-fg-primary' : 'text-red-500'}`}>{meta.label}</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : success ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
+              {isRunning ? 'Running' : success ? 'Success' : 'Failed'}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -103,19 +104,36 @@ function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () =>
               </div>
             </div>
           )}
-          {info.result && (
+          {!isRunning && info.result && (
             <div>
               <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
               <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto overflow-y-auto max-h-[60vh] whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
             </div>
           )}
-          {info.error && (
+          {!isRunning && info.error && (
             <div>
               <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">Error</h4>
               <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-40 whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
             </div>
           )}
-          {!argEntries.length && !info.result && !info.error && (
+          {info.subagentLogs && info.subagentLogs.length > 0 && (
+            <div>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Sub-agent Execution</h4>
+              <div className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-[50vh] overflow-y-auto">
+                {info.subagentLogs.map((log, idx) => {
+                  const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '💭' : '→';
+                  const color = log.eventType === 'error' ? 'text-red-500' : log.eventType === 'completed' ? 'text-green-500' : log.eventType === 'started' ? 'text-brand-500' : 'text-fg-tertiary';
+                  return (
+                    <div key={idx} className="flex items-start gap-1.5 text-xs">
+                      <span className={`shrink-0 ${color}`}>{icon}</span>
+                      <span className={`font-mono break-all ${color}`}>{log.content}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {!argEntries.length && !isRunning && !info.result && !info.error && !(info.subagentLogs?.length) && (
             <div className="text-sm text-fg-tertiary italic py-4 text-center">No detailed data recorded for this tool call.</div>
           )}
         </div>
@@ -417,7 +435,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
   const isStopped = info.status === 'stopped';
   const isSubagentTool = info.tool === 'spawn_subagent' || info.tool === 'spawn_subagents';
   const hasSubagentLogs = isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0;
-  const clickable = isDone || hasSubagentLogs;
+  const clickable = true;
 
   const shellCmd = getShellCommand(info);
   const outputRef = useRef<HTMLPreElement>(null);
@@ -432,7 +450,7 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
     <>
       <div
         className={`relative flex items-start gap-2 py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${clickable ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
-        onClick={() => isDone && setExpanded(true)}
+        onClick={() => setExpanded(true)}
       >
         {showTime && time && (
           <span className="text-[10px] text-fg-tertiary shrink-0 w-24 text-right tabular-nums mt-0.5 hidden md:inline">{time}</span>

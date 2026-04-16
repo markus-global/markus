@@ -108,11 +108,35 @@ export const REVISION_REASON_CHARS = 200;
 /** Max retries after transient errors (network, rate-limit). */
 export const TASK_MAX_RETRIES = 3;
 
+/** Max retries for mailbox items whose reply lacks the completion marker.
+ *  Keeps retry budget low because repeated failures with the same model
+ *  are unlikely to self-correct. */
+export const MAILBOX_ITEM_MAX_RETRIES = 2;
+
+/** Sentinel token the agent must emit at the end of every mailbox-item reply
+ *  to signal successful processing.  Absence triggers automatic retry.
+ *  Chosen to be unique enough to never collide with natural language. */
+export const COMPLETION_MARKER = '<<HANDLE_COMPLETE>>';
+
+/** Instruction appended to the user message for LLM-invoking mailbox items. */
+export const COMPLETION_MARKER_INSTRUCTION =
+  `\n\n[IMPORTANT: When you have finished processing this request, you MUST end your final response with the exact token: ${COMPLETION_MARKER}]`;
+
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 
-/** Progressive retry delays in milliseconds. */
+/** Progressive retry delays in milliseconds (base values before jitter). */
 export const TASK_RETRY_DELAYS_MS: readonly number[] = [10_000, 30_000, 60_000, 120_000, 300_000];
+
+/** Apply ±20% random jitter to a delay to avoid thundering-herd retries. */
+export function withJitter(baseMs: number, factor = 0.2): number {
+  const jitter = baseMs * factor * (2 * Math.random() - 1);
+  return Math.max(0, Math.round(baseMs + jitter));
+}
+
+/** Delay (ms) before re-queuing a preempted task, giving the higher-priority
+ *  item time to enter processing first. */
+export const PREEMPT_REQUEUE_DELAY_MS = 3_000;
 
 // ─── System Prompt: Memory & Knowledge Injection ─────────────────────────────
 // These control how much memory context is injected into the system prompt.
@@ -181,3 +205,88 @@ export const TASK_LIST_PAGE_SIZE = 20;
 
 /** Max page size for task queries (prevents accidental full-table scans). */
 export const TASK_LIST_PAGE_MAX = 100;
+
+// ─── Auto-Archive Policy ─────────────────────────────────────────────────────
+
+/** Days after which completed tasks are auto-archived.
+ *  30 days gives reviewers/users plenty of time to revisit results
+ *  before the task moves to the archive filter. */
+export const ARCHIVE_COMPLETED_AFTER_DAYS = 30;
+
+/** Days after which failed/rejected/cancelled tasks are auto-archived.
+ *  Terminal-but-unsuccessful tasks are less likely to be revisited;
+ *  7 days keeps the board clean without losing traceability. */
+export const ARCHIVE_TERMINAL_AFTER_DAYS = 7;
+
+/** Days after which completed/failed/rejected/cancelled requirements are auto-archived.
+ *  Aligned with task archival for consistency. */
+export const ARCHIVE_REQUIREMENT_AFTER_DAYS = 30;
+
+/** Interval between automatic archive scans (ms).
+ *  6 hours balances responsiveness with minimal overhead. */
+export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+// ─── Mailbox Item TTL ────────────────────────────────────────────────────────
+
+/** Maximum age (ms) for queued mailbox items before they are dropped on restart.
+ *  Items older than 3 days are stale — the context they carried is no longer
+ *  timely, and processing them would confuse agents with outdated information. */
+export const MAILBOX_QUEUED_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+
+// ─── Mailbox Processing ─────────────────────────────────────────────────────
+
+/** Maximum time (ms) allowed for processing a single mailbox item.
+ *  If processing exceeds this duration — typically caused by system sleep,
+ *  network hang, or an unresponsive LLM provider — the item is requeued
+ *  for retry and the attention loop continues.
+ *  10 minutes covers even long tool-chain executions while catching genuine hangs. */
+export const MAILBOX_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Watchdog interval (ms) for detecting system sleep/wake cycles.
+ *  A timer fires every WATCHDOG_INTERVAL_MS; if the actual elapsed time
+ *  between fires exceeds WATCHDOG_DRIFT_THRESHOLD_MS, the system likely slept.
+ *  On detection, any in-flight processing is aborted and requeued. */
+export const WATCHDOG_INTERVAL_MS = 30_000;
+
+/** Drift threshold (ms) that signals a sleep/wake event.
+ *  If a 30s timer fires 60+ seconds late, the system was asleep. */
+export const WATCHDOG_DRIFT_THRESHOLD_MS = 60_000;
+
+// ─── Mailbox Triage ─────────────────────────────────────────────────────────
+// These control the LLM-driven triage phase in the attention controller.
+// Triage runs when multiple queued items compete for attention and priority
+// alone cannot decide the order.
+
+/** Max candidate items included in the triage LLM prompt.
+ *  Items beyond this count are omitted from the prompt (but still in the
+ *  queue).  50 items × ~5 lines each ≈ 250 lines — substantial context
+ *  without overwhelming the model's attention. */
+export const TRIAGE_PROMPT_MAX_ITEMS = 50;
+
+/** Max tokens for the triage LLM response.
+ *  Must be generous enough for models that emit <think> blocks before the
+ *  JSON payload.  4096 tokens covers even verbose chain-of-thought. */
+export const TRIAGE_MAX_TOKENS = 4096;
+
+/** Temperature for the triage LLM call.
+ *  Low temperature produces deterministic, focused decisions. */
+export const TRIAGE_TEMPERATURE = 0.1;
+
+// ─── Shell Execution Limits ─────────────────────────────────────────────────
+
+/** Default timeout for shell commands (ms).
+ *  60s covers typical builds, tests, git operations. */
+export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
+
+/** Maximum allowed timeout for shell commands (ms).
+ *  5 minutes caps even explicitly requested long-running operations.
+ *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
+export const SHELL_TIMEOUT_MAX_MS = 300_000;
+
+// ─── Human-Approval Wait ─────────────────────────────────────────────────────
+
+/** Backstop timeout (ms) for mailbox items that are blocking on human approval.
+ *  Normal processing uses MAILBOX_PROCESSING_TIMEOUT_MS (10 min), but
+ *  request_user_approval can wait indefinitely for the user. 24 hours is a
+ *  generous safety net while allowing realistic human response times. */
+export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;

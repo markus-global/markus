@@ -83,6 +83,9 @@ export function ChatTeamSidebar({
   const [actionMenu, setActionMenu] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
 
+  // Highlight newly created team
+  const [highlightTeamId, setHighlightTeamId] = useState<string | null>(null);
+
   // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -96,6 +99,9 @@ export function ChatTeamSidebar({
 
   useEffect(() => {
     api.governance.getSystemStatus().then(s => setGlobalPaused(s.globalPaused)).catch(() => {});
+    const unsubPause = wsClient.on('system:pause-all', () => setGlobalPaused(true));
+    const unsubResume = wsClient.on('system:resume-all', () => setGlobalPaused(false));
+    return () => { unsubPause(); unsubResume(); };
   }, []);
 
   const handlePauseClick = useCallback(() => {
@@ -140,16 +146,16 @@ export function ChatTeamSidebar({
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [editTeamName, setEditTeamName] = useState('');
 
-  const adjustMenuPosition = useCallback((el: HTMLDivElement | null) => {
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
+  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 320) => {
+    const btn = e.currentTarget.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
     const pad = 8;
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${Math.max(pad, window.innerHeight - rect.height - pad)}px`;
-    }
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${Math.max(pad, window.innerWidth - rect.width - pad)}px`;
-    }
+    let x = btn.left;
+    let y = btn.bottom + 4;
+    if (x + menuW > vw - pad) x = Math.max(pad, vw - menuW - pad);
+    if (y + menuH > vh - pad) y = Math.max(pad, btn.top - menuH - 4);
+    return { x, y };
   }, []);
 
   // ── Last messages per agent ──────────────────────────────────────────────
@@ -175,7 +181,10 @@ export function ChatTeamSidebar({
                 const last = [...segs].reverse().find(s => s.type === 'text');
                 if (last && last.type === 'text') raw = last.content;
               }
-              const txt = raw.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/\n+/g, ' ').trim().slice(0, 80);
+              const txt = raw
+                .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+                .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+                .replace(/\n+/g, ' ').trim().slice(0, 80);
               if (txt) entries.push([a.id, txt]);
             }
           } catch { /* ignore */ }
@@ -425,7 +434,8 @@ export function ChatTeamSidebar({
           onContextMenu={e => {
             if (!isAdmin) return;
             e.preventDefault();
-            setAgentMenu({ agentId: a.id, teamId, x: e.clientX, y: e.clientY });
+            const pos = clampMenuPos(e);
+            setAgentMenu({ agentId: a.id, teamId, ...pos });
           }}
           className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs transition-colors select-none ${
             isMobile ? '' : 'touch-none'
@@ -449,7 +459,7 @@ export function ChatTeamSidebar({
               {subtitle || '\u00A0'}
             </div>
           </div>
-          <span className="flex items-center gap-1 shrink-0">
+          <span className="flex items-center gap-1.5 shrink-0">
             {a.mailboxDepth != null && a.mailboxDepth > 0 && (
               <span className="text-[8px] text-fg-tertiary bg-surface-overlay rounded-full px-1 leading-relaxed">{a.mailboxDepth}</span>
             )}
@@ -458,6 +468,21 @@ export function ChatTeamSidebar({
               onClick={e => { e.stopPropagation(); onViewProfile(a.id); }}
               className={`w-2 h-2 rounded-full cursor-pointer transition-transform duration-150 hover:scale-[2] ${statusColor}`}
             />
+            {isMobile && isAdmin && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={e => {
+                  e.stopPropagation();
+                  if (agentMenu?.agentId === a.id) { setAgentMenu(null); }
+                  else { const pos = clampMenuPos(e as unknown as React.MouseEvent); setAgentMenu({ agentId: a.id, teamId, ...pos }); }
+                }}
+                className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors"
+                title="More options"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
+              </span>
+            )}
           </span>
         </button>
       </div>
@@ -471,11 +496,13 @@ export function ChatTeamSidebar({
     const isDropTarget = isDragging && dragOverTeam === tid && dragAgent?.fromTeamId !== tid;
     const teamGc = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? [])[0] : undefined;
     const isGcActive = teamGc && chatMode === 'channel' && activeChannel === teamGc.channelKey;
+    const isHighlighted = highlightTeamId === tid;
 
     return (
       <div
         key={tid}
-        className={`mb-1 rounded-lg transition-colors ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''}`}
+        data-team-id={tid}
+        className={`mb-1 rounded-lg transition-all duration-500 ${isDropTarget ? 'ring-1 ring-brand-500/50 bg-brand-500/5' : ''} ${isHighlighted ? 'ring-2 ring-brand-500 bg-brand-500/10' : ''}`}
         onPointerEnter={() => { if (isDragging) setDragOverTeam(tid); }}
         onPointerLeave={() => { if (isDragging && dragOverTeam === tid) setDragOverTeam(null); }}
       >
@@ -489,7 +516,8 @@ export function ChatTeamSidebar({
             onContextMenu={e => {
               if (!isAdmin || !team) return;
               e.preventDefault();
-              setTeamMenu({ teamId: tid, x: e.clientX, y: e.clientY });
+              const pos = clampMenuPos(e);
+              setTeamMenu({ teamId: tid, ...pos });
             }}
             className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition-colors min-w-0 ${
               isGcActive
@@ -523,11 +551,11 @@ export function ChatTeamSidebar({
           {/* Expand / collapse toggle */}
           <button
             onClick={() => toggleTeam(tid)}
-            className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors shrink-0 opacity-60 hover:opacity-100"
+            className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
             title={isCollapsed ? 'Expand' : 'Collapse'}
           >
             <svg
-              className={`w-3 h-3 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
+              className={`w-3.5 h-3.5 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
               fill="currentColor" viewBox="0 0 20 20"
             >
               <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
@@ -537,11 +565,11 @@ export function ChatTeamSidebar({
           {/* More options menu */}
           {isAdmin && team && (
             <button
-              onClick={e => { e.stopPropagation(); setTeamMenu({ teamId: tid, x: e.clientX, y: e.clientY }); }}
-              className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors shrink-0 opacity-0 group-hover/teamhdr:opacity-100"
+              onClick={e => { e.stopPropagation(); if (teamMenu?.teamId === tid) { setTeamMenu(null); } else { const pos = clampMenuPos(e); setTeamMenu({ teamId: tid, ...pos }); } }}
+              className="w-7 h-7 flex items-center justify-center text-fg-secondary hover:text-fg-primary rounded-md hover:bg-surface-overlay transition-colors shrink-0"
               title="More options"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
             </button>
           )}
         </div>
@@ -622,7 +650,15 @@ export function ChatTeamSidebar({
                 </svg>
               </button>
               {actionMenu && (
-                <div className="absolute left-0 top-full mt-1 w-48 bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
+                <div ref={el => {
+                  if (!el) return;
+                  const rect = el.getBoundingClientRect();
+                  const vw = window.innerWidth;
+                  const pad = 8;
+                  if (rect.right > vw - pad) el.style.left = 'auto';
+                  if (rect.right > vw - pad) el.style.right = '0';
+                  if (rect.left < pad) { el.style.left = '0'; el.style.right = 'auto'; }
+                }} className="absolute left-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
                   <button onClick={() => { setActionMenu(false); setShowNewTeam(true); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated transition-colors">
                     <div className="font-medium flex items-center gap-1.5">
@@ -693,17 +729,17 @@ export function ChatTeamSidebar({
             </button>
           ))}
 
-          {/* Teams with agents */}
+          {/* Teams with agents or members */}
           {teams.map(t => {
             const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
             if (agentList.length === 0 && (!t.members || t.members.length === 0)) return null;
             return renderTeamSection(t.id, t, agentList, t.name);
           })}
 
-          {/* Empty teams */}
+          {/* Empty teams (no agents and no members) */}
           {teams.filter(t => {
             const agentList = agentsByTeam.byTeam.get(t.id) ?? [];
-            return agentList.length === 0 && t.members && t.members.length > 0;
+            return agentList.length === 0 && (!t.members || t.members.length === 0);
           }).map(t => renderTeamSection(t.id, t, [], t.name))}
 
           {/* Ungrouped agents */}
@@ -783,8 +819,7 @@ export function ChatTeamSidebar({
         const hasActive = teamAgents.some(a => a.status !== 'offline');
         return (
           <div
-            ref={adjustMenuPosition}
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
             style={{ left: teamMenu.x, top: teamMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -864,8 +899,7 @@ export function ChatTeamSidebar({
         const isSelf = a.id === authUser?.id;
         return (
           <div
-            ref={adjustMenuPosition}
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44"
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)]"
             style={{ left: agentMenu.x, top: agentMenu.y }}
             onClick={e => e.stopPropagation()}
           >
@@ -937,9 +971,19 @@ export function ChatTeamSidebar({
         <NewTeamModal
           onClose={() => setShowNewTeam(false)}
           onCreate={async (name, description) => {
-            await api.teams.create(name, description);
-            setShowNewTeam(false);
-            onRefreshTeams();
+            try {
+              const { team: newTeam } = await api.teams.create(name, description);
+              setShowNewTeam(false);
+              onRefreshTeams();
+              setHighlightTeamId(newTeam.id);
+              setTimeout(() => {
+                const el = document.querySelector(`[data-team-id="${newTeam.id}"]`);
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 300);
+              setTimeout(() => setHighlightTeamId(null), 3000);
+            } catch (e) {
+              alert(`Failed to create team: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }}
         />
       )}

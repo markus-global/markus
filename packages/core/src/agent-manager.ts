@@ -126,6 +126,12 @@ export interface RequirementServiceBridge {
     id: string,
     updates?: { title?: string; description?: string; priority?: string; tags?: string[] }
   ): { id: string; title: string; status: string };
+  getRequirement(id: string): {
+    id: string; title: string; description: string; status: string;
+    priority: string; source: string; createdBy?: string;
+    approvedBy?: string; approvedAt?: string; rejectedReason?: string;
+    taskIds: string[]; tags?: string[]; createdAt: string; updatedAt: string;
+  } | undefined;
 }
 
 export interface TaskServiceBridge {
@@ -215,8 +221,10 @@ export interface TaskServiceBridge {
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
-  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
-  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[]): Promise<{ id: string }>;
+  postTaskComment?(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  postRequirementComment?(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string): Promise<{ id: string; comment?: Record<string, unknown> }>;
+  getRequirementComments?(requirementId: string): Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>;
+  getTaskComments?(taskId: string): Promise<Array<{ id: string; authorId: string; authorName: string; content: string; createdAt: string }>>;
 }
 
 export interface MCPServerConfig {
@@ -284,9 +292,12 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
-  private userMessageSenders?: Map<string, (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>>;
+  private userApprovalRequester?: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
-  private chatSessionsFetchers?: Map<string, () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>>;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private knowledgeService?: KnowledgeServiceBridge;
@@ -549,18 +560,22 @@ export class AgentManager {
     this.skillInstaller = cb;
   }
 
-  setUserMessageSender(agentId: string, cb: (message: string, opts?: { sessionId?: string }) => Promise<{ sessionId: string; messageId: string }>): void {
-    if (!this.userMessageSenders) this.userMessageSenders = new Map();
-    this.userMessageSenders.set(agentId, cb);
+  setUserApprovalRequester(cb: (opts: {
+    agentId: string; agentName: string; title: string; description: string;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+    this.userApprovalRequester = cb;
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch { /* skip */ }
+    }
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
-  }
-
-  setChatSessionsFetcher(agentId: string, cb: () => Promise<Array<{ id: string; title?: string; lastMessageAt: string; lastMessagePreview?: string }>>): void {
-    if (!this.chatSessionsFetchers) this.chatSessionsFetchers = new Map();
-    this.chatSessionsFetchers.set(agentId, cb);
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setUserNotifier(cb); } catch { /* skip */ }
+    }
   }
 
   getSharedDataDir(): string | undefined {
@@ -610,6 +625,7 @@ export class AgentManager {
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
+    if (!request.name?.trim()) throw new Error('Agent name is required');
     const id = genAgentId();
     const role = this.roleLoader.loadRole(request.roleName);
     const agentDataDir = join(this.dataDir, id);
@@ -770,15 +786,8 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
-    if (this.userMessageSenders) {
-      const sender = this.userMessageSenders.get(id);
-      if (sender) agent.setUserMessageSender(sender);
-    }
+    if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
-    if (this.chatSessionsFetchers) {
-      const fetcher = this.chatSessionsFetchers.get(id);
-      if (fetcher) agent.setChatSessionsFetcher(fetcher);
-    }
 
     // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
@@ -793,7 +802,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -819,6 +828,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
           }
         );
         return stripInternalBlocks(reply);
@@ -978,6 +988,14 @@ export class AgentManager {
               });
             }
           : undefined,
+        getRequirement: this.requirementService
+          ? async (reqId) => {
+              const req = this.requirementService!.getRequirement(reqId);
+              if (!req) return null;
+              const comments = ts.getRequirementComments?.(reqId) ?? [];
+              return { ...req, comments };
+            }
+          : undefined,
         updateRequirementStatus: this.requirementService
           ? async (reqId, status, reason) => {
               if (status === 'rejected') {
@@ -999,12 +1017,16 @@ export class AgentManager {
               return this.requirementService!.resubmitRequirement(reqId, updates);
             }
           : undefined,
+        getTaskComments: ts.getTaskComments
+          ? async (taskId) => ts.getTaskComments!(taskId)
+          : undefined,
         postTaskComment: ts.postTaskComment
-          ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
+          ? async (taskId, content, mentions, activityId) => ts.postTaskComment!(taskId, id, config.name, content, mentions, activityId)
           : undefined,
         postRequirementComment: ts.postRequirementComment
-          ? async (reqId, content, mentions) => ts.postRequirementComment!(reqId, id, config.name, content, mentions)
+          ? async (reqId, content, mentions, activityId) => ts.postRequirementComment!(reqId, id, config.name, content, mentions, activityId)
           : undefined,
+        getCurrentActivityId: () => agent.getCurrentActivityId(),
       };
       for (const tool of createAgentTaskTools(taskCtx)) {
         agent.registerTool(tool);
@@ -1170,6 +1192,7 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    this.forwardAgentEvents(agent);
 
     if (config.teamId) {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
@@ -1395,15 +1418,8 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
-    if (this.userMessageSenders) {
-      const sender = this.userMessageSenders.get(id);
-      if (sender) agent.setUserMessageSender(sender);
-    }
+    if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
-    if (this.chatSessionsFetchers) {
-      const fetcher = this.chatSessionsFetchers.get(id);
-      if (fetcher) agent.setChatSessionsFetcher(fetcher);
-    }
 
     const a2aCtx = {
       selfId: id,
@@ -1417,7 +1433,7 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string) => {
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number) => {
         // Lightweight path: informational broadcasts are stored directly,
         // skipping the expensive LLM call that would cause cascade amplification.
         try {
@@ -1443,6 +1459,7 @@ export class AgentManager {
             sourceType: 'a2a_message',
             sessionId: `a2a_${targetId}_${Date.now()}`,
             scenario: 'a2a',
+            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
           }
         );
       },
@@ -1565,6 +1582,14 @@ export class AgentManager {
               });
             }
           : undefined,
+        getRequirement: this.requirementService
+          ? async (reqId) => {
+              const req = this.requirementService!.getRequirement(reqId);
+              if (!req) return null;
+              const comments = ts.getRequirementComments?.(reqId) ?? [];
+              return { ...req, comments };
+            }
+          : undefined,
         updateRequirementStatus: this.requirementService
           ? async (reqId, status, reason) => {
               if (status === 'rejected') {
@@ -1585,6 +1610,9 @@ export class AgentManager {
           ? async (reqId, updates) => {
               return this.requirementService!.resubmitRequirement(reqId, updates);
             }
+          : undefined,
+        getTaskComments: ts.getTaskComments
+          ? async (taskId) => ts.getTaskComments!(taskId)
           : undefined,
         postTaskComment: ts.postTaskComment
           ? async (taskId, content, mentions) => ts.postTaskComment!(taskId, id, config.name, content, mentions)
@@ -1725,6 +1753,7 @@ export class AgentManager {
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
     }
+    this.forwardAgentEvents(agent);
 
     if (config.teamId) {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
@@ -1903,6 +1932,39 @@ export class AgentManager {
     this.stateChangeHandler = handler;
     for (const [, agent] of this.agents) {
       agent.setStateChangeCallback(handler);
+    }
+  }
+
+  /**
+   * Forward events from an agent's private EventBus to the manager's
+   * EventBus so that external listeners (e.g. start.ts WS broadcasts) receive them.
+   *
+   * Each Agent creates its own EventBus. Without forwarding, events emitted by
+   * the agent, its mailbox, and its attention controller would never reach the
+   * manager-level bus where start.ts registers WS broadcast handlers.
+   */
+  private forwardAgentEvents(agent: Agent): void {
+    const FORWARDED_EVENTS = [
+      'agent:activity-log',
+      'agent:activity_log',
+      'agent:started',
+      'agent:stopped',
+      'agent:paused',
+      'agent:resumed',
+      'agent:focus-changed',
+      'agent:message',
+      'task:completed',
+      'task:failed',
+      'mailbox:new-item',
+      'attention:decision',
+      'attention:state-changed',
+      'attention:triage',
+    ] as const;
+    const agentBus = agent.getEventBus();
+    for (const eventName of FORWARDED_EVENTS) {
+      agentBus.on(eventName, (payload: unknown) => {
+        this.eventBus.emit(eventName, payload);
+      });
     }
   }
 

@@ -74,9 +74,10 @@ banner() {
 
 detect_os() {
   case "$(uname -s)" in
-    Darwin) echo "macos"  ;;
-    Linux)  echo "linux"  ;;
-    *)      echo "unknown" ;;
+    Darwin)          echo "macos"   ;;
+    Linux)           echo "linux"   ;;
+    MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+    *)               echo "unknown" ;;
   esac
 }
 
@@ -118,6 +119,17 @@ install_node_guidance() {
     printf "\n"
     printf "    ${BOLD}Option 3: Official installer${NC}\n"
     printf "      https://nodejs.org/en/download\n"
+  elif [ "$os" = "windows" ]; then
+    printf "    ${BOLD}Option 1: nvm-windows (recommended)${NC}\n"
+    printf "      https://github.com/coreybutler/nvm-windows/releases\n"
+    printf "      nvm install 22\n"
+    printf "      nvm use 22\n"
+    printf "\n"
+    printf "    ${BOLD}Option 2: Official installer${NC}\n"
+    printf "      https://nodejs.org/en/download\n"
+    printf "\n"
+    printf "    ${BOLD}Option 3: winget${NC}\n"
+    printf "      winget install OpenJS.NodeJS.LTS\n"
   else
     printf "    ${BOLD}Option 1: nvm (recommended)${NC}\n"
     printf "      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n"
@@ -190,7 +202,7 @@ main() {
 
   if [ "$os" = "unknown" ]; then
     error "Unsupported operating system: $(uname -s)"
-    error "Markus currently supports macOS and Linux."
+    error "Markus currently supports macOS, Linux, and Windows (Git Bash / MSYS2)."
     exit 1
   fi
 
@@ -226,17 +238,28 @@ main() {
   # Step 4: Verify installation
   if ! command -v markus &>/dev/null; then
     warn "markus command not found in PATH."
-    warn "You may need to add npm global bin to your PATH:"
-    printf "    export PATH=\"\$(npm prefix -g)/bin:\$PATH\"\n"
-    printf "\n"
+    if [ "$os" = "windows" ]; then
+      info "On Windows, npm global bin may not be in PATH. Use npx instead:"
+      printf "\n"
+      printf "    ${BOLD}npx @markus-global/cli start${NC}\n"
+      printf "\n"
+    else
+      warn "You may need to add npm global bin to your PATH:"
+      printf "    export PATH=\"\$(npm prefix -g)/bin:\$PATH\"\n"
+      printf "\n"
+    fi
   else
     ok "markus $(markus --version 2>/dev/null || echo 'installed')"
   fi
 
   # Step 5: Run init
+  local markus_cmd="markus"
+  if ! command -v markus &>/dev/null; then
+    markus_cmd="npx @markus-global/cli"
+  fi
   info "Running setup wizard..."
   printf "\n"
-  markus init 2>/dev/null || true
+  $markus_cmd init 2>/dev/null || true
 
   printf "\n"
   printf "${GREEN}${BOLD}"
@@ -246,9 +269,18 @@ main() {
   printf "${NC}\n"
   printf "  Quick start:\n"
   printf "\n"
-  printf "    ${BOLD}markus start${NC}          Launch the platform\n"
-  printf "    ${BOLD}markus agent list${NC}     List your agents\n"
-  printf "    ${BOLD}markus --help${NC}         Show all commands\n"
+  if command -v markus &>/dev/null; then
+    printf "    ${BOLD}markus start${NC}          Launch the platform\n"
+    printf "    ${BOLD}markus agent list${NC}     List your agents\n"
+    printf "    ${BOLD}markus --help${NC}         Show all commands\n"
+  else
+    printf "    ${BOLD}npx @markus-global/cli start${NC}          Launch the platform\n"
+    printf "    ${BOLD}npx @markus-global/cli agent list${NC}     List your agents\n"
+    printf "    ${BOLD}npx @markus-global/cli --help${NC}         Show all commands\n"
+  fi
+  printf "\n"
+  printf "  ${DIM}Upgrade or run without global install:${NC}\n"
+  printf "    ${BOLD}npx @markus-global/cli@latest start${NC}\n"
   printf "\n"
   printf "  Documentation:  https://github.com/markus-global/markus\n"
   printf "\n"

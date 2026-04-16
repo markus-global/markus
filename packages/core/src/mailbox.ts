@@ -1,6 +1,7 @@
 import {
   createLogger,
   generateId,
+  MAILBOX_QUEUED_TTL_MS,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPayload,
@@ -26,6 +27,10 @@ export interface EnqueueOptions {
 export interface MailboxPersistence {
   save(item: MailboxItem): void;
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
+  /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
+  markStaleProcessingAsDropped?(agentId: string): number;
+  /** Load persisted queued items for this agent (for recovery on restart). */
+  loadQueued?(agentId: string): MailboxItem[];
 }
 
 /**
@@ -52,14 +57,243 @@ export class AgentMailbox {
   }
 
   /**
+   * On startup:
+   * 1. Mark any persisted items stuck in 'processing' as 'dropped'.
+   * 2. Reload surviving 'queued' items into the in-memory queue.
+   * Returns { dropped, restored }.
+   */
+  recoverStaleItems(): { dropped: number; restored: number; expired: number; merged: number } {
+    const dropped = this.persistence?.markStaleProcessingAsDropped?.(this.agentId) ?? 0;
+
+    let restored = 0;
+    let expired = 0;
+    const now = Date.now();
+    const queuedItems = this.persistence?.loadQueued?.(this.agentId) ?? [];
+    for (const item of queuedItems) {
+      if (this.queue.some(q => q.id === item.id)) continue;
+
+      const age = now - new Date(item.queuedAt).getTime();
+      if (age > MAILBOX_QUEUED_TTL_MS) {
+        this.persistence?.updateStatus(item.id, 'dropped');
+        expired++;
+        continue;
+      }
+      this.insertSorted(item);
+      restored++;
+    }
+
+    // Post-recovery dedup: merge duplicate items that were queued separately
+    // before restart. Also collapses redundant heartbeats to a single entry.
+    const merged = this.deduplicateQueue();
+
+    if (restored > 0 || expired > 0 || merged > 0) {
+      log.info('Mailbox recovery from DB', {
+        agentId: this.agentId,
+        restored,
+        expired,
+        merged,
+      });
+    }
+    return { dropped, restored, expired, merged };
+  }
+
+  /**
+   * Deduplicate the in-memory queue after bulk restoration.
+   * - For task_comment: merge items with the same taskId.
+   * - For requirement_comment: merge items with the same requirementId.
+   * - For heartbeat: keep only the latest one and drop the rest.
+   * Status updates are NOT merged (structurally different from comments).
+   * Returns the number of items removed.
+   */
+  private deduplicateQueue(): number {
+    let removed = 0;
+
+    // 1. Collapse heartbeats: keep only the most recent queued heartbeat
+    const heartbeatIndices: number[] = [];
+    for (let i = 0; i < this.queue.length; i++) {
+      if (this.queue[i].status === 'queued' && this.queue[i].sourceType === 'heartbeat') {
+        heartbeatIndices.push(i);
+      }
+    }
+    if (heartbeatIndices.length > 1) {
+      // Keep the last (most recent) heartbeat, drop the rest
+      for (let k = heartbeatIndices.length - 2; k >= 0; k--) {
+        const idx = heartbeatIndices[k];
+        const [item] = this.queue.splice(idx, 1);
+        this.persistence?.updateStatus(item.id, 'dropped');
+        removed++;
+      }
+    }
+
+    // 2. Merge task comments by taskId (status updates stay separate)
+    removed += this.mergeByEntity(
+      AgentMailbox.TASK_COMMENT_DEDUP_TYPES,
+      (item) => item.payload.taskId ?? item.metadata?.taskId as string | undefined,
+    );
+
+    // 3. Merge requirement comments by requirementId (updates stay separate)
+    removed += this.mergeByEntity(
+      AgentMailbox.REQ_COMMENT_DEDUP_TYPES,
+      (item) => item.payload.requirementId,
+    );
+
+    return removed;
+  }
+
+  /**
+   * Merge queued items of the given types that share the same entity key.
+   * The first item in queue order becomes the survivor; subsequent items
+   * have their content appended and are then removed.
+   */
+  private mergeByEntity(
+    eligibleTypes: ReadonlySet<MailboxItemType>,
+    getKey: (item: MailboxItem) => string | undefined,
+  ): number {
+    let removed = 0;
+    const seen = new Map<string, number>(); // entityKey → index of survivor in queue
+
+    for (let i = 0; i < this.queue.length; i++) {
+      const item = this.queue[i];
+      if (item.status !== 'queued' || !eligibleTypes.has(item.sourceType)) continue;
+      if (item.payload.extra?.triggerExecution) continue;
+
+      const key = getKey(item);
+      if (!key) continue;
+
+      const survivorIdx = seen.get(key);
+      if (survivorIdx === undefined) {
+        seen.set(key, i);
+        continue;
+      }
+
+      // Merge into survivor
+      const survivor = this.queue[survivorIdx];
+      survivor.payload.content += `\n\n---\n\n${item.payload.content}`;
+      survivor.payload.summary += ` (+1)`;
+      // Elevate priority if the new item is higher priority
+      if (item.priority < survivor.priority) {
+        survivor.priority = item.priority;
+      }
+      this.persistence?.updateStatus(survivor.id, 'queued', survivor);
+
+      // Remove the duplicate
+      this.queue.splice(i, 1);
+      this.persistence?.updateStatus(item.id, 'dropped');
+      removed++;
+      i--; // re-check same index since we spliced
+    }
+
+    return removed;
+  }
+
+  /**
+   * Pre-triage consolidation: merge all queued items that share the same
+   * taskId or requirementId into a single consolidated item, regardless
+   * of sourceType.  This runs right before triage so the LLM sees one
+   * consolidated item per entity instead of N scattered ones.
+   *
+   * Unlike enqueue-time dedup (which only merges same-type comments),
+   * this cross-type merge produces a comprehensive context block:
+   *   "[task_status_update] Task assigned → ...\n[a2a_message] Review ...\n[task_comment] ..."
+   *
+   * Returns the number of items removed.
+   */
+  consolidateByEntity(): number {
+    let removed = 0;
+
+    // Group by taskId
+    removed += this.consolidateGroup(
+      (item) => item.payload.taskId ?? (item.metadata?.taskId as string | undefined),
+      'task',
+    );
+
+    // Group by requirementId (only for items that don't also have a taskId)
+    removed += this.consolidateGroup(
+      (item) => {
+        if (item.payload.taskId || item.metadata?.taskId) return undefined;
+        return item.payload.requirementId;
+      },
+      'requirement',
+    );
+
+    if (removed > 0) {
+      log.info('Pre-triage consolidation', { agentId: this.agentId, merged: removed });
+    }
+    return removed;
+  }
+
+  private consolidateGroup(
+    getKey: (item: MailboxItem) => string | undefined,
+    _groupType: string,
+  ): number {
+    let removed = 0;
+    const seen = new Map<string, number>();
+
+    for (let i = 0; i < this.queue.length; i++) {
+      const item = this.queue[i];
+      if (item.status !== 'queued') continue;
+      if (item.payload.extra?.triggerExecution) continue;
+
+      const key = getKey(item);
+      if (!key) continue;
+
+      const survivorIdx = seen.get(key);
+      if (survivorIdx === undefined) {
+        seen.set(key, i);
+        continue;
+      }
+
+      const survivor = this.queue[survivorIdx];
+      const typeLabel = item.sourceType !== survivor.sourceType
+        ? `[${item.sourceType}] ` : '';
+      survivor.payload.content += `\n\n---\n\n${typeLabel}${item.payload.content}`;
+      const countMatch = survivor.payload.summary.match(/\((\+\d+)\)$/);
+      if (countMatch) {
+        const prev = parseInt(countMatch[1].slice(1), 10);
+        survivor.payload.summary = survivor.payload.summary.replace(/\(\+\d+\)$/, `(+${prev + 1})`);
+      } else {
+        survivor.payload.summary += ' (+1)';
+      }
+      if (item.priority < survivor.priority) {
+        survivor.priority = item.priority;
+      }
+      this.persistence?.updateStatus(survivor.id, 'queued', survivor);
+
+      this.queue.splice(i, 1);
+      this.persistence?.updateStatus(item.id, 'dropped');
+      removed++;
+      i--;
+    }
+
+    return removed;
+  }
+
+  /**
    * Add an item to the mailbox. Returns the item ID.
    * Emits 'mailbox:new-item' so the AttentionController can react.
    */
+  // Enqueue-time dedup: only comments merge with other comments for the same entity.
+  // Cross-type consolidation happens later in consolidateByEntity() before triage.
+  private static readonly TASK_COMMENT_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'task_comment',
+  ]);
+  private static readonly REQ_COMMENT_DEDUP_TYPES: ReadonlySet<MailboxItemType> = new Set([
+    'requirement_comment',
+  ]);
+
   enqueue(
     sourceType: MailboxItemType,
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
+    // Enqueue-time dedup: merge into existing queued item for the same entity
+    const merged = this.tryMergeIntoExisting(sourceType, payload);
+    if (merged) {
+      this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: merged });
+      this.wakeIdleLoop();
+      return merged;
+    }
+
     const item: MailboxItem = {
       id: generateId('mbx'),
       agentId: this.agentId,
@@ -84,14 +318,20 @@ export class AgentMailbox {
     });
 
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
+    this.wakeIdleLoop();
 
+    return item;
+  }
+
+  /**
+   * Wake the attention loop if it's blocked in `dequeueAsync`.
+   */
+  private wakeIdleLoop(): void {
     if (this.idleResolve) {
       const resolve = this.idleResolve;
       this.idleResolve = undefined;
       resolve();
     }
-
-    return item;
   }
 
   /**
@@ -193,6 +433,77 @@ export class AgentMailbox {
   }
 
   /**
+   * Drop queued `task_status_update` items for a specific task.
+   * Only targets informational notifications — execution-trigger items
+   * and other types (comments, mentions) are preserved.
+   */
+  dropStatusUpdatesByTaskId(taskId: string): number {
+    const toRemove: number[] = [];
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const item = this.queue[i];
+      if (item.status === 'queued'
+        && item.sourceType === 'task_status_update'
+        && !item.payload.extra?.triggerExecution
+        && (item.payload.taskId === taskId || item.metadata?.taskId === taskId)) {
+        toRemove.push(i);
+      }
+    }
+    for (const idx of toRemove) {
+      const [item] = this.queue.splice(idx, 1);
+      this.persistence?.updateStatus(item.id, 'dropped');
+    }
+    return toRemove.length;
+  }
+
+  /**
+   * Re-queue an item for retry after abnormal completion.
+   * Increments `retryCount`, resets status to 'queued', and re-inserts
+   * at its original priority position.
+   */
+  requeue(item: MailboxItem): void {
+    item.retryCount = (item.retryCount ?? 0) + 1;
+    item.status = 'queued';
+    item.startedAt = undefined;
+    item.completedAt = undefined;
+    this.insertSorted(item);
+    this.persistence?.updateStatus(item.id, 'queued', { retryCount: item.retryCount } as Partial<MailboxItem>);
+    log.info('Mailbox item requeued for retry', {
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      retryCount: item.retryCount,
+    });
+
+    this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
+    this.wakeIdleLoop();
+  }
+
+  /**
+   * Return a dequeued item to the queue without incrementing retryCount.
+   * Used by the triage phase when it picks a different item to process.
+   */
+  putBack(item: MailboxItem): void {
+    item.status = 'queued';
+    item.startedAt = undefined;
+    this.insertSorted(item);
+    this.persistence?.updateStatus(item.id, 'queued');
+  }
+
+  /**
+   * Dequeue a specific item by ID (not just the head of the queue).
+   * Used by the triage phase to pick its chosen item.
+   */
+  dequeueById(id: string): MailboxItem | undefined {
+    const idx = this.queue.findIndex(i => i.id === id);
+    if (idx === -1) return undefined;
+    const [item] = this.queue.splice(idx, 1);
+    item.status = 'processing';
+    item.startedAt = new Date().toISOString();
+    this.persistence?.updateStatus(item.id, 'processing', { startedAt: item.startedAt });
+    return item;
+  }
+
+  /**
    * Re-enqueue a deferred item back into the active queue.
    */
   resurface(item: MailboxItem): void {
@@ -201,12 +512,7 @@ export class AgentMailbox {
     this.insertSorted(item);
     this.persistence?.updateStatus(item.id, 'queued');
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
-
-    if (this.idleResolve) {
-      const resolve = this.idleResolve;
-      this.idleResolve = undefined;
-      resolve();
-    }
+    this.wakeIdleLoop();
   }
 
   get depth(): number {
@@ -226,6 +532,10 @@ export class AgentMailbox {
     );
   }
 
+  findByRequirementId(requirementId: string): MailboxItem | undefined {
+    return this.queue.find(i => i.payload.requirementId === requirementId);
+  }
+
   /**
    * Cancel the idle wait (used during shutdown).
    */
@@ -234,6 +544,54 @@ export class AgentMailbox {
       this.idleResolve();
       this.idleResolve = undefined;
     }
+  }
+
+  /**
+   * If a queued (not yet processing) item exists for the same entity and a
+   * dedup-eligible type, append the new content into it and return the
+   * existing item.  Returns undefined when no merge candidate is found.
+   */
+  private tryMergeIntoExisting(
+    sourceType: MailboxItemType,
+    payload: MailboxPayload,
+  ): MailboxItem | undefined {
+    // Never merge execution-trigger items — they must remain standalone.
+    if (payload.extra?.triggerExecution) return undefined;
+
+    let existing: MailboxItem | undefined;
+
+    if (AgentMailbox.TASK_COMMENT_DEDUP_TYPES.has(sourceType)) {
+      const taskId = payload.taskId;
+      if (taskId) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.TASK_COMMENT_DEDUP_TYPES.has(i.sourceType)
+            && !i.payload.extra?.triggerExecution
+            && (i.payload.taskId === taskId || i.metadata?.taskId === taskId),
+        );
+      }
+    } else if (AgentMailbox.REQ_COMMENT_DEDUP_TYPES.has(sourceType)) {
+      const reqId = payload.requirementId;
+      if (reqId) {
+        existing = this.queue.find(
+          i => i.status === 'queued'
+            && AgentMailbox.REQ_COMMENT_DEDUP_TYPES.has(i.sourceType)
+            && i.payload.requirementId === reqId,
+        );
+      }
+    }
+
+    if (!existing) return undefined;
+
+    existing.payload.content += `\n\n---\n\n${payload.content}`;
+    existing.payload.summary += ` (+1)`;
+    this.persistence?.updateStatus(existing.id, 'queued', existing);
+    log.debug('Mailbox enqueue-time dedup: merged into existing item', {
+      agentId: this.agentId,
+      existingId: existing.id,
+      sourceType,
+    });
+    return existing;
   }
 
   /**

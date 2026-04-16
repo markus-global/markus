@@ -160,10 +160,12 @@ file_write("~/.markus/builder-artifacts/teams/research-team/members/senior-resea
 
 ## After Creation
 
+> **CRITICAL**: Creating an artifact is NOT the same as installing/deploying it. Creating writes files to `builder-artifacts/`; installing deploys live agents that consume resources and join the org. **NEVER auto-install.** Only install when the user explicitly says "install", "deploy", or "hire". This applies to ALL modes (chat, task, A2A).
+
 Once all files are written, tell the user:
 
 1. **The team has been created and saved** — summarize the team composition (name, members, their roles).
-2. **Go to the Builder page** to manage the team: install it to deploy all members, share it to Markus Hub, or delete it.
+2. **Ready to install** — the user can install from the Builder page, or ask you to install it (you would use `builder_install`). Do NOT install unless asked.
 3. **To modify or improve** this team (e.g., add new members, update roles, change team norms), just continue the conversation here — describe what you want to change and I'll update the files directly.
 
 ## Rules

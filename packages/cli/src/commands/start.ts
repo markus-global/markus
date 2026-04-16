@@ -8,6 +8,9 @@ import {
   getDefaultConfigPath,
   createLogger,
   closeRuntimeLogger,
+  checkForUpdate,
+  TRIAGE_MAX_TOKENS,
+  TRIAGE_TEMPERATURE,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -35,6 +38,7 @@ import {
   DeliverableService,
   ReportService,
   TrustService,
+  ArchiveService,
   ScheduledTaskRunner,
   initStorage,
   searchRegistries,
@@ -438,6 +442,11 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   taskService.setProjectService(projectService);
   taskService.setRequirementService(requirementService);
 
+  // Auto-archive: archive terminal tasks and requirements after configured thresholds
+  const archiveService = new ArchiveService(taskService, projectService);
+  archiveService.setRequirementService(requirementService);
+  archiveService.start();
+
   // Expose LLM router to API server so settings can read/write it at runtime
   apiServer.setLLMRouter(llmRouter);
   apiServer.setConfigPath(values['config'] as string ?? getDefaultConfigPath());
@@ -493,44 +502,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     return { installed: result.installed, name: result.name, method: result.method };
   });
 
-  // Wire proactive user message senders for all agents
-  if (storage?.chatSessionRepo) {
-    const ws = apiServer.getWSBroadcaster();
-    for (const info of agentManager.listAgents()) {
-      agentManager.setUserMessageSender(info.id, async (message: string, opts?: { sessionId?: string }) => {
-        let sessionId: string;
-        if (opts?.sessionId) {
-          sessionId = opts.sessionId;
-        } else {
-          const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
-          if (sessions.length > 0) {
-            sessionId = sessions[0]!.id;
-          } else {
-            const newSess = await storage.chatSessionRepo.createSession(info.id);
-            sessionId = newSess.id;
-          }
-        }
-        const msg = await storage.chatSessionRepo.appendMessage(sessionId, info.id, 'assistant', message);
-        ws.broadcastProactiveMessage(info.id, info.name, sessionId, msg.id, message);
-        return { sessionId, messageId: msg.id };
-      });
-    }
-  }
-
-  // Wire chat sessions fetcher for session-aware prompts
-  if (storage?.chatSessionRepo) {
-    for (const info of agentManager.listAgents()) {
-      agentManager.setChatSessionsFetcher(info.id, async () => {
-        const sessions = await storage.chatSessionRepo.getSessionsByAgent(info.id);
-        return sessions.slice(0, 5).map((s: any) => ({
-          id: s.id,
-          title: s.title,
-          lastMessageAt: s.lastMessageAt ?? s.createdAt ?? new Date().toISOString(),
-          lastMessagePreview: s.lastMessagePreview,
-        }));
-      });
-    }
-  }
+  // Wire user approval requester through HITL service
+  agentManager.setUserApprovalRequester(async (opts) => {
+    return hitlService.requestApprovalAndWait({
+      agentId: opts.agentId,
+      agentName: opts.agentName,
+      type: 'custom',
+      title: opts.title,
+      description: opts.description,
+      targetUserId: 'default',
+      options: opts.options,
+      allowFreeform: opts.allowFreeform,
+      details: { priority: opts.priority, relatedTaskId: opts.relatedTaskId },
+    });
+  });
 
   // Wire user notifier through HITL service
   agentManager.setUserNotifier((opts) => {
@@ -546,16 +531,42 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     });
   });
 
-  // Auto-resume in_progress tasks after agents are fully loaded.
-  // Tasks retain their execution history in DB (task_logs + comments),
-  // so the agent receives full previous context on resume.
-  setTimeout(async () => {
-    try {
-      await taskService.resumeInProgressTasks();
-    } catch (err) {
-      log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
+  // Ensure every agent has a main session on startup, then persist activity logs to it
+  if (storage?.chatSessionRepo) {
+    for (const info of agentManager.listAgents()) {
+      try {
+        storage.chatSessionRepo.getOrCreateMainSession(info.id);
+      } catch { /* skip */ }
     }
-  }, 3000);
+    const ws = apiServer.getWSBroadcaster();
+    agentManager.getEventBus().on('agent:activity-log', async (evt: unknown) => {
+      const { agentId, message, metadata } = evt as {
+        agentId: string; message: string;
+        metadata: Record<string, unknown>;
+      };
+      try {
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const msg = storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', message, 0, metadata,
+        );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
+        const agent = agentManager.getAgent(agentId);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, message, {
+          ...metadata,
+          isMainSession: true,
+        });
+      } catch (e) {
+        log.warn('Failed to persist activity log', { agentId, error: String(e) });
+      }
+    });
+    // Also create main session for newly created agents
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      try { storage.chatSessionRepo.getOrCreateMainSession(agentId); } catch { /* skip */ }
+    });
+  }
+
+  // Task resume is triggered after agents finish starting (see below).
 
   // Wire External Agent Gateway for OpenClaw integration
   const gatewaySecret = config.security?.gatewaySecret ?? process.env['GATEWAY_SECRET'] ?? 'markus-gateway-default-secret-change-me';
@@ -639,12 +650,22 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });
+    let mainSessionId: string | undefined;
+    if (storage?.chatSessionRepo) {
+      try {
+        const ms = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        if (ms && typeof ms === 'object' && 'id' in ms) mainSessionId = (ms as { id: string }).id;
+      } catch { /* skip */ }
+    }
     hitlService.notify({
       targetUserId: 'default',
       type: 'system',
       title: 'Agent needs help',
       body: reason,
       priority: 'high',
+      actionType: 'open_chat',
+      actionTarget: JSON.stringify({ agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) }),
+      metadata: { agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) },
     });
     auditService.record({
       orgId: 'default',
@@ -672,7 +693,6 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       description: request.reason,
       details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId },
       targetUserId: 'default',
-      expiresInMs: 5 * 60 * 1000, // 5 minutes
     });
     auditService.record({
       orgId: 'default',
@@ -801,7 +821,8 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     const wireMailboxPersistence = (agentId: string) => {
       try {
         const agent = agentManager.getAgent(agentId);
-        agent.getMailbox().setPersistence({
+        const mailbox = agent.getMailbox();
+        mailbox.setPersistence({
           save: (item) => {
             try {
               mbRepo.save({
@@ -817,7 +838,28 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
+          markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
+          loadQueued: (aid: string) => {
+            const rows = mbRepo.getByAgent(aid, { status: 'queued' });
+            return rows.map((r: any) => ({
+              id: r.id,
+              agentId: r.agentId,
+              sourceType: r.sourceType,
+              priority: r.priority,
+              status: r.status as 'queued',
+              payload: r.payload,
+              metadata: r.metadata,
+              queuedAt: r.queuedAt,
+              startedAt: r.startedAt ?? undefined,
+              completedAt: r.completedAt ?? undefined,
+              deferredUntil: r.deferredUntil ?? undefined,
+              mergedInto: r.mergedInto ?? undefined,
+              retryCount: r.retryCount ?? 0,
+            }));
+          },
         });
+        const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
+        if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {
@@ -832,6 +874,20 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
+        // Wire TriageJudge — uses the agent's configured LLM provider
+        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
+          ? agent.config.llmConfig.primary : undefined;
+        agent.getAttentionController().setTriageJudge(async (prompt: string) => {
+          const response = await llmRouter.chat({
+            messages: [
+              { role: 'system', content: 'You are a mailbox triage assistant. Output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
+              { role: 'user', content: prompt },
+            ],
+            temperature: TRIAGE_TEMPERATURE,
+            maxTokens: TRIAGE_MAX_TOKENS,
+          }, triageProvider);
+          return response.content;
+        });
       } catch { /* agent not found */ }
     };
 
@@ -839,9 +895,37 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     for (const a of agentManager.listAgents()) wireMailboxPersistence(a.id);
 
     // Wire for future agents via event bus
-    agentManager.getEventBus().on('agent:registered', (evt: unknown) => {
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
       wireMailboxPersistence(agentId);
+    });
+  }
+
+  // Persist runtime-created agents (e.g. via team_hire_agent tool) to DB
+  if (storage?.agentRepo) {
+    const agentRepo = storage.agentRepo;
+    const existingIds = new Set(agentManager.listAgents().map(a => a.id));
+    agentManager.getEventBus().on('agent:created', (evt: unknown) => {
+      const { agentId } = evt as { agentId: string };
+      if (existingIds.has(agentId)) return;
+      existingIds.add(agentId);
+      try {
+        const agent = agentManager.getAgent(agentId);
+        agentRepo.create({
+          id: agent.id,
+          name: agent.config.name,
+          orgId: agent.config.orgId ?? 'default',
+          teamId: agent.config.teamId,
+          roleId: agent.config.roleId,
+          roleName: agent.role.name,
+          agentRole: agent.config.agentRole ?? 'worker',
+          skills: agent.config.skills,
+          llmConfig: agent.config.llmConfig,
+          heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
+        }).catch((err: unknown) => {
+          log.warn('Failed to persist runtime-created agent to DB', { agentId, error: String(err) });
+        });
+      } catch { /* agent not found */ }
     });
   }
 
@@ -875,6 +959,63 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   eventBus.on('agent:focus-changed', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
     ws.broadcast({ type: 'agent:focus', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('attention:triage', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:triage', payload: event, timestamp: new Date().toISOString() });
+  });
+
+  // Wire agent lifecycle events to WS broadcast
+  eventBus.on('agent:removed', (event: unknown) => {
+    const { agentId } = event as { agentId: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastAgentUpdate(agentId, 'removed');
+  });
+  eventBus.on('agent:paused', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:paused', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:resumed', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:resumed', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:started', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:started', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('agent:stopped', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'agent:stopped', payload: event, timestamp: new Date().toISOString() });
+  });
+
+  // Wire task completion/failure events to WS broadcast
+  eventBus.on('task:completed', (event: unknown) => {
+    const { taskId, agentId } = event as { taskId: string; agentId: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastTaskUpdate(taskId, 'completed', { agentId });
+  });
+  eventBus.on('task:failed', (event: unknown) => {
+    const { taskId, agentId, error } = event as { taskId: string; agentId: string; error?: string };
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcastTaskUpdate(taskId, 'failed', { agentId, error });
+  });
+
+  // Wire system-wide events to WS broadcast
+  eventBus.on('system:pause-all', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:pause-all', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:resume-all', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:resume-all', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:emergency-stop', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:emergency-stop', payload: event, timestamp: new Date().toISOString() });
+  });
+  eventBus.on('system:announcement', (event: unknown) => {
+    const ws = apiServer.getWSBroadcaster();
+    ws.broadcast({ type: 'system:announcement', payload: event, timestamp: new Date().toISOString() });
   });
 
   // Daily token reset scheduler: runs at midnight to reset per-agent tokensUsedToday
@@ -974,13 +1115,29 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     progress.finish(uiUrl);
   }
 
-  // Start restored agents in background (server is already accepting requests)
-  orgService.startRestoredAgentsInBackground();
+  // Non-blocking update check — runs after startup, never blocks or throws
+  checkForUpdate().then(info => {
+    if (info.updateAvailable) {
+      console.log(`\n  \x1b[33m⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})\x1b[0m`);
+      console.log(`    Run \x1b[1mnpm i -g @markus-global/cli\x1b[0m to upgrade\n`);
+    }
+  }).catch(() => {});
+
+  // Start restored agents in background (server is already accepting requests),
+  // then auto-resume in_progress tasks once all agents are ready.
+  orgService.startRestoredAgentsInBackground().then(async () => {
+    try {
+      await taskService.resumeInProgressTasks();
+    } catch (err) {
+      log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
+    }
+  });
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');
     closeStartupLogger();
     closeRuntimeLogger();
+    archiveService.stop();
     scheduledTaskRunner.stop();
     apiServer.stop();
     agentManager.shutdown()

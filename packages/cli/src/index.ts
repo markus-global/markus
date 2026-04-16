@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
 import { Command } from 'commander';
-import { APP_VERSION } from '@markus/shared';
+import { APP_VERSION, checkForUpdate } from '@markus/shared';
 import { setGlobalJson } from './output.js';
 
 // Load .env file from project root
@@ -20,6 +20,19 @@ if (existsSync(envPath)) {
     }
   }
 }
+
+// Handle -v / --version with update check before Commander takes over
+const versionArg = process.argv[2];
+if (versionArg === '-v' || versionArg === '--version' || versionArg === '-V') {
+  console.log(`v${APP_VERSION}`);
+  checkForUpdate().then(info => {
+    if (info.updateAvailable) {
+      console.log(`\n  \x1b[33m⬆ Update available: v${info.latestVersion}\x1b[0m`);
+      console.log(`  Run \x1b[1mnpm i -g @markus-global/cli\x1b[0m to upgrade`);
+    }
+    process.exit(0);
+  }).catch(() => process.exit(0));
+} else {
 
 const program = new Command();
 
@@ -131,3 +144,5 @@ registerCommands()
     console.error('Fatal error:', error);
     process.exit(1);
   });
+
+} // end of version-check else block

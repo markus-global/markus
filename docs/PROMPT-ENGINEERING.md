@@ -39,7 +39,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()`. Sections 
 ```
 ┌─────────────────────────────────────────────┐
 │  1. Role System Prompt (from ROLE.md)       │  ← Stable: rarely changes
-│  2. Dynamic Context (activated skills)      │
+│  2. Dynamic Context (skills + cognition)    │
 │  3. Identity Section                        │
 │  4. Organization Context (CONTEXT.md)       │
 │  5. Team Announcements & Norms              │
@@ -78,9 +78,10 @@ Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.
 Contains the core behavioral instructions, personality, and domain expertise.
 
 #### Dynamic Context (§2)
-Source: `getDynamicContext()` — two sources:
+Source: `getDynamicContext()` — three sources:
 1. **Registered providers**: Callback functions set via `registerDynamicContextProvider()`.
 2. **Activated skill instructions**: When an agent calls `discover_tools` to activate a skill, its instructions are wrapped in `<skill name="...">...</skill>` tags and injected here.
+3. **Triage cognition**: When the mailbox triage system produces a decision, the reasoning is stored as `currentCognition` and injected here as "Current Situational Awareness." This gives the agent persistent awareness of its latest prioritization decision across all LLM calls (chat, task execution, A2A, etc.).
 
 #### Identity Section (§3)
 Source: `buildIdentitySection()`.  
@@ -308,15 +309,17 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_chat`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent-to-user communication:
 | Situation | Tool | Example |
 |-----------|------|---------|
 | Status report, finding, alert | `notify_user` | "Daily report: completed 3 tasks today" |
 | Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
-| Need user decision | `request_user_chat` | "Should I use approach A or B for the auth refactor?" |
-| Blocked, need human help | `request_user_chat` (high priority) | "I'm blocked on task X, need credentials" |
+| Need user to approve/reject | `request_user_approval` | "Approve deployment to production?" |
+| Need user to choose between options | `request_user_approval` with custom `options` | "Should I use approach A or B for the auth refactor?" |
+| Need user freeform input | `request_user_approval` with `allow_freeform: true` | "What credentials should I use?" |
+| Want to discuss interactively | Mention user via task/requirement comment | Use `task_comment` or `requirement_comment` |
 | Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
 
 Retry: 3 retries with exponential backoff (3s base).
@@ -407,6 +410,26 @@ This ensures that modern models with large output windows are not artificially c
 6. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
 7. **Skill-provided tools**: MCP tools from activated skills
 8. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime
+
+### 7.1 Agent/Team Creation & Deployment
+
+Creation and deployment are **two separate phases** with an explicit user gate between them.
+
+**Phase 1 — Create (design the artifact):**
+- Activate `agent-building`, `team-building`, or `skill-building` skill via `discover_tools`
+- Write manifest + content files to `~/.markus/builder-artifacts/{agents|teams|skills}/{name}/`
+- This produces a package on disk. No live resources are created.
+
+**Phase 2 — Deploy (ONLY on explicit user request):**
+| Method | When to use | Tools |
+|--------|-------------|-------|
+| Quick hire from template | Standard roles, minor customization | `team_list_templates` → `team_hire_agent` |
+| Install artifact | Custom-built or Hub-downloaded packages | `builder_install` |
+| Hub one-step | Community packages from Markus Hub | `hub_search` → `hub_install` |
+
+**Post-deploy:** Onboard new agents via `agent_send_message` (project context) → `task_create` (initial work).
+
+**Critical rule:** Agents must NEVER auto-deploy. `builder_install`, `team_hire_agent`, and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
 
 ---
 

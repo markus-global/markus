@@ -37,7 +37,7 @@ export interface ExecutionStreamEntryUI {
   sourceId: string;
   agentId: string;
   seq: number;
-  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error';
+  type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
   content: string;
   metadata?: Record<string, unknown>;
   executionRound?: number;
@@ -220,10 +220,13 @@ export function taskLogToEntry(entry: TaskLogEntry): ExecEntry | null {
   }
 }
 
+type RawLogLike = Pick<TaskLogEntry, 'seq' | 'type' | 'content' | 'metadata'>;
+
 /**
- * Post-process TaskLogEntry[] to attach subagent_* logs to parent spawn_subagent(s) tool entries.
+ * Post-process raw log entries to attach subagent_* logs to parent spawn_subagent(s) tool entries.
+ * Accepts both TaskLogEntry[] and AgentActivityLogEntry[] (or any array with seq/type/content/metadata).
  */
-export function attachSubagentLogsToEntries(rawLogs: TaskLogEntry[], entries: ExecEntry[]): ExecEntry[] {
+export function attachSubagentLogsToEntries(rawLogs: RawLogLike[], entries: ExecEntry[]): ExecEntry[] {
   const subagentLogsByRange: Map<number, SubagentLogEntry[]> = new Map();
   let currentSpawnStartSeq: number | null = null;
 
@@ -351,6 +354,7 @@ export function streamEntryToExecEntry(entry: ExecutionStreamEntryUI): ExecEntry
           result: meta?.result as string | undefined,
           error: meta?.error as string | undefined,
           durationMs: meta?.durationMs as number | undefined,
+          subagentLogs: meta?.subagentLogs as SubagentLogEntry[] | undefined,
         },
       };
     default:

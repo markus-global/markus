@@ -40,6 +40,9 @@ export interface ApprovalRequest {
   respondedBy?: string;
   responseComment?: string;
   expiresAt?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  allowFreeform?: boolean;
+  selectedOption?: string;
 }
 
 export interface BountyTask {
@@ -113,7 +116,7 @@ function genId(prefix: string): string {
 
 export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
-  private pendingResolvers = new Map<string, (result: { approved: boolean; comment?: string }) => void>();
+  private pendingResolvers = new Map<string, (result: { approved: boolean; comment?: string; selectedOption?: string }) => void>();
   private bounties = new Map<string, BountyTask>();
   private notificationHandlers: NotificationHandler[] = [];
   private notificationRepo?: NotificationRepo;
@@ -145,6 +148,8 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean;
   }): ApprovalRequest {
     const id = genId('apr');
     const now = new Date().toISOString();
@@ -159,6 +164,8 @@ export class HITLService {
       status: 'pending',
       requestedAt: now,
       expiresAt: opts.expiresInMs ? new Date(Date.now() + opts.expiresInMs).toISOString() : undefined,
+      options: opts.options,
+      allowFreeform: opts.allowFreeform,
     };
     this.approvals.set(id, approval);
     log.info(`Approval requested: ${id} by ${opts.agentName}`);
@@ -186,9 +193,11 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-  }): Promise<{ approved: boolean; comment?: string }> {
+    options?: Array<{ id: string; label: string; description?: string }>;
+    allowFreeform?: boolean;
+  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string }> {
     const approval = this.requestApproval(opts);
-    return new Promise<{ approved: boolean; comment?: string }>((resolve) => {
+    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string }>((resolve) => {
       this.pendingResolvers.set(approval.id, resolve);
       if (opts.expiresInMs) {
         setTimeout(() => {
@@ -201,7 +210,7 @@ export class HITLService {
     });
   }
 
-  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string): ApprovalRequest | undefined {
+  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string, selectedOption?: string): ApprovalRequest | undefined {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
 
@@ -209,7 +218,8 @@ export class HITLService {
     approval.respondedAt = new Date().toISOString();
     approval.respondedBy = respondedBy;
     if (comment) approval.responseComment = comment;
-    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, comment ? { comment } : {});
+    if (selectedOption) approval.selectedOption = selectedOption;
+    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption });
 
     if (this.notificationRepo) {
       try {
@@ -225,7 +235,7 @@ export class HITLService {
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve({ approved, comment });
+      resolve({ approved, comment, selectedOption });
     }
     return approval;
   }
