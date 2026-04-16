@@ -316,14 +316,15 @@ function friendlyAgentError(err: unknown): string {
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
-  msg, onCopy, onRetry, onReply, isCopied, isLastAgentMsg,
+  msg, onCopy, onRetry, onResume, onReply, isCopied, isLastAgentMsg,
 }: {
   msg: ChatMsg;
   onCopy: (msg: ChatMsg) => void;
   onRetry?: (msg: ChatMsg) => void;
+  onResume?: (msg: ChatMsg) => void;
   onReply?: (msg: ChatMsg) => void;
   isCopied: boolean;
-  /** Only the most recent agent message should offer Retry/Re-ask */
+  /** Only the most recent agent message should offer Retry/Resume/Re-ask */
   isLastAgentMsg?: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
@@ -344,6 +345,17 @@ function MessageActions({
         )}
         {isCopied ? 'Copied' : 'Copy'}
       </button>
+      {/* Resume — for the last agent message (continue from where it left off) */}
+      {canRetry && onResume && (
+        <button
+          onClick={() => onResume(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors"
+          title="Resume"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+          Resume
+        </button>
+      )}
       {/* Re-ask — for stopped messages (only on latest agent msg) */}
       {canRetry && isStopped && onRetry && (
         <button
@@ -539,7 +551,13 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    const displayText = allText;
+    const displayText = allText
+      ? allText
+          .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+          .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+          .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+          .trim() || null
+      : null;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
@@ -595,6 +613,13 @@ function AgentMessageBody({
 
   // Fallback: old messages from DB (no segments) — use legacy ActivityIndicator + text
   const hasActivities = (msg.activities?.length ?? 0) > 0;
+  const legacyText = msg.text
+    ? msg.text
+        .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+        .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+        .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+        .trim()
+    : '';
   return (
     <>
       {(isStreaming || hasActivities) && (
@@ -604,7 +629,7 @@ function AgentMessageBody({
           persistent={!isStreaming && hasActivities}
         />
       )}
-      {msg.text ? <MarkdownMessage content={msg.text} /> : null}
+      {legacyText ? <MarkdownMessage content={legacyText} /> : null}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -1304,7 +1329,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setActivities([]);
   };
 
-  const send = async (retryText?: string, options?: { isRetry?: boolean }) => {
+  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
@@ -1581,6 +1606,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           imagesToSend,
           effectiveSessionId,
           options?.isRetry,
+          options?.isResume,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {
@@ -1786,6 +1812,27 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
     void send(retryText, { isRetry: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, updateConvMsgs]);
+
+  const handleResume = useCallback((resumeMsg: ChatMsg) => {
+    const convKey = currentConvKeyRef.current;
+    const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
+    const resumeIdx = currentMsgs.findIndex(m => m.id === resumeMsg.id);
+    if (resumeIdx < 0) return;
+    let userMsg: ChatMsg | null = null;
+    for (let i = resumeIdx - 1; i >= 0; i--) {
+      if (currentMsgs[i]?.sender === 'user') { userMsg = currentMsgs[i]!; break; }
+    }
+    const resumeText = userMsg?.text ?? '';
+    if (!resumeText) return;
+
+    // Remove the agent bubble (and any messages after it)
+    updateConvMsgs(convKey, prev => {
+      const idx = prev.findIndex(m => m.id === resumeMsg.id);
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+    void send(resumeText, { isResume: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -2297,7 +2344,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       }
                     </div>
                     <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                     </div>
                   </div>
                 </div>
@@ -2426,7 +2473,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       </div>
                       {showActions && (
                         <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>
                       )}
                     </div>

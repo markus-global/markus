@@ -820,7 +820,7 @@ export const api = {
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     message: (id: string, text: string, images?: string[], sessionId?: string | null) =>
       request<{ reply: string; sessionId?: string }>(`/agents/${id}/message`, { method: 'POST', body: JSON.stringify({ text, images, sessionId: sessionId ?? undefined }) }),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean): Promise<{ content: string; sessionId?: string }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean): Promise<{ content: string; sessionId?: string }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -829,7 +829,7 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined }),
+            body: JSON.stringify({ text, stream: true, images, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }

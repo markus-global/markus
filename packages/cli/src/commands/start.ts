@@ -537,6 +537,13 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
 
   // Ensure every agent has a main session on startup, then persist activity logs to it
   if (storage?.chatSessionRepo) {
+    // Migrate legacy assistant messages that lack segments metadata
+    try {
+      storage.chatSessionRepo.migrateLegacyMessages();
+    } catch (e) {
+      log.warn('Legacy chat message migration failed', { error: String(e) });
+    }
+
     for (const info of agentManager.listAgents()) {
       try {
         storage.chatSessionRepo.getOrCreateMainSession(info.id);

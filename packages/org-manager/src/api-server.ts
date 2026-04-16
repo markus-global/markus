@@ -1306,6 +1306,7 @@ export class APIServer {
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
+        const isResume = body['isResume'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -1318,12 +1319,14 @@ export class APIServer {
           try {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
+            } else if (isResume) {
+              this.storage.chatSessionRepo.deleteLastAssistantMessage(sessionId);
             }
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
               histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-              { isRetry: !!isRetry },
+              { isRetry: !!isRetry, isResume: !!isResume },
             );
           } catch (err) {
             log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });

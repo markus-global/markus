@@ -1749,6 +1749,23 @@ export class SqliteChatSessionRepo {
   }
 
   /**
+   * Remove only the last assistant message from a session (for resume).
+   * Returns the deleted message's content and metadata so the caller can
+   * reconstruct a trimmed version for the LLM context.
+   */
+  deleteLastAssistantMessage(sessionId: string): { content: string; metadata?: Record<string, unknown> } | null {
+    const row = this.db.prepare(
+      'SELECT id, content, metadata FROM chat_messages WHERE session_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId, 'assistant') as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const id = row['id'] as string;
+    const content = row['content'] as string;
+    const rawMeta = row['metadata'] as string | null;
+    this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+    return { content, metadata: rawMeta ? JSON.parse(rawMeta) : undefined };
+  }
+
+  /**
    * Remove the last user+assistant exchange from a session (for retry).
    * Deletes from the end backwards through the last assistant message
    * and its preceding user message.
@@ -1777,6 +1794,74 @@ export class SqliteChatSessionRepo {
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
+  }
+
+  /**
+   * Migrate legacy assistant messages that lack segments metadata.
+   * Parses raw text content to extract tool calls and clean text into proper segments.
+   * Should be called once at startup.
+   */
+  migrateLegacyMessages(): number {
+    const rows = this.db.prepare(
+      `SELECT id, content, metadata FROM chat_messages
+       WHERE role = 'assistant'
+         AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
+         AND content IS NOT NULL AND content != ''`
+    ).all() as Array<Record<string, unknown>>;
+
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare(
+      'UPDATE chat_messages SET metadata = ? WHERE id = ?'
+    );
+    let migrated = 0;
+
+    for (const row of rows) {
+      const id = row['id'] as string;
+      const content = row['content'] as string;
+      const rawMeta = row['metadata'] as string | null;
+      const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
+
+      const segments = this._parseContentToSegments(content);
+      if (segments.length === 0) continue;
+
+      existingMeta.segments = segments;
+      update.run(JSON.stringify(existingMeta), id);
+      migrated++;
+    }
+
+    if (migrated > 0) {
+      log.info(`Migrated ${migrated} legacy chat messages to segment format`);
+    }
+    return migrated;
+  }
+
+  private _parseContentToSegments(content: string): Array<Record<string, unknown>> {
+    const segments: Array<Record<string, unknown>> = [];
+    let remaining = content;
+
+    // Strip thinking blocks
+    remaining = remaining.replace(/<think>[\s\S]*?<\/think>/g, '');
+
+    // Extract tool invocations (XML format from LLM output)
+    const toolPattern = /<(?:invoke|function_calls|antml:\w+)\b[\s\S]*?(?:<\/(?:invoke|function_calls|antml:\w+)>|$)/g;
+    const parts = remaining.split(toolPattern);
+    const tools = remaining.match(toolPattern) ?? [];
+
+    for (let i = 0; i < parts.length; i++) {
+      const text = parts[i]!.replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '').trim();
+      if (text) {
+        segments.push({ type: 'text', content: text });
+      }
+      if (i < tools.length) {
+        const toolXml = tools[i]!;
+        const nameMatch = toolXml.match(/name="([^"]+)"/);
+        const toolName = nameMatch?.[1] ?? 'unknown_tool';
+        segments.push({ type: 'tool', tool: toolName, status: 'done' });
+      }
+    }
+
+    return segments;
   }
 
   private _mapMsg(r: Record<string, unknown>) {
