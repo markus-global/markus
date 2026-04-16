@@ -67,26 +67,6 @@ interface ChatMsg {
 
 type ChatMode = 'channel' | 'direct' | 'dm';
 
-// Mirror of MAILBOX_TYPE_REGISTRY icon/category from @markus/shared — kept in sync manually
-const ACTIVITY_TYPE_META: Record<string, { icon: string; category: string }> = {
-  system_event:         { icon: '⚙',  category: 'System' },
-  human_chat:           { icon: '💬', category: 'Chat' },
-  a2a_message:          { icon: '🔗', category: 'Chat' },
-  task_comment:         { icon: '📝', category: 'Comment' },
-  requirement_comment:  { icon: '📝', category: 'Comment' },
-  mention:              { icon: '@',  category: 'Mention' },
-  session_reply:        { icon: '↩',  category: 'Task' },
-  task_status_update:   { icon: '📋', category: 'Task' },
-  review_request:       { icon: '👀', category: 'Review' },
-  requirement_update:   { icon: '📝', category: 'Notification' },
-  daily_report:         { icon: '📊', category: 'System' },
-  heartbeat:            { icon: '♡',  category: 'System' },
-  memory_consolidation: { icon: '🧠', category: 'System' },
-  notify_user:          { icon: '🔔', category: 'Notification' },
-};
-
-const SCROLL_TO_BOTTOM_ACTIVITY_TYPES = new Set(['task_comment', 'requirement_comment', 'mention', 'notify_user']);
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
@@ -772,8 +752,6 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
-
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2380,62 +2358,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
 
-                // Activity log → compact inline card rendered from metadata
-                if (msg.isActivityLog) {
-                  // Collapse consecutive heartbeats: only show the last one in a run
-                  if (msg.activityType === 'heartbeat') {
-                    const next = messages[i + 1];
-                    if (next?.isActivityLog && next.activityType === 'heartbeat') return null;
-                  }
-                  const meta = ACTIVITY_TYPE_META[msg.activityType ?? ''];
-                  const icon = meta?.icon ?? '•';
-                  const category = meta?.category;
-                  const navToWork = !!(msg.taskId || msg.requirementId);
-                  const navToMind = !navToWork && !!msg.mailboxItemId;
-                  const canNavigate = navToWork || navToMind;
-                  const isCommentType = SCROLL_TO_BOTTOM_ACTIVITY_TYPES.has(msg.activityType ?? '');
-                  const isExpanded = expandedActivities.has(msg.id);
-                  const fullText = msg.text + (msg.outcome ? `\n→ ${msg.outcome}` : '');
-                  const handleActivityClick = () => {
-                    if (canNavigate) {
-                      if (msg.taskId) {
-                        navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                      } else if (msg.requirementId) {
-                        navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                      } else if (msg.mailboxItemId && selectedAgent) {
-                        handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
-                      }
-                    } else {
-                      setExpandedActivities(prev => {
-                        const next = new Set(prev);
-                        if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
-                        return next;
-                      });
-                    }
-                  };
-                  return (
-                    <div key={msg.id} id={`msg-${msg.id}`} className={`flex justify-start ${isMobile ? 'max-w-[95%]' : 'max-w-[85%]'}`}>
-                      <div className="min-w-0 w-full">
-                        <div
-                          className="group/act flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full overflow-hidden cursor-pointer"
-                          onClick={handleActivityClick}
-                          title={canNavigate ? undefined : fullText}
-                        >
-                          <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
-                          <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
-                          {category && <span className="shrink-0 text-[9px] font-medium rounded py-px bg-surface-elevated text-fg-quaternary inline-flex items-center justify-center overflow-hidden" style={{ width: 68 }}>{category}</span>}
-                          <span className={`text-xs text-fg-tertiary truncate min-w-0 flex-1 ${canNavigate ? 'group-hover/act:text-brand-500 transition-colors' : ''}`}>{msg.text}</span>
-                          {msg.outcome && !isExpanded && <span className="text-[10px] text-fg-quaternary shrink-0 truncate max-w-[50%]">→ {msg.outcome}</span>}
-                        </div>
-                        {isExpanded && msg.outcome && (
-                          <div className="ml-10 mr-4 mt-1 mb-2 py-2 px-3 rounded-md bg-surface-elevated/40 text-[11px] text-fg-tertiary whitespace-pre-wrap break-words leading-relaxed max-h-[240px] overflow-y-auto">
-                            {msg.outcome}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
+                // Activity log entries are visible in the Agent Profile Mind tab;
+                // hide them from the chat to reduce noise.
+                if (msg.isActivityLog) return null;
 
                 return (
                   <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
