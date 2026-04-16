@@ -35,9 +35,9 @@ afterEach(() => {
 
 describe('SQLite Storage Backend', () => {
   describe('OrgRepo', () => {
-    it('should create and find an organization', () => {
+    it('should create and find an organization', async () => {
       const repo = new SqliteOrgRepo(db);
-      repo.createOrg({ id: 'org-1', name: 'Test Org', ownerId: 'user-1' });
+      await repo.createOrg({ id: 'org-1', name: 'Test Org', ownerId: 'user-1' });
       const found = repo.findOrgById('org-1');
       expect(found).toBeDefined();
       expect(found!.name).toBe('Test Org');
@@ -53,9 +53,9 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('AgentRepo', () => {
-    it('should CRUD agents', () => {
+    it('should CRUD agents', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
 
       const repo = new SqliteAgentRepo(db);
       const created = repo.create({
@@ -84,7 +84,7 @@ describe('SQLite Storage Backend', () => {
   describe('TaskRepo', () => {
     it('should create, update, and query tasks', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
       agentRepo.create({ id: 'agent-1', name: 'Agent1', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
       agentRepo.create({ id: 'agent-2', name: 'Agent2', orgId: 'org-1', roleId: 'r1', roleName: 'Reviewer' });
@@ -103,9 +103,9 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('UserRepo', () => {
-    it('should create, find by email, and upsert users', () => {
+    it('should create, find by email, and upsert users', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
 
       const repo = new SqliteUserRepo(db);
       repo.create({
@@ -129,9 +129,9 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('ChatSessionRepo', () => {
-    it('should manage chat sessions and messages', () => {
+    it('should manage chat sessions and messages', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
       agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
 
@@ -208,9 +208,9 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('AgentKnowledgeRepo', () => {
-    it('should CRUD knowledge entries and search by tags', () => {
+    it('should CRUD knowledge entries and search by tags', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
       agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
 
@@ -243,7 +243,7 @@ describe('SQLite Storage Backend', () => {
   describe('TaskLogRepo', () => {
     it('should append and retrieve task logs', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
       const agentRepo = new SqliteAgentRepo(db);
       agentRepo.create({ id: 'agent-1', name: 'Agent1', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
       agentRepo.create({ id: 'agent-2', name: 'Agent2', orgId: 'org-1', roleId: 'r1', roleName: 'Reviewer' });
@@ -262,9 +262,9 @@ describe('SQLite Storage Backend', () => {
   });
 
   describe('TeamRepo', () => {
-    it('should create and manage teams', () => {
+    it('should create and manage teams', async () => {
       const orgRepo = new SqliteOrgRepo(db);
-      orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
+      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
 
       const repo = new SqliteTeamRepo(db);
       const createdTeam = repo.create({
