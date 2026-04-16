@@ -7,9 +7,17 @@ import type { AgentToolHandler } from '../agent.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Read-only search tools can access any path — no restrictions on reads by design */
-function isPathAccessible(_resolvedPath: string, _workspacePath?: string, _policy?: PathAccessPolicy): boolean {
-  return true;
+/**
+ * Check if a resolved path is accessible within the workspace.
+ * Returns true if no workspace is configured (legacy behavior),
+ * otherwise checks if the path is within the workspace.
+ */
+function isPathAccessible(resolvedPath: string, workspacePath?: string, _policy?: PathAccessPolicy): boolean {
+  if (!workspacePath) {
+    return true; // No workspace configured - allow all (legacy behavior)
+  }
+  const resolvedWorkspace = resolve(workspacePath);
+  return resolvedPath.startsWith(resolvedWorkspace);
 }
 
 /**

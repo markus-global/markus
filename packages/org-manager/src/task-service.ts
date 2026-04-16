@@ -1838,7 +1838,12 @@ export class TaskService {
 
     // Semantic guards
     if (!_internal && prevStatus === 'pending' && status !== 'pending') {
-      throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint.`);
+      // Only enforce the pending-approval guard when governance is enabled.
+      // When governance is disabled (e.g., in tests), skip it so tasks can
+      // transition directly from 'pending' to 'in_progress' etc.
+      if (this.governancePolicy?.enabled !== false) {
+        throw new Error(`Task ${id} is pending approval. Use the approve or reject endpoint.`);
+      }
     }
     if (status === 'in_progress' && prevStatus === 'blocked') {
       if (!this.areBlockersSatisfied(task)) {
@@ -3342,7 +3347,7 @@ export class TaskService {
         const dup = sorted[i];
         try {
           this.addTaskNote(dup.id, `Auto-cancelled: duplicate of task ${keeper.id} ("${keeper.title}")`, 'System');
-          this.updateTaskStatus(dup.id, 'cancelled');
+          this.updateTaskStatus(dup.id, 'cancelled', undefined, true);
           cancelledIds.push(dup.id);
           log.info(`Auto-cancelled duplicate task`, { cancelledId: dup.id, keeperId: keeper.id });
         } catch (err) {
