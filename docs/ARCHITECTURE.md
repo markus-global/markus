@@ -76,7 +76,7 @@ Each Agent consists of:
 | `MEMORY.md` | Long-term memory (Agent-maintained) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
-The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks, and a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution remains uncapped.
+The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.
 
 **Agent role types:**
 - `worker` -- Regular digital employee, executes tasks
@@ -100,6 +100,8 @@ Key components:
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `merge`, `defer`, `drop`
+- **Deferred Item Auto-Resume** — Items deferred with a `deferredUntil` timestamp are automatically resurfaced when the agent is idle and the timestamp has passed
+- **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -109,6 +111,8 @@ External callers use the mailbox API exclusively:
 - `agent.enqueueToMailbox()` — Fire-and-forget notification
 
 Internal processes (heartbeat, daily report, memory consolidation) also enqueue to the mailbox, ensuring **no LLM call bypasses the attention controller**. The mailbox timeline (items + decisions) forms the agent's **episodic memory ground truth**.
+
+**Task status notifications** (`task_status_update` with `invokesLLM: false`) are **informational only** — the side-effect system in `updateTaskStatus()` handles all real actions automatically (execution start/cancel, reviewer notification, dependency unblocking). These notifications exist as episodic memory and triage decision context, not as work items requiring agent processing.
 
 See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
 

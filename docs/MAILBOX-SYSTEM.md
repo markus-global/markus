@@ -979,7 +979,10 @@ dequeueAsync() → headItem
        │
        └─ triageJudge configured?
             → performTriage(headItem)
-                 ├─ Build prompt (all candidates + agent context)
+                 ├─ Build prompt (all candidates + agent context + item content)
+                 ├─ [Optional] Mini tool loop: LLM calls read-only tools
+                 │    (task_list, task_get, requirement_list, etc.) up to
+                 │    TRIAGE_MAX_TOOL_ITERATIONS times to gather context
                  ├─ TriageJudge returns JSON: { processItemId, deferItemIds, dropItemIds, reasoning }
                  ├─ Validate IDs against candidate set
                  ├─ If chosen ≠ headItem: putBack(headItem), dequeueById(chosen)
@@ -988,6 +991,18 @@ dequeueAsync() → headItem
                  ├─ Emit 'attention:triage' → WS → frontend
                  └─ Record 'triage' decision
 ```
+
+### Triage Context Budget
+
+The triage prompt is intentionally **generous** — tens of thousands of tokens are acceptable because accurate triage decisions save far more cost downstream. Context includes:
+- **20 recent messages** (up to 2000 chars each) from the agent's main session
+- **Full payload.content** (up to 3000 chars) for each candidate item, not just the summary
+- **Active task IDs** for the agent's current workload
+- **Recent activity summaries** and **recent decisions**
+
+### Read-Only Tool Access
+
+When `triageChatFn` and `triageToolHandlers` are configured, `performTriage` runs a mini tool loop before the final JSON decision. The LLM can invoke read-only tools defined by `TRIAGE_ALLOWED_TOOLS` (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (default 3) times. This lets the triage LLM understand current workload, task dependencies, and team state before deciding priority.
 
 ### Cognition Injection
 
@@ -1011,7 +1026,8 @@ TriageResult.reasoning
 | `putBack()` | `mailbox.ts` | Returns a dequeued item to queue (no retryCount increment) |
 | `dequeueById()` | `mailbox.ts` | Dequeues a specific item by ID (for triage swap) |
 | `updateCognition()` | `agent.ts` | Converts TriageResult into situational awareness text |
-| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity |
+| `getTriageContext()` | `agent.ts` (delegate) | Provides agent name, recent messages, recent activity, active task IDs |
+| `resurfaceDue()` | `mailbox.ts` | Resurfaces deferred items whose `deferredUntil` has passed or is unset |
 
 ### Triage Prompt Identity
 
@@ -1019,8 +1035,25 @@ The triage prompt uses first-person perspective: "You are {agentName}." The agen
 
 ---
 
-## 22. Future Work
+## 22. Deferred Item Auto-Resume
+
+Deferred mailbox items are automatically resurfaced when the agent is idle:
+
+- `resurfaceDue()` is called at the top of each attention loop idle cycle (before `dequeueAsync`) and after `recoverStaleItems` on startup.
+- Items where `deferredUntil <= now` or `deferredUntil` is undefined (deferred without a time = resume on next idle) are re-enqueued.
+- Deferred items are loaded from persistence via `loadDeferred(agentId)`.
+
+## 23. Task Status Update Processing
+
+`task_status_update` items are **informational only** (`invokesLLM: false`). The side-effect system in `updateTaskStatus()` handles all real actions automatically:
+- **→ `in_progress`**: Auto-starts task execution
+- **Leaving `in_progress`**: Cancels running execution
+- **→ `review`**: Notifies reviewer agent
+- **Terminal states**: Checks and unblocks dependent tasks
+
+Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
+
+## 24. Future Work
 
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
-- **Deferred item resurfacing**: Automatically re-enqueue deferred items when conditions are met.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.

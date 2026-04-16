@@ -523,7 +523,8 @@ function AgentMessageBody({
   const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
 
   // Messages with segment data: render compact card / full log + final text
-  if (segments !== undefined) {
+  // If segments is defined but empty, fall through to legacy path using msg.text
+  if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
     const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
     const streamingText = isStreaming
@@ -538,8 +539,6 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    // Always use allText so MarkdownMessage can properly extract think blocks
-    // that span across text segments (split by tool-call segments in between).
     const displayText = allText;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
@@ -580,7 +579,7 @@ function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {viewMode === 'compact' && displayText && (
+        {displayText && (
           <MarkdownMessage content={displayText} />
         )}
 
@@ -905,10 +904,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Auto-select secretary agent when no agent is selected and agents have loaded
   useEffect(() => {
     if (selectedAgent || agents.length === 0) return;
-    const secretary = agents.find(a => a.role === 'secretary');
+    const secretary = agents.find(a => a.role === 'secretary')
+      ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
     if (secretary) {
       setChatMode('direct');
       setSelectedAgent(secretary.id);
+      setMainTab('chat');
+    } else if (agents.length > 0) {
+      setChatMode('direct');
+      setSelectedAgent(agents[0].id);
+      setMainTab('chat');
     }
   }, [agents, selectedAgent]);
 
@@ -1703,14 +1708,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               const result = await api.sessions.getMessages(pollSessionId, 2);
               const assistantMsg = result.messages.find(m => m.role === 'assistant');
               if (assistantMsg?.content) {
+                const recovered = dbMsgToChat(assistantMsg);
                 updateConvMsgs(sendKey, prev => {
                   const u = [...prev];
                   const idx = u.findIndex(m => m.id === agentMsgId);
                   if (idx >= 0) {
                     u[idx] = {
                       ...u[idx]!,
-                      text: assistantMsg.content,
-                      segments: [{ type: 'text', content: assistantMsg.content }],
+                      text: recovered.text,
+                      segments: recovered.segments,
                     };
                   }
                   return u;

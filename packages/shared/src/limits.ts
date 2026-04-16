@@ -275,12 +275,86 @@ export const TRIAGE_PROMPT_MAX_ITEMS = 50;
 
 /** Max tokens for the triage LLM response.
  *  Must be generous enough for models that emit <think> blocks before the
- *  JSON payload.  4096 tokens covers even verbose chain-of-thought. */
-export const TRIAGE_MAX_TOKENS = 4096;
+ *  JSON payload.  8192 tokens covers verbose chain-of-thought plus
+ *  tool-call reasoning when triage tools are enabled. */
+export const TRIAGE_MAX_TOKENS = 8192;
 
 /** Temperature for the triage LLM call.
  *  Low temperature produces deterministic, focused decisions. */
 export const TRIAGE_TEMPERATURE = 0.1;
+
+/** Max recent messages from the agent's main session included in triage context.
+ *  More messages give the triage LLM better situational awareness.
+ *  20 messages × ~2000 chars ≈ ~40K chars — generous but justified since
+ *  good triage decisions save far more downstream cost. */
+export const TRIAGE_CONTEXT_MESSAGES_MAX = 20;
+
+/** Max characters per message in the triage context.
+ *  2000 chars lets the LLM see real content instead of useless fragments. */
+export const TRIAGE_CONTEXT_MSG_CHARS = 2000;
+
+/** Max characters for payload.content per candidate item in the triage prompt.
+ *  The summary alone is often insufficient; the full content provides
+ *  actionable detail for prioritization decisions. */
+export const TRIAGE_ITEM_CONTENT_CHARS = 3000;
+
+/** Age threshold (ms) for auto-dropping informational items before triage.
+ *  Informational items (task_status_update, heartbeat, memory_consolidation,
+ *  daily_report) older than this are stale — the information they carried is
+ *  outdated and processing them would waste attention.
+ *  4 hours is generous enough for agents that were paused but short enough
+ *  to prevent unbounded queue growth. */
+export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
+
+/** Informational mailbox types eligible for age-based auto-drop before triage.
+ *  These types carry context that decays rapidly and do not require LLM processing. */
+export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
+  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report',
+];
+
+/** Max tool-use iterations allowed during triage deliberation.
+ *  Enough to gather context (task_list, task_get, etc.) but not enough
+ *  to do real work. */
+export const TRIAGE_MAX_TOOL_ITERATIONS = 3;
+
+/** Read-only tools allowed during triage deliberation.
+ *  These let the triage LLM understand current workload, task dependencies,
+ *  and team state before deciding priority. */
+export const TRIAGE_ALLOWED_TOOLS: readonly string[] = [
+  'task_list', 'task_get', 'requirement_list', 'requirement_get',
+  'list_projects', 'team_list',
+];
+
+// ─── Subagent Limits ────────────────────────────────────────────────────────
+// These control subagent execution behavior and progress preview truncation.
+
+/** Max characters for the task preview in subagent progress events.
+ *  Shown in the frontend execution log as context. */
+export const SUBAGENT_TASK_PREVIEW_CHARS = 500;
+
+/** Max characters for the thinking preview in subagent progress events.
+ *  Shown while the subagent is processing (streaming teaser). */
+export const SUBAGENT_THINKING_PREVIEW_CHARS = 1000;
+
+/** Max characters for the result preview in subagent progress events.
+ *  Shown in tool_end events and completion metadata. */
+export const SUBAGENT_RESULT_PREVIEW_CHARS = 500;
+
+/** Max characters for tool result content in persisted subagent log entries.
+ *  Full results are kept in messages for context; this caps the log file copy. */
+export const SUBAGENT_LOG_ENTRY_CHARS = 10_000;
+
+/** Max characters for error message previews in retry logs. */
+export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
+
+/** Max parallel subagents in a single spawn_subagents call. */
+export const SUBAGENT_MAX_PARALLEL = 10;
+
+/** Max LLM call retries for transient errors within a subagent. */
+export const SUBAGENT_MAX_LLM_RETRIES = 2;
+
+/** Base delay (ms) for exponential backoff on retryable LLM errors. */
+export const SUBAGENT_RETRY_BASE_MS = 2000;
 
 // ─── Shell Execution Limits ─────────────────────────────────────────────────
 

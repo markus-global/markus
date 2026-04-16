@@ -111,6 +111,10 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 - **Recent decisions**: Last 3-5 attention decisions (continue/preempt/merge/defer) with reasoning.
 - **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
 
+**Triage context budget** is generous — up to 20 recent messages × 2000 chars each, plus full item content (3000 chars per candidate) and the agent's active task list. Tens of thousands of tokens are acceptable for triage because accurate prioritization decisions save far more cost downstream. The triage LLM can also invoke a curated set of **read-only tools** (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) to gather additional context before deciding. These are controlled by `TRIAGE_ALLOWED_TOOLS` and `TRIAGE_MAX_TOOL_ITERATIONS` in `limits.ts`.
+
+**Task status notifications** are purely informational — the system's side-effect mechanism handles all actions (execution start/cancel, reviewer notification, dependency unblocking). Agents are instructed not to send redundant A2A messages for routine status changes.
+
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
 #### Scenario Section (§25)
@@ -244,7 +248,7 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 
 All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
 
-`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools.
+`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
 
 Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` with a preview in context (Manus-inspired "restorable compression").
 

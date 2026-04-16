@@ -488,6 +488,11 @@ export class ContextEngine {
       parts.push('');
       parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
       parts.push('');
+      parts.push('**Automatic status notifications** (do NOT duplicate manually):');
+      parts.push('- When task status changes, the system **automatically** handles all side effects: execution start/cancel, reviewer notification, dependency unblocking.');
+      parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
+      parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
+      parts.push('');
       parts.push('**Communicating with the user**:');
       parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
       parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
@@ -642,9 +647,11 @@ export class ContextEngine {
         lines.push('- Be concise and structured — your colleague needs actionable information');
         lines.push('- Always use **absolute file paths** when referencing files or deliverables');
         lines.push('- Respond with clear facts. No conversational filler.');
+        lines.push('- Do NOT use A2A for routine task status notifications or acknowledgments — the system handles all status-triggered side effects automatically');
+        lines.push('- Only send A2A when you have substantive coordination needs: sharing context, asking questions, or providing instructions that go beyond a status change');
         lines.push('');
         lines.push('**Work delegation:**');
-        lines.push('- A2A messages are for: status updates, quick coordination, simple questions, sharing file references');
+        lines.push('- A2A messages are for: quick coordination, simple questions, sharing file references, substantive instructions');
         lines.push('- For substantial work requests: create a `task_create` assigned to the target agent — do NOT ask them to do complex work via chat');
         lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
         lines.push('- If you cannot help, explain why and suggest who can');

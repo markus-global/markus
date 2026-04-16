@@ -11,6 +11,7 @@ import {
   checkForUpdate,
   TRIAGE_MAX_TOKENS,
   TRIAGE_TEMPERATURE,
+  TRIAGE_ALLOWED_TOOLS,
   type LLMProviderConfig,
 } from '@markus/shared';
 import {
@@ -857,6 +858,24 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
               retryCount: r.retryCount ?? 0,
             }));
           },
+          loadDeferred: (aid: string) => {
+            const rows = mbRepo.getByAgent(aid, { status: 'deferred' });
+            return rows.map((r: any) => ({
+              id: r.id,
+              agentId: r.agentId,
+              sourceType: r.sourceType,
+              priority: r.priority,
+              status: r.status as 'deferred',
+              payload: r.payload,
+              metadata: r.metadata,
+              queuedAt: r.queuedAt,
+              startedAt: r.startedAt ?? undefined,
+              completedAt: r.completedAt ?? undefined,
+              deferredUntil: r.deferredUntil ?? undefined,
+              mergedInto: r.mergedInto ?? undefined,
+              retryCount: r.retryCount ?? 0,
+            }));
+          },
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
@@ -888,6 +907,40 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           }, triageProvider);
           return response.content;
         });
+
+        // Wire triage chat function (for mini tool loop during triage)
+        agent.getAttentionController().setTriageChatFn(async (messages, tools) => {
+          const llmTools = tools?.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          }));
+          const response = await llmRouter.chat({
+            messages: messages as any,
+            tools: llmTools,
+            temperature: TRIAGE_TEMPERATURE,
+            maxTokens: TRIAGE_MAX_TOKENS,
+          }, triageProvider);
+          return { content: response.content, toolCalls: response.toolCalls };
+        });
+
+        // Wire read-only triage tools from the agent's tool set
+        const triageToolMap = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>();
+        const agentTools = agent.getTools();
+        for (const toolName of TRIAGE_ALLOWED_TOOLS) {
+          const handler = agentTools.get(toolName);
+          if (handler) {
+            triageToolMap.set(toolName, {
+              name: handler.name,
+              description: handler.description,
+              inputSchema: handler.inputSchema,
+              execute: handler.execute.bind(handler),
+            });
+          }
+        }
+        if (triageToolMap.size > 0) {
+          agent.getAttentionController().setTriageTools(triageToolMap);
+        }
       } catch { /* agent not found */ }
     };
 

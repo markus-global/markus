@@ -26,6 +26,8 @@ import {
   HEARTBEAT_DAILY_LOG_CHARS,
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
+  TRIAGE_CONTEXT_MESSAGES_MAX,
+  TRIAGE_CONTEXT_MSG_CHARS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -639,9 +641,10 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
+    taskTitle?: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: `Task: ${taskDescription.slice(0, 80)}`,
+      summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
       content: taskDescription,
       taskId,
       extra: {
@@ -767,13 +770,17 @@ export class Agent {
       },
       getTriageContext: async () => {
         const messages = this.currentSessionId
-          ? this.memory.getRecentMessages(this.currentSessionId, 10)
+          ? this.memory.getRecentMessages(this.currentSessionId, TRIAGE_CONTEXT_MESSAGES_MAX * 2)
               .filter(m => m.role === 'user' || m.role === 'assistant')
-              .slice(-6)
-              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 200) : String(m.content).slice(0, 200) }))
+              .slice(-TRIAGE_CONTEXT_MESSAGES_MAX)
+              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, TRIAGE_CONTEXT_MSG_CHARS) : String(m.content).slice(0, TRIAGE_CONTEXT_MSG_CHARS) }))
           : [];
         const activities = this.recentActivitySummaries();
-        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities };
+
+        // Include active task IDs for situational awareness
+        const activeTaskIds = Array.from(this.activeTasks);
+
+        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities, activeTaskIds };
       },
       onTriageCompleted: (result) => {
         if (!result) return;
@@ -3626,6 +3633,10 @@ export class Agent {
 
   registerTool(handler: AgentToolHandler): void {
     this.tools.set(handler.name, handler);
+  }
+
+  getTools(): Map<string, AgentToolHandler> {
+    return this.tools;
   }
 
   /**

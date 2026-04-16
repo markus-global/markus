@@ -1,4 +1,16 @@
-import { createLogger, type LLMMessage, type LLMTool } from '@markus/shared';
+import {
+  createLogger,
+  type LLMMessage,
+  type LLMTool,
+  SUBAGENT_TASK_PREVIEW_CHARS,
+  SUBAGENT_THINKING_PREVIEW_CHARS,
+  SUBAGENT_RESULT_PREVIEW_CHARS,
+  SUBAGENT_LOG_ENTRY_CHARS,
+  SUBAGENT_ERROR_PREVIEW_CHARS,
+  SUBAGENT_MAX_PARALLEL,
+  SUBAGENT_MAX_LLM_RETRIES,
+  SUBAGENT_RETRY_BASE_MS,
+} from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
 import type { ContextEngine } from '../context-engine.js';
@@ -80,8 +92,6 @@ function stripThinkTags(text: string): string {
 }
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
-const MAX_LLM_RETRIES = 2;
-const RETRY_BASE_MS = 2000;
 
 function isRetryableError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
@@ -97,17 +107,17 @@ function isRetryableError(err: unknown): boolean {
 
 async function llmCallWithRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   let lastErr: unknown;
-  for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= SUBAGENT_MAX_LLM_RETRIES; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRetryableError(err) || attempt >= MAX_LLM_RETRIES) {
+      if (!isRetryableError(err) || attempt >= SUBAGENT_MAX_LLM_RETRIES) {
         throw err;
       }
-      const delay = RETRY_BASE_MS * Math.pow(2, attempt);
-      log.warn(`${label}: retryable error, attempt ${attempt + 1}/${MAX_LLM_RETRIES + 1}`, {
-        error: String(err).slice(0, 200),
+      const delay = SUBAGENT_RETRY_BASE_MS * Math.pow(2, attempt);
+      log.warn(`${label}: retryable error, attempt ${attempt + 1}/${SUBAGENT_MAX_LLM_RETRIES + 1}`, {
+        error: String(err).slice(0, SUBAGENT_ERROR_PREVIEW_CHARS),
         delay,
       });
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -204,7 +214,7 @@ export async function runSubagentLoop(
   onProgress?.({
     type: 'started',
     content: `Subagent ${subagentId} started`,
-    metadata: { subagentId, toolCount: toolMap.size, taskPreview: task.slice(0, 200) },
+    metadata: { subagentId, toolCount: toolMap.size, taskPreview: task.slice(0, SUBAGENT_TASK_PREVIEW_CHARS) },
   });
 
   let response = await llmCallWithRetry(
@@ -257,7 +267,7 @@ export async function runSubagentLoop(
       if (response.content) {
         onProgress?.({
           type: 'thinking',
-          content: stripThinkTags(response.content).slice(0, 500),
+          content: stripThinkTags(response.content).slice(0, SUBAGENT_THINKING_PREVIEW_CHARS),
         });
       }
 
@@ -291,14 +301,14 @@ export async function runSubagentLoop(
             toolCallId: tc.id,
             durationMs: toolDuration,
             success: !isErrorResult(result),
-            resultPreview: result.slice(0, 200),
+            resultPreview: result.slice(0, SUBAGENT_RESULT_PREVIEW_CHARS),
           },
         });
 
         logEntries.push({
           ts: new Date().toISOString(),
           role: 'tool',
-          content: result.slice(0, 5000),
+          content: result.slice(0, SUBAGENT_LOG_ENTRY_CHARS),
           toolCallId: tc.id,
           toolName: tc.name,
         });
@@ -478,11 +488,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         return JSON.stringify({ status: 'error', error: 'tasks array is required and must not be empty' });
       }
 
-      const MAX_PARALLEL = 10;
-      if (tasks.length > MAX_PARALLEL) {
+      if (tasks.length > SUBAGENT_MAX_PARALLEL) {
         return JSON.stringify({
           status: 'error',
-          error: `Too many parallel subagents (${tasks.length}). Maximum is ${MAX_PARALLEL}.`,
+          error: `Too many parallel subagents (${tasks.length}). Maximum is ${SUBAGENT_MAX_PARALLEL}.`,
         });
       }
 

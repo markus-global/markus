@@ -1358,7 +1358,8 @@ export class TaskService {
         },
         cancelToken,
         taskProjectContext,
-        executionRound
+        executionRound,
+        task.title,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -3580,7 +3581,8 @@ export class TaskService {
         },
         cancelToken,
         undefined,
-        executionRound
+        executionRound,
+        task.title,
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });
