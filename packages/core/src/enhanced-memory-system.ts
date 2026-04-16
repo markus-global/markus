@@ -326,6 +326,10 @@ export class EnhancedMemorySystem implements IMemoryStore {
     this.baseStore.replaceEntries(removedIds, newEntry);
   }
 
+  removeEntriesByTag(tag: string): number {
+    return this.baseStore.removeEntriesByTag(tag);
+  }
+
   getSession(sessionId: string): ConversationSession | undefined {
     return this.baseStore.getSession(sessionId);
   }
@@ -360,6 +364,10 @@ export class EnhancedMemorySystem implements IMemoryStore {
   
   getLongTermMemory(): string {
     return this.baseStore.getLongTermMemory();
+  }
+
+  getLongTermMemoryExcluding(sections: string[]): string {
+    return this.baseStore.getLongTermMemoryExcluding(sections);
   }
 
   getLongTermSection(sectionName: string): string {

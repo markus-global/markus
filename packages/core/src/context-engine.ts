@@ -336,7 +336,8 @@ export class ContextEngine {
       parts.push(sops.slice(0, SYSTEM_SOPS_CHARS));
     }
 
-    const longTermMem = opts.memory.getLongTermMemory();
+    // Exclude sections already loaded separately (SOPs) to avoid duplication
+    const longTermMem = opts.memory.getLongTermMemoryExcluding(['sops']);
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
       parts.push(longTermMem.slice(0, SYSTEM_LONGTERM_MEMORY_CHARS));
@@ -361,6 +362,25 @@ export class ContextEngine {
       }
     }
 
+    // Collect IDs already shown in Lessons / Best Practices to avoid duplication in Relevant Memories
+    const alreadyShownIds = new Set<string>([
+      ...lessons.map(e => e.id),
+      ...bestPractices.map(e => e.id),
+    ]);
+
+    // During task execution, actively surface lessons/best-practices matching the task
+    if (opts.scenario === 'task_execution' && opts.currentQuery) {
+      const taskLessons = this.matchLessonsForTask(opts.memory, opts.currentQuery, alreadyShownIds);
+      if (taskLessons.length > 0) {
+        parts.push('\n## Applicable Lessons for This Task');
+        parts.push('These lessons from past experience are relevant to the current task. Apply them proactively.');
+        for (const lesson of taskLessons) {
+          parts.push(`- ${lesson.content}`);
+          alreadyShownIds.add(lesson.id);
+        }
+      }
+    }
+
     const isDream = opts.scenario === 'memory_consolidation';
 
     if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
@@ -369,7 +389,7 @@ export class ContextEngine {
     }
 
     if (!isDream) {
-      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
+      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
         parts.push('\n## Relevant Memories');
         for (const mem of relevantMemories) {
@@ -1491,8 +1511,55 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private async retrieveRelevantMemories(memory: IMemoryStore, query?: string, agentId?: string): Promise<MemoryEntry[]> {
-    const facts = memory.getEntries('fact', this.config.memorySearchTopK);
+  /**
+   * Match lesson/best-practice entries against the current task description
+   * using keyword overlap. Returns entries whose content shares significant
+   * words with the task, ranked by overlap score.
+   */
+  private matchLessonsForTask(
+    memory: IMemoryStore,
+    taskDescription: string,
+    excludeIds: Set<string>,
+  ): MemoryEntry[] {
+    const lessons = memory.getEntriesByTag('lesson');
+    const bestPractices = memory.getEntriesByTag('best-practice');
+    const candidates = [...lessons, ...bestPractices].filter(e => !excludeIds.has(e.id));
+    if (candidates.length === 0) return [];
+
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+      'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or', 'not',
+      'this', 'that', 'it', 'as', 'if', 'but', 'do', 'does', 'did', 'has', 'have', 'had',
+      'will', 'would', 'could', 'should', 'can', 'may', 'must', 'use', 'task', 'using']);
+    const tokenize = (text: string) => {
+      const words = text.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+      return new Set(words.filter(w => !stopWords.has(w)));
+    };
+
+    const taskTokens = tokenize(taskDescription);
+    if (taskTokens.size === 0) return [];
+
+    const scored = candidates.map(entry => {
+      const entryTokens = tokenize(entry.content);
+      let overlap = 0;
+      for (const t of entryTokens) {
+        if (taskTokens.has(t)) overlap++;
+      }
+      return { entry, score: overlap };
+    }).filter(s => s.score >= 2);
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map(s => s.entry);
+  }
+
+  private async retrieveRelevantMemories(
+    memory: IMemoryStore,
+    query?: string,
+    agentId?: string,
+    excludeIds?: Set<string>,
+  ): Promise<MemoryEntry[]> {
+    const exclude = excludeIds ?? new Set<string>();
+    const facts = memory.getEntries('fact', this.config.memorySearchTopK)
+      .filter(f => !exclude.has(f.id));
 
     if (query && this.semanticSearch?.isEnabled()) {
       try {
@@ -1500,7 +1567,7 @@ export class ContextEngine {
           agentId,
           topK: this.config.memorySearchTopK,
         });
-        const semEntries = semResults.map(r => r.entry);
+        const semEntries = semResults.map(r => r.entry).filter(e => !exclude.has(e.id));
         const semIds = new Set(semEntries.map(e => e.id));
         const combined = [...facts.filter(f => !semIds.has(f.id)), ...semEntries];
         return combined.slice(0, this.config.memorySearchTopK * 2);
@@ -1511,7 +1578,7 @@ export class ContextEngine {
 
     if (query) {
       try {
-        const searchResults = memory.search(query);
+        const searchResults = memory.search(query).filter(e => !exclude.has(e.id));
         const searchIds = new Set(searchResults.map(m => m.id));
         const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
         return combined.slice(0, this.config.memorySearchTopK * 2);

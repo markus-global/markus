@@ -3032,6 +3032,7 @@ export class Agent {
         ? [
             'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section, you MUST review all dependency task outputs before continuing. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details. These outputs provide essential background knowledge that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check if you have SOPs or lessons relevant to this type of task. Your SOPs and applicable lessons are shown in your system context above — read them and follow any that match.',
             ...(hasErrors ? [
               '',
               '⚠ CRITICAL — LEARN FROM PREVIOUS FAILURES:',
@@ -3046,6 +3047,7 @@ export class Agent {
             'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
             '',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section above, you MUST review all dependency task outputs BEFORE starting your own work. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details of each dependency task. These dependency outputs provide essential background knowledge and artifacts that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check if you have SOPs or lessons relevant to this type of task. Your SOPs and applicable lessons are shown in your system context above — read them and follow any that match.',
           ].join('\n'),
       '',
       '## Completion Requirements — MANDATORY',
@@ -3275,6 +3277,24 @@ export class Agent {
             ].join('\n'),
           });
           log.debug('Injected task completion reminder', { taskId, iteration: taskToolIterations });
+        }
+
+        // Mid-execution reflection nudge every 30 tool iterations.
+        // Forces the agent to pause and capture insights while context is fresh.
+        if (taskToolIterations > 0 && taskToolIterations % 30 === 0) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: [
+              '[REFLECTION CHECKPOINT]',
+              `You have completed ${taskToolIterations} tool call rounds on this task.`,
+              'Before continuing, briefly consider:',
+              '- Have you encountered any surprising errors or workarounds worth remembering?',
+              '- Have you discovered a better tool or approach mid-task?',
+              'If yes, save the insight now using `memory_save` with appropriate tags (lesson, tool-preference, best-practice).',
+              'Then continue with the task.',
+            ].join('\n'),
+          });
+          log.debug('Injected mid-execution reflection nudge', { taskId, iteration: taskToolIterations });
         }
 
         const preparedTaskCont = await this.contextEngine.prepareMessages({
@@ -4229,29 +4249,37 @@ export class Agent {
       'Use `task_list` to find tasks recently completed (status `completed`) where you were the assignee.',
       'For each completed task since your last heartbeat:',
       '',
-      '1. **What went well?** — Identify approaches, patterns, or techniques that led to a smooth completion.',
-      '   - First-pass approvals (no revision needed) are strong signals of good practice.',
-      '   - Efficient tool usage, clean code patterns, good decomposition strategies.',
-      '2. **What could be improved?** — Note any friction, rework, or reviewer feedback that revealed a better way.',
+      '1. **What went well?** — First-pass approvals (no revision) are strong signals. Efficient tool usage, clean patterns, good decomposition.',
+      '2. **What could be improved?** — Friction, rework, reviewer feedback that revealed a better way.',
       '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), this is SOP material.',
       '',
-      'If you identify a best practice worth preserving:',
-      '- Save it via `memory_save` with `tags: ["lesson", "best-practice", ...]` and format:',
-      '  `[BEST-PRACTICE] <one-line summary>\\nContext: <when this applies>\\nApproach: <what to do>\\nWhy: <why this works>`',
-      '- If it is a multi-step repeatable workflow, promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.',
+      '## Knowledge Lifecycle (how to save what you learn)',
       '',
-      '## Self-Evolution Reflection',
-      'After reviewing completed tasks, reflect on your overall growth. Follow your **self-evolution** skill instructions:',
+      '**Intake buffer** (`memory_save` → memories.json):',
+      '- Individual observations: lessons, tool preferences, gotchas, task outcomes.',
+      '- Format: `[LESSON]`, `[BEST-PRACTICE]`, or `[TOOL-PREF]` prefix + context/approach/why.',
+      '- Tags: `lesson`, `best-practice`, `tool-preference` — these get surfaced automatically.',
+      '- Dream cycles will promote recurring patterns to MEMORY.md and prune source entries.',
       '',
-      '1. **Lessons** — Did anything go wrong or get corrected? Save with `memory_save` using `tags: ["lesson", ...]` and the `[LESSON]` format.',
-      '2. **Tool preferences** — Did you discover a better tool or parameter for a task? Save with `tags: ["lesson", "tool-preference", ...]` and the `[TOOL-PREF]` format.',
-      '3. **SOPs** — Consolidate best practices from completed tasks into SOPs. Update `memory_update_longterm({ section: "sops", ... })`.',
-      '   - Review existing SOPs first (`memory_search("sops")`) — update rather than duplicate.',
-      '   - Each SOP: trigger, steps, gotchas, last updated date.',
-      '4. **Role evolution** — When you accumulate 3+ related best practices or lessons pointing to a fundamental behavioral improvement, update your ROLE.md:',
-      '   - Read current ROLE.md via `file_read`',
-      '   - Append the new guideline (do NOT rewrite the file)',
-      '   - Log the change via `memory_save` with `tags: ["lesson", "role-evolution"]`',
+      '**Curated knowledge** (`memory_update_longterm` → MEMORY.md):',
+      '- Only for *validated, multi-step procedures* (SOPs) and *consolidated knowledge*.',
+      '- Use `mode: "patch"` to append a new SOP without overwriting existing ones.',
+      '- **ALWAYS check existing SOPs first** (`memory_search("sops")`) — update rather than duplicate.',
+      '- To update an existing SOP, use `mode: "replace"` with the full updated sops content.',
+      '- Each SOP: trigger condition, steps, gotchas, last updated date.',
+      '',
+      '**Shareable skills** (for team-wide best practices):',
+      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `builder_list`.',
+      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `builder_install`.',
+      '',
+      '**Decision guide — where does this insight go?**',
+      '| Observation type | Action |',
+      '|---|---|',
+      '| Single lesson / gotcha | `memory_save` with tags: ["lesson"] |',
+      '| Tool preference | `memory_save` with tags: ["lesson", "tool-preference"] |',
+      '| Multi-step repeatable workflow (personal) | `memory_update_longterm({ section: "sops", mode: "patch" })` |',
+      '| Best practice worth sharing with the team | Create skill via **skill-building**, then install with `builder_install` |',
+      '| 3+ related lessons → behavioral rule | Update ROLE.md (read first, append, log change) |',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',
@@ -4274,6 +4302,16 @@ export class Agent {
       ].join('\n');
     }
 
+    const qualitySignalSection = [
+      '',
+      '## Quality Signal Check',
+      'When reviewing completed tasks, note your revision rate:',
+      '- Tasks with `executionRound > 1` required revision — your initial approach had issues.',
+      '- A high revision rate (>30%) suggests your SOPs or lessons are not being applied effectively.',
+      '- Check: do your saved lessons and SOPs actually cover the failure patterns you see?',
+      '- If you keep making the same type of mistake, escalate it: turn the lesson into an SOP or update ROLE.md.',
+    ].join('\n');
+
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
@@ -4285,6 +4323,7 @@ export class Agent {
       requirementMonitoringSection,
       dailyReportSection,
       selfEvolutionSection,
+      qualitySignalSection,
       '',
       '## Core Principle: Patrol, Don\'t Build',
       'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
@@ -4497,27 +4536,43 @@ export class Agent {
       truncated,
     });
 
+    const existingSops = this.memory.getLongTermSection('sops');
+
     const prompt = [
       '[MEMORY CONSOLIDATION — Dream Cycle]',
       '',
-      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and identify:`,
-      '1. **Duplicates**: entries saying essentially the same thing',
-      '2. **Outdated**: entries superseded by newer information',
-      '3. **Merge candidates**: multiple entries about the same topic that can be combined',
+      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
+      '',
+      '**Phase 1 — Clean up:**',
+      '1. **Duplicates**: entries saying essentially the same thing → remove',
+      '2. **Outdated**: entries superseded by newer information → remove',
+      '3. **Merge candidates**: multiple entries about the same topic → combine into one',
+      '',
+      '**Phase 2 — Promote recurring patterns:**',
+      '4. **Pattern promotion**: If 3+ entries share a common theme (e.g., same type of mistake, same tool approach),',
+      '   synthesize them into a consolidated insight and mark the source entries for removal.',
+      '   Promoted insights go to `lessons-learned` section of MEMORY.md.',
+      '5. **SOP candidates**: If merged/promoted entries describe a repeatable multi-step workflow,',
+      '   flag them for SOP promotion.',
+      '',
+      existingSops ? `## Existing SOPs (for reference — avoid duplicating these)\n${existingSops.slice(0, 1000)}\n` : '',
       '',
       'Respond with ONLY a JSON object (no markdown fences):',
       '{',
-      '  "remove": ["id1", "id2"],       // IDs to delete (duplicates, outdated)',
-      '  "merge": [                       // groups to merge into single entries',
+      '  "remove": ["id1", "id2"],',
+      '  "merge": [',
       '    { "removeIds": ["id3", "id4"], "mergedContent": "combined text", "tags": ["tag1"] }',
+      '  ],',
+      '  "promote": [',
+      '    { "sourceIds": ["id5", "id6", "id7"], "section": "lessons-learned", "content": "synthesized insight" }',
       '  ]',
       '}',
       '',
       'Rules:',
       '- Be conservative. Only remove entries you are confident are redundant or outdated.',
       '- When merging, preserve all unique information from the originals.',
-      '- If nothing needs consolidation, return { "remove": [], "merge": [] }',
-      '- Keep lessons and best-practices entries unless truly duplicated.',
+      '- Promote only when 3+ entries point to the same pattern.',
+      '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
       '',
       '## Current Memory Entries',
       '',
@@ -4541,18 +4596,21 @@ export class Agent {
       const plan = JSON.parse(jsonMatch[0]) as {
         remove?: string[];
         merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
+        promote?: Array<{ sourceIds: string[]; section: string; content: string }>;
       };
 
       log.info('Dream cycle plan', {
         agentId: this.id,
         toRemove: plan.remove?.length ?? 0,
         toMerge: plan.merge?.length ?? 0,
+        toPromote: plan.promote?.length ?? 0,
         removeIds: plan.remove?.slice(0, 10),
         mergeGroups: plan.merge?.map(g => ({ removeIds: g.removeIds, contentPreview: g.mergedContent.slice(0, 80) })).slice(0, 5),
       });
 
       let removedCount = 0;
       let mergedCount = 0;
+      let promotedCount = 0;
 
       if (plan.remove?.length) {
         removedCount = this.memory.removeEntries(plan.remove);
@@ -4584,12 +4642,37 @@ export class Agent {
         }
       }
 
-      if (removedCount > 0 || mergedCount > 0) {
+      // Phase 2: Promote recurring patterns to MEMORY.md and prune source entries
+      if (plan.promote?.length) {
+        for (const promo of plan.promote) {
+          if (!promo.sourceIds?.length || !promo.content || !promo.section) continue;
+          const section = promo.section.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          const existing = this.memory.getLongTermSection(section);
+          const merged = existing ? `${existing}\n${promo.content}` : promo.content;
+          this.memory.addLongTermMemory(section, merged);
+
+          // Remove source entries from intake buffer
+          const removed = this.memory.removeEntries(promo.sourceIds);
+          if (this.semanticSearch?.isEnabled()) {
+            for (const id of promo.sourceIds) {
+              this.semanticSearch.deleteMemory(id).catch(() => {});
+            }
+          }
+          promotedCount++;
+          log.debug('Dream cycle: promoted pattern to MEMORY.md', {
+            section, sourceCount: promo.sourceIds.length, removed,
+            contentPreview: promo.content.slice(0, 100),
+          });
+        }
+      }
+
+      if (removedCount > 0 || mergedCount > 0 || promotedCount > 0) {
         log.info('Dream cycle completed', {
           agentId: this.id,
           entriesBefore: entries.length,
           removed: removedCount,
           merged: mergedCount,
+          promoted: promotedCount,
           entriesAfter: this.memory.getEntries().length,
         });
       } else {

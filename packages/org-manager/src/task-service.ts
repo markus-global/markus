@@ -2945,6 +2945,28 @@ export class TaskService {
 
     const hadRevisions = (task.executionRound ?? 1) > 1;
 
+    // Build execution trace summary from available task data
+    const traceParts: string[] = [];
+    traceParts.push(`- Execution rounds: ${task.executionRound ?? 1}`);
+    if (task.startedAt && task.completedAt) {
+      const durationMin = Math.round(
+        (new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()) / 60_000
+      );
+      traceParts.push(`- Duration: ~${durationMin} min`);
+    }
+    if (task.result?.summary) {
+      traceParts.push(`- Result summary: ${task.result.summary.slice(0, 300)}`);
+    }
+
+    const recentNotes = (task.notes ?? []).slice(-8);
+    if (recentNotes.length > 0) {
+      traceParts.push('- Recent notes (oldest→newest):');
+      for (const note of recentNotes) {
+        traceParts.push(`  • ${note.slice(0, 200)}`);
+      }
+    }
+    const traceSection = traceParts.join('\n');
+
     const prompt = hadRevisions
       ? [
           '[SELF-EVOLUTION — Post-Task Reflection (Revision)]',
@@ -2952,24 +2974,34 @@ export class TaskService {
           `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
           'This means the task required revision — something in your initial approach needed correction.',
           '',
-          'Follow the **self-evolution** skill instructions to extract lessons:',
+          '## Execution Trace',
+          traceSection,
+          '',
+          'Use the trace above to ground your reflection:',
           '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
           '2. What did you change in the successful round?',
-          '3. What is the generalizable lesson?',
+          '3. What is the generalizable lesson? Is it SOP-worthy (multi-step repeatable procedure)?',
           '',
           'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
-          'If you now have 3+ unsaved lessons, also consolidate into long-term memory via `memory_update_longterm` with section `"lessons-learned"`.',
+          'If it is a repeatable multi-step procedure, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
+          'If the best practice would benefit other agents on the team, create a shareable skill via **skill-building** and install it with `builder_install`.',
         ].join('\n')
       : [
           '[SELF-EVOLUTION — Post-Task Reflection (Success)]',
           '',
           `Task "${task.title}" (ID: ${task.id}) was completed successfully on the first attempt.`,
           '',
-          'Briefly reflect on what made this task go well:',
+          '## Execution Trace',
+          traceSection,
+          '',
+          'First-pass approval is a strong signal. Reflect on what made this work:',
           '1. Were there tools, patterns, or approaches that proved especially effective?',
           '2. Is there a reusable technique or SOP worth remembering for similar future tasks?',
+          '3. Would this best practice benefit other agents on the team? If so, consider creating a shareable skill.',
           '',
           'If you identify a meaningful insight, save it using `memory_save` with tags `["lesson", "best-practice", ...]`.',
+          'If it is a multi-step workflow, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
+          'If worth sharing with the team, create a skill via **skill-building** and install with `builder_install`.',
           'If nothing noteworthy stands out, it is fine to skip saving.',
         ].join('\n');
 

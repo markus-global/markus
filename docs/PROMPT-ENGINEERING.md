@@ -256,6 +256,17 @@ Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` 
 
 In `_executeTaskInternal`, every 10 tool iterations, a `[SYSTEM REMINDER]` message is injected reminding the agent to call `task_submit_review`. This combats the "lost in the middle" effect where long tool-use sequences push the original instructions out of the model's attention.
 
+### 4.6 Mid-Execution Reflection Nudge
+
+Every 30 tool iterations during task execution, a `[REFLECTION CHECKPOINT]` message is injected prompting the agent to capture any insights discovered during the current task. This ensures lessons are saved while context is fresh, rather than relying solely on post-task reflection.
+
+### 4.7 Post-Task Reflection
+
+When a task is accepted (`triggerPostTaskReflection` in `task-service.ts`), the system sends a reflection prompt to the assigned agent. The prompt includes:
+- An **execution trace summary** (execution rounds, duration, result summary, recent notes)
+- Differentiated guidance for **revision** cases (focus on what went wrong) vs **success** cases (focus on what worked)
+- Guidance to create **skill packages** via skill-building for complex procedures (5+ steps)
+
 ---
 
 ## 5. Scenario-Specific Prompt Assembly
@@ -303,11 +314,13 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 2. Agent's custom checklist (from `role.heartbeatChecklist`)
 3. Last heartbeat summary (from memory search)
 4. Failed task recovery instructions
-5. Daily report section (managers, after 20:00)
-6. Self-evolution reflection instructions
-7. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
-8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
-9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
+5. Requirement monitoring section
+6. Daily report section (managers, after 20:00)
+7. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (intake buffer vs curated knowledge vs skill creation)
+8. Quality signal check — revision rate self-assessment, SOP/lesson effectiveness
+9. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
+10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
+11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
 Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 

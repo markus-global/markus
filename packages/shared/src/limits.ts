@@ -154,6 +154,16 @@ export const SYSTEM_SOPS_CHARS = 3000;
  *  5000 chars ≈ ~1200 tokens — moderate cost, good coverage. */
 export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
 
+/** Hard cap on individual MEMORY.md section content (chars).
+ *  Prevents any single section from growing unbounded.
+ *  3000 chars ≈ 10-15 SOP entries or ~20 lessons. */
+export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
+
+/** Hard cap on total MEMORY.md file size (chars).
+ *  Prevents the file from growing without bound even if the agent
+ *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
+export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
+
 /** Max recent lesson entries (tagged "lesson") injected into system prompt.
  *  These are individual memory_save entries from self-evolution.
  *  10 entries × ~150 chars = ~1500 chars ≈ ~375 tokens. */
