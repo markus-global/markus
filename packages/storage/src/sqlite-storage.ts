@@ -1803,7 +1803,7 @@ export class SqliteChatSessionRepo {
    */
   migrateLegacyMessages(): number {
     const rows = this.db.prepare(
-      `SELECT id, content, metadata FROM chat_messages
+      `SELECT id, content, metadata, created_at FROM chat_messages
        WHERE role = 'assistant'
          AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
          AND content IS NOT NULL AND content != ''`
@@ -1821,8 +1821,9 @@ export class SqliteChatSessionRepo {
       const content = row['content'] as string;
       const rawMeta = row['metadata'] as string | null;
       const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
+      const createdAt = row['created_at'] as string | null;
 
-      const segments = this._parseContentToSegments(content);
+      const segments = this._parseContentToSegments(content, createdAt ?? undefined);
       if (segments.length === 0) continue;
 
       existingMeta.segments = segments;
@@ -1836,28 +1837,31 @@ export class SqliteChatSessionRepo {
     return migrated;
   }
 
-  private _parseContentToSegments(content: string): Array<Record<string, unknown>> {
+  private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {
     const segments: Array<Record<string, unknown>> = [];
     let remaining = content;
 
-    // Strip thinking blocks
     remaining = remaining.replace(/<think>[\s\S]*?<\/think>/g, '');
 
-    // Extract tool invocations (XML format from LLM output)
     const toolPattern = /<(?:invoke|function_calls|antml:\w+)\b[\s\S]*?(?:<\/(?:invoke|function_calls|antml:\w+)>|$)/g;
     const parts = remaining.split(toolPattern);
     const tools = remaining.match(toolPattern) ?? [];
 
+    const baseMs = msgCreatedAt ? new Date(msgCreatedAt).getTime() : Date.now();
+    let cursorMs = baseMs;
+
     for (let i = 0; i < parts.length; i++) {
       const text = parts[i]!.replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '').trim();
       if (text) {
-        segments.push({ type: 'text', content: text });
+        segments.push({ type: 'text', content: text, createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 1000;
       }
       if (i < tools.length) {
         const toolXml = tools[i]!;
         const nameMatch = toolXml.match(/name="([^"]+)"/);
         const toolName = nameMatch?.[1] ?? 'unknown_tool';
-        segments.push({ type: 'tool', tool: toolName, status: 'done' });
+        segments.push({ type: 'tool', tool: toolName, status: 'done', createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 2000;
       }
     }
 

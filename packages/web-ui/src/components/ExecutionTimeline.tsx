@@ -517,6 +517,9 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 
 function ThinkingRow({ content, time, showTime }: { content: string; time?: string; showTime?: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const firstLine = content.split('\n')[0] ?? '';
+  const preview = firstLine.length > 60 ? firstLine.slice(0, 60) + '...' : firstLine;
+  const hasMore = content.length > firstLine.length || firstLine.length > 60;
   return (
     <div className="flex items-start gap-2">
       {showTime && time && (
@@ -525,12 +528,11 @@ function ThinkingRow({ content, time, showTime }: { content: string; time?: stri
       <div className="flex-1 min-w-0 my-1 overflow-hidden">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+          className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors max-w-full"
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-purple-400/60 shrink-0" />
-          <span>Thinking</span>
-          <span className="text-fg-tertiary text-[10px]">({content.length} chars)</span>
-          <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          <svg className={`w-3 h-3 transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          <span className="font-medium shrink-0">Thinking</span>
+          <span className="text-fg-tertiary text-[11px] truncate">{preview}</span>
         </button>
         {expanded && (
           <div className="mt-1.5 bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2.5 overflow-hidden">

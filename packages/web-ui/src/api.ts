@@ -37,8 +37,8 @@ export interface ChatSessionInfo {
 }
 
 export type StoredSegment =
-  | { type: 'text'; content: string }
-  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number };
+  | { type: 'text'; content: string; createdAt?: string }
+  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string };
 
 export interface ChatMessageInfo {
   id: string;

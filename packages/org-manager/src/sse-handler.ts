@@ -35,7 +35,7 @@ export interface SSEMessageHandlerOptions {
 export class SSEHandler {
   private options: SSEMessageHandlerOptions;
   private sseBuffer: SSEBuffer | null = null;
-  private msgSegments: Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number}> = [];
+  private msgSegments: Array<{type: 'text'; content: string; createdAt?: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string}> = [];
   private textBuf = '';
   private runningTools: Array<{tool: string; arguments?: unknown; startedAt: number}> = [];
   private totalTokens = 0;
@@ -189,10 +189,10 @@ export class SSEHandler {
       // Include any partial text that was accumulated before the error.
       const errSuffix = `\n\n⚠ ${String(error).slice(0, 500)}`;
       if (this.textBuf) {
-        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.msgSegments.push({ type: 'text', content: this.textBuf, createdAt: new Date().toISOString() });
         this.textBuf = '';
       }
-      this.msgSegments.push({ type: 'text', content: errSuffix.trim() });
+      this.msgSegments.push({ type: 'text', content: errSuffix.trim(), createdAt: new Date().toISOString() });
 
       // Reconstruct reply from accumulated text segments so partial content is preserved
       const partialText = this.msgSegments
@@ -256,6 +256,7 @@ export class SSEHandler {
         status: 'stopped',
         arguments: rt.arguments,
         durationMs: Date.now() - rt.startedAt,
+        createdAt: new Date().toISOString(),
       });
     }
     this.runningTools = [];
@@ -290,7 +291,7 @@ export class SSEHandler {
       
       if (event.phase === 'start') {
         if (this.textBuf) { 
-          this.msgSegments.push({ type: 'text', content: this.textBuf }); 
+          this.msgSegments.push({ type: 'text', content: this.textBuf, createdAt: new Date().toISOString() }); 
           this.textBuf = ''; 
         }
         if (event.tool) {
@@ -307,12 +308,13 @@ export class SSEHandler {
           result: event.result,
           error: event.error,
           durationMs: event.durationMs,
+          createdAt: new Date().toISOString(),
         });
         this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
       }
     } else if (event.type === 'message_end') {
       if (this.textBuf) {
-        this.msgSegments.push({ type: 'text', content: this.textBuf });
+        this.msgSegments.push({ type: 'text', content: this.textBuf, createdAt: new Date().toISOString() });
         this.textBuf = '';
       }
       if (event.usage?.outputTokens) {

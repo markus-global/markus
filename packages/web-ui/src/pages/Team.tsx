@@ -30,14 +30,16 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
-  | { type: 'text'; content: string; thinking?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[] };
+  | { type: 'text'; content: string; thinking?: string; createdAt?: string }
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[]; createdAt?: string };
 
 interface ChatMsg {
   id: string;
   sender: 'user' | 'agent';
   text: string;          // plain text (used for DB-loaded messages without segments)
   time: string;
+  /** Raw ISO timestamp from DB */
+  rawCreatedAt?: string;
   agentName?: string;
   agentId?: string;
   /** Chronologically interleaved segments (text + tool calls) — built during streaming */
@@ -93,13 +95,14 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     sender: m.role === 'user' ? 'user' : 'agent',
     text: m.content,
     time: new Date(m.createdAt).toLocaleTimeString(),
+    rawCreatedAt: m.createdAt,
     agentId: m.role !== 'user' ? m.agentId : undefined,
   };
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
     base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
       s.type === 'tool'
-        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs }
-        : { type: 'text' as const, content: s.content }
+        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
+        : { type: 'text' as const, content: s.content, createdAt: s.createdAt }
     );
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
@@ -135,6 +138,7 @@ function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
     sender: m.senderType === 'human' ? 'user' : 'agent',
     text: m.text,
     time: new Date(m.createdAt).toLocaleTimeString(),
+    rawCreatedAt: m.createdAt,
     agentName: m.senderType !== 'human' ? m.senderName : undefined,
     agentId: m.senderType !== 'human' ? m.senderId : undefined,
     isError,
@@ -413,23 +417,42 @@ function MessageActions({
  * - Real (non-thinking) text between tool calls is shown at its natural position
  * - Thinking content that spans a tool call is preserved across the gap
  */
-function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
+function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string, msgTime?: string): ExecutionStreamEntryUI[] {
   if (!segments) return [];
   const entries: ExecutionStreamEntryUI[] = [];
   let seq = 0;
-  const now = new Date().toISOString();
   const aid = agentId ?? '';
+
+  // For old segments without per-segment createdAt, build incremental timestamps
+  // starting from the message creation time.
+  const baseMs = msgTime ? new Date(msgTime).getTime() : Date.now();
+  let cursorMs = baseMs;
+  const hasRealTimestamps = segments.some(s => s.createdAt);
+
+  const getTimestamp = (seg: MsgSegment): string => {
+    if (seg.createdAt) return seg.createdAt;
+    if (hasRealTimestamps) return new Date(cursorMs).toISOString();
+    // For legacy data, advance cursor by 1s for text, or use durationMs for tools
+    const ts = new Date(cursorMs).toISOString();
+    if (seg.type === 'tool' && seg.durationMs) {
+      cursorMs += seg.durationMs;
+    } else {
+      cursorMs += 1000;
+    }
+    return ts;
+  };
 
   let insideThink = false;
   let thinkBuf = '';
   let textBuf = '';
+  let currentSegTimestamp = '';
 
   const emitThinking = () => {
     const t = thinkBuf.trim();
     if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
         metadata: { isThinking: true },
       });
     }
@@ -441,7 +464,7 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
     if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
       });
     }
     textBuf = '';
@@ -450,7 +473,6 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   const OPEN_TAG = '<think>';
   const CLOSE_TAG = '</think>';
 
-  /** Parse text content, tracking <think> state across calls */
   const processText = (content: string) => {
     let pos = 0;
     while (pos < content.length) {
@@ -481,13 +503,18 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   };
 
   for (const seg of segments) {
+    currentSegTimestamp = getTimestamp(seg);
+
     if (seg.type === 'tool') {
-      // Flush pending regular text before the tool (thinking stays open across tools)
       if (!insideThink) emitText();
+
+      const toolStartTs = seg.createdAt && seg.durationMs
+        ? new Date(new Date(seg.createdAt).getTime() - seg.durationMs).toISOString()
+        : currentSegTimestamp;
 
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: now,
+        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: toolStartTs,
       });
       if (seg.status !== 'running') {
         entries.push({
@@ -498,11 +525,10 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
             success: seg.status !== 'error',
             ...(seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
           },
-          createdAt: now,
+          createdAt: currentSegTimestamp,
         });
       }
     } else {
-      // Handle client-side extracted thinking (from streaming)
       if (seg.thinking) {
         if (!insideThink) emitText();
         thinkBuf += seg.thinking;
@@ -512,7 +538,6 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
     }
   }
 
-  // Flush whatever remains
   if (insideThink) {
     emitThinking();
   } else {
@@ -538,7 +563,7 @@ function AgentMessageBody({
   // If segments is defined but empty, fall through to legacy path using msg.text
   if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
-    const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
+    const streamEntries = segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt);
     const streamingText = isStreaming
       ? (() => {
           const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
