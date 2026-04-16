@@ -1638,10 +1638,10 @@ export class TaskService {
         title: `Task approval: ${task.title}`,
         description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
         details: { taskId: task.id, priority: task.priority },
-      }).then(approved => {
+      }).then(result => {
         const current = this.tasks.get(task.id);
         if (!current || current.status !== 'pending') return;
-        if (approved) {
+        if (result.approved) {
           this.approveTask(task.id);
         } else {
           this.rejectTask(task.id);
