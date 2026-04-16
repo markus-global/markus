@@ -30,14 +30,16 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 
 /** A single interleaved segment: either text or a tool call */
 export type MsgSegment =
-  | { type: 'text'; content: string; thinking?: string }
-  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[] };
+  | { type: 'text'; content: string; thinking?: string; createdAt?: string }
+  | { type: 'tool'; key: string; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; args?: unknown; result?: string; error?: string; durationMs?: number; liveOutput?: string; subagentLogs?: import('../api.ts').SubagentProgressEvent[]; createdAt?: string };
 
 interface ChatMsg {
   id: string;
   sender: 'user' | 'agent';
   text: string;          // plain text (used for DB-loaded messages without segments)
   time: string;
+  /** Raw ISO timestamp from DB */
+  rawCreatedAt?: string;
   agentName?: string;
   agentId?: string;
   /** Chronologically interleaved segments (text + tool calls) — built during streaming */
@@ -93,13 +95,14 @@ function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     sender: m.role === 'user' ? 'user' : 'agent',
     text: m.content,
     time: new Date(m.createdAt).toLocaleTimeString(),
+    rawCreatedAt: m.createdAt,
     agentId: m.role !== 'user' ? m.agentId : undefined,
   };
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
     base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
       s.type === 'tool'
-        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs }
-        : { type: 'text' as const, content: s.content }
+        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
+        : { type: 'text' as const, content: s.content, createdAt: s.createdAt }
     );
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
@@ -135,6 +138,7 @@ function channelMsgToChat(m: ChannelMessageInfo): ChatMsg {
     sender: m.senderType === 'human' ? 'user' : 'agent',
     text: m.text,
     time: new Date(m.createdAt).toLocaleTimeString(),
+    rawCreatedAt: m.createdAt,
     agentName: m.senderType !== 'human' ? m.senderName : undefined,
     agentId: m.senderType !== 'human' ? m.senderId : undefined,
     isError,
@@ -316,14 +320,15 @@ function friendlyAgentError(err: unknown): string {
 
 /** Action toolbar shown on hover below a message bubble */
 function MessageActions({
-  msg, onCopy, onRetry, onReply, isCopied, isLastAgentMsg,
+  msg, onCopy, onRetry, onResume, onReply, isCopied, isLastAgentMsg,
 }: {
   msg: ChatMsg;
   onCopy: (msg: ChatMsg) => void;
   onRetry?: (msg: ChatMsg) => void;
+  onResume?: (msg: ChatMsg) => void;
   onReply?: (msg: ChatMsg) => void;
   isCopied: boolean;
-  /** Only the most recent agent message should offer Retry/Re-ask */
+  /** Only the most recent agent message should offer Retry/Resume/Re-ask */
   isLastAgentMsg?: boolean;
 }) {
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
@@ -344,6 +349,17 @@ function MessageActions({
         )}
         {isCopied ? 'Copied' : 'Copy'}
       </button>
+      {/* Resume — for the last agent message (continue from where it left off) */}
+      {canRetry && onResume && (
+        <button
+          onClick={() => onResume(msg)}
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors"
+          title="Resume"
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+          Resume
+        </button>
+      )}
       {/* Re-ask — for stopped messages (only on latest agent msg) */}
       {canRetry && isStopped && onRetry && (
         <button
@@ -401,23 +417,42 @@ function MessageActions({
  * - Real (non-thinking) text between tool calls is shown at its natural position
  * - Thinking content that spans a tool call is preserved across the gap
  */
-function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string): ExecutionStreamEntryUI[] {
+function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string, msgTime?: string): ExecutionStreamEntryUI[] {
   if (!segments) return [];
   const entries: ExecutionStreamEntryUI[] = [];
   let seq = 0;
-  const now = new Date().toISOString();
   const aid = agentId ?? '';
+
+  // For old segments without per-segment createdAt, build incremental timestamps
+  // starting from the message creation time.
+  const baseMs = msgTime ? new Date(msgTime).getTime() : Date.now();
+  let cursorMs = baseMs;
+  const hasRealTimestamps = segments.some(s => s.createdAt);
+
+  const getTimestamp = (seg: MsgSegment): string => {
+    if (seg.createdAt) return seg.createdAt;
+    if (hasRealTimestamps) return new Date(cursorMs).toISOString();
+    // For legacy data, advance cursor by 1s for text, or use durationMs for tools
+    const ts = new Date(cursorMs).toISOString();
+    if (seg.type === 'tool' && seg.durationMs) {
+      cursorMs += seg.durationMs;
+    } else {
+      cursorMs += 1000;
+    }
+    return ts;
+  };
 
   let insideThink = false;
   let thinkBuf = '';
   let textBuf = '';
+  let currentSegTimestamp = '';
 
   const emitThinking = () => {
     const t = thinkBuf.trim();
     if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
         metadata: { isThinking: true },
       });
     }
@@ -429,7 +464,7 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
     if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: now,
+        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
       });
     }
     textBuf = '';
@@ -438,7 +473,6 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   const OPEN_TAG = '<think>';
   const CLOSE_TAG = '</think>';
 
-  /** Parse text content, tracking <think> state across calls */
   const processText = (content: string) => {
     let pos = 0;
     while (pos < content.length) {
@@ -469,13 +503,18 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
   };
 
   for (const seg of segments) {
+    currentSegTimestamp = getTimestamp(seg);
+
     if (seg.type === 'tool') {
-      // Flush pending regular text before the tool (thinking stays open across tools)
       if (!insideThink) emitText();
+
+      const toolStartTs = seg.createdAt && seg.durationMs
+        ? new Date(new Date(seg.createdAt).getTime() - seg.durationMs).toISOString()
+        : currentSegTimestamp;
 
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: now,
+        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: toolStartTs,
       });
       if (seg.status !== 'running') {
         entries.push({
@@ -486,11 +525,10 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
             success: seg.status !== 'error',
             ...(seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
           },
-          createdAt: now,
+          createdAt: currentSegTimestamp,
         });
       }
     } else {
-      // Handle client-side extracted thinking (from streaming)
       if (seg.thinking) {
         if (!insideThink) emitText();
         thinkBuf += seg.thinking;
@@ -500,7 +538,6 @@ function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string
     }
   }
 
-  // Flush whatever remains
   if (insideThink) {
     emitThinking();
   } else {
@@ -523,9 +560,10 @@ function AgentMessageBody({
   const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
 
   // Messages with segment data: render compact card / full log + final text
-  if (segments !== undefined) {
+  // If segments is defined but empty, fall through to legacy path using msg.text
+  if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
-    const streamEntries = segmentsToStreamEntries(segments, msg.agentId);
+    const streamEntries = segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt);
     const streamingText = isStreaming
       ? (() => {
           const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
@@ -538,9 +576,13 @@ function AgentMessageBody({
       : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
-    // Always use allText so MarkdownMessage can properly extract think blocks
-    // that span across text segments (split by tool-call segments in between).
-    const displayText = allText;
+    const displayText = allText
+      ? allText
+          .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+          .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+          .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+          .trim() || null
+      : null;
 
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
     if (viewMode === 'compact') {
@@ -580,7 +622,7 @@ function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {viewMode === 'compact' && displayText && (
+        {displayText && (
           <MarkdownMessage content={displayText} />
         )}
 
@@ -596,6 +638,13 @@ function AgentMessageBody({
 
   // Fallback: old messages from DB (no segments) — use legacy ActivityIndicator + text
   const hasActivities = (msg.activities?.length ?? 0) > 0;
+  const legacyText = msg.text
+    ? msg.text
+        .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+        .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+        .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
+        .trim()
+    : '';
   return (
     <>
       {(isStreaming || hasActivities) && (
@@ -605,7 +654,7 @@ function AgentMessageBody({
           persistent={!isStreaming && hasActivities}
         />
       )}
-      {msg.text ? <MarkdownMessage content={msg.text} /> : null}
+      {legacyText ? <MarkdownMessage content={legacyText} /> : null}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -905,10 +954,16 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   // Auto-select secretary agent when no agent is selected and agents have loaded
   useEffect(() => {
     if (selectedAgent || agents.length === 0) return;
-    const secretary = agents.find(a => a.role === 'secretary');
+    const secretary = agents.find(a => a.role === 'secretary')
+      ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
     if (secretary) {
       setChatMode('direct');
       setSelectedAgent(secretary.id);
+      setMainTab('chat');
+    } else if (agents.length > 0) {
+      setChatMode('direct');
+      setSelectedAgent(agents[0].id);
+      setMainTab('chat');
     }
   }, [agents, selectedAgent]);
 
@@ -1299,7 +1354,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     setActivities([]);
   };
 
-  const send = async (retryText?: string, options?: { isRetry?: boolean }) => {
+  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
     const text = (retryText ?? input).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
@@ -1576,6 +1631,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
           imagesToSend,
           effectiveSessionId,
           options?.isRetry,
+          options?.isResume,
         );
         if (currentConvKeyRef.current === sendKey) {
           if (streamResult.sessionId) {
@@ -1703,14 +1759,15 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
               const result = await api.sessions.getMessages(pollSessionId, 2);
               const assistantMsg = result.messages.find(m => m.role === 'assistant');
               if (assistantMsg?.content) {
+                const recovered = dbMsgToChat(assistantMsg);
                 updateConvMsgs(sendKey, prev => {
                   const u = [...prev];
                   const idx = u.findIndex(m => m.id === agentMsgId);
                   if (idx >= 0) {
                     u[idx] = {
                       ...u[idx]!,
-                      text: assistantMsg.content,
-                      segments: [{ type: 'text', content: assistantMsg.content }],
+                      text: recovered.text,
+                      segments: recovered.segments,
                     };
                   }
                   return u;
@@ -1780,6 +1837,27 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
     void send(retryText, { isRetry: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, updateConvMsgs]);
+
+  const handleResume = useCallback((resumeMsg: ChatMsg) => {
+    const convKey = currentConvKeyRef.current;
+    const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
+    const resumeIdx = currentMsgs.findIndex(m => m.id === resumeMsg.id);
+    if (resumeIdx < 0) return;
+    let userMsg: ChatMsg | null = null;
+    for (let i = resumeIdx - 1; i >= 0; i--) {
+      if (currentMsgs[i]?.sender === 'user') { userMsg = currentMsgs[i]!; break; }
+    }
+    const resumeText = userMsg?.text ?? '';
+    if (!resumeText) return;
+
+    // Remove the agent bubble (and any messages after it)
+    updateConvMsgs(convKey, prev => {
+      const idx = prev.findIndex(m => m.id === resumeMsg.id);
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+    void send(resumeText, { isResume: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -2291,7 +2369,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       }
                     </div>
                     <div className={`transition-opacity ${isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
-                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                      <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                     </div>
                   </div>
                 </div>
@@ -2420,7 +2498,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                       </div>
                       {showActions && (
                         <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'} ${msg.sender === 'user' ? 'flex justify-end' : ''}`}>
-                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                          <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
                         </div>
                       )}
                     </div>

@@ -21,6 +21,9 @@ import {
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
+  TRIAGE_ITEM_CONTENT_CHARS,
+  TRIAGE_MAX_TOOL_ITERATIONS,
+  TRIAGE_ALLOWED_TOOLS,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
@@ -93,6 +96,12 @@ export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
 export type TriageJudge = (prompt: string) => Promise<string>;
 
 /**
+ * Extended triage function that supports tool use during deliberation.
+ * When set, performTriage uses a mini tool loop for read-only context gathering.
+ */
+export type TriageChatFn = (messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string }>, tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>) => Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }> }>;
+
+/**
  * Event-driven attention controller for a single agent.
  *
  * The controller manages the agent's cognitive focus:
@@ -119,6 +128,8 @@ export class AttentionController {
   private decisionPersistence?: DecisionPersistence;
   private llmJudge?: LLMDecisionJudge;
   private triageJudge?: TriageJudge;
+  private triageToolHandlers?: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }>;
+  private triageChatFn?: TriageChatFn;
   private lastTriageResult?: TriageResult & { timestamp: string };
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
@@ -168,7 +179,11 @@ export class AttentionController {
     );
 
     this.startWatchdog();
-    this.loopPromise = this.runLoop();
+    this.loopPromise = this.runLoop().catch(err => {
+      if (this.running) {
+        log.error('Attention loop crashed unexpectedly', { agentId: this.agentId, error: String(err) });
+      }
+    });
     log.info('Attention controller started', { agentId: this.agentId });
   }
 
@@ -234,27 +249,43 @@ export class AttentionController {
       this.currentFocus = undefined;
       this.delegate?.onFocusChanged(undefined);
 
+      // Resurface deferred items that are due before waiting for new work
+      try { this.mailbox.resurfaceDue(); } catch { /* best-effort */ }
+
       let item: MailboxItem;
       try {
         item = await this.mailbox.dequeueAsync();
       } catch {
+        // MailboxCancelledError (or any error) while not running → clean exit
         if (!this.running) break;
         continue;
       }
 
       if (!this.running) {
-        this.mailbox.enqueue(item.sourceType, item.payload, {
-          priority: item.priority,
-          metadata: item.metadata,
-        });
+        // Re-enqueue the item so it is not lost on shutdown
+        try {
+          this.mailbox.enqueue(item.sourceType, item.payload, {
+            priority: item.priority,
+            metadata: item.metadata,
+          });
+        } catch (err) {
+          log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
+        }
         break;
       }
 
-      // Pre-triage consolidation: merge items sharing the same task/requirement.
-      // Put headItem back temporarily so it participates in consolidation,
-      // then re-dequeue the (possibly enriched) head.
+      // Pre-triage cleanup: drop stale informational items, then consolidate
+      // items sharing the same task/requirement into single rich-context items.
       if (this.mailbox.depth > 0) {
         this.mailbox.putBack(item);
+
+        // 1. Purge stale informational items (old heartbeats, status updates, etc.)
+        const purged = this.mailbox.purgeStaleItems();
+        if (purged > 0) {
+          log.info('Pre-triage stale purge', { agentId: this.agentId, purged });
+        }
+
+        // 2. Consolidate items by entity (task/requirement)
         const consolidated = this.mailbox.consolidateByEntity();
         const reHead = this.mailbox.dequeue();
         if (reHead) {
@@ -295,7 +326,7 @@ export class AttentionController {
             this.mailbox.defer(deferId);
           }
           for (const dropId of triageResult.dropItemIds) {
-            this.mailbox.complete(dropId);
+            this.mailbox.drop(dropId);
           }
           this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
           this.delegate?.onTriageCompleted?.(triageResult);
@@ -496,6 +527,18 @@ export class AttentionController {
   }
 
   /**
+   * Set read-only tools available during triage deliberation.
+   * These let the LLM gather context (task_list, team_list, etc.) before deciding.
+   */
+  setTriageTools(tools: Map<string, { name: string; description: string; inputSchema: Record<string, unknown>; execute: (args: Record<string, unknown>) => Promise<string> }> | undefined): void {
+    this.triageToolHandlers = tools;
+  }
+
+  setTriageChatFn(fn: TriageChatFn | undefined): void {
+    this.triageChatFn = fn;
+  }
+
+  /**
    * Fast heuristic decision when no LLM judgment is available.
    * Rules are evaluated top-to-bottom; first match wins.
    */
@@ -681,10 +724,57 @@ export class AttentionController {
     try {
       const ctx = await this.delegate?.getTriageContext?.();
       const prompt = this.buildTriagePrompt(headItem, ctx ?? undefined);
-      const raw = await this.triageJudge(prompt);
+
+      let raw: string | undefined;
+
+      // Mini tool loop: if triageChatFn and tools are available, allow limited
+      // read-only tool calls before the final JSON decision
+      if (this.triageChatFn && this.triageToolHandlers && this.triageToolHandlers.size > 0) {
+        const llmTools = [...this.triageToolHandlers.values()].map(t => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }));
+        const messages: Array<{ role: string; content: string; toolCalls?: any[]; toolCallId?: string }> = [
+          { role: 'system', content: 'You are a mailbox triage assistant. You may call read-only tools to gather context before making your decision. When ready, output ONLY a single JSON object — no explanation, no markdown fences, no <think> tags. Start your response with {' },
+          { role: 'user', content: prompt },
+        ];
+
+        let iterations = 0;
+        while (iterations < TRIAGE_MAX_TOOL_ITERATIONS) {
+          const response = await this.triageChatFn(messages, llmTools);
+
+          if (!response.toolCalls?.length) {
+            raw = response.content;
+            break;
+          }
+
+          messages.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
+
+          for (const tc of response.toolCalls) {
+            const handler = this.triageToolHandlers!.get(tc.name);
+            let result: string;
+            if (handler) {
+              try { result = await handler.execute(tc.arguments); }
+              catch (err) { result = `Error: ${String(err)}`; }
+            } else {
+              result = JSON.stringify({ error: `Unknown tool: ${tc.name}` });
+            }
+            messages.push({ role: 'tool', content: result, toolCallId: tc.id });
+          }
+          iterations++;
+        }
+
+        // If loop exhausted without a final text response, make one last call without tools
+        if (raw === undefined) {
+          const finalResp = await this.triageChatFn(messages, undefined);
+          raw = finalResp.content;
+        }
+      } else {
+        raw = await this.triageJudge(prompt);
+      }
 
       // Strip <think>...</think> blocks that some models (e.g. Qwen, DeepSeek) emit.
-      // Handle both closed tags and unclosed (truncated) thinking blocks.
       const cleaned = raw
         .replace(/<think>[\s\S]*?<\/think>/gi, '')
         .replace(/<think>[\s\S]*/gi, '')
@@ -701,7 +791,6 @@ export class AttentionController {
         return null;
       }
 
-      // Validate that processItemId is in our candidate set
       const allCandidateIds = new Set([headItem.id, ...this.mailbox.getQueuedItems().map(i => i.id)]);
       if (!allCandidateIds.has(parsed.processItemId)) {
         log.warn('Triage judge chose unknown item ID', {
@@ -735,15 +824,26 @@ export class AttentionController {
     const shown = allItems.slice(0, TRIAGE_PROMPT_MAX_ITEMS);
     const overflow = allItems.length - shown.length;
 
+    const formatAge = (ms: number): string => {
+      if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+      if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
+      return `${(ms / 3_600_000).toFixed(1)}h`;
+    };
+
     const formatItem = (item: MailboxItem, idx: number) => {
       const pri = PRIORITY_LABELS?.[item.priority] ?? `p${item.priority}`;
-      const age = Math.round((Date.now() - new Date(item.queuedAt).getTime()) / 60000);
+      const ageMs = Date.now() - new Date(item.queuedAt).getTime();
+      const timestamp = new Date(item.queuedAt).toISOString().slice(11, 19);
+      const contentPreview = item.payload.content
+        ? `\n      content: "${item.payload.content.slice(0, TRIAGE_ITEM_CONTENT_CHARS)}"`
+        : '';
       return [
         `  [${idx + 1}] id="${item.id}"`,
-        `      type=${item.sourceType}  priority=${pri}  age=${age}min`,
+        `      type=${item.sourceType}  priority=${pri}  age=${formatAge(ageMs)}  queued=${timestamp}`,
         `      summary: "${item.payload.summary}"`,
         item.payload.taskId ? `      taskId: ${item.payload.taskId}` : null,
         item.metadata?.senderName ? `      from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
+        contentPreview || null,
       ].filter(Boolean).join('\n');
     };
 
@@ -751,6 +851,16 @@ export class AttentionController {
     const overflowNote = overflow > 0
       ? `\n\n  ... and ${overflow} more items (lower priority, similar types). You can only choose from the items listed above.`
       : '';
+
+    // Group items by taskId for the LLM to see relationships
+    const taskGroups = new Map<string, number>();
+    for (const item of shown) {
+      const tid = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
+      if (tid) taskGroups.set(tid, (taskGroups.get(tid) ?? 0) + 1);
+    }
+    const taskGroupSummary = taskGroups.size > 0
+      ? [...taskGroups.entries()].map(([tid, count]) => `  ${tid}: ${count} items`).join('\n')
+      : '  (no task grouping)';
 
     const recentContext = ctx?.recentMainSessionMessages
       ?.map(m => `  [${m.role}]: ${m.content}`)
@@ -764,12 +874,22 @@ export class AttentionController {
       `  - ${d.decisionType}: ${d.reasoning}`
     ).join('\n') || '  (none)';
 
+    const activeTasksSection = (ctx as any)?.activeTaskIds?.length
+      ? `  Active tasks: ${(ctx as any).activeTaskIds.join(', ')}`
+      : '  (no active tasks)';
+
     return [
       `You are ${agentName}. You have ${allItems.length} items in your mailbox that need attention.`,
-      `Your job is to decide which item to process NOW.`,
+      `Your job is to decide which item to process NOW. Current time: ${new Date().toISOString().slice(11, 19)} UTC.`,
       '',
       `## Mailbox Items (top ${shown.length} candidates)`,
       itemsSection + overflowNote,
+      '',
+      '## Items Grouped by Task',
+      taskGroupSummary,
+      '',
+      '## Your Current State',
+      activeTasksSection,
       '',
       '## Your Recent Conversation Context',
       recentContext,
@@ -782,10 +902,12 @@ export class AttentionController {
       '',
       '## Rules',
       '- Human messages (human_chat) and human comments are ALWAYS highest priority — process them first.',
+      '- Task status updates (task_status_update) are **informational only** — the system handles all side effects automatically. These serve as context for your decisions, not as work items.',
+      '- **Time decay**: Items older than 1 hour are increasingly stale. Multiple status updates about the same task — only the latest matters. Aggressively DROP old informational items (heartbeats, old status updates, memory consolidation) that no longer provide actionable context.',
+      '- **Task grouping**: When multiple items reference the same taskId, consider them together. Drop redundant/superseded items for the same task — only keep the most recent or most actionable one.',
       '- Consider dependencies: if one item provides context needed by another, process it first.',
-      '- Consider urgency: older high-priority items should not be indefinitely deferred.',
       '- DEFER means "handle later" — use for items that can wait but should not be forgotten.',
-      '- DROP means "not worth processing" — use only for truly redundant or obsolete items (e.g., status updates already superseded).',
+      '- DROP means "not worth processing" — use for stale, redundant, or obsolete items. When in doubt about old informational items, DROP them.',
       '- When in doubt, process items in priority order (lower number = higher priority).',
       '',
       '## Required Response Format',

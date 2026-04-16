@@ -1306,6 +1306,7 @@ export class APIServer {
         const sessionId = body['sessionId'] as string | undefined ?? undefined;
         const images = (body['images'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
+        const isResume = body['isResume'] as boolean | undefined;
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'working');
@@ -1318,12 +1319,14 @@ export class APIServer {
           try {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
+            } else if (isResume) {
+              this.storage.chatSessionRepo.deleteLastAssistantMessage(sessionId);
             }
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
               histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-              { isRetry: !!isRetry },
+              { isRetry: !!isRetry, isResume: !!isResume },
             );
           } catch (err) {
             log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
@@ -2704,6 +2707,86 @@ export class APIServer {
         this.json(res, result.success ? 200 : 400, result);
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Smart sync: use LLM to merge template changes while preserving agent customizations
+    if (path.match(/^\/api\/agents\/[^/]+\/role-smart-sync$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      if (!this.llmRouter) {
+        this.json(res, 503, { error: 'LLM router not available for smart sync' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req);
+        const fileName = (body['file'] as string) ?? 'ROLE.md';
+        const diff = this.orgService.getAgentManager().getRoleFileDiff(agentId, fileName);
+
+        if (!diff.agentContent || !diff.templateContent) {
+          this.json(res, 400, { error: 'Cannot smart sync: missing agent or template content' });
+          return;
+        }
+
+        if (diff.agentContent === diff.templateContent) {
+          this.json(res, 200, { success: true, mergedContent: diff.agentContent, explanation: 'Files are already identical.' });
+          return;
+        }
+
+        const prompt = `You are a configuration merge assistant. You need to intelligently merge a template update into an agent's configuration file while preserving the agent's customizations.
+
+AGENT'S CURRENT FILE (${fileName}):
+\`\`\`
+${diff.agentContent}
+\`\`\`
+
+UPDATED TEMPLATE FILE (${fileName}):
+\`\`\`
+${diff.templateContent}
+\`\`\`
+
+INSTRUCTIONS:
+1. Identify what changed in the template compared to the agent's current file
+2. Preserve the agent's custom modifications (things the user deliberately changed from the original template)
+3. Incorporate valuable new additions from the template (new sections, improved wording, new capabilities)
+4. If the agent removed something from the original template, keep it removed (respect user intent)
+5. If the template added something new, include it
+6. If both modified the same section, prefer the agent's version but incorporate template improvements where they don't conflict
+
+Output ONLY two sections:
+MERGED_CONTENT_START
+(the merged file content here)
+MERGED_CONTENT_END
+
+EXPLANATION_START
+(brief bullet points of what was kept, added, and why)
+EXPLANATION_END`;
+
+        const llmResponse = await this.llmRouter.chat({
+          messages: [
+            { role: 'system', content: 'You are a precise configuration merge tool. Output exactly the requested format.' },
+            { role: 'user', content: prompt },
+          ],
+          maxTokens: 8192,
+          temperature: 0.1,
+        });
+
+        const text = llmResponse.content;
+        const mergedMatch = text.match(/MERGED_CONTENT_START\n([\s\S]*?)\nMERGED_CONTENT_END/);
+        const explanationMatch = text.match(/EXPLANATION_START\n([\s\S]*?)\nEXPLANATION_END/);
+
+        if (!mergedMatch) {
+          this.json(res, 500, { error: 'LLM did not produce valid merged content', success: false });
+          return;
+        }
+
+        this.json(res, 200, {
+          success: true,
+          mergedContent: mergedMatch[1]!.trim(),
+          explanation: explanationMatch?.[1]?.trim() ?? 'Merge completed.',
+        });
+      } catch (err) {
+        this.json(res, 500, { error: `Smart sync failed: ${String(err)}`, success: false });
       }
       return;
     }
@@ -4598,59 +4681,6 @@ export class APIServer {
         return;
       }
       this.json(res, 200, { approval: result });
-      return;
-    }
-
-    // HITL: Bounties
-    if (path === '/api/bounties' && req.method === 'GET') {
-      const status = url.searchParams.get('status') as 'open' | 'claimed' | undefined;
-      this.json(res, 200, { bounties: this.hitlService?.listBounties(status ?? undefined) ?? [] });
-      return;
-    }
-
-    if (path === '/api/bounties' && req.method === 'POST') {
-      if (!this.hitlService) {
-        this.json(res, 503, { error: 'HITL service not available' });
-        return;
-      }
-      const body = await this.readBody(req);
-      const bounty = this.hitlService.postBounty({
-        agentId: body['agentId'] as string,
-        agentName: (body['agentName'] as string) ?? 'Agent',
-        title: body['title'] as string,
-        description: body['description'] as string,
-        skills: body['skills'] as string[],
-        reward: body['reward'] as string,
-      });
-      this.json(res, 201, { bounty });
-      return;
-    }
-
-    if (path.startsWith('/api/bounties/') && req.method === 'POST') {
-      if (!this.hitlService) {
-        this.json(res, 503, { error: 'HITL service not available' });
-        return;
-      }
-      const bountyId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      const action = body['action'] as string;
-      if (action === 'claim') {
-        const result = this.hitlService.claimBounty(bountyId, body['userId'] as string);
-        if (!result) {
-          this.json(res, 404, { error: 'Bounty not found or not open' });
-          return;
-        }
-        this.json(res, 200, { bounty: result });
-      } else if (action === 'complete') {
-        const result = this.hitlService.completeBounty(bountyId, body['result'] as string);
-        if (!result) {
-          this.json(res, 404, { error: 'Bounty not found or not claimed' });
-          return;
-        }
-        this.json(res, 200, { bounty: result });
-      } else {
-        this.json(res, 400, { error: 'Unknown action. Use claim or complete' });
-      }
       return;
     }
 

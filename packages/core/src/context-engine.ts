@@ -151,7 +151,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -336,7 +336,8 @@ export class ContextEngine {
       parts.push(sops.slice(0, SYSTEM_SOPS_CHARS));
     }
 
-    const longTermMem = opts.memory.getLongTermMemory();
+    // Exclude sections already loaded separately (SOPs) to avoid duplication
+    const longTermMem = opts.memory.getLongTermMemoryExcluding(['sops']);
     if (longTermMem) {
       parts.push('\n## Long-term Knowledge');
       parts.push(longTermMem.slice(0, SYSTEM_LONGTERM_MEMORY_CHARS));
@@ -361,6 +362,25 @@ export class ContextEngine {
       }
     }
 
+    // Collect IDs already shown in Lessons / Best Practices to avoid duplication in Relevant Memories
+    const alreadyShownIds = new Set<string>([
+      ...lessons.map(e => e.id),
+      ...bestPractices.map(e => e.id),
+    ]);
+
+    // During task execution, actively surface lessons/best-practices matching the task
+    if (opts.scenario === 'task_execution' && opts.currentQuery) {
+      const taskLessons = this.matchLessonsForTask(opts.memory, opts.currentQuery, alreadyShownIds);
+      if (taskLessons.length > 0) {
+        parts.push('\n## Applicable Lessons for This Task');
+        parts.push('These lessons from past experience are relevant to the current task. Apply them proactively.');
+        for (const lesson of taskLessons) {
+          parts.push(`- ${lesson.content}`);
+          alreadyShownIds.add(lesson.id);
+        }
+      }
+    }
+
     const isDream = opts.scenario === 'memory_consolidation';
 
     if (!isDream && (opts.deliverableContext || opts.knowledgeContext)) {
@@ -369,7 +389,7 @@ export class ContextEngine {
     }
 
     if (!isDream) {
-      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId);
+      const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
         parts.push('\n## Relevant Memories');
         for (const mem of relevantMemories) {
@@ -467,6 +487,11 @@ export class ContextEngine {
       parts.push('- If consolidated output is needed, create a final synthesis task assigned to a manager, `blocked_by` ALL prerequisites.');
       parts.push('');
       parts.push('**Work discovery**: `list_projects` → `requirement_list` → `task_list`. Use `memory_save`/`memory_search` for personal notes; `deliverable_create`/`deliverable_search` for shared outputs.');
+      parts.push('');
+      parts.push('**Automatic status notifications** (do NOT duplicate manually):');
+      parts.push('- When task status changes, the system **automatically** handles all side effects: execution start/cancel, reviewer notification, dependency unblocking.');
+      parts.push('- Task status notifications are placed in assignees\' mailboxes as **informational context only**.');
+      parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
       parts.push('');
       parts.push('**Communicating with the user**:');
       parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
@@ -566,7 +591,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review'): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -622,9 +647,11 @@ export class ContextEngine {
         lines.push('- Be concise and structured — your colleague needs actionable information');
         lines.push('- Always use **absolute file paths** when referencing files or deliverables');
         lines.push('- Respond with clear facts. No conversational filler.');
+        lines.push('- Do NOT use A2A for routine task status notifications or acknowledgments — the system handles all status-triggered side effects automatically');
+        lines.push('- Only send A2A when you have substantive coordination needs: sharing context, asking questions, or providing instructions that go beyond a status change');
         lines.push('');
         lines.push('**Work delegation:**');
-        lines.push('- A2A messages are for: status updates, quick coordination, simple questions, sharing file references');
+        lines.push('- A2A messages are for: quick coordination, simple questions, sharing file references, substantive instructions');
         lines.push('- For substantial work requests: create a `task_create` assigned to the target agent — do NOT ask them to do complex work via chat');
         lines.push('- For multi-agent work: decompose into a task DAG with `blocked_by` dependencies, assign each to the right agent');
         lines.push('- If you cannot help, explain why and suggest who can');
@@ -658,6 +685,23 @@ export class ContextEngine {
         lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
         lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
         lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        break;
+
+      case 'review':
+        lines.push('You are in **task review mode** — you have been asked to review a completed task.');
+        lines.push('');
+        lines.push('**MANDATORY review protocol:**');
+        lines.push('1. **Understand the task**: Call `task_get` with the task ID to see the full task state, description, deliverables, and notes');
+        lines.push('2. **Inspect deliverables**: Use `file_read` to examine ALL deliverable files listed in the task');
+        lines.push('3. **Check git changes**: If a task branch exists, use `shell_execute` to run `git diff` and review code changes');
+        lines.push('4. **Verify quality**: Check that deliverables match the task requirements and are functionally correct');
+        lines.push('');
+        lines.push('**After completing your review, you MUST take one of these actions:**');
+        lines.push('- **Approve**: `task_update` with `status: "completed"` and a `note` summarizing your review findings. If there is a task branch, merge it first.');
+        lines.push('- **Request revision**: `task_update` with `status: "in_progress"` and a `note` explaining what needs to change. This auto-restarts the task with your feedback.');
+        lines.push('');
+        lines.push('**CRITICAL: You MUST call `task_update` to finalize the review.** Simply writing a text response is NOT sufficient — the task will remain stuck in "review" status until you explicitly call `task_update` with either "completed" or "in_progress".');
+        lines.push('Do NOT review or change the status of any task other than the one you were asked to review.');
         break;
 
       case 'memory_consolidation':
@@ -1491,8 +1535,55 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private async retrieveRelevantMemories(memory: IMemoryStore, query?: string, agentId?: string): Promise<MemoryEntry[]> {
-    const facts = memory.getEntries('fact', this.config.memorySearchTopK);
+  /**
+   * Match lesson/best-practice entries against the current task description
+   * using keyword overlap. Returns entries whose content shares significant
+   * words with the task, ranked by overlap score.
+   */
+  private matchLessonsForTask(
+    memory: IMemoryStore,
+    taskDescription: string,
+    excludeIds: Set<string>,
+  ): MemoryEntry[] {
+    const lessons = memory.getEntriesByTag('lesson');
+    const bestPractices = memory.getEntriesByTag('best-practice');
+    const candidates = [...lessons, ...bestPractices].filter(e => !excludeIds.has(e.id));
+    if (candidates.length === 0) return [];
+
+    const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+      'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or', 'not',
+      'this', 'that', 'it', 'as', 'if', 'but', 'do', 'does', 'did', 'has', 'have', 'had',
+      'will', 'would', 'could', 'should', 'can', 'may', 'must', 'use', 'task', 'using']);
+    const tokenize = (text: string) => {
+      const words = text.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+      return new Set(words.filter(w => !stopWords.has(w)));
+    };
+
+    const taskTokens = tokenize(taskDescription);
+    if (taskTokens.size === 0) return [];
+
+    const scored = candidates.map(entry => {
+      const entryTokens = tokenize(entry.content);
+      let overlap = 0;
+      for (const t of entryTokens) {
+        if (taskTokens.has(t)) overlap++;
+      }
+      return { entry, score: overlap };
+    }).filter(s => s.score >= 2);
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5).map(s => s.entry);
+  }
+
+  private async retrieveRelevantMemories(
+    memory: IMemoryStore,
+    query?: string,
+    agentId?: string,
+    excludeIds?: Set<string>,
+  ): Promise<MemoryEntry[]> {
+    const exclude = excludeIds ?? new Set<string>();
+    const facts = memory.getEntries('fact', this.config.memorySearchTopK)
+      .filter(f => !exclude.has(f.id));
 
     if (query && this.semanticSearch?.isEnabled()) {
       try {
@@ -1500,7 +1591,7 @@ export class ContextEngine {
           agentId,
           topK: this.config.memorySearchTopK,
         });
-        const semEntries = semResults.map(r => r.entry);
+        const semEntries = semResults.map(r => r.entry).filter(e => !exclude.has(e.id));
         const semIds = new Set(semEntries.map(e => e.id));
         const combined = [...facts.filter(f => !semIds.has(f.id)), ...semEntries];
         return combined.slice(0, this.config.memorySearchTopK * 2);
@@ -1511,7 +1602,7 @@ export class ContextEngine {
 
     if (query) {
       try {
-        const searchResults = memory.search(query);
+        const searchResults = memory.search(query).filter(e => !exclude.has(e.id));
         const searchIds = new Set(searchResults.map(m => m.id));
         const combined = [...facts.filter(f => !searchIds.has(f.id)), ...searchResults];
         return combined.slice(0, this.config.memorySearchTopK * 2);

@@ -26,6 +26,8 @@ import {
   HEARTBEAT_DAILY_LOG_CHARS,
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
+  TRIAGE_CONTEXT_MESSAGES_MAX,
+  TRIAGE_CONTEXT_MSG_CHARS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -59,6 +61,7 @@ import { AttentionController, type AttentionDelegate } from './attention.js';
  */
 interface TaskAsyncContext {
   taskId: string;
+  requirementId?: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
@@ -541,7 +544,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -639,11 +642,14 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
+    taskTitle?: string,
+    requirementId?: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: `Task: ${taskDescription.slice(0, 80)}`,
+      summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
       content: taskDescription,
       taskId,
+      requirementId,
       extra: {
         triggerExecution: true,
         onLog,
@@ -767,13 +773,17 @@ export class Agent {
       },
       getTriageContext: async () => {
         const messages = this.currentSessionId
-          ? this.memory.getRecentMessages(this.currentSessionId, 10)
+          ? this.memory.getRecentMessages(this.currentSessionId, TRIAGE_CONTEXT_MESSAGES_MAX * 2)
               .filter(m => m.role === 'user' || m.role === 'assistant')
-              .slice(-6)
-              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, 200) : String(m.content).slice(0, 200) }))
+              .slice(-TRIAGE_CONTEXT_MESSAGES_MAX)
+              .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content.slice(0, TRIAGE_CONTEXT_MSG_CHARS) : String(m.content).slice(0, TRIAGE_CONTEXT_MSG_CHARS) }))
           : [];
         const activities = this.recentActivitySummaries();
-        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities };
+
+        // Include active task IDs for situational awareness
+        const activeTaskIds = Array.from(this.activeTasks);
+
+        return { agentName: this.config.name, recentMainSessionMessages: messages, recentActivitySummaries: activities, activeTaskIds };
       },
       onTriageCompleted: (result) => {
         if (!result) return;
@@ -860,6 +870,7 @@ export class Agent {
               extra.cancelToken as { cancelled: boolean } | undefined,
               extra.taskProjectContext as TaskProjectContext | undefined,
               extra.executionRound as number | undefined,
+              item.payload.requirementId,
             );
             resolveResponse('');
             return;
@@ -939,7 +950,7 @@ export class Agent {
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts({ sessionId: `review_${this.id}_${ts}` }),
+            buildHandleOpts({ sessionId: `review_${this.id}_${ts}`, scenario: 'review' }),
           );
           resolveResponse(reply);
           return reply;
@@ -1116,7 +1127,7 @@ export class Agent {
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
-    options?: { isRetry?: boolean },
+    options?: { isRetry?: boolean; isResume?: boolean },
   ): void {
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
@@ -1132,6 +1143,12 @@ export class Agent {
             session.messages.pop();
           }
           log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
+        } else if (options?.isResume) {
+          // Strip only the last assistant reply from memory (keep user message)
+          while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'assistant') {
+            session.messages.pop();
+          }
+          log.info(`Trimmed memory session for resume: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
         }
         log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
         return;
@@ -1329,6 +1346,10 @@ export class Agent {
    */
   getCurrentTaskId(): string | undefined {
     return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
+  }
+
+  private getCurrentRequirementId(): string | undefined {
+    return taskAsyncContext.getStore()?.requirementId;
   }
 
   /**
@@ -2090,7 +2111,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -2105,7 +2126,7 @@ export class Agent {
     }
 
     const scenario = options?.scenario ?? 'chat';
-    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
     const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
     const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
 
@@ -2128,6 +2149,10 @@ export class Agent {
         case 'comment_response':
           actType = 'chat';
           actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          break;
+        case 'review':
+          actType = 'internal';
+          actLabel = `Reviewing task from ${senderInfo?.name ?? senderId ?? 'worker'}`;
           break;
         default:
           actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
@@ -2213,7 +2238,10 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    let llmTools = this.buildToolDefinitions({
+      userMessage: effectiveMessage,
+      isReview: scenario === 'review',
+    });
     if (options?.allowedTools) {
       llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
     }
@@ -2875,9 +2903,10 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound, requirementId);
   }
 
   /**
@@ -2896,7 +2925,8 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     priority: TaskPriority = TaskPriority.MEDIUM,
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -2907,7 +2937,7 @@ export class Agent {
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId }, () =>
+      () => taskAsyncContext.run({ taskId, requirementId }, () =>
         this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound)
       ),
       {
@@ -3032,6 +3062,7 @@ export class Agent {
         ? [
             'Review the previous execution history above, then continue and complete the remaining work. Skip steps already marked as completed (✓).',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section, you MUST review all dependency task outputs before continuing. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details. These outputs provide essential background knowledge that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check if you have SOPs or lessons relevant to this type of task. Your SOPs and applicable lessons are shown in your system context above — read them and follow any that match.',
             ...(hasErrors ? [
               '',
               '⚠ CRITICAL — LEARN FROM PREVIOUS FAILURES:',
@@ -3046,6 +3077,7 @@ export class Agent {
             'Execute this task completely using your available tools. When done, provide a concise summary of what was accomplished.',
             '',
             '**IMPORTANT — Dependency check:** If this task has a "Dependency Tasks" section above, you MUST review all dependency task outputs BEFORE starting your own work. Use `file_read` to inspect any deliverable files listed, and use `task_get` to retrieve full details of each dependency task. These dependency outputs provide essential background knowledge and artifacts that your work should build upon.',
+            '**IMPORTANT — Check existing knowledge:** Before diving in, check if you have SOPs or lessons relevant to this type of task. Your SOPs and applicable lessons are shown in your system context above — read them and follow any that match.',
           ].join('\n'),
       '',
       '## Completion Requirements — MANDATORY',
@@ -3277,6 +3309,24 @@ export class Agent {
           log.debug('Injected task completion reminder', { taskId, iteration: taskToolIterations });
         }
 
+        // Mid-execution reflection nudge every 30 tool iterations.
+        // Forces the agent to pause and capture insights while context is fresh.
+        if (taskToolIterations > 0 && taskToolIterations % 30 === 0) {
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: [
+              '[REFLECTION CHECKPOINT]',
+              `You have completed ${taskToolIterations} tool call rounds on this task.`,
+              'Before continuing, briefly consider:',
+              '- Have you encountered any surprising errors or workarounds worth remembering?',
+              '- Have you discovered a better tool or approach mid-task?',
+              'If yes, save the insight now using `memory_save` with appropriate tags (lesson, tool-preference, best-practice).',
+              'Then continue with the task.',
+            ].join('\n'),
+          });
+          log.debug('Injected mid-execution reflection nudge', { taskId, iteration: taskToolIterations });
+        }
+
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: this.memory.getRecentMessages(sessionId, 200),
@@ -3321,9 +3371,103 @@ export class Agent {
         return;
       }
 
-      flushText();
-      const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      // Last-chance check: did the agent call task_submit_review?
+      // Scan session messages for a tool call to task_submit_review.
+      const sessionMsgs = this.memory.getRecentMessages(sessionId, 500);
+      const didSubmitReview = sessionMsgs.some(
+        m => m.role === 'assistant' && m.toolCalls?.some(tc => tc.name === 'task_submit_review')
+      );
+      if (!didSubmitReview && !cancelToken?.cancelled) {
+        log.warn('Task execution ending without task_submit_review — injecting final reminder', { taskId, agentId: this.id });
+        flushText();
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: [
+            `[SYSTEM — CRITICAL REMINDER — Task ${taskId}]`,
+            'You are about to finish without calling `task_submit_review`. This is MANDATORY.',
+            'The task will NOT enter review and will be automatically retried if you do not submit.',
+            '',
+            'Call `task_submit_review` NOW with:',
+            '- `summary`: What you accomplished',
+            '- `deliverables`: List of files/directories you produced',
+            '',
+            'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
+            'Do NOT just stop — take action NOW.',
+          ].join('\n'),
+        });
+
+        const preparedFinal = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+        taskLlmStart = Date.now();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            {
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+            },
+            event => {
+              if (event.type === 'text_delta' && event.text) {
+                textBuffer += event.text;
+                emitDelta(event.text);
+              }
+            },
+            this.getEffectiveProvider(),
+            abortController.signal,
+          ),
+          'Task execution final submit reminder',
+        );
+        taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(taskLlmTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens);
+
+        // Process any tool calls from the final reminder turn
+        if (response.toolCalls?.length) {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
+          for (const tc of response.toolCalls) {
+            if (cancelToken?.cancelled) break;
+            emit('tool_start', tc.name, { arguments: tc.arguments });
+            const toolStart = Date.now();
+            try {
+              let result = await this.executeTool(tc, undefined, sessionId);
+              result = this.offloadLargeResult(tc.name, result);
+              const isErr = isErrorResult(result);
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } catch (toolErr) {
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            }
+          }
+          // After processing tool calls, only append if there's non-tool-call text
+          flushText();
+        } else {
+          flushText();
+          const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+        }
+      } else {
+        flushText();
+        const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      }
+
       emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
@@ -3608,6 +3752,10 @@ export class Agent {
     this.tools.set(handler.name, handler);
   }
 
+  getTools(): Map<string, AgentToolHandler> {
+    return this.tools;
+  }
+
   /**
    * Mark tool names as permanently activated so they appear in every LLM call.
    * Used by skill MCP integration to ensure skill-provided tools are always visible.
@@ -3674,6 +3822,7 @@ export class Agent {
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
+    isReview?: boolean;
   }): LLMTool[] {
     const isManager = this.config.agentRole === 'manager';
 
@@ -3688,6 +3837,7 @@ export class Agent {
       recentToolNames: recentPlusActivated,
       isManager,
       isTaskExecution: context?.isTaskExecution,
+      isReview: context?.isReview,
       skillCatalog: this.skillRegistry?.list(),
     });
 
@@ -3871,10 +4021,14 @@ export class Agent {
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
-        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
-        const actionType = relatedTaskId ? 'navigate' : 'none';
-        const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
-        // Send to notification bell
+        const explicitTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const taskId = explicitTaskId ?? this.getCurrentTaskId();
+        const requirementId = this.getCurrentRequirementId();
+        const actionType = taskId ? 'navigate' : 'none';
+        const actionTarget = taskId ? JSON.stringify({ path: `/work?openTask=${taskId}` }) : undefined;
+        const meta: Record<string, unknown> = { agentId: this.id, agentName: this.config.name };
+        if (taskId) meta.taskId = taskId;
+        if (requirementId) meta.requirementId = requirementId;
         if (this.userNotifier) {
           this.userNotifier({
             type: 'agent_report',
@@ -3883,7 +4037,7 @@ export class Agent {
             priority,
             actionType,
             actionTarget,
-            metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+            metadata: meta,
           });
         }
         // Also post to main session so it appears in the chat timeline
@@ -4229,29 +4383,37 @@ export class Agent {
       'Use `task_list` to find tasks recently completed (status `completed`) where you were the assignee.',
       'For each completed task since your last heartbeat:',
       '',
-      '1. **What went well?** — Identify approaches, patterns, or techniques that led to a smooth completion.',
-      '   - First-pass approvals (no revision needed) are strong signals of good practice.',
-      '   - Efficient tool usage, clean code patterns, good decomposition strategies.',
-      '2. **What could be improved?** — Note any friction, rework, or reviewer feedback that revealed a better way.',
+      '1. **What went well?** — First-pass approvals (no revision) are strong signals. Efficient tool usage, clean patterns, good decomposition.',
+      '2. **What could be improved?** — Friction, rework, reviewer feedback that revealed a better way.',
       '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), this is SOP material.',
       '',
-      'If you identify a best practice worth preserving:',
-      '- Save it via `memory_save` with `tags: ["lesson", "best-practice", ...]` and format:',
-      '  `[BEST-PRACTICE] <one-line summary>\\nContext: <when this applies>\\nApproach: <what to do>\\nWhy: <why this works>`',
-      '- If it is a multi-step repeatable workflow, promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.',
+      '## Knowledge Lifecycle (how to save what you learn)',
       '',
-      '## Self-Evolution Reflection',
-      'After reviewing completed tasks, reflect on your overall growth. Follow your **self-evolution** skill instructions:',
+      '**Intake buffer** (`memory_save` → memories.json):',
+      '- Individual observations: lessons, tool preferences, gotchas, task outcomes.',
+      '- Format: `[LESSON]`, `[BEST-PRACTICE]`, or `[TOOL-PREF]` prefix + context/approach/why.',
+      '- Tags: `lesson`, `best-practice`, `tool-preference` — these get surfaced automatically.',
+      '- Dream cycles will promote recurring patterns to MEMORY.md and prune source entries.',
       '',
-      '1. **Lessons** — Did anything go wrong or get corrected? Save with `memory_save` using `tags: ["lesson", ...]` and the `[LESSON]` format.',
-      '2. **Tool preferences** — Did you discover a better tool or parameter for a task? Save with `tags: ["lesson", "tool-preference", ...]` and the `[TOOL-PREF]` format.',
-      '3. **SOPs** — Consolidate best practices from completed tasks into SOPs. Update `memory_update_longterm({ section: "sops", ... })`.',
-      '   - Review existing SOPs first (`memory_search("sops")`) — update rather than duplicate.',
-      '   - Each SOP: trigger, steps, gotchas, last updated date.',
-      '4. **Role evolution** — When you accumulate 3+ related best practices or lessons pointing to a fundamental behavioral improvement, update your ROLE.md:',
-      '   - Read current ROLE.md via `file_read`',
-      '   - Append the new guideline (do NOT rewrite the file)',
-      '   - Log the change via `memory_save` with `tags: ["lesson", "role-evolution"]`',
+      '**Curated knowledge** (`memory_update_longterm` → MEMORY.md):',
+      '- Only for *validated, multi-step procedures* (SOPs) and *consolidated knowledge*.',
+      '- Use `mode: "patch"` to append a new SOP without overwriting existing ones.',
+      '- **ALWAYS check existing SOPs first** (`memory_search("sops")`) — update rather than duplicate.',
+      '- To update an existing SOP, use `mode: "replace"` with the full updated sops content.',
+      '- Each SOP: trigger condition, steps, gotchas, last updated date.',
+      '',
+      '**Shareable skills** (for team-wide best practices):',
+      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `builder_list`.',
+      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `builder_install`.',
+      '',
+      '**Decision guide — where does this insight go?**',
+      '| Observation type | Action |',
+      '|---|---|',
+      '| Single lesson / gotcha | `memory_save` with tags: ["lesson"] |',
+      '| Tool preference | `memory_save` with tags: ["lesson", "tool-preference"] |',
+      '| Multi-step repeatable workflow (personal) | `memory_update_longterm({ section: "sops", mode: "patch" })` |',
+      '| Best practice worth sharing with the team | Create skill via **skill-building**, then install with `builder_install` |',
+      '| 3+ related lessons → behavioral rule | Update ROLE.md (read first, append, log change) |',
       '',
       'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
       'Skip if nothing meaningful happened since last heartbeat.',
@@ -4274,6 +4436,16 @@ export class Agent {
       ].join('\n');
     }
 
+    const qualitySignalSection = [
+      '',
+      '## Quality Signal Check',
+      'When reviewing completed tasks, note your revision rate:',
+      '- Tasks with `executionRound > 1` required revision — your initial approach had issues.',
+      '- A high revision rate (>30%) suggests your SOPs or lessons are not being applied effectively.',
+      '- Check: do your saved lessons and SOPs actually cover the failure patterns you see?',
+      '- If you keep making the same type of mistake, escalate it: turn the lesson into an SOP or update ROLE.md.',
+    ].join('\n');
+
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
@@ -4285,6 +4457,7 @@ export class Agent {
       requirementMonitoringSection,
       dailyReportSection,
       selfEvolutionSection,
+      qualitySignalSection,
       '',
       '## Core Principle: Patrol, Don\'t Build',
       'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
@@ -4497,27 +4670,43 @@ export class Agent {
       truncated,
     });
 
+    const existingSops = this.memory.getLongTermSection('sops');
+
     const prompt = [
       '[MEMORY CONSOLIDATION — Dream Cycle]',
       '',
-      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and identify:`,
-      '1. **Duplicates**: entries saying essentially the same thing',
-      '2. **Outdated**: entries superseded by newer information',
-      '3. **Merge candidates**: multiple entries about the same topic that can be combined',
+      `You have ${batch.length} memory entries${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
+      '',
+      '**Phase 1 — Clean up:**',
+      '1. **Duplicates**: entries saying essentially the same thing → remove',
+      '2. **Outdated**: entries superseded by newer information → remove',
+      '3. **Merge candidates**: multiple entries about the same topic → combine into one',
+      '',
+      '**Phase 2 — Promote recurring patterns:**',
+      '4. **Pattern promotion**: If 3+ entries share a common theme (e.g., same type of mistake, same tool approach),',
+      '   synthesize them into a consolidated insight and mark the source entries for removal.',
+      '   Promoted insights go to `lessons-learned` section of MEMORY.md.',
+      '5. **SOP candidates**: If merged/promoted entries describe a repeatable multi-step workflow,',
+      '   flag them for SOP promotion.',
+      '',
+      existingSops ? `## Existing SOPs (for reference — avoid duplicating these)\n${existingSops.slice(0, 1000)}\n` : '',
       '',
       'Respond with ONLY a JSON object (no markdown fences):',
       '{',
-      '  "remove": ["id1", "id2"],       // IDs to delete (duplicates, outdated)',
-      '  "merge": [                       // groups to merge into single entries',
+      '  "remove": ["id1", "id2"],',
+      '  "merge": [',
       '    { "removeIds": ["id3", "id4"], "mergedContent": "combined text", "tags": ["tag1"] }',
+      '  ],',
+      '  "promote": [',
+      '    { "sourceIds": ["id5", "id6", "id7"], "section": "lessons-learned", "content": "synthesized insight" }',
       '  ]',
       '}',
       '',
       'Rules:',
       '- Be conservative. Only remove entries you are confident are redundant or outdated.',
       '- When merging, preserve all unique information from the originals.',
-      '- If nothing needs consolidation, return { "remove": [], "merge": [] }',
-      '- Keep lessons and best-practices entries unless truly duplicated.',
+      '- Promote only when 3+ entries point to the same pattern.',
+      '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
       '',
       '## Current Memory Entries',
       '',
@@ -4541,18 +4730,21 @@ export class Agent {
       const plan = JSON.parse(jsonMatch[0]) as {
         remove?: string[];
         merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
+        promote?: Array<{ sourceIds: string[]; section: string; content: string }>;
       };
 
       log.info('Dream cycle plan', {
         agentId: this.id,
         toRemove: plan.remove?.length ?? 0,
         toMerge: plan.merge?.length ?? 0,
+        toPromote: plan.promote?.length ?? 0,
         removeIds: plan.remove?.slice(0, 10),
         mergeGroups: plan.merge?.map(g => ({ removeIds: g.removeIds, contentPreview: g.mergedContent.slice(0, 80) })).slice(0, 5),
       });
 
       let removedCount = 0;
       let mergedCount = 0;
+      let promotedCount = 0;
 
       if (plan.remove?.length) {
         removedCount = this.memory.removeEntries(plan.remove);
@@ -4584,12 +4776,37 @@ export class Agent {
         }
       }
 
-      if (removedCount > 0 || mergedCount > 0) {
+      // Phase 2: Promote recurring patterns to MEMORY.md and prune source entries
+      if (plan.promote?.length) {
+        for (const promo of plan.promote) {
+          if (!promo.sourceIds?.length || !promo.content || !promo.section) continue;
+          const section = promo.section.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          const existing = this.memory.getLongTermSection(section);
+          const merged = existing ? `${existing}\n${promo.content}` : promo.content;
+          this.memory.addLongTermMemory(section, merged);
+
+          // Remove source entries from intake buffer
+          const removed = this.memory.removeEntries(promo.sourceIds);
+          if (this.semanticSearch?.isEnabled()) {
+            for (const id of promo.sourceIds) {
+              this.semanticSearch.deleteMemory(id).catch(() => {});
+            }
+          }
+          promotedCount++;
+          log.debug('Dream cycle: promoted pattern to MEMORY.md', {
+            section, sourceCount: promo.sourceIds.length, removed,
+            contentPreview: promo.content.slice(0, 100),
+          });
+        }
+      }
+
+      if (removedCount > 0 || mergedCount > 0 || promotedCount > 0) {
         log.info('Dream cycle completed', {
           agentId: this.id,
           entriesBefore: entries.length,
           removed: removedCount,
           merged: mergedCount,
+          promoted: promotedCount,
           entriesAfter: this.memory.getEntries().length,
         });
       } else {

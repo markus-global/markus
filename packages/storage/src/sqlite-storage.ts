@@ -507,6 +507,26 @@ CREATE TABLE IF NOT EXISTS user_notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, read, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'custom',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  details TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  responded_at TEXT,
+  responded_by TEXT,
+  response_comment TEXT,
+  expires_at TEXT,
+  options TEXT,
+  allow_freeform INTEGER NOT NULL DEFAULT 0,
+  selected_option TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -1729,6 +1749,23 @@ export class SqliteChatSessionRepo {
   }
 
   /**
+   * Remove only the last assistant message from a session (for resume).
+   * Returns the deleted message's content and metadata so the caller can
+   * reconstruct a trimmed version for the LLM context.
+   */
+  deleteLastAssistantMessage(sessionId: string): { content: string; metadata?: Record<string, unknown> } | null {
+    const row = this.db.prepare(
+      'SELECT id, content, metadata FROM chat_messages WHERE session_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId, 'assistant') as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const id = row['id'] as string;
+    const content = row['content'] as string;
+    const rawMeta = row['metadata'] as string | null;
+    this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+    return { content, metadata: rawMeta ? JSON.parse(rawMeta) : undefined };
+  }
+
+  /**
    * Remove the last user+assistant exchange from a session (for retry).
    * Deletes from the end backwards through the last assistant message
    * and its preceding user message.
@@ -1757,6 +1794,78 @@ export class SqliteChatSessionRepo {
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
+  }
+
+  /**
+   * Migrate legacy assistant messages that lack segments metadata.
+   * Parses raw text content to extract tool calls and clean text into proper segments.
+   * Should be called once at startup.
+   */
+  migrateLegacyMessages(): number {
+    const rows = this.db.prepare(
+      `SELECT id, content, metadata, created_at FROM chat_messages
+       WHERE role = 'assistant'
+         AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
+         AND content IS NOT NULL AND content != ''`
+    ).all() as Array<Record<string, unknown>>;
+
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare(
+      'UPDATE chat_messages SET metadata = ? WHERE id = ?'
+    );
+    let migrated = 0;
+
+    for (const row of rows) {
+      const id = row['id'] as string;
+      const content = row['content'] as string;
+      const rawMeta = row['metadata'] as string | null;
+      const existingMeta = rawMeta && rawMeta !== 'null' ? JSON.parse(rawMeta) : {};
+      const createdAt = row['created_at'] as string | null;
+
+      const segments = this._parseContentToSegments(content, createdAt ?? undefined);
+      if (segments.length === 0) continue;
+
+      existingMeta.segments = segments;
+      update.run(JSON.stringify(existingMeta), id);
+      migrated++;
+    }
+
+    if (migrated > 0) {
+      log.info(`Migrated ${migrated} legacy chat messages to segment format`);
+    }
+    return migrated;
+  }
+
+  private _parseContentToSegments(content: string, msgCreatedAt?: string): Array<Record<string, unknown>> {
+    const segments: Array<Record<string, unknown>> = [];
+    let remaining = content;
+
+    remaining = remaining.replace(/<think>[\s\S]*?<\/think>/g, '');
+
+    const toolPattern = /<(?:invoke|function_calls|antml:\w+)\b[\s\S]*?(?:<\/(?:invoke|function_calls|antml:\w+)>|$)/g;
+    const parts = remaining.split(toolPattern);
+    const tools = remaining.match(toolPattern) ?? [];
+
+    const baseMs = msgCreatedAt ? new Date(msgCreatedAt).getTime() : Date.now();
+    let cursorMs = baseMs;
+
+    for (let i = 0; i < parts.length; i++) {
+      const text = parts[i]!.replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '').trim();
+      if (text) {
+        segments.push({ type: 'text', content: text, createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 1000;
+      }
+      if (i < tools.length) {
+        const toolXml = tools[i]!;
+        const nameMatch = toolXml.match(/name="([^"]+)"/);
+        const toolName = nameMatch?.[1] ?? 'unknown_tool';
+        segments.push({ type: 'tool', tool: toolName, status: 'done', createdAt: new Date(cursorMs).toISOString() });
+        cursorMs += 2000;
+      }
+    }
+
+    return segments;
   }
 
   private _mapMsg(r: Record<string, unknown>) {
@@ -3427,6 +3536,99 @@ export class SqliteNotificationRepo {
       actionTarget: r['action_target'] as string | null,
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── SQLite Approval Repo ────────────────────────────────────────────────────
+
+export interface ApprovalRow {
+  id: string;
+  agentId: string;
+  agentName: string;
+  type: string;
+  title: string;
+  description: string;
+  details: Record<string, unknown>;
+  status: string;
+  requestedAt: string;
+  respondedAt?: string;
+  respondedBy?: string;
+  responseComment?: string;
+  expiresAt?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  allowFreeform?: boolean;
+  selectedOption?: string;
+}
+
+export class SqliteApprovalRepo {
+  constructor(private db: DatabaseSync) {}
+
+  upsert(a: ApprovalRow): void {
+    this.db.prepare(
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         responded_at = excluded.responded_at,
+         responded_by = excluded.responded_by,
+         response_comment = excluded.response_comment,
+         selected_option = excluded.selected_option`
+    ).run(
+      a.id,
+      a.agentId,
+      a.agentName,
+      a.type,
+      a.title,
+      a.description,
+      JSON.stringify(a.details),
+      a.status,
+      a.requestedAt,
+      a.respondedAt ?? null,
+      a.respondedBy ?? null,
+      a.responseComment ?? null,
+      a.expiresAt ?? null,
+      a.options ? JSON.stringify(a.options) : null,
+      a.allowFreeform ? 1 : 0,
+      a.selectedOption ?? null,
+    );
+  }
+
+  list(status?: string): ApprovalRow[] {
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (status) {
+      conditions.push('status = ?');
+      params.push(status);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT 200`;
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  get(id: string): ApprovalRow | undefined {
+    const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.mapRow(r) : undefined;
+  }
+
+  private mapRow(r: Record<string, unknown>): ApprovalRow {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      agentName: r['agent_name'] as string,
+      type: r['type'] as string,
+      title: r['title'] as string,
+      description: r['description'] as string,
+      details: fromJson<Record<string, unknown>>(r['details'] as string) ?? {},
+      status: r['status'] as string,
+      requestedAt: r['requested_at'] as string,
+      respondedAt: r['responded_at'] as string | undefined,
+      respondedBy: r['responded_by'] as string | undefined,
+      responseComment: r['response_comment'] as string | undefined,
+      expiresAt: r['expires_at'] as string | undefined,
+      options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
+      allowFreeform: !!(r['allow_freeform'] as number),
+      selectedOption: r['selected_option'] as string | undefined,
     };
   }
 }

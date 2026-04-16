@@ -139,7 +139,7 @@ See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete architecture.
 
 **LLM-assisted compaction**: Before heuristic compaction, `memoryFlush()` sends a lightweight prompt asking the agent to persist any important information via `memory_save`. This ensures high-value content is promoted to Layer 2 before the conversation is truncated.
 
-#### Layer 2: Structured Memories
+#### Layer 2: Structured Memories (Intake Buffer)
 
 | Attribute | Value |
 |-----------|-------|
@@ -149,15 +149,18 @@ See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete architecture.
 | Write triggers | `memory_save` tool, session compaction, task reflection |
 | Search | Substring match (`search()`), tag filter (`getEntriesByTag()`), semantic search (vector overlay) |
 | System prompt | Top-K relevant entries retrieved per query via `retrieveRelevantMemories()` |
+| Role | **Intake buffer** — raw observations that may be promoted to Layer 4 |
 
 **Entry lifecycle**:
 1. **Created** by agent via `memory_save` tool, or automatically during session compaction
 2. **Indexed** in vector store for semantic search (if embedding provider is configured)
-3. **Retrieved** during system prompt assembly: facts always included, query-relevant entries added via semantic or substring search
+3. **Retrieved** during system prompt assembly: facts always included, query-relevant entries added via semantic or substring search; entries already shown in Lessons/Best Practices sections are excluded from Relevant Memories to avoid duplication
 4. **Consolidated** by Dream Cycle: duplicates removed, related entries merged, outdated entries pruned (see Section 5)
+5. **Promoted** by Dream Cycle: recurring patterns (3+ similar entries) are synthesized and promoted to MEMORY.md (Layer 4); source entries are then removed from the intake buffer
 
 **Tagging convention** (enforced by self-evolution skill):
 - `lesson` — learned principle from experience
+- `best-practice` — proven approach from successfully completed tasks
 - `tool-preference` — tool usage optimization
 - `role-evolution` — ROLE.md change record
 - `domain:<topic>` — domain-specific knowledge
@@ -178,15 +181,16 @@ Daily logs serve as an audit trail. They capture:
 
 **Important**: Daily logs are append-only and are never deleted or modified. They serve as a historical record for problem analysis.
 
-#### Layer 4: Long-Term Knowledge
+#### Layer 4: Long-Term Knowledge (Curated Knowledge)
 
 | Attribute | Value |
 |-----------|-------|
 | Storage | `MEMORY.md` |
 | Format | Markdown with `## section-name` headers, key-value section structure |
-| Write triggers | `memory_update_longterm` tool (agent-initiated) |
-| System prompt | Full content loaded via `getLongTermMemory()`, capped at 5000 chars |
+| Write triggers | `memory_update_longterm` tool (agent-initiated), Dream Cycle promotion |
+| System prompt | Full content loaded via `getLongTermMemoryExcluding(['sops'])`, capped at 5000 chars; SOPs loaded separately with dedicated 3000 char budget |
 | Lifetime | Persistent across sessions and restarts |
+| Role | **Curated knowledge** — validated SOPs and consolidated insights |
 
 **Allowed sections and limits**:
 
@@ -198,10 +202,20 @@ Daily logs serve as an audit trail. They capture:
 | `role-evolution-log` | 20 | Chronological record of ROLE.md changes |
 | Custom sections (e.g. `project-conventions`) | 20 | Agent-defined knowledge categories |
 
+**Hard limits (code-enforced)**:
+- Per-section: 3000 chars max (`MEMORY_MD_SECTION_MAX_CHARS`) — content is truncated if exceeded
+- Total file: 15000 chars max (`MEMORY_MD_TOTAL_MAX_CHARS`) — writes are refused if total would exceed limit
+- SOPs loaded independently from general MEMORY.md cap (deduplication: SOPs section excluded from Long-term Knowledge injection)
+
+**`memory_update_longterm` modes**:
+- `replace` (default): overwrites the section
+- `patch`: appends to the existing section — use for adding SOPs incrementally
+
 **Rules**:
 - MEMORY.md must contain only **distilled, high-signal knowledge** — not raw reports or verbose outputs
 - Daily reports must **not** be written to MEMORY.md; they belong in daily-logs/ (Layer 3)
-- Agents are responsible for enforcing section limits when calling `memory_update_longterm`; the Dream Cycle (Section 5) provides a system-level enforcement backstop
+- Agents should use `mode: "patch"` for SOPs to avoid accidentally overwriting existing ones
+- The system enforces section and total size limits in `addLongTermMemory()` code
 
 #### Layer 5: Identity
 
@@ -254,16 +268,23 @@ System Prompt
 ├── Agent Identity (from RoleTemplate — Layer 5)
 ├── Organization Context (CONTEXT.md, team info)
 ├── Policies & Governance
-├── Long-term Knowledge (MEMORY.md — Layer 4, up to 5000 chars)
+├── SOPs (MEMORY.md "sops" section — dedicated 3000 char budget)
+├── Long-term Knowledge (MEMORY.md excluding SOPs — Layer 4, up to 5000 chars)
 ├── Lessons from Past Experience (memories.json — Layer 2, tag: "lesson", up to 10)
+├── Best Practices (memories.json — Layer 2, tag: "best-practice", up to 10)
+├── Applicable Lessons for This Task (task_execution scenario only — keyword-matched lessons)
 ├── Shared Deliverables
-├── Relevant Memories (Layer 2 + Vector Index)
+├── Relevant Memories (Layer 2 + Vector Index, excluding already-shown IDs)
 │   ├── All "fact" type entries (up to topK)
 │   ├── Semantic search results for current query (if vector index enabled)
 │   └── Fallback: substring search results
 ├── Recent Activity Summary (daily-logs/ — Layer 3, today only, up to 1500 chars)
 └── Task Board (assigned tasks)
 ```
+
+**Deduplication**: SOPs are loaded separately and excluded from the general MEMORY.md dump. Lesson and best-practice entry IDs are tracked; entries already shown in those sections are filtered out of Relevant Memories to prevent the same content appearing twice.
+
+**Active retrieval**: During `task_execution` scenario, the system performs keyword matching between the task description and all lesson/best-practice entries, surfacing relevant ones in an "Applicable Lessons for This Task" section.
 
 ### 4.3 Conversation History Flow
 
@@ -349,6 +370,13 @@ The LLM receives the entry list and must respond with a JSON object:
       "mergedContent": "Combined information from both entries...",
       "tags": ["lesson", "coding"]
     }
+  ],
+  "promote": [
+    {
+      "sourceIds": ["id5", "id6", "id7"],
+      "section": "lessons-learned",
+      "content": "Synthesized insight from recurring pattern..."
+    }
   ]
 }
 ```
@@ -357,7 +385,9 @@ The LLM receives the entry list and must respond with a JSON object:
 - Be conservative — only remove entries that are clearly redundant or superseded
 - When merging, preserve all unique information from the original entries
 - Keep lesson and best-practices entries unless truly duplicated
-- If nothing needs consolidation, return `{ "remove": [], "merge": [] }`
+- Promote only when 3+ entries point to the same recurring pattern
+- Promoted content is appended to the named MEMORY.md section; source entries are removed from `memories.json`
+- If nothing needs consolidation, return `{ "remove": [], "merge": [], "promote": [] }`
 
 ### MEMORY.md Hygiene (pruneMemoryMd)
 

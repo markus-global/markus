@@ -40,8 +40,11 @@ export interface IMemoryStore {
   getDailyLog(date?: string): string;
   getRecentDailyLogs(days?: number): string;
 
+  removeEntriesByTag(tag: string): number;
+
   addLongTermMemory(key: string, content: string): void;
   getLongTermMemory(): string;
+  getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;
 
   compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number };

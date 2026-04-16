@@ -345,9 +345,15 @@ requirement status change → agent.enqueueToMailbox('requirement_update', {
 
 ### Design Rationale
 
-- **Completeness**: Even if no immediate action is needed (e.g., an `archived` transition), the agent should know. This supports reflection and learning.
+- **Informational context only**: Task status notifications (`task_status_update`) are enqueued with `invokesLLM: false` — they do **not** trigger LLM processing. They exist as decision context for triage and as episodic memory, not as work items.
+- **Side-effect system handles all actions**: The `updateTaskStatus()` method in `TaskService` automatically handles all real side effects triggered by status changes:
+  - **→ `in_progress`**: Auto-starts task execution via `runTask()`
+  - **Leaving `in_progress`**: Cancels any running execution
+  - **→ `review`**: Notifies the reviewer agent
+  - **Terminal states** (`completed`, `failed`, `cancelled`): Checks and unblocks dependent tasks
+- **Agents should NOT duplicate these actions**: Do not send A2A messages to notify about task status changes — the system handles everything. A2A should only be used for substantive coordination that goes beyond a status change.
 - **Episodic memory**: These notifications become part of the agent's mailbox timeline — the authoritative record of everything that happened. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md).
-- **Event-driven**: Notifications are fire-and-forget (`enqueueToMailbox`). The agent's attention controller decides when and whether to act on them.
+- **Event-driven**: Notifications are fire-and-forget (`enqueueToMailbox`). The agent's attention controller uses them as context during triage deliberation.
 
 ---
 

@@ -213,18 +213,14 @@ export interface AgentMindState {
 
 export type UserNotificationType =
   | 'approval_request'
-  | 'bounty_posted'
-  | 'task_completed'
-  | 'agent_alert'
-  | 'system'
-  | 'agent_report'
-  | 'agent_chat_request'
-  | 'task_status_changed'
-  | 'requirement_decision'
-  | 'agent_escalation'
-  | 'mention'
   | 'task_created'
-  | 'requirement_created';
+  | 'task_completed'
+  | 'task_review'
+  | 'task_failed'
+  | 'requirement_created'
+  | 'requirement_decision'
+  | 'agent_report'
+  | 'system';
 
 export type UserNotificationActionType = 'none' | 'navigate' | 'open_chat';
 
@@ -238,16 +234,12 @@ export interface UserNotificationTypeDescriptor {
 
 export const USER_NOTIFICATION_TYPE_REGISTRY: Record<UserNotificationType, UserNotificationTypeDescriptor> = {
   approval_request:    { label: 'Approval Request',      icon: '🔐', defaultPriority: 'high',   actionType: 'navigate',  category: 'approval' },
-  bounty_posted:       { label: 'Bounty Posted',         icon: '🎯', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
-  task_completed:      { label: 'Task Completed',        icon: '✅', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
   task_created:        { label: 'Task Created',          icon: '📋', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
-  task_status_changed: { label: 'Task Status Changed',   icon: '🔄', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_completed:      { label: 'Task Completed',        icon: '✅', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_review:         { label: 'Task Review',           icon: '👁️', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
+  task_failed:         { label: 'Task Failed',           icon: '❌', defaultPriority: 'high',   actionType: 'navigate',  category: 'task' },
   requirement_created: { label: 'Requirement Proposed',  icon: '📝', defaultPriority: 'high',   actionType: 'navigate',  category: 'task' },
   requirement_decision:{ label: 'Requirement Decision',  icon: '⚖️', defaultPriority: 'normal', actionType: 'navigate',  category: 'task' },
-  agent_alert:         { label: 'Agent Alert',           icon: '⚠️', defaultPriority: 'high',   actionType: 'none',      category: 'agent' },
   agent_report:        { label: 'Agent Report',          icon: '📊', defaultPriority: 'normal', actionType: 'none',      category: 'agent' },
-  agent_chat_request:  { label: 'Chat Request',          icon: '💬', defaultPriority: 'normal', actionType: 'open_chat', category: 'agent' },
-  agent_escalation:    { label: 'Agent Escalation',      icon: '🚨', defaultPriority: 'high',   actionType: 'open_chat', category: 'agent' },
-  mention:             { label: 'Mention',               icon: '@',  defaultPriority: 'normal', actionType: 'navigate',  category: 'system' },
   system:              { label: 'System',                icon: '⚙️', defaultPriority: 'normal', actionType: 'none',      category: 'system' },
 };

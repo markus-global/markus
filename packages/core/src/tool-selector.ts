@@ -93,6 +93,7 @@ export class ToolSelector {
     recentToolNames?: string[];
     isManager?: boolean;
     isTaskExecution?: boolean;
+    isReview?: boolean;
     skillCatalog?: SkillManifest[];
   }): LLMTool[] {
     const selected = new Set<string>();
@@ -123,6 +124,22 @@ export class ToolSelector {
         'subtask_create', 'subtask_complete', 'subtask_list',
         'task_submit_review',
         'requirement_get', 'requirement_update', 'requirement_resubmit',
+      ]) {
+        if (opts.allTools.has(name)) selected.add(name);
+      }
+    }
+
+    if (opts.isReview) {
+      for (const group of this.groups) {
+        if (['code', 'shell'].includes(group.name)) {
+          for (const name of group.toolNames) {
+            if (opts.allTools.has(name)) selected.add(name);
+          }
+        }
+      }
+      for (const name of [
+        'task_get', 'task_note',
+        'requirement_get',
       ]) {
         if (opts.allTools.has(name)) selected.add(name);
       }

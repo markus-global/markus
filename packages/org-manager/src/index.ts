@@ -3,7 +3,7 @@ export { TaskService } from './task-service.js';
 export { APIServer } from './api-server.js';
 export { WSBroadcaster } from './ws-server.js';
 export { HITLService } from './hitl-service.js';
-export type { ApprovalRequest, BountyTask, Notification } from './hitl-service.js';
+export type { ApprovalRequest, Notification } from './hitl-service.js';
 export { BillingService } from './billing-service.js';
 export { AuditService } from './audit-service.js';
 export type { AuditEntry, AuditEventType, TokenUsage } from './audit-service.js';

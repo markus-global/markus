@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLogger, getTextContent, type LLMMessage } from '@markus/shared';
+import { createLogger, getTextContent, type LLMMessage, MEMORY_MD_SECTION_MAX_CHARS, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
@@ -92,6 +92,17 @@ export class MemoryStore implements IMemoryStore {
     this.removeEntries(removedIds);
     this.entries.push(sanitizeEntry(newEntry));
     this.saveToDisk();
+  }
+
+  removeEntriesByTag(tag: string): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter(e => {
+      const tags = Array.isArray(e.metadata?.tags) ? e.metadata!.tags as string[] : [];
+      return !tags.includes(tag);
+    });
+    const removed = before - this.entries.length;
+    if (removed > 0) this.saveToDisk();
+    return removed;
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
@@ -190,6 +201,14 @@ export class MemoryStore implements IMemoryStore {
   // --- Long-term: MEMORY.md ---
 
   addLongTermMemory(key: string, content: string): void {
+    let truncatedContent = content;
+    if (truncatedContent.length > MEMORY_MD_SECTION_MAX_CHARS) {
+      log.warn('Section content exceeds limit, truncating', {
+        key, original: content.length, limit: MEMORY_MD_SECTION_MAX_CHARS,
+      });
+      truncatedContent = truncatedContent.slice(0, MEMORY_MD_SECTION_MAX_CHARS);
+    }
+
     let existing = '';
     if (existsSync(this.longTermFile)) {
       existing = readFileSync(this.longTermFile, 'utf-8');
@@ -197,14 +216,23 @@ export class MemoryStore implements IMemoryStore {
 
     const sectionHeader = `## ${key}`;
     try {
+      let updated: string;
       if (existing.includes(sectionHeader)) {
         const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
-        existing = existing.replace(regex, `${sectionHeader}\n${content}\n`);
-        writeFileSync(this.longTermFile, existing);
+        updated = existing.replace(regex, `${sectionHeader}\n${truncatedContent}\n`);
       } else {
-        appendFileSync(this.longTermFile, `\n${sectionHeader}\n${content}\n`);
+        updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
       }
-      log.debug('Long-term memory updated', { key });
+
+      if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
+        log.warn('MEMORY.md total size exceeds limit, refusing write', {
+          key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
+        });
+        return;
+      }
+
+      writeFileSync(this.longTermFile, updated);
+      log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length });
     } catch (err) {
       log.warn('Failed to write long-term memory', { key, error: String(err) });
     }
@@ -213,6 +241,20 @@ export class MemoryStore implements IMemoryStore {
   getLongTermMemory(): string {
     if (!existsSync(this.longTermFile)) return '';
     return readFileSync(this.longTermFile, 'utf-8');
+  }
+
+  getLongTermMemoryExcluding(sections: string[]): string {
+    const full = this.getLongTermMemory();
+    if (!full || sections.length === 0) return full;
+
+    let result = full;
+    for (const section of sections) {
+      const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(
+        new RegExp(`\\n?## ${escaped}\\n[\\s\\S]*?(?=\\n## |$)`), ''
+      );
+    }
+    return result.trim();
   }
 
   getLongTermSection(sectionName: string): string {

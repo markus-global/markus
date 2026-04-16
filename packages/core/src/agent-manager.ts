@@ -2174,9 +2174,13 @@ export class AgentManager {
   private emergencyMode = false;
 
   async pauseAllAgents(reason?: string): Promise<void> {
-    for (const [, agent] of this.agents) {
-      if (agent.getState().status !== 'offline') {
-        agent.pause(reason);
+    for (const [id, agent] of this.agents) {
+      try {
+        if (agent.getState().status !== 'offline') {
+          agent.pause(reason);
+        }
+      } catch (err) {
+        log.warn('Failed to pause agent', { agentId: id, error: String(err) });
       }
     }
     this.globalPaused = true;
@@ -2185,9 +2189,13 @@ export class AgentManager {
   }
 
   async resumeAllAgents(): Promise<void> {
-    for (const [, agent] of this.agents) {
-      if (agent.getState().status === 'paused') {
-        agent.resume();
+    for (const [id, agent] of this.agents) {
+      try {
+        if (agent.getState().status === 'paused') {
+          agent.resume();
+        }
+      } catch (err) {
+        log.warn('Failed to resume agent', { agentId: id, error: String(err) });
       }
     }
     this.globalPaused = false;
@@ -2197,9 +2205,13 @@ export class AgentManager {
   }
 
   async emergencyStop(): Promise<void> {
-    for (const [, agent] of this.agents) {
-      agent.cancelActiveStream();
-      await agent.stop();
+    for (const [id, agent] of this.agents) {
+      try {
+        agent.cancelActiveStream();
+        await agent.stop();
+      } catch (err) {
+        log.warn('Failed to stop agent during emergency', { agentId: id, error: String(err) });
+      }
     }
     this.emergencyMode = true;
     this.globalPaused = true;

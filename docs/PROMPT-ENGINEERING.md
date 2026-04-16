@@ -111,6 +111,10 @@ Every LLM call passes through the mailbox, so this section is always populated. 
 - **Recent decisions**: Last 3-5 attention decisions (continue/preempt/merge/defer) with reasoning.
 - **Merged content**: If a `merge` decision injected additional context (e.g., a comment on the current task), it appears here.
 
+**Triage context budget** is generous — up to 20 recent messages × 2000 chars each, plus full item content (3000 chars per candidate) and the agent's active task list. Tens of thousands of tokens are acceptable for triage because accurate prioritization decisions save far more cost downstream. The triage LLM can also invoke a curated set of **read-only tools** (`task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`) to gather additional context before deciding. These are controlled by `TRIAGE_ALLOWED_TOOLS` and `TRIAGE_MAX_TOOL_ITERATIONS` in `limits.ts`.
+
+**Task status notifications** are purely informational — the system's side-effect mechanism handles all actions (execution start/cancel, reviewer notification, dependency unblocking). Agents are instructed not to send redundant A2A messages for routine status changes.
+
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
 #### Scenario Section (§25)
@@ -244,7 +248,7 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 
 All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
 
-`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools.
+`spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
 
 Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` with a preview in context (Manus-inspired "restorable compression").
 
@@ -255,6 +259,17 @@ Large tool results (>50K chars) are offloaded to `{agentDataDir}/tool-outputs/` 
 ### 4.5 Task Completion Reminder
 
 In `_executeTaskInternal`, every 10 tool iterations, a `[SYSTEM REMINDER]` message is injected reminding the agent to call `task_submit_review`. This combats the "lost in the middle" effect where long tool-use sequences push the original instructions out of the model's attention.
+
+### 4.6 Mid-Execution Reflection Nudge
+
+Every 30 tool iterations during task execution, a `[REFLECTION CHECKPOINT]` message is injected prompting the agent to capture any insights discovered during the current task. This ensures lessons are saved while context is fresh, rather than relying solely on post-task reflection.
+
+### 4.7 Post-Task Reflection
+
+When a task is accepted (`triggerPostTaskReflection` in `task-service.ts`), the system sends a reflection prompt to the assigned agent. The prompt includes:
+- An **execution trace summary** (execution rounds, duration, result summary, recent notes)
+- Differentiated guidance for **revision** cases (focus on what went wrong) vs **success** cases (focus on what worked)
+- Guidance to create **skill packages** via skill-building for complex procedures (5+ steps)
 
 ---
 
@@ -303,11 +318,13 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 2. Agent's custom checklist (from `role.heartbeatChecklist`)
 3. Last heartbeat summary (from memory search)
 4. Failed task recovery instructions
-5. Daily report section (managers, after 20:00)
-6. Self-evolution reflection instructions
-7. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
-8. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
-9. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
+5. Requirement monitoring section
+6. Daily report section (managers, after 20:00)
+7. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (intake buffer vs curated knowledge vs skill creation)
+8. Quality signal check — revision rate self-assessment, SOP/lesson effectiveness
+9. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
+10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
+11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
 Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
