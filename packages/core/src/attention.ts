@@ -326,7 +326,7 @@ export class AttentionController {
             this.mailbox.defer(deferId);
           }
           for (const dropId of triageResult.dropItemIds) {
-            this.mailbox.complete(dropId);
+            this.mailbox.drop(dropId);
           }
           this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
           this.delegate?.onTriageCompleted?.(triageResult);

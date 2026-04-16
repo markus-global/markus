@@ -188,7 +188,6 @@ describe('AuditService', () => {
         'agent_fire',
         'approval_request',
         'approval_response',
-        'bounty_post',
         'error',
         'system',
       ];

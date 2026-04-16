@@ -404,6 +404,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   if (storage?.notificationRepo) {
     hitlService.setNotificationRepo(storage.notificationRepo);
   }
+  if (storage?.approvalRepo) {
+    hitlService.setApprovalRepo(storage.approvalRepo);
+  }
   if (storage?.projectRepo) {
     projectService.setProjectRepo(storage.projectRepo);
   }
@@ -514,7 +517,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       targetUserId: 'default',
       options: opts.options,
       allowFreeform: opts.allowFreeform,
-      details: { priority: opts.priority, relatedTaskId: opts.relatedTaskId },
+      details: { priority: opts.priority, taskId: opts.relatedTaskId },
     });
   });
 

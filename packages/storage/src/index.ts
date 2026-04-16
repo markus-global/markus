@@ -39,6 +39,7 @@ export {
   SqliteMailboxRepo,
   SqliteDecisionRepo,
   SqliteNotificationRepo,
+  SqliteApprovalRepo,
   migrateToExecutionStreamLogs,
   type SqliteExternalAgentRegistration,
   type ActivityRecord,
@@ -47,4 +48,5 @@ export {
   type MailboxItemRow,
   type DecisionRow,
   type NotificationRow,
+  type ApprovalRow,
 } from './sqlite-storage.js';

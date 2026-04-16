@@ -784,6 +784,8 @@ export const api = {
       request<{ file: string; agentContent: string | null; templateContent: string | null }>(`/agents/${id}/role-diff?file=${encodeURIComponent(file)}`),
     roleSync: (id: string, files?: string[]) =>
       request<{ agentId: string; success: boolean; error?: string; synced: string[] }>(`/agents/${id}/role-sync`, { method: 'POST', body: JSON.stringify(files ? { files } : {}) }),
+    roleSmartSync: (id: string, file: string) =>
+      request<{ success: boolean; mergedContent: string; explanation: string; error?: string }>(`/agents/${id}/role-smart-sync`, { method: 'POST', body: JSON.stringify({ file }) }),
     roleUpdates: () =>
       request<{ total: number; staleCount: number; stale: RoleUpdateStatus[] }>('/agents/role-updates'),
     addSkill: (id: string, skillName: string) =>

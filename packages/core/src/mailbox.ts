@@ -405,9 +405,14 @@ export class AgentMailbox {
   }
 
   /**
-   * Mark an item as completed.
+   * Mark an item as completed and remove from in-memory queue if still present.
    */
   complete(itemId: string): void {
+    const idx = this.queue.findIndex(i => i.id === itemId);
+    if (idx !== -1) {
+      const [item] = this.queue.splice(idx, 1);
+      item.status = 'completed';
+    }
     const now = new Date().toISOString();
     this.persistence?.updateStatus(itemId, 'completed', { completedAt: now });
   }

@@ -526,6 +526,180 @@ function OverviewTab({ agent, onUpdate, externalInfo }: { agent: AgentDetail; on
   );
 }
 
+// ─── Inline Diff (line-level + word-level highlighting) ───────────────────────
+
+type DiffLineType = 'equal' | 'add' | 'remove';
+interface DiffLine { type: DiffLineType; content: string; lineNum?: number; oldLineNum?: number }
+
+function computeLineDiff(a: string, b: string): DiffLine[] {
+  const aLines = a.split('\n');
+  const bLines = b.split('\n');
+  const m = aLines.length, n = bLines.length;
+
+  // Myers-like LCS for line diff (O(mn) DP — fine for config files)
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i]![j] = aLines[i] === bLines[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+
+  const result: DiffLine[] = [];
+  let i = 0, j = 0, oldLn = 1, newLn = 1;
+  while (i < m || j < n) {
+    if (i < m && j < n && aLines[i] === bLines[j]) {
+      result.push({ type: 'equal', content: aLines[i]!, oldLineNum: oldLn++, lineNum: newLn++ });
+      i++; j++;
+    } else if (j < n && (i >= m || dp[i]![j + 1]! >= dp[i + 1]![j]!)) {
+      result.push({ type: 'add', content: bLines[j]!, lineNum: newLn++ });
+      j++;
+    } else {
+      result.push({ type: 'remove', content: aLines[i]!, oldLineNum: oldLn++ });
+      i++;
+    }
+  }
+  return result;
+}
+
+function tokenizeWords(line: string): string[] {
+  return line.match(/\S+|\s+/g) ?? [''];
+}
+
+function WordDiff({ oldText, newText, mode }: { oldText: string; newText: string; mode: 'add' | 'remove' }) {
+  const oldWords = tokenizeWords(oldText);
+  const newWords = tokenizeWords(newText);
+  const m = oldWords.length, n = newWords.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i]![j] = oldWords[i] === newWords[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+
+  const segments: Array<{ text: string; changed: boolean }> = [];
+  let oi = 0, ni = 0;
+  while (oi < m || ni < n) {
+    if (oi < m && ni < n && oldWords[oi] === newWords[ni]) {
+      segments.push({ text: mode === 'remove' ? oldWords[oi]! : newWords[ni]!, changed: false });
+      oi++; ni++;
+    } else if (ni < n && (oi >= m || dp[oi]![ni + 1]! >= dp[oi + 1]![ni]!)) {
+      if (mode === 'add') segments.push({ text: newWords[ni]!, changed: true });
+      ni++;
+    } else {
+      if (mode === 'remove') segments.push({ text: oldWords[oi]!, changed: true });
+      oi++;
+    }
+  }
+
+  return (
+    <span>
+      {segments.map((s, i) =>
+        s.changed
+          ? <span key={i} className={mode === 'add' ? 'bg-green-500/30 rounded-sm' : 'bg-red-500/30 rounded-sm'}>{s.text}</span>
+          : <span key={i}>{s.text}</span>
+      )}
+    </span>
+  );
+}
+
+function InlineDiff({ agent, template, templateId }: { agent: string; template: string; templateId: string }) {
+  const lines = useMemo(() => computeLineDiff(agent, template), [agent, template]);
+  const [collapsed, setCollapsed] = useState(true);
+
+  // Group into hunks with context lines
+  const contextSize = 3;
+  const hunks = useMemo(() => {
+    const changed = lines.map((l, i) => l.type !== 'equal' ? i : -1).filter(i => i >= 0);
+    if (changed.length === 0) return [];
+
+    const groups: Array<{ start: number; end: number }> = [];
+    let start = Math.max(0, changed[0]! - contextSize);
+    let end = Math.min(lines.length - 1, changed[0]! + contextSize);
+
+    for (let k = 1; k < changed.length; k++) {
+      const cs = Math.max(0, changed[k]! - contextSize);
+      const ce = Math.min(lines.length - 1, changed[k]! + contextSize);
+      if (cs <= end + 1) {
+        end = ce;
+      } else {
+        groups.push({ start, end });
+        start = cs;
+        end = ce;
+      }
+    }
+    groups.push({ start, end });
+    return groups;
+  }, [lines]);
+
+  // Pair consecutive remove/add lines for word-level diff
+  const renderLine = (line: DiffLine, idx: number, allLines: DiffLine[]) => {
+    const prefix = line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' ';
+    const bg = line.type === 'add' ? 'bg-green-500/8' : line.type === 'remove' ? 'bg-red-500/8' : '';
+    const textColor = line.type === 'add' ? 'text-green-600/90' : line.type === 'remove' ? 'text-red-500/80' : 'text-fg-tertiary';
+    const prefixColor = line.type === 'add' ? 'text-green-500' : line.type === 'remove' ? 'text-red-500' : 'text-fg-muted';
+    const ln = line.type === 'remove' ? line.oldLineNum : line.lineNum;
+
+    let wordDiffContent: React.ReactNode = null;
+    if (line.type === 'remove' && idx + 1 < allLines.length && allLines[idx + 1]!.type === 'add') {
+      wordDiffContent = <WordDiff oldText={line.content} newText={allLines[idx + 1]!.content} mode="remove" />;
+    } else if (line.type === 'add' && idx > 0 && allLines[idx - 1]!.type === 'remove') {
+      wordDiffContent = <WordDiff oldText={allLines[idx - 1]!.content} newText={line.content} mode="add" />;
+    }
+
+    return (
+      <div key={idx} className={`flex ${bg} hover:brightness-95 transition-colors`}>
+        <span className="w-10 shrink-0 text-right pr-2 text-[10px] text-fg-muted/50 select-none leading-[20px]">{ln ?? ''}</span>
+        <span className={`w-4 shrink-0 text-center text-[11px] font-mono ${prefixColor} select-none leading-[20px]`}>{prefix}</span>
+        <span className={`flex-1 text-[11px] font-mono ${textColor} whitespace-pre-wrap break-words leading-[20px]`}>
+          {wordDiffContent ?? line.content}
+          {line.content === '' && '\u00A0'}
+        </span>
+      </div>
+    );
+  };
+
+  const addCount = lines.filter(l => l.type === 'add').length;
+  const removeCount = lines.filter(l => l.type === 'remove').length;
+  const displayLines = collapsed ? hunks.flatMap(h => {
+    const hunkLines: Array<DiffLine & { _idx: number; _separator?: boolean }> = [];
+    for (let i = h.start; i <= h.end; i++) hunkLines.push({ ...lines[i]!, _idx: i });
+    return hunkLines;
+  }) : lines.map((l, i) => ({ ...l, _idx: i }));
+
+  return (
+    <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-surface-elevated/80 border-b border-border-default">
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
+            Diff: Current vs Template ({templateId})
+          </span>
+          <span className="text-[10px] text-green-500 font-mono">+{addCount}</span>
+          <span className="text-[10px] text-red-500 font-mono">-{removeCount}</span>
+        </div>
+        <button
+          onClick={() => setCollapsed(c => !c)}
+          className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors"
+        >{collapsed ? 'Show full file' : 'Show changes only'}</button>
+      </div>
+      <div className="max-h-72 overflow-y-auto bg-surface-primary/50">
+        {collapsed && hunks.length > 0 && hunks[0]!.start > 0 && (
+          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-b border-border-default/30">··· {hunks[0]!.start} lines hidden ···</div>
+        )}
+        {displayLines.map((line, viewIdx) => {
+          const prevInDisplay = viewIdx > 0 ? displayLines[viewIdx - 1] : null;
+          const showSep = collapsed && prevInDisplay && (line as any)._idx - (prevInDisplay as any)._idx > 1;
+          return (
+            <div key={viewIdx}>
+              {showSep && <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-y border-border-default/30">···</div>}
+              {renderLine(line, (line as any)._idx, lines)}
+            </div>
+          );
+        })}
+        {collapsed && hunks.length > 0 && hunks[hunks.length - 1]!.end < lines.length - 1 && (
+          <div className="text-[10px] text-fg-muted/50 text-center py-0.5 bg-surface-elevated/40 border-t border-border-default/30">··· {lines.length - 1 - hunks[hunks.length - 1]!.end} lines hidden ···</div>
+        )}
+        {hunks.length === 0 && <div className="text-xs text-fg-tertiary text-center py-4">Files are identical</div>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Files Tab (System Prompts / Role Files) ─────────────────────────────────
 
 function FilesTab({ agentId }: { agentId: string }) {
@@ -538,6 +712,8 @@ function FilesTab({ agentId }: { agentId: string }) {
   const [roleStatus, setRoleStatus] = useState<RoleUpdateStatus | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [diffView, setDiffView] = useState<{ file: string; agent: string; template: string } | null>(null);
+  const [smartSyncing, setSmartSyncing] = useState(false);
+  const [smartSyncResult, setSmartSyncResult] = useState<{ file: string; mergedContent: string; explanation: string; previousContent: string } | null>(null);
 
   const loadFiles = useCallback(() => {
     setLoading(true);
@@ -581,9 +757,38 @@ function FilesTab({ agentId }: { agentId: string }) {
       await api.agents.roleSync(agentId, fileName ? [fileName] : undefined);
       setDiffView(null);
       setDirty(false);
+      setSmartSyncResult(null);
       loadFiles();
     } catch { /* */ }
     setSyncing(false);
+  };
+
+  const smartSync = async (fileName: string) => {
+    setSmartSyncing(true);
+    try {
+      const result = await api.agents.roleSmartSync(agentId, fileName);
+      if (result.success && result.mergedContent) {
+        const currentFile = files.find(f => f.name === fileName);
+        setSmartSyncResult({
+          file: fileName,
+          mergedContent: result.mergedContent,
+          explanation: result.explanation,
+          previousContent: currentFile?.content ?? editContent,
+        });
+        setEditContent(result.mergedContent);
+        setDirty(true);
+        setDiffView(null);
+      }
+    } catch { /* */ }
+    setSmartSyncing(false);
+  };
+
+  const undoSmartSync = () => {
+    if (!smartSyncResult) return;
+    setEditContent(smartSyncResult.previousContent);
+    setFiles(prev => prev.map(f => f.name === smartSyncResult.file ? { ...f, content: smartSyncResult.previousContent } : f));
+    setDirty(false);
+    setSmartSyncResult(null);
   };
 
   const showDiff = async (fileName: string) => {
@@ -664,10 +869,20 @@ function FilesTab({ agentId }: { agentId: string }) {
                     <button onClick={() => showDiff(selected)} className="px-2.5 py-1 text-[11px] text-amber-600 hover:text-amber-600 border border-amber-500/30 hover:border-amber-500/50 rounded-lg transition-colors">
                       {diffView?.file === selected ? 'Hide Diff' : 'View Diff'}
                     </button>
+                    <button onClick={() => smartSync(selected)} disabled={smartSyncing || syncing}
+                      className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                      title="Use AI to intelligently merge template changes while preserving your customizations"
+                    >{smartSyncing ? 'Merging...' : 'Smart Sync'}</button>
                     <button onClick={() => syncFromTemplate(selected)} disabled={syncing}
                       className="px-2.5 py-1 text-[11px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50"
+                      title="Overwrite with template content"
                     >{syncing ? 'Syncing...' : 'Sync This File'}</button>
                   </>
+                )}
+                {smartSyncResult?.file === selected && (
+                  <button onClick={undoSmartSync} className="px-2.5 py-1 text-[11px] text-red-500 hover:text-red-400 border border-red-500/30 hover:border-red-500/50 rounded-lg transition-colors"
+                    title="Undo smart sync and restore previous content"
+                  >Undo Merge</button>
                 )}
                 {dirty && <span className="text-[10px] text-amber-600">unsaved</span>}
                 <button onClick={saveFile} disabled={saving || !dirty}
@@ -677,15 +892,16 @@ function FilesTab({ agentId }: { agentId: string }) {
             </div>
 
             {diffView?.file === selected && (
-              <div className="mb-3 border border-border-default rounded-lg overflow-hidden">
-                <div className="grid grid-cols-2 text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider bg-surface-elevated/80">
-                  <div className="px-3 py-2 border-r border-border-default">Current (Agent)</div>
-                  <div className="px-3 py-2">Template ({roleStatus?.templateId})</div>
+              <InlineDiff agent={diffView.agent} template={diffView.template} templateId={roleStatus?.templateId ?? ''} />
+            )}
+
+            {smartSyncResult?.file === selected && (
+              <div className="mb-3 bg-brand-600/8 border border-brand-500/25 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-[10px] font-semibold text-brand-500 uppercase tracking-wider">Smart Sync Result</span>
+                  <span className="text-[10px] text-fg-tertiary">— review and save to apply</span>
                 </div>
-                <div className="grid grid-cols-2 max-h-60 overflow-y-auto">
-                  <pre className="px-3 py-2 text-[11px] font-mono text-red-500/70 bg-red-500/5 border-r border-border-default whitespace-pre-wrap break-words overflow-x-hidden">{diffView.agent}</pre>
-                  <pre className="px-3 py-2 text-[11px] font-mono text-green-600/70 bg-green-500/5 whitespace-pre-wrap break-words overflow-x-hidden">{diffView.template}</pre>
-                </div>
+                <p className="text-[11px] text-fg-secondary whitespace-pre-wrap leading-relaxed">{smartSyncResult.explanation}</p>
               </div>
             )}
 

@@ -617,7 +617,6 @@ Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `US
 | Type | Label | Icon | Default Priority |
 |------|-------|------|-----------------|
 | `approval_request` | Approval Request | ⚠ | high |
-| `bounty_posted` | Bounty Posted | 🎯 | normal |
 | `task_created` | Task Created | ☑ | normal |
 | `task_review` | Task Review | 👀 | high |
 | `task_completed` | Task Completed | ✓ | normal |

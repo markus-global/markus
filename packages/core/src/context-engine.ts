@@ -151,7 +151,7 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+    scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
     agentWorkspace?: {
       primaryWorkspace: string;
       sharedWorkspace?: string;
@@ -591,7 +591,7 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation'): string {
+  private buildScenarioSection(scenario: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review'): string {
     const lines: string[] = ['\n## Current Interaction Mode'];
 
     switch (scenario) {
@@ -685,6 +685,23 @@ export class ContextEngine {
         lines.push('- Your reply would only be "Sounds good", "Agreed", or similar zero-information response — do NOT reply');
         lines.push('- The comment does not ask a question, request action, or contain information you need to correct — do NOT reply');
         lines.push('- **Principle**: only comment when your reply adds **new information** or requests a **decision**. Avoid comment ping-pong.');
+        break;
+
+      case 'review':
+        lines.push('You are in **task review mode** — you have been asked to review a completed task.');
+        lines.push('');
+        lines.push('**MANDATORY review protocol:**');
+        lines.push('1. **Understand the task**: Call `task_get` with the task ID to see the full task state, description, deliverables, and notes');
+        lines.push('2. **Inspect deliverables**: Use `file_read` to examine ALL deliverable files listed in the task');
+        lines.push('3. **Check git changes**: If a task branch exists, use `shell_execute` to run `git diff` and review code changes');
+        lines.push('4. **Verify quality**: Check that deliverables match the task requirements and are functionally correct');
+        lines.push('');
+        lines.push('**After completing your review, you MUST take one of these actions:**');
+        lines.push('- **Approve**: `task_update` with `status: "completed"` and a `note` summarizing your review findings. If there is a task branch, merge it first.');
+        lines.push('- **Request revision**: `task_update` with `status: "in_progress"` and a `note` explaining what needs to change. This auto-restarts the task with your feedback.');
+        lines.push('');
+        lines.push('**CRITICAL: You MUST call `task_update` to finalize the review.** Simply writing a text response is NOT sufficient — the task will remain stuck in "review" status until you explicitly call `task_update` with either "completed" or "in_progress".');
+        lines.push('Do NOT review or change the status of any task other than the one you were asked to review.');
         break;
 
       case 'memory_consolidation':

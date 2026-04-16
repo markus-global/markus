@@ -1360,6 +1360,7 @@ export class TaskService {
         taskProjectContext,
         executionRound,
         task.title,
+        task.requirementId,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -1931,8 +1932,7 @@ export class TaskService {
     if (this.hitlService && (to === 'review' || to === 'completed' || to === 'failed')) {
       const notifType = to === 'completed' ? 'task_completed' as const
         : to === 'review' ? 'task_review' as const
-        : to === 'failed' ? 'task_failed' as const
-        : 'task_status_changed' as const;
+        : 'task_failed' as const;
       const priority = to === 'failed' ? 'high' as const : 'normal' as const;
       this.hitlService.notify({
         targetUserId: 'default',
@@ -3583,6 +3583,7 @@ export class TaskService {
         undefined,
         executionRound,
         task.title,
+        task.requirementId,
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });

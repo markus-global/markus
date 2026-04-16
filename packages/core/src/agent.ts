@@ -61,6 +61,7 @@ import { AttentionController, type AttentionDelegate } from './attention.js';
  */
 interface TaskAsyncContext {
   taskId: string;
+  requirementId?: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
@@ -543,7 +544,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -642,11 +643,13 @@ export class Agent {
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
     taskTitle?: string,
+    requirementId?: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
       content: taskDescription,
       taskId,
+      requirementId,
       extra: {
         triggerExecution: true,
         onLog,
@@ -867,6 +870,7 @@ export class Agent {
               extra.cancelToken as { cancelled: boolean } | undefined,
               extra.taskProjectContext as TaskProjectContext | undefined,
               extra.executionRound as number | undefined,
+              item.payload.requirementId,
             );
             resolveResponse('');
             return;
@@ -946,7 +950,7 @@ export class Agent {
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts({ sessionId: `review_${this.id}_${ts}` }),
+            buildHandleOpts({ sessionId: `review_${this.id}_${ts}`, scenario: 'review' }),
           );
           resolveResponse(reply);
           return reply;
@@ -1336,6 +1340,10 @@ export class Agent {
    */
   getCurrentTaskId(): string | undefined {
     return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
+  }
+
+  private getCurrentRequirementId(): string | undefined {
+    return taskAsyncContext.getStore()?.requirementId;
   }
 
   /**
@@ -2097,7 +2105,7 @@ export class Agent {
       channelContext?: Array<{ role: string; content: string }>;
       images?: string[];
       allowedTools?: Set<string>;
-      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation';
+      scenario?: 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'comment_response' | 'memory_consolidation' | 'review';
       toolEventCollector?: Array<{
         tool: string;
         status: 'done' | 'error';
@@ -2112,7 +2120,7 @@ export class Agent {
     }
 
     const scenario = options?.scenario ?? 'chat';
-    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution';
+    const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
     const PREEMPTABLE_SCENARIOS = new Set(['heartbeat', 'memory_consolidation']);
     const isPreemptable = PREEMPTABLE_SCENARIOS.has(scenario);
 
@@ -2135,6 +2143,10 @@ export class Agent {
         case 'comment_response':
           actType = 'chat';
           actLabel = `Comment reply to ${senderInfo?.name ?? senderId ?? 'user'}`;
+          break;
+        case 'review':
+          actType = 'internal';
+          actLabel = `Reviewing task from ${senderInfo?.name ?? senderId ?? 'worker'}`;
           break;
         default:
           actLabel = `Chat with ${senderInfo?.name ?? senderId ?? 'user'}`;
@@ -2220,7 +2232,10 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    let llmTools = this.buildToolDefinitions({
+      userMessage: effectiveMessage,
+      isReview: scenario === 'review',
+    });
     if (options?.allowedTools) {
       llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
     }
@@ -2882,9 +2897,10 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound, requirementId);
   }
 
   /**
@@ -2903,7 +2919,8 @@ export class Agent {
     cancelToken?: { cancelled: boolean },
     priority: TaskPriority = TaskPriority.MEDIUM,
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    requirementId?: string,
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -2914,7 +2931,7 @@ export class Agent {
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId }, () =>
+      () => taskAsyncContext.run({ taskId, requirementId }, () =>
         this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound)
       ),
       {
@@ -3348,9 +3365,103 @@ export class Agent {
         return;
       }
 
-      flushText();
-      const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      // Last-chance check: did the agent call task_submit_review?
+      // Scan session messages for a tool call to task_submit_review.
+      const sessionMsgs = this.memory.getRecentMessages(sessionId, 500);
+      const didSubmitReview = sessionMsgs.some(
+        m => m.role === 'assistant' && m.toolCalls?.some(tc => tc.name === 'task_submit_review')
+      );
+      if (!didSubmitReview && !cancelToken?.cancelled) {
+        log.warn('Task execution ending without task_submit_review — injecting final reminder', { taskId, agentId: this.id });
+        flushText();
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content });
+        this.memory.appendMessage(sessionId, {
+          role: 'user',
+          content: [
+            `[SYSTEM — CRITICAL REMINDER — Task ${taskId}]`,
+            'You are about to finish without calling `task_submit_review`. This is MANDATORY.',
+            'The task will NOT enter review and will be automatically retried if you do not submit.',
+            '',
+            'Call `task_submit_review` NOW with:',
+            '- `summary`: What you accomplished',
+            '- `deliverables`: List of files/directories you produced',
+            '',
+            'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
+            'Do NOT just stop — take action NOW.',
+          ].join('\n'),
+        });
+
+        const preparedFinal = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          memory: this.memory,
+          sessionId,
+          agentId: this.id,
+          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
+          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          toolDefinitions: llmTools,
+        });
+        taskLlmStart = Date.now();
+        response = await this.withNetworkRetry(
+          () => this.llmRouter.chatStream(
+            {
+              messages: preparedFinal.messages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(sessionId),
+              compaction: useCompaction,
+            },
+            event => {
+              if (event.type === 'text_delta' && event.text) {
+                textBuffer += event.text;
+                emitDelta(event.text);
+              }
+            },
+            this.getEffectiveProvider(),
+            abortController.signal,
+          ),
+          'Task execution final submit reminder',
+        );
+        taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
+        this.updateTokensUsed(taskLlmTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens);
+
+        // Process any tool calls from the final reminder turn
+        if (response.toolCalls?.length) {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+          });
+          for (const tc of response.toolCalls) {
+            if (cancelToken?.cancelled) break;
+            emit('tool_start', tc.name, { arguments: tc.arguments });
+            const toolStart = Date.now();
+            try {
+              let result = await this.executeTool(tc, undefined, sessionId);
+              result = this.offloadLargeResult(tc.name, result);
+              const isErr = isErrorResult(result);
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } catch (toolErr) {
+              const durationMs = Date.now() - toolStart;
+              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
+              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+            }
+          }
+          // After processing tool calls, only append if there's non-tool-call text
+          flushText();
+        } else {
+          flushText();
+          const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+          this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+        }
+      } else {
+        flushText();
+        const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply });
+      }
+
       emit('status', 'execution_finished', {});
       this.metricsCollector.recordTaskCompletion(taskId, 'completed', Date.now() - taskStartMs);
       this.eventBus.emit('task:completed', { taskId, agentId: this.id });
@@ -3705,6 +3816,7 @@ export class Agent {
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
+    isReview?: boolean;
   }): LLMTool[] {
     const isManager = this.config.agentRole === 'manager';
 
@@ -3719,6 +3831,7 @@ export class Agent {
       recentToolNames: recentPlusActivated,
       isManager,
       isTaskExecution: context?.isTaskExecution,
+      isReview: context?.isReview,
       skillCatalog: this.skillRegistry?.list(),
     });
 
@@ -3902,10 +4015,14 @@ export class Agent {
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
-        const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
-        const actionType = relatedTaskId ? 'navigate' : 'none';
-        const actionTarget = relatedTaskId ? JSON.stringify({ path: `/work?openTask=${relatedTaskId}` }) : undefined;
-        // Send to notification bell
+        const explicitTaskId = toolCall.arguments.related_task_id as string | undefined;
+        const taskId = explicitTaskId ?? this.getCurrentTaskId();
+        const requirementId = this.getCurrentRequirementId();
+        const actionType = taskId ? 'navigate' : 'none';
+        const actionTarget = taskId ? JSON.stringify({ path: `/work?openTask=${taskId}` }) : undefined;
+        const meta: Record<string, unknown> = { agentId: this.id, agentName: this.config.name };
+        if (taskId) meta.taskId = taskId;
+        if (requirementId) meta.requirementId = requirementId;
         if (this.userNotifier) {
           this.userNotifier({
             type: 'agent_report',
@@ -3914,7 +4031,7 @@ export class Agent {
             priority,
             actionType,
             actionTarget,
-            metadata: { agentId: this.id, agentName: this.config.name, ...(relatedTaskId ? { taskId: relatedTaskId } : {}) },
+            metadata: meta,
           });
         }
         // Also post to main session so it appears in the chat timeline

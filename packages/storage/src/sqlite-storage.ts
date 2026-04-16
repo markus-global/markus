@@ -507,6 +507,26 @@ CREATE TABLE IF NOT EXISTS user_notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id, read, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'custom',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  details TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  responded_at TEXT,
+  responded_by TEXT,
+  response_comment TEXT,
+  expires_at TEXT,
+  options TEXT,
+  allow_freeform INTEGER NOT NULL DEFAULT 0,
+  selected_option TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -3427,6 +3447,99 @@ export class SqliteNotificationRepo {
       actionTarget: r['action_target'] as string | null,
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── SQLite Approval Repo ────────────────────────────────────────────────────
+
+export interface ApprovalRow {
+  id: string;
+  agentId: string;
+  agentName: string;
+  type: string;
+  title: string;
+  description: string;
+  details: Record<string, unknown>;
+  status: string;
+  requestedAt: string;
+  respondedAt?: string;
+  respondedBy?: string;
+  responseComment?: string;
+  expiresAt?: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  allowFreeform?: boolean;
+  selectedOption?: string;
+}
+
+export class SqliteApprovalRepo {
+  constructor(private db: DatabaseSync) {}
+
+  upsert(a: ApprovalRow): void {
+    this.db.prepare(
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         responded_at = excluded.responded_at,
+         responded_by = excluded.responded_by,
+         response_comment = excluded.response_comment,
+         selected_option = excluded.selected_option`
+    ).run(
+      a.id,
+      a.agentId,
+      a.agentName,
+      a.type,
+      a.title,
+      a.description,
+      JSON.stringify(a.details),
+      a.status,
+      a.requestedAt,
+      a.respondedAt ?? null,
+      a.respondedBy ?? null,
+      a.responseComment ?? null,
+      a.expiresAt ?? null,
+      a.options ? JSON.stringify(a.options) : null,
+      a.allowFreeform ? 1 : 0,
+      a.selectedOption ?? null,
+    );
+  }
+
+  list(status?: string): ApprovalRow[] {
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (status) {
+      conditions.push('status = ?');
+      params.push(status);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT 200`;
+    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  get(id: string): ApprovalRow | undefined {
+    const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return r ? this.mapRow(r) : undefined;
+  }
+
+  private mapRow(r: Record<string, unknown>): ApprovalRow {
+    return {
+      id: r['id'] as string,
+      agentId: r['agent_id'] as string,
+      agentName: r['agent_name'] as string,
+      type: r['type'] as string,
+      title: r['title'] as string,
+      description: r['description'] as string,
+      details: fromJson<Record<string, unknown>>(r['details'] as string) ?? {},
+      status: r['status'] as string,
+      requestedAt: r['requested_at'] as string,
+      respondedAt: r['responded_at'] as string | undefined,
+      respondedBy: r['responded_by'] as string | undefined,
+      responseComment: r['response_comment'] as string | undefined,
+      expiresAt: r['expires_at'] as string | undefined,
+      options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
+      allowFreeform: !!(r['allow_freeform'] as number),
+      selectedOption: r['selected_option'] as string | undefined,
     };
   }
 }
