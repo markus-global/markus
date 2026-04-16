@@ -611,7 +611,7 @@ function AgentMessageBody({
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
-          <span>Stopped</span>
+          <span>{t('team.stopped')}</span>
         </div>
       )}
     </>
