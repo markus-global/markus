@@ -67,7 +67,8 @@
     "currentActivity": "目前活動",
     "errorDetails": "錯誤詳情",
     "introMessage": "自我介紹",
-    "workingOnTask": "正在處理任務"
+    "workingOnTask": "正在處理任務",
+    "stopped": "已停止"
   },
   "project": {
     "title": "專案",

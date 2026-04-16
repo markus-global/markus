@@ -67,7 +67,8 @@
     "introMessage": "介绍一下你自己",
     "errorDetails": "错误详情",
     "currentActivity": "当前活动",
-    "workingOnTask": "正在执行任务"
+    "workingOnTask": "正在执行任务",
+    "stopped": "已停止"
   },
   "project": {
     "title": "项目",

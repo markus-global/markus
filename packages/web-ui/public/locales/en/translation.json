@@ -67,7 +67,8 @@
     "introMessage": "Introduce yourself",
     "errorDetails": "Error Details",
     "currentActivity": "Current Activity",
-    "workingOnTask": "Working on task"
+    "workingOnTask": "Working on task",
+    "stopped": "Stopped"
   },
   "project": {
     "title": "Projects",
