@@ -743,8 +743,7 @@ export class LLMRouter {
     }
 
     try {
-      const response: LLMResponse;
-      response = await cb.execute(async () => {
+      const response = await cb.execute(async () => {
         if (provider.chatStream) {
           return await provider.chatStream(request, onEvent, signal);
         } else {
@@ -844,8 +843,7 @@ export class LLMRouter {
       if (allCircuitsOpenStream) {
         const cbStats = this.getCircuitBreakerStats();
         log.error(`[LLMRouter] All circuit breakers OPEN in stream — emitting degraded end event`);
-        onEvent({ type: 'error', error: `All LLM providers unavailable. Circuit breaker states: ${JSON.stringify(cbStats)}` });
-        onEvent({ type: 'message_end', usage: { inputTokens: 0, outputTokens: 0 }, finishReason: 'circuit_breaker_open' });
+        onEvent({ type: 'message_end', usage: { inputTokens: 0, outputTokens: 0 }, finishReason: undefined });
         span.end();
         throw lastError;
       }
@@ -1112,32 +1110,6 @@ export class LLMRouter {
     } catch { /* logging should never crash the app */ }
   }
 
-  /**
-   * Returns the current state of all circuit breakers, keyed by provider name.
-   */
-  getCircuitBreakerStats(): Record<string, { state: CircuitState; failures: number; lastFailure: number | null; halfOpenAttempts: number }> {
-    const stats: Record<string, { state: CircuitState; failures: number; lastFailure: number | null; halfOpenAttempts: number }> = {};
-    for (const [name, cb] of this.providerCircuitBreakers) {
-      stats[name] = {
-        state: cb.state,
-        failures: cb.failures,
-        lastFailure: cb.lastFailure,
-        halfOpenAttempts: cb.halfOpenAttempts,
-      };
-    }
-    return stats;
-  }
-
-  /**
-   * Update circuit breaker options at runtime (e.g. from a Settings UI).
-   * A null value for any option means: keep the current setting.
-   */
-  configureCircuitBreakers(options: Partial<CircuitBreakerOptions>): void {
-    this.circuitBreakerOptions = { ...this.circuitBreakerOptions, ...options };
-    // Refresh all breakers so they pick up the new options
-    this.providerCircuitBreakers.clear();
-    log.info('[LLMRouter] Circuit breaker configuration updated', options);
-  }
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
