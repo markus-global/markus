@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import type { LLMProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -72,11 +72,16 @@ export class LLMRouter {
   private customModelCatalog = new Map<string, ModelDefinition[]>();
   private disabledProviders = new Set<string>();
 
+  /** Per-provider in-flight request counter for concurrency-aware jitter */
+  private inFlight = new Map<string, number>();
+
   private _profileStore?: AuthProfileStore;
   private _oauthManager?: OAuthManager;
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
+  /** Rate-limit (429) failures recover much faster than generic errors */
+  private readonly CIRCUIT_RESET_RATE_LIMIT_MS = LLM_CIRCUIT_RESET_RATE_LIMIT_MS;
   /** Non-retryable failures (auth, billing, region) get a longer cooldown */
   private readonly CIRCUIT_RESET_FATAL_MS = 30 * 60 * 1000;
 
@@ -185,6 +190,30 @@ export class LLMRouter {
       /authentication/i.test(msg);
   }
 
+  /** Detect rate-limit (429) errors which should use a shorter circuit breaker cooldown. */
+  private static isRateLimitError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return /\b429\b/.test(msg) || /rate.limit/i.test(msg);
+  }
+
+  /**
+   * Apply random jitter when a provider has many concurrent in-flight requests.
+   * Spreads burst traffic to avoid thundering-herd 429 cascades.
+   */
+  private async applyJitter(providerName: string): Promise<void> {
+    const current = this.inFlight.get(providerName) ?? 0;
+    if (current >= LLM_MAX_CONCURRENT_PER_PROVIDER) {
+      const jitter = Math.round(LLM_CONCURRENCY_JITTER_BASE_MS + Math.random() * LLM_CONCURRENCY_JITTER_BASE_MS * 2);
+      await new Promise(r => setTimeout(r, jitter));
+    }
+    this.inFlight.set(providerName, (this.inFlight.get(providerName) ?? 0) + 1);
+  }
+
+  private releaseInflight(providerName: string): void {
+    const current = this.inFlight.get(providerName) ?? 0;
+    this.inFlight.set(providerName, Math.max(0, current - 1));
+  }
+
   private static healthKey(provider: string, model: string): string {
     return `${provider}:${model}`;
   }
@@ -215,14 +244,16 @@ export class LLMRouter {
       return;
     }
 
+    const isRateLimit = LLMRouter.isRateLimitError(error);
     const h = this.getModelHealth(provider, model);
     h.consecutiveFailures++;
     h.lastFailureAt = Date.now();
 
     if (h.consecutiveFailures >= this.CIRCUIT_OPEN_AFTER && !h.degraded) {
       h.degraded = true;
-      h.resetMs = this.CIRCUIT_RESET_MS;
-      log.warn(`Model ${provider}:${model} marked as degraded after ${h.consecutiveFailures} failures — skipping for ${this.CIRCUIT_RESET_MS / 60000} min`);
+      h.resetMs = isRateLimit ? this.CIRCUIT_RESET_RATE_LIMIT_MS : this.CIRCUIT_RESET_MS;
+      const cooldownSec = h.resetMs / 1000;
+      log.warn(`Model ${provider}:${model} marked as degraded after ${h.consecutiveFailures} failures (${isRateLimit ? 'rate-limit' : 'error'}) — skipping for ${cooldownSec}s`);
     }
   }
 
@@ -527,6 +558,7 @@ export class LLMRouter {
       provider.configure({ provider: providerName as any, model: altModel });
     }
     const activeModel = provider.model;
+    await this.applyJitter(providerName);
     try {
       const response = await provider.chat(request);
       this.recordSuccess(providerName, activeModel);
@@ -537,6 +569,8 @@ export class LLMRouter {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
       throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
+      this.releaseInflight(providerName);
     }
   }
 
@@ -618,6 +652,7 @@ export class LLMRouter {
       provider.configure({ provider: providerName as any, model: altModel });
     }
     const activeModel = provider.model;
+    await this.applyJitter(providerName);
     try {
       let response: LLMResponse;
       if (provider.chatStream) {
@@ -635,6 +670,8 @@ export class LLMRouter {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
       throw LLMRouter.enrichError(error, providerName, activeModel);
+    } finally {
+      this.releaseInflight(providerName);
     }
   }
 

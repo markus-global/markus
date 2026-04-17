@@ -5,6 +5,7 @@ import {
   createLogger,
   orgId,
   generateId,
+  HEARTBEAT_STARTUP_JITTER_MS,
   type Organization,
   type Team,
   type TeamInfo,
@@ -826,7 +827,7 @@ export class OrganizationService {
         const id = ids[i]!;
         try {
           const initialHeartbeatDelayMs = ids.length > 1
-            ? Math.floor((i / ids.length) * DEFAULT_HEARTBEAT_INTERVAL_MS)
+            ? Math.floor((i / ids.length) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
             : undefined;
           await this.agentManager.startAgent(id, { initialHeartbeatDelayMs });
           started++;

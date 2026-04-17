@@ -374,3 +374,32 @@ export const SHELL_TIMEOUT_MAX_MS = 300_000;
  *  request_user_approval can wait indefinitely for the user. 24 hours is a
  *  generous safety net while allowing realistic human response times. */
 export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+// ─── Heartbeat Startup ──────────────────────────────────────────────────────
+
+/** Minimum initial delay (ms) before an agent's first heartbeat fires.
+ *  Prevents the first agent from firing immediately at startup, giving the
+ *  system time to settle and avoiding a burst of LLM requests at boot. */
+export const HEARTBEAT_MIN_INITIAL_DELAY_MS = 5_000;
+
+/** Random jitter (ms) added to deterministic heartbeat stagger on startup.
+ *  When multiple agents start together, each gets a stagger offset plus
+ *  this random jitter to avoid deterministic collisions across restarts. */
+export const HEARTBEAT_STARTUP_JITTER_MS = 10_000;
+
+// ─── LLM Router Circuit Breaker ─────────────────────────────────────────────
+
+/** Circuit-breaker cooldown (ms) specifically for rate-limit (HTTP 429) errors.
+ *  Much shorter than the generic 5-minute cooldown because rate limits
+ *  typically clear within seconds. */
+export const LLM_CIRCUIT_RESET_RATE_LIMIT_MS = 30 * 1000;
+
+/** Max concurrent in-flight LLM requests per provider before jitter kicks in.
+ *  When exceeded, additional requests add a random delay to spread the load
+ *  and avoid thundering-herd 429 cascades. */
+export const LLM_MAX_CONCURRENT_PER_PROVIDER = 5;
+
+/** Base delay (ms) for the random jitter applied when per-provider concurrency
+ *  exceeds LLM_MAX_CONCURRENT_PER_PROVIDER.  Actual delay is in the range
+ *  [JITTER_BASE, JITTER_BASE * 3]. */
+export const LLM_CONCURRENCY_JITTER_BASE_MS = 500;

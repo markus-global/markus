@@ -847,11 +847,12 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         mailbox.setPersistence({
           save: (item) => {
             try {
+              const { responsePromise, ...persistableMetadata } = (item.metadata ?? {}) as Record<string, unknown>;
               mbRepo.save({
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
-                metadata: (item.metadata ?? {}) as unknown as Record<string, unknown>,
+                metadata: persistableMetadata,
                 queuedAt: item.queuedAt,
               });
             } catch (e) { log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) }); }

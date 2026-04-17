@@ -215,17 +215,20 @@ export class BrowserSessionManager {
           args.background = true;
         }
         return this.withAgentLock(agentId, async () => {
+          const owned = this.getOwned(ownerKey);
+          const prevIds = new Set(owned);
           const result = await handler.execute(args);
           const pages = this.parsePageEntries(result);
-          const owned = this.getOwned(ownerKey);
-          const newPage = pages.find((p) => p.selected) ?? pages.find((p) => !owned.has(p.id));
+          const newPage = pages.find((p) => p.selected)
+            ?? pages.find((p) => !prevIds.has(p.id))
+            ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
           if (newPage) {
             owned.add(newPage.id);
             this.currentPage.set(ownerKey, newPage.id);
             this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
             log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
           } else {
-            log.warn(`new_page response did not contain a [selected] page for ${ownerKey}`);
+            log.warn(`new_page response contained no pages for ${ownerKey}`);
           }
           return this.annotateResponse(result, ownerKey);
         });
@@ -340,9 +343,12 @@ export class BrowserSessionManager {
             if (args.timeout) newPageArgs.timeout = args.timeout;
 
             try {
+              const prevIds = new Set(owned);
               const result = await newPageHandler.execute(newPageArgs);
               const pages = this.parsePageEntries(result);
-              const newPage = pages.find((p) => p.selected) ?? pages.find((p) => !owned.has(p.id));
+              const newPage = pages.find((p) => p.selected)
+                ?? pages.find((p) => !prevIds.has(p.id))
+                ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
 
               if (newPage) {
                 owned.add(newPage.id);

@@ -804,10 +804,14 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user' }
       : undefined;
     const resolveResponse = (reply: string) => {
-      item.metadata?.responsePromise?.resolve(stripCompletionMarker(reply));
+      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
+        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
+      }
     };
     const rejectResponse = (err: unknown) => {
-      item.metadata?.responsePromise?.reject(err);
+      if (typeof item.metadata?.responsePromise?.reject === 'function') {
+        item.metadata.responsePromise.reject(err);
+      }
     };
 
     const ts = Date.now();
@@ -961,8 +965,9 @@ export class Agent {
             agentId: this.id,
             triggeredAt: item.queuedAt,
           });
-          resolveResponse('');
-          return;
+          const hbReply = COMPLETION_MARKER;
+          resolveResponse(hbReply);
+          return hbReply;
         }
 
         case 'system_event':
@@ -2388,13 +2393,14 @@ export class Agent {
           }
           const loopCheck = this.loopDetector.check();
           if (loopCheck.detected) {
+            const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
+            this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
             if (loopCheck.severity === 'critical') {
-              log.warn('Loop detector: critical pattern — breaking', {
+              log.warn('Loop detector: critical pattern — force-breaking tool loop', {
                 agentId: this.id,
                 pattern: loopCheck.pattern,
               });
-              const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
-              this.memory.appendMessage(sessionId, { role: 'user', content: warningMsg });
+              break;
             }
           }
         }
@@ -2744,12 +2750,15 @@ export class Agent {
             this.loopDetector.record(tc.name, tc.arguments ?? {}, toolResults[i]?.content ?? '');
           }
           const loopCheck = this.loopDetector.check();
-          if (loopCheck.detected && loopCheck.severity === 'critical') {
-            log.warn('Stream loop detector: critical pattern — injecting warning', {
-              agentId: this.id, pattern: loopCheck.pattern,
-            });
+          if (loopCheck.detected) {
             const warningMsg = `[SYSTEM] Loop detected: ${loopCheck.message}. You are repeating the same actions without progress. Try a different approach or stop.`;
             this.memory.appendMessage(this.currentSessionId, { role: 'user', content: warningMsg });
+            if (loopCheck.severity === 'critical') {
+              log.warn('Stream loop detector: critical pattern — force-breaking tool loop', {
+                agentId: this.id, pattern: loopCheck.pattern,
+              });
+              break;
+            }
           }
         }
 
