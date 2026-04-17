@@ -1319,14 +1319,14 @@ export class APIServer {
           try {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
-            } else if (isResume) {
-              this.storage.chatSessionRepo.deleteLastAssistantMessage(sessionId);
             }
+            // Resume: keep the existing assistant message in DB and memory so
+            // the LLM can see its previous partial response and continue.
             const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
             agent.restoreSessionFromHistory(
               sessionId,
               histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-              { isRetry: !!isRetry, isResume: !!isResume },
+              { isRetry: !!isRetry },
             );
           } catch (err) {
             log.warn('Failed to restore session history, starting fresh', { sessionId, error: String(err) });
@@ -1360,6 +1360,7 @@ export class APIServer {
             persistUserMessage: bindingPersist,
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
             executionStreamRepo: this.storage?.executionStreamRepo,
+            isResume,
           });
 
           await sseHandler.handle(res);
@@ -4669,17 +4670,43 @@ EXPLANATION_END`;
       const authUser = await this.getAuthUser(req);
       const approvalId = path.split('/')[3]!;
       const body = await this.readBody(req);
+      const approved = body['approved'] as boolean;
+      const respondedBy = (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous';
+      const comment = body['comment'] as string | undefined;
+      const selectedOption = body['selectedOption'] as string | undefined;
       const result = this.hitlService.respondToApproval(
-        approvalId,
-        body['approved'] as boolean,
-        (body['respondedBy'] as string) ?? authUser?.userId ?? 'anonymous',
-        body['comment'] as string | undefined,
-        body['selectedOption'] as string | undefined,
+        approvalId, approved, respondedBy, comment, selectedOption,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
         return;
       }
+
+      // Directly transition task/requirement as fallback.
+      // The in-memory promise callback from requestApprovalAndWait is lost on
+      // server restart, so we must also drive the state change from here.
+      const details = result.details as Record<string, unknown> | undefined;
+      const taskId = details?.['taskId'] as string | undefined;
+      const requirementId = details?.['requirementId'] as string | undefined;
+      if (taskId) {
+        try {
+          if (approved) {
+            this.taskService.approveTask(taskId);
+          } else {
+            this.taskService.rejectTask(taskId);
+          }
+        } catch { /* already transitioned by in-memory promise callback */ }
+      }
+      if (requirementId && this.requirementService) {
+        try {
+          if (approved) {
+            this.requirementService.approveRequirement(requirementId, respondedBy);
+          } else {
+            this.requirementService.rejectRequirement(requirementId, respondedBy, comment || 'Rejected via approval');
+          }
+        } catch { /* already transitioned by in-memory promise callback */ }
+      }
+
       this.json(res, 200, { approval: result });
       return;
     }

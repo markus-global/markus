@@ -14,6 +14,8 @@ export interface ManagerToolsContext {
   listTemplates?: () => Array<{ id: string; name: string; description: string; roleId: string; category: string }>;
   installArtifact?: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }>;
   listArtifacts?: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>;
+  updateTeam?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
+  updateAgentConfig?: (agentId: string, data: { name?: string }) => Promise<{ id: string; name: string }>;
 }
 
 export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[] {
@@ -232,6 +234,70 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
               try {
                 const artifacts = ctx.listArtifacts!(args['type'] as 'agent' | 'team' | 'skill' | undefined);
                 return JSON.stringify({ artifacts, count: artifacts.length });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.updateTeam
+      ? [
+          {
+            name: 'team_update',
+            description: 'Update your team\'s name or description.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                team_id: { type: 'string', description: 'Team ID to update (defaults to your own team)' },
+                name: { type: 'string', description: 'New team name' },
+                description: { type: 'string', description: 'New team description' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const teamId = (args['team_id'] as string | undefined)?.trim();
+                const name = (args['name'] as string | undefined)?.trim();
+                const description = args['description'] as string | undefined;
+                if (!teamId) return JSON.stringify({ status: 'error', error: 'team_id is required' });
+                if (name === undefined && description === undefined) {
+                  return JSON.stringify({ status: 'error', error: 'At least one of name or description must be provided' });
+                }
+                const data: { name?: string; description?: string } = {};
+                if (name !== undefined) data.name = name;
+                if (description !== undefined) data.description = description;
+                const result = await ctx.updateTeam!(teamId, data);
+                return JSON.stringify({ status: 'success', team: result });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.updateAgentConfig
+      ? [
+          {
+            name: 'agent_update',
+            description: 'Update an agent\'s display name. Only agents in your team can be updated.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                agent_id: { type: 'string', description: 'The ID of the agent to update' },
+                name: { type: 'string', description: 'New display name for the agent' },
+              },
+              required: ['agent_id', 'name'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const agentId = (args['agent_id'] as string | undefined)?.trim();
+                const name = (args['name'] as string | undefined)?.trim();
+                if (!agentId) return JSON.stringify({ status: 'error', error: 'agent_id is required' });
+                if (!name) return JSON.stringify({ status: 'error', error: 'name is required' });
+                const result = await ctx.updateAgentConfig!(agentId, { name });
+                return JSON.stringify({ status: 'success', agent: result });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

@@ -489,6 +489,17 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     agentManager.setHubClient(hubClient);
   }
 
+  // Wire team/agent update callbacks for manager tools
+  agentManager.setTeamUpdater(async (teamId, data) => {
+    const team = await orgService.updateTeam(teamId, data);
+    return { id: teamId, name: team.name, description: team.description };
+  });
+  if (storage) {
+    agentManager.setAgentConfigPersister(async (agentId, data) => {
+      await storage.agentRepo.updateConfig(agentId, data);
+    });
+  }
+
   // Wire skill search/install callbacks so agents can discover and install remote skills
   agentManager.setSkillSearcher(async (query) => searchRegistries(query));
   agentManager.setSkillInstaller(async (request) => {

@@ -67,26 +67,6 @@ interface ChatMsg {
 
 type ChatMode = 'channel' | 'direct' | 'dm';
 
-// Mirror of MAILBOX_TYPE_REGISTRY icon/category from @markus/shared — kept in sync manually
-const ACTIVITY_TYPE_META: Record<string, { icon: string; category: string }> = {
-  system_event:         { icon: '⚙',  category: 'System' },
-  human_chat:           { icon: '💬', category: 'Chat' },
-  a2a_message:          { icon: '🔗', category: 'Chat' },
-  task_comment:         { icon: '📝', category: 'Comment' },
-  requirement_comment:  { icon: '📝', category: 'Comment' },
-  mention:              { icon: '@',  category: 'Mention' },
-  session_reply:        { icon: '↩',  category: 'Task' },
-  task_status_update:   { icon: '📋', category: 'Task' },
-  review_request:       { icon: '👀', category: 'Review' },
-  requirement_update:   { icon: '📝', category: 'Notification' },
-  daily_report:         { icon: '📊', category: 'System' },
-  heartbeat:            { icon: '♡',  category: 'System' },
-  memory_consolidation: { icon: '🧠', category: 'System' },
-  notify_user:          { icon: '🔔', category: 'Notification' },
-};
-
-const SCROLL_TO_BOTTOM_ACTIVITY_TYPES = new Set(['task_comment', 'requirement_comment', 'mention', 'notify_user']);
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
@@ -769,11 +749,21 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   const [sending, setSending] = useState(false);
+  const [streamingVisual, setStreamingVisual] = useState(false);
+  const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const STREAMING_MIN_DISPLAY_MS = 1500;
+  useEffect(() => {
+    if (sending) {
+      if (streamingTimerRef.current) { clearTimeout(streamingTimerRef.current); streamingTimerRef.current = null; }
+      setStreamingVisual(true);
+    } else if (streamingVisual) {
+      streamingTimerRef.current = setTimeout(() => { setStreamingVisual(false); streamingTimerRef.current = null; }, STREAMING_MIN_DISPLAY_MS);
+    }
+    return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
+  }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [expandedActivities, setExpandedActivities] = useState<Set<string>>(new Set());
-
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1472,14 +1462,23 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     } else {
       // direct — build an interleaved segment stream
       const agentMsgId = `a_${Date.now()}`;
-      const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
-      if (imagesToSend?.length) userMsg.images = imagesToSend;
-      if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
-      updateConvMsgs(sendKey, prev => [
-        ...prev,
-        userMsg,
-        { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
-      ]);
+      if (options?.isResume) {
+        // Resume: don't add a duplicate user message — just append the
+        // agent continuation placeholder after the existing partial response.
+        updateConvMsgs(sendKey, prev => [
+          ...prev,
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
+        ]);
+      } else {
+        const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
+        if (imagesToSend?.length) userMsg.images = imagesToSend;
+        if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
+        updateConvMsgs(sendKey, prev => [
+          ...prev,
+          userMsg,
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
+        ]);
+      }
 
       /** Track whether we're inside a <think> block across streaming chunks */
       let insideThink = false;
@@ -1777,7 +1776,9 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             } catch { /* retry */ }
           }
         };
-        void pollForReply(5, 3000);
+        // Await polling so `sending` stays true (and the streaming animation
+        // remains visible) while we recover the reply from the DB.
+        await pollForReply(5, 3000);
       }
     }
 
@@ -1845,19 +1846,32 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
     const currentMsgs = msgBuffers.current.get(convKey) ?? messages;
     const resumeIdx = currentMsgs.findIndex(m => m.id === resumeMsg.id);
     if (resumeIdx < 0) return;
-    let userMsg: ChatMsg | null = null;
-    for (let i = resumeIdx - 1; i >= 0; i--) {
-      if (currentMsgs[i]?.sender === 'user') { userMsg = currentMsgs[i]!; break; }
-    }
-    const resumeText = userMsg?.text ?? '';
-    if (!resumeText) return;
 
-    // Remove the agent bubble (and any messages after it)
+    // Trim the last incomplete segment from the agent bubble (stopped tools,
+    // trailing empty text) but keep all completed content.
     updateConvMsgs(convKey, prev => {
-      const idx = prev.findIndex(m => m.id === resumeMsg.id);
-      return idx >= 0 ? prev.slice(0, idx) : prev;
+      const u = [...prev];
+      const idx = u.findIndex(m => m.id === resumeMsg.id);
+      if (idx < 0) return prev;
+      const msg = u[idx]!;
+      const segs = [...(msg.segments ?? [])];
+      while (segs.length > 0) {
+        const last = segs[segs.length - 1]!;
+        if (last.type === 'tool' && (last.status === 'stopped' || last.status === 'running')) {
+          segs.pop();
+        } else if (last.type === 'text' && !(last as { content: string }).content) {
+          segs.pop();
+        } else {
+          break;
+        }
+      }
+      u[idx] = { ...msg, segments: segs, isStopped: false, isError: false };
+      return u;
     });
-    void send(resumeText, { isResume: true });
+
+    // Send a hidden continuation prompt — the backend will keep the existing
+    // session context and let the LLM pick up where it left off.
+    void send('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -1998,6 +2012,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
   const currentUserName = authUser?.name ?? 'You';
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
+  const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
   const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionFilter));
 
   const activeDmUser = humans.find(h => h.id === activeDmUserId);
@@ -2377,65 +2392,13 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
             : messages.map((msg, i) => {
                 const isPending = isLastPending && i === messages.length - 1;
                 const isStreamingMsg = isPending && sending;
+                const showStreamingBubble = (isLastVisualStreaming && i === messages.length - 1) || isStreamingMsg;
                 // Always show actions for stopped/error messages, otherwise only when not streaming
                 const showActions = !isStreamingMsg || msg.isStopped;
 
-                // Activity log → compact inline card rendered from metadata
-                if (msg.isActivityLog) {
-                  // Collapse consecutive heartbeats: only show the last one in a run
-                  if (msg.activityType === 'heartbeat') {
-                    const next = messages[i + 1];
-                    if (next?.isActivityLog && next.activityType === 'heartbeat') return null;
-                  }
-                  const meta = ACTIVITY_TYPE_META[msg.activityType ?? ''];
-                  const icon = meta?.icon ?? '•';
-                  const category = meta?.category;
-                  const navToWork = !!(msg.taskId || msg.requirementId);
-                  const navToMind = !navToWork && !!msg.mailboxItemId;
-                  const canNavigate = navToWork || navToMind;
-                  const isCommentType = SCROLL_TO_BOTTOM_ACTIVITY_TYPES.has(msg.activityType ?? '');
-                  const isExpanded = expandedActivities.has(msg.id);
-                  const fullText = msg.text + (msg.outcome ? `\n→ ${msg.outcome}` : '');
-                  const handleActivityClick = () => {
-                    if (canNavigate) {
-                      if (msg.taskId) {
-                        navBus.navigate(PAGE.WORK, { openTask: msg.taskId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                      } else if (msg.requirementId) {
-                        navBus.navigate(PAGE.WORK, { openRequirement: msg.requirementId, ...(isCommentType ? { scrollToComments: 'true' } : {}) });
-                      } else if (msg.mailboxItemId && selectedAgent) {
-                        handleViewProfile(selectedAgent, { tab: 'mind', highlightMailboxId: msg.mailboxItemId });
-                      }
-                    } else {
-                      setExpandedActivities(prev => {
-                        const next = new Set(prev);
-                        if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
-                        return next;
-                      });
-                    }
-                  };
-                  return (
-                    <div key={msg.id} id={`msg-${msg.id}`} className={`flex justify-start ${isMobile ? 'max-w-[95%]' : 'max-w-[85%]'}`}>
-                      <div className="min-w-0 w-full">
-                        <div
-                          className="group/act flex items-center gap-2 py-0.5 px-2 rounded-md hover:bg-surface-elevated/30 transition-colors min-w-0 w-full overflow-hidden cursor-pointer"
-                          onClick={handleActivityClick}
-                          title={canNavigate ? undefined : fullText}
-                        >
-                          <span className="text-[10px] text-fg-quaternary shrink-0 font-mono">{msg.time}</span>
-                          <span className="shrink-0 text-xs" title={msg.activityType}>{icon}</span>
-                          {category && <span className="shrink-0 text-[9px] font-medium rounded py-px bg-surface-elevated text-fg-quaternary inline-flex items-center justify-center overflow-hidden" style={{ width: 68 }}>{category}</span>}
-                          <span className={`text-xs text-fg-tertiary truncate min-w-0 flex-1 ${canNavigate ? 'group-hover/act:text-brand-500 transition-colors' : ''}`}>{msg.text}</span>
-                          {msg.outcome && !isExpanded && <span className="text-[10px] text-fg-quaternary shrink-0 truncate max-w-[50%]">→ {msg.outcome}</span>}
-                        </div>
-                        {isExpanded && msg.outcome && (
-                          <div className="ml-10 mr-4 mt-1 mb-2 py-2 px-3 rounded-md bg-surface-elevated/40 text-[11px] text-fg-tertiary whitespace-pre-wrap break-words leading-relaxed max-h-[240px] overflow-y-auto">
-                            {msg.outcome}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
+                // Activity log entries are visible in the Agent Profile Mind tab;
+                // hide them from the chat to reduce noise.
+                if (msg.isActivityLog) return null;
 
                 return (
                   <div key={msg.id} id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -2472,7 +2435,7 @@ export function TeamPage({ initialAgentId, authUser }: { initialAgentId?: string
                           : msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
                             ? 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm border-b-2 border-red-500/60'
                             : 'bg-surface-chat-bubble text-fg-primary rounded-bl-sm'
-                      } ${isStreamingMsg && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
+                      } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
                         {msg.sender === 'user'
                           ? <>
                               {msg.images && msg.images.length > 0 && (

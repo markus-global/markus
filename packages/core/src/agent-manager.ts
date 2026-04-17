@@ -334,6 +334,9 @@ export class AgentManager {
   private templateRegistry?: TemplateRegistry;
   private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
+  private teamUpdater?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
+  private agentConfigPersister?: (agentId: string, data: Record<string, unknown>) => Promise<void>;
+
   private groupChatHandlers?: {
     sendGroupMessage: (
       channelKey: string,
@@ -1134,6 +1137,19 @@ export class AgentManager {
         listArtifacts: this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
+        updateTeam: this.teamUpdater
+          ? async (teamId: string, data: { name?: string; description?: string }) => this.teamUpdater!(teamId, data)
+          : undefined,
+        updateAgentConfig: async (agentId: string, data: { name?: string }) => {
+          const targetAgent = this.getAgent(agentId);
+          if (data.name !== undefined) {
+            (targetAgent.config as unknown as Record<string, unknown>).name = data.name;
+          }
+          if (this.agentConfigPersister) {
+            await this.agentConfigPersister(agentId, data);
+          }
+          return { id: agentId, name: targetAgent.config.name };
+        },
       });
       for (const tool of managerTools) {
         agent.registerTool(tool);
@@ -1719,6 +1735,19 @@ export class AgentManager {
         listArtifacts: this.builderService
           ? (type?: 'agent' | 'team' | 'skill') => this.builderService!.listArtifacts(type)
           : undefined,
+        updateTeam: this.teamUpdater
+          ? async (teamId: string, data: { name?: string; description?: string }) => this.teamUpdater!(teamId, data)
+          : undefined,
+        updateAgentConfig: async (agentId: string, data: { name?: string }) => {
+          const targetAgent = this.getAgent(agentId);
+          if (data.name !== undefined) {
+            (targetAgent.config as unknown as Record<string, unknown>).name = data.name;
+          }
+          if (this.agentConfigPersister) {
+            await this.agentConfigPersister(agentId, data);
+          }
+          return { id: agentId, name: targetAgent.config.name };
+        },
       });
       for (const tool of managerTools) agent.registerTool(tool);
 
@@ -2046,6 +2075,14 @@ export class AgentManager {
 
   setBuilderService(service: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string) => Promise<{ type: string; installed: unknown }> }): void {
     this.builderService = service;
+  }
+
+  setTeamUpdater(updater: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>): void {
+    this.teamUpdater = updater;
+  }
+
+  setAgentConfigPersister(persister: (agentId: string, data: Record<string, unknown>) => Promise<void>): void {
+    this.agentConfigPersister = persister;
   }
 
   setHubClient(client: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> }): void {
