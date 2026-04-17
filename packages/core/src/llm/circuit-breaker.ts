@@ -120,7 +120,7 @@ export class CircuitBreaker {
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      const id = setTimeout(() => reject(new CircuitTimeoutError(`[${this.name}] Request timed out after ${this.timeoutMs}ms`)), this.timeoutMs);
+      const _id = setTimeout(() => reject(new CircuitTimeoutError(`[${this.name}] Request timed out after ${this.timeoutMs}ms`)), this.timeoutMs);
       // Allow abort
       if (typeof AbortSignal !== 'undefined') {
         // no-op: caller should pass AbortSignal separately
@@ -161,7 +161,7 @@ export class CircuitBreaker {
    * Record a failed execution.
    * Called by execute() automatically, but can also be called manually.
    */
-  recordFailure(error?: unknown): void {
+  recordFailure(_error?: unknown): void {
     const now = Date.now();
     this.lastFailureAt = now;
     this.consecutiveSuccesses = 0;
