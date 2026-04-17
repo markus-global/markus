@@ -1127,7 +1127,7 @@ export class Agent {
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
-    options?: { isRetry?: boolean; isResume?: boolean },
+    options?: { isRetry?: boolean },
   ): void {
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
@@ -1135,7 +1135,6 @@ export class Agent {
       if (session) {
         this.currentSessionId = existingMemorySessionId;
         if (options?.isRetry) {
-          // Strip last assistant reply + preceding user msg from memory
           while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role !== 'user') {
             session.messages.pop();
           }
@@ -1143,12 +1142,6 @@ export class Agent {
             session.messages.pop();
           }
           log.info(`Trimmed memory session for retry: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
-        } else if (options?.isResume) {
-          // Strip only the last assistant reply from memory (keep user message)
-          while (session.messages.length > 0 && session.messages[session.messages.length - 1]!.role === 'assistant') {
-            session.messages.pop();
-          }
-          log.info(`Trimmed memory session for resume: ${existingMemorySessionId} (${session.messages.length} messages remaining)`);
         }
         log.debug(`Switched to existing memory session ${existingMemorySessionId} for DB session ${dbSessionId}`);
         return;

@@ -34,9 +34,16 @@ import type { AgentMailbox } from './mailbox.js';
  * Check whether a mailbox-item reply was completed normally.
  *
  * For LLM-invoking items the agent is instructed to end its reply with
- * `COMPLETION_MARKER`.  If the marker is absent the model either crashed,
- * output garbage (e.g. raw XML tool calls), or was interrupted — in all
- * cases we should retry.
+ * `COMPLETION_MARKER`.  If the marker is absent the model either crashed
+ * or output garbage (e.g. raw XML tool calls) — we should retry.
+ *
+ * However, intentional interruptions (preemption, user cancellation) are
+ * NOT abnormal and must never be retried:
+ *  - Preempted items return '[preempted]' — the scheduler will re-trigger
+ *    background scenarios naturally.
+ *  - User-facing chats (human_chat, a2a_message) already streamed a
+ *    (partial) response to the caller; re-processing the same input would
+ *    produce a *different* reply, which is confusing.
  *
  * Returns a reason string when abnormal, `undefined` when the reply is OK.
  */
@@ -46,6 +53,16 @@ export function detectAbnormalCompletion(
 ): string | undefined {
   const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
   if (!registry?.invokesLLM) return undefined;
+
+  // Intentional preemption by the attention controller — a higher-priority
+  // item arrived and this one was interrupted on purpose.
+  if (reply === '[preempted]') return undefined;
+
+  // User-facing interactions: the response (even if partial) was already
+  // delivered to the caller.  Requeuing would re-process the identical
+  // message and generate a different reply — never desirable.
+  const isUserFacing = item.sourceType === 'human_chat' || item.sourceType === 'a2a_message';
+  if (isUserFacing) return undefined;
 
   if (reply === undefined || reply === '') {
     return 'empty reply from LLM-invoking item';
@@ -262,14 +279,19 @@ export class AttentionController {
       }
 
       if (!this.running) {
-        // Re-enqueue the item so it is not lost on shutdown
-        try {
-          this.mailbox.enqueue(item.sourceType, item.payload, {
-            priority: item.priority,
-            metadata: item.metadata,
-          });
-        } catch (err) {
-          log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
+        // Re-enqueue so non-interactive items are not lost on shutdown.
+        // User-facing chats are NOT re-enqueued: their SSE/promise
+        // callbacks are stale after restart, and replaying them would
+        // duplicate the message in the session.  The user can resend.
+        if (item.sourceType !== 'human_chat' && item.sourceType !== 'a2a_message') {
+          try {
+            this.mailbox.enqueue(item.sourceType, item.payload, {
+              priority: item.priority,
+              metadata: item.metadata,
+            });
+          } catch (err) {
+            log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
+          }
         }
         break;
       }
@@ -322,10 +344,17 @@ export class AttentionController {
               if (redequeued) item = redequeued;
             }
           }
+          // Build a lookup so we can guard user chat items from triage actions.
+          const queueSnapshot = this.mailbox.getQueuedItems();
+          const isUserChat = (id: string) =>
+            queueSnapshot.find(i => i.id === id)?.sourceType === 'human_chat';
+
           for (const deferId of triageResult.deferItemIds) {
+            if (isUserChat(deferId)) continue;
             this.mailbox.defer(deferId);
           }
           for (const dropId of triageResult.dropItemIds) {
+            if (isUserChat(dropId)) continue;
             this.mailbox.drop(dropId);
           }
           this.lastTriageResult = { ...triageResult, timestamp: new Date().toISOString() };
@@ -704,6 +733,10 @@ export class AttentionController {
    *   with correct priority queue, but defensive check)
    */
   private needsLLMTriage(headItem: MailboxItem): boolean {
+    // User chat messages are processed strictly in FIFO order — no triage.
+    // The priority queue already surfaced this item; just handle it.
+    if (headItem.sourceType === 'human_chat') return false;
+
     const queued = this.mailbox.getQueuedItems();
     if (queued.length === 0) return false;
 

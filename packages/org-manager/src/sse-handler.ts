@@ -27,6 +27,7 @@ export interface SSEMessageHandlerOptions {
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
+  isResume?: boolean;
 }
 
 /**
@@ -79,7 +80,7 @@ export class SSEHandler {
         }
       });
 
-      if (this.options.persistUserMessage) {
+      if (this.options.persistUserMessage && !this.options.isResume) {
         this.sessionId = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
@@ -87,6 +88,8 @@ export class SSEHandler {
           this.options.images,
           this.options.sessionId,
         );
+      } else if (this.options.isResume) {
+        this.sessionId = this.options.sessionId ?? null;
       }
 
       const reply = await this.options.agent.sendMessageStream(
