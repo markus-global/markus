@@ -64,6 +64,21 @@ export class BrowserSessionManager {
   private selectPageHandlers = new Map<string, AgentToolHandler>();
 
   /**
+   * When true, new_page and select_page will bring Chrome to foreground.
+   * Controlled via Settings > Browser Automation. Default: false.
+   */
+  private _bringToFront = false;
+
+  /** When true, agent-owned tabs are auto-closed on cleanup. Default: true. */
+  private _autoCloseTabs = true;
+
+  get bringToFront(): boolean { return this._bringToFront; }
+  set bringToFront(v: boolean) { this._bringToFront = v; }
+
+  get autoCloseTabs(): boolean { return this._autoCloseTabs; }
+  set autoCloseTabs(v: boolean) { this._autoCloseTabs = v; }
+
+  /**
    * Acquire a per-agent mutex.  Operations are serialized per-agent so that
    * the "select_page → tool" sequence is atomic.
    */
@@ -90,8 +105,8 @@ export class BrowserSessionManager {
    * Ensure the MCP server's selected tab matches this session's current page.
    * Called inside the agent lock before any tool that operates on the active tab.
    *
-   * Uses bringToFront: false to prevent Chrome from stealing window focus on
-   * macOS (Chromium CDP activates the window on select_page by default).
+   * Respects the bringToFront setting: when false (default), prevents Chrome
+   * from stealing window focus on macOS.
    * Skips the call entirely when the agent's last operation was already on
    * this session's current page.
    */
@@ -107,7 +122,7 @@ export class BrowserSessionManager {
     const selectHandler = this.selectPageHandlers.get(agentId);
     if (!selectHandler) return;
     try {
-      await selectHandler.execute({ pageId, bringToFront: false });
+      await selectHandler.execute({ pageId, bringToFront: this._bringToFront });
       this.lastActiveSession.set(agentId, { ownerKey, pageId });
     } catch (err) {
       log.warn(`Auto-select page ${pageId} failed for ${ownerKey}: ${err}`);
@@ -212,7 +227,7 @@ export class BrowserSessionManager {
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
         if (args.background === undefined) {
-          args.background = true;
+          args.background = !this._bringToFront;
         }
         return this.withAgentLock(agentId, async () => {
           const result = await handler.execute(args);
@@ -257,7 +272,7 @@ export class BrowserSessionManager {
           return JSON.stringify({ error: msg });
         }
         if (args.bringToFront === undefined) {
-          args.bringToFront = false;
+          args.bringToFront = this._bringToFront;
         }
         return this.withAgentLock(agentId, async () => {
           const result = await handler.execute(args);
@@ -336,7 +351,7 @@ export class BrowserSessionManager {
           log.info(`Session ${ownerKey} called navigate_page with no owned pages -- auto-creating via new_page`, { url });
 
           return this.withAgentLock(agentId, async () => {
-            const newPageArgs: Record<string, unknown> = { url, background: true };
+            const newPageArgs: Record<string, unknown> = { url, background: !this._bringToFront };
             if (args.timeout) newPageArgs.timeout = args.timeout;
 
             try {

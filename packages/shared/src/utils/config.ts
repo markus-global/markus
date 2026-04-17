@@ -50,6 +50,14 @@ export interface MarkusConfig {
     /** Safety cap on tool iterations per agent turn (default: 200) */
     maxToolIterations?: number;
   };
+  browser?: {
+    /** Bring Chrome tabs/windows to foreground when agent navigates (default: false) */
+    bringToFront?: boolean;
+    /** Remote debugging port for persistent Chrome connection (avoids repeated permission dialogs). Set to e.g. 9222 to enable. */
+    remoteDebuggingPort?: number;
+    /** Automatically close agent-owned tabs when the task completes (default: true) */
+    autoCloseTabs?: boolean;
+  };
   integrations?: {
     feishu?: { appId?: string; appSecret?: string };
     search?: { serperApiKey?: string; braveApiKey?: string };

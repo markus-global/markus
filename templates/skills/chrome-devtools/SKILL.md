@@ -24,17 +24,35 @@ Chrome DevTools is for interactive browser sessions that require a real renderin
 
 ## Prerequisites
 
-The MCP server connects to the user's running Chrome via `--autoConnect` (Chrome 144+).
+The MCP server connects to the user's running Chrome via one of two modes:
 
-**Setup steps:**
+### Mode 1: Auto-Connect (default)
+Uses `--autoConnect` to discover Chrome automatically (Chrome 144+).
 1. Chrome version must be 144 or newer (146+ recommended).
 2. Open `chrome://inspect/#remote-debugging` in Chrome and enable remote debugging.
 3. On first MCP connection, Chrome will show a permission dialog — the user must click **Allow**.
+4. **Note:** This permission is per-connection. Each new agent or session may trigger a new dialog.
+
+### Mode 2: Persistent Debugging Port (recommended for unattended use)
+Set **Remote Debugging Port** in Settings > Browser Automation (e.g. 9222) to skip the
+permission dialog entirely. This requires launching Chrome with:
+```
+chrome --remote-debugging-port=9222
+```
+Once configured, all agents reuse this connection without prompting for permission.
 
 **Frozen/suspended tabs cause connection timeout:** When Chrome has frozen tabs (Memory Saver
 or restored tabs), the MCP server may hang. If you encounter a timeout, inform the user to:
 upgrade Chrome to 146+, disable Memory Saver at `chrome://settings/performance`, click suspended
 tabs to wake them, or use a dedicated Chrome profile with few tabs.
+
+## Configurable behavior (Settings > Browser Automation)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Bring to Foreground** | Off | When on, Chrome tabs are brought to the foreground during agent operations. When off (default), agents operate silently in background tabs. |
+| **Auto-close Tabs** | On | When on, agent-owned tabs are closed when the agent task completes or the agent is removed. |
+| **Remote Debugging Port** | 0 (auto-connect) | Set to a port number (e.g. 9222) to use a persistent debugging connection instead of auto-connect, eliminating repeated permission dialogs. |
 
 ## Tool reference
 
@@ -136,18 +154,19 @@ on the current page?" If yes, call `new_page` first.
 ## CRITICAL: operate in the background — never steal user focus
 
 The user may be working in another application (IDE, terminal, another browser tab) while
-you interact with Chrome. **You must never cause Chrome to steal window focus.**
+you interact with Chrome. **By default, you must never cause Chrome to steal window focus.**
 
-The system enforces this automatically for internal operations, but you must also follow
-these rules for your own tool calls:
+The system enforces this automatically based on the "Bring to Foreground" setting
+(Settings > Browser Automation). When the setting is **off** (default):
 
-- **`new_page`**: Always pass `background: true`. This opens the tab without bringing
-  Chrome to the foreground. Example: `new_page({ url: "...", background: true })`
-- **`select_page`**: Always pass `bringToFront: false` (or omit `bringToFront` — the
-  system defaults it to `false`). Never pass `bringToFront: true` unless the user
-  explicitly asks you to show them a page.
-- **`navigate_page`**: This navigates the current tab in-place and does not have a
-  focus parameter. The system handles background selection automatically.
+- **`new_page`**: The system automatically opens tabs in the background.
+- **`select_page`**: The system automatically prevents Chrome from coming to foreground.
+- **`navigate_page`**: The system handles background selection automatically.
+
+When the setting is **on**, the system will bring Chrome to the foreground during operations,
+which is useful when you want to watch what the agent is doing in real-time.
+
+Regardless of the setting:
 - **Do NOT call `select_page` unnecessarily.** The system auto-selects your current
   tab before each operation. Only call `select_page` when you need to switch between
   multiple tabs you own.

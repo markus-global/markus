@@ -287,6 +287,7 @@ export class AgentManager {
   private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
   private browserSessionManager: BrowserSessionManager;
+  private remoteDebuggingPort = 0;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -535,6 +536,37 @@ export class AgentManager {
     this._maxToolIterations = value <= 0 ? Infinity : value;
   }
 
+  setBrowserBringToFront(value: boolean): void {
+    this.browserSessionManager.bringToFront = value;
+  }
+
+  setBrowserAutoCloseTabs(value: boolean): void {
+    this.browserSessionManager.autoCloseTabs = value;
+  }
+
+  setBrowserRemoteDebuggingPort(port: number): void {
+    this.remoteDebuggingPort = port;
+  }
+
+  /**
+   * When remoteDebuggingPort is configured, replace --autoConnect with
+   * --browserUrl so that the chrome-devtools MCP server reuses a persistent
+   * debugging connection instead of requesting a new permission each time.
+   */
+  private enrichChromeDevtoolsConfig(
+    serverName: string,
+    config: { command: string; args?: string[]; env?: Record<string, string> },
+  ): { command: string; args?: string[]; env?: Record<string, string> } {
+    if (serverName !== 'chrome-devtools' || this.remoteDebuggingPort <= 0) return config;
+    const args = [...(config.args ?? [])];
+    const autoIdx = args.indexOf('--autoConnect');
+    if (autoIdx !== -1) args.splice(autoIdx, 1);
+    if (!args.includes('--browserUrl') && !args.includes('--browser-url')) {
+      args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
+    }
+    return { ...config, args };
+  }
+
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
   }
@@ -736,8 +768,9 @@ export class AgentManager {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolated = skill.manifest.isolation === 'per-agent';
-          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+          for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             try {
+              const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
               let mcpTools: AgentToolHandler[];
               if (isolated) {
                 await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
@@ -771,7 +804,8 @@ export class AgentManager {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
       const isolated = skill?.manifest.isolation === 'per-agent';
-      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+      for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (isolated) {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));
@@ -1378,9 +1412,10 @@ export class AgentManager {
         const skill = this.skillRegistry.get(skillName);
         if (skill?.manifest.mcpServers) {
           const isolated = skill.manifest.isolation === 'per-agent';
-          for (const [serverName, serverConfig] of Object.entries(skill.manifest.mcpServers)) {
+          for (const [serverName, rawServerConfig] of Object.entries(skill.manifest.mcpServers)) {
             mcpConnections.push((async () => {
               try {
+                const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                 let mcpTools: AgentToolHandler[];
                 if (isolated) {
                   await this.mcpManager.connectServerScoped(serverName, serverConfig, id);
@@ -1416,7 +1451,8 @@ export class AgentManager {
       let tools: AgentToolHandler[] = [];
       const skill = this.skillRegistry?.get(skillName);
       const isolated = skill?.manifest.isolation === 'per-agent';
-      for (const [serverName, srvConfig] of Object.entries(mcpServers)) {
+      for (const [serverName, rawSrvConfig] of Object.entries(mcpServers)) {
+        const srvConfig = this.enrichChromeDevtoolsConfig(serverName, rawSrvConfig);
         if (isolated) {
           await this.mcpManager.connectServerScoped(serverName, srvConfig, id);
           tools.push(...this.mcpManager.getToolHandlersScoped(serverName, id));

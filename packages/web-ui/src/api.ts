@@ -1079,6 +1079,9 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number }) =>
       request<{ maxToolIterations: number }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean }) =>
+      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
