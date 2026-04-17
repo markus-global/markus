@@ -249,6 +249,15 @@ async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
   }
+  if (config.browser?.bringToFront !== undefined) {
+    agentManager.setBrowserBringToFront(config.browser.bringToFront);
+  }
+  if (config.browser?.autoCloseTabs !== undefined) {
+    agentManager.setBrowserAutoCloseTabs(config.browser.autoCloseTabs);
+  }
+  if (config.browser?.remoteDebuggingPort) {
+    agentManager.setBrowserRemoteDebuggingPort(config.browser.remoteDebuggingPort);
+  }
 
   taskService.setAgentManager(agentManager);
 

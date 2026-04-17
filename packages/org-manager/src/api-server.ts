@@ -5069,6 +5069,53 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Browser automation
+    if (path === '/api/settings/browser' && req.method === 'GET') {
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const browser = currentConfig.browser ?? {};
+      this.json(res, 200, {
+        bringToFront: browser.bringToFront ?? false,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        autoCloseTabs: browser.autoCloseTabs ?? true,
+      });
+      return;
+    }
+
+    if (path === '/api/settings/browser' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const updates: Record<string, unknown> = {};
+      if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
+      if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
+      if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
+      try {
+        saveConfig({ browser: updates } as any, this.markusConfigPath);
+        const am = this.orgService.getAgentManager();
+        if (typeof updates.bringToFront === 'boolean') {
+          am.setBrowserBringToFront(updates.bringToFront);
+        }
+        if (typeof updates.autoCloseTabs === 'boolean') {
+          am.setBrowserAutoCloseTabs(updates.autoCloseTabs);
+        }
+        if (typeof updates.remoteDebuggingPort === 'number') {
+          am.setBrowserRemoteDebuggingPort(updates.remoteDebuggingPort);
+        }
+      } catch (e) {
+        log.warn('Failed to persist browser settings', { error: String(e) });
+      }
+      const { loadConfig: loadCfg } = await import('@markus/shared');
+      const currentConfig = loadCfg(this.markusConfigPath);
+      const browser = currentConfig.browser ?? {};
+      this.json(res, 200, {
+        bringToFront: browser.bringToFront ?? false,
+        remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
+        autoCloseTabs: browser.autoCloseTabs ?? true,
+      });
+      return;
+    }
+
     if (path === '/api/settings/llm/models' && req.method === 'GET') {
       if (!this.llmRouter) {
         this.json(res, 200, { models: [] });

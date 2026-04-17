@@ -65,6 +65,13 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
+  // Browser automation settings
+  const [browserBringToFront, setBrowserBringToFront] = useState(false);
+  const [browserRemotePort, setBrowserRemotePort] = useState(0);
+  const [browserAutoClose, setBrowserAutoClose] = useState(true);
+  const [browserSaving, setBrowserSaving] = useState(false);
+  const [browserMsg, setBrowserMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
   // Storage transparency
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
@@ -111,13 +118,25 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
       .catch(() => {});
   }, []);
 
+  const loadBrowserSettings = useCallback(() => {
+    api.settings.getBrowser()
+      .then(d => {
+        if (d) {
+          setBrowserBringToFront(d.bringToFront ?? false);
+          setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
+          setBrowserAutoClose(d.autoCloseTabs ?? true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
     api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
   }, []);
 
-  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadStorage]);
+  useEffect(() => { loadSettings(); loadOAuthProviders(); loadAuthProfiles(); loadAgentSettings(); loadBrowserSettings(); loadStorage(); }, [loadSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -1129,6 +1148,117 @@ export function Settings({ theme, onThemeChange }: { theme?: ThemeMode; onThemeC
               </div>
             </div>
             {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
+          </div>
+        </Section>
+
+        <Section title="Browser Automation">
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-5 space-y-5">
+            <div className="text-xs text-fg-tertiary">
+              Settings for the Chrome DevTools browser skill. Agents use Chrome to browse, test web apps, and inspect pages.
+            </div>
+
+            {/* Bring to Front toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">Bring to Foreground</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">
+                  When enabled, Chrome tabs will be brought to the foreground when agents navigate.
+                  When disabled (default), agents work silently in the background without stealing focus.
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !browserBringToFront;
+                  setBrowserBringToFront(newVal);
+                  setBrowserSaving(true); setBrowserMsg(null);
+                  try {
+                    const d = await api.settings.updateBrowser({ bringToFront: newVal });
+                    setBrowserBringToFront(d.bringToFront);
+                    setBrowserMsg({ type: 'ok', text: newVal ? 'Tabs will be brought to foreground' : 'Tabs will stay in background' });
+                  } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); setBrowserBringToFront(!newVal); }
+                  setBrowserSaving(false);
+                }}
+                disabled={browserSaving}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserBringToFront ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserBringToFront ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Auto-close tabs toggle */}
+            <div className="flex items-center justify-between border-t border-border-default pt-4">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">Auto-close Tabs</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">
+                  Automatically close agent-owned browser tabs when the agent task completes or the agent is removed.
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newVal = !browserAutoClose;
+                  setBrowserAutoClose(newVal);
+                  setBrowserSaving(true); setBrowserMsg(null);
+                  try {
+                    const d = await api.settings.updateBrowser({ autoCloseTabs: newVal });
+                    setBrowserAutoClose(d.autoCloseTabs);
+                    setBrowserMsg({ type: 'ok', text: 'Saved' });
+                  } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); setBrowserAutoClose(!newVal); }
+                  setBrowserSaving(false);
+                }}
+                disabled={browserSaving}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClose ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {/* Remote Debugging Port */}
+            <div className="border-t border-border-default pt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-fg-primary">Remote Debugging Port</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">
+                    Set a persistent debugging port (e.g. 9222) to avoid Chrome&apos;s permission
+                    dialog every time an agent connects. Start Chrome with{' '}
+                    <code className="text-fg-secondary bg-surface-elevated px-1 rounded">--remote-debugging-port=9222</code>{' '}
+                    then set the same port here. Set to 0 to use auto-connect (requires manual permission approval).
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={65535}
+                    value={browserRemotePort}
+                    onChange={e => { setBrowserRemotePort(Number(e.target.value)); setBrowserMsg(null); }}
+                    className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                    placeholder="0"
+                  />
+                  <button
+                    disabled={browserSaving}
+                    onClick={async () => {
+                      setBrowserSaving(true); setBrowserMsg(null);
+                      try {
+                        const d = await api.settings.updateBrowser({ remoteDebuggingPort: browserRemotePort });
+                        setBrowserRemotePort(d.remoteDebuggingPort);
+                        setBrowserMsg({
+                          type: 'ok',
+                          text: d.remoteDebuggingPort > 0
+                            ? `Using persistent connection on port ${d.remoteDebuggingPort} (no more permission dialogs)`
+                            : 'Using auto-connect mode (permission dialog required on each connection)',
+                        });
+                      } catch { setBrowserMsg({ type: 'err', text: 'Failed to save' }); }
+                      setBrowserSaving(false);
+                    }}
+                    className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  >
+                    {browserSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {browserMsg && <Msg type={browserMsg.type} text={browserMsg.text} />}
           </div>
         </Section>
 
