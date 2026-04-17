@@ -690,8 +690,7 @@ export class LLMRouter {
     }
 
     try {
-      let response: LLMResponse;
-      response = await cb.execute(async () => {
+      const response = await cb.execute(async () => {
         if (provider.chatStream) {
           return await provider.chatStream(request, onEvent, signal);
         } else {
