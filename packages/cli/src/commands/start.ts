@@ -30,6 +30,7 @@ import {
   TaskService,
   APIServer,
   HITLService,
+  type NotificationPriority,
   BillingService,
   AuditService,
   ProjectService,
@@ -584,7 +585,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
     // notify_user: persist as regular chat message + WS broadcast + notification bell
     agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
       const { agentId, title, body, priority, taskId, requirementId } = evt as {
-        agentId: string; title: string; body: string; priority?: string;
+        agentId: string; title: string; body: string; priority?: NotificationPriority;
         taskId?: string; requirementId?: string;
       };
       try {
@@ -884,7 +885,7 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
           type: opts.type,
           limit: opts.limit,
         });
-        if (opts.taskId) return results.filter(a => a.taskId === opts.taskId);
+        if (opts.taskId) return results.filter((a: { taskId?: string | null }) => a.taskId === opts.taskId);
         return results;
       },
       getActivityLogs: (activityId) => {
