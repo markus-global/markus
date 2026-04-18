@@ -326,17 +326,18 @@ The heartbeat prompt is assembled inline (not via `buildSystemPrompt`) and inclu
 10. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
 11. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
 
-Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `file_edit`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update_longterm`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`, `team_hire_agent`, `team_list_templates`, `builder_install`, `builder_list`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
 
 Agent-to-user communication:
 | Situation | Tool | Example |
 |-----------|------|---------|
-| Status report, finding, alert | `notify_user` | "Daily report: completed 3 tasks today" |
+| Status report, finding, alert | `notify_user` (appears in chat, user may reply) | "Daily report: completed 3 tasks today" |
 | Task completed notification | `notify_user` + `related_task_id` | "Task X is ready for review" (clicks to task) |
 | Need user to approve/reject | `request_user_approval` | "Approve deployment to production?" |
 | Need user to choose between options | `request_user_approval` with custom `options` | "Should I use approach A or B for the auth refactor?" |
 | Need user freeform input | `request_user_approval` with `allow_freeform: true` | "What credentials should I use?" |
 | Want to discuss interactively | Mention user via task/requirement comment | Use `task_comment` or `requirement_comment` |
+| Need to review past execution details | `recall_activity` | `recall_activity({ task_id: "tsk_abc" })` to find what happened |
 | Routine heartbeat, nothing notable | Neither | Agent responds with `HEARTBEAT_OK` |
 
 Retry: 3 retries with exponential backoff (3s base).

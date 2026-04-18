@@ -43,8 +43,8 @@ Three independent storage backends serve different purposes:
 |-------|---------|---------|
 | `chat_sessions` | API server, Web UI | Persistent chat session list; each agent has one **main session** (`is_main = 1`) for activity log |
 | `chat_messages` | API server, Web UI | Persistent message history (user conversations + activity log entries with `metadata.activityLog`) |
-| `agent_activities` | Agent, API server, Activity Tab | **Single source of truth** for all agent activity sessions (task, chat, heartbeat, A2A, internal) |
-| `agent_activity_logs` | Agent, API server, Activity Tab | Event-level logs within each activity (LLM calls, tool calls, status changes) |
+| `agent_activities` | Agent, API server, Activity Tab, `recall_activity` tool | **Single source of truth** for all agent activity sessions (task, chat, heartbeat, A2A, internal) |
+| `agent_activity_logs` | Agent, API server, Activity Tab, `recall_activity` tool | Event-level logs within each activity (LLM calls, tool calls, status changes) |
 | `mailbox_items` | Agent mailbox, API server, Agent Mind UI | **Episodic memory ground truth** — every stimulus the agent received, with timestamps and status |
 | `agent_decisions` | Attention controller, API server, Agent Mind UI | Every attention decision (continue, preempt, merge, defer) with reasoning |
 | `memories` | *(unused — dead code)* | Was intended for DB-backed memory but never wired into the core loop |
@@ -107,7 +107,7 @@ The vector store is shared across all agents (created once at `AgentManager` lev
 | Format | `MailboxItem` rows (stimulus) + `AttentionDecision` rows (response) |
 | Lifecycle | Persistent; never deleted. Grows continuously. |
 | Injection | Recent decisions + current focus summary injected into system prompt (§22 — see [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md)) |
-| Query | Available via `/api/agents/:id/mailbox` and `/api/agents/:id/decisions` |
+| Query | Available via `/api/agents/:id/mailbox`, `/api/agents/:id/decisions`, and the agent's `recall_activity` tool (for `agent_activities` + `agent_activity_logs`) |
 
 The mailbox timeline is the **ground truth** of the agent's experience — every incoming stimulus and every attention decision. All 12 item types (`human_chat`, `a2a_message`, `task_status_update`, `task_comment`, `mention`, `review_request`, `requirement_update`, `session_reply`, `daily_report`, `heartbeat`, `memory_consolidation`, `system_event`) are recorded. Internal agent processes (heartbeats, daily reports, memory consolidation) also flow through the mailbox, ensuring complete traceability. Higher memory layers are derived from this timeline:
 

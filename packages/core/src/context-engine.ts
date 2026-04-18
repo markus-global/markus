@@ -494,8 +494,9 @@ export class ContextEngine {
       parts.push('- Do NOT send A2A messages to notify about task status changes — only send A2A when you have substantive coordination needs beyond the status change itself.');
       parts.push('');
       parts.push('**Communicating with the user**:');
-      parts.push('- `notify_user` — one-way FYI: status updates, progress reports, findings (no response expected)');
+      parts.push('- `notify_user` — proactive message to user: status updates, progress reports, findings, alerts. Appears in chat and notification bell. User may reply. Write comprehensive body with full context.');
       parts.push('- `request_user_approval` — when you need a user decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      parts.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
     }
 
     if (opts.environment) {

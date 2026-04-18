@@ -581,6 +581,71 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
     });
+    // notify_user: persist as regular chat message + WS broadcast + notification bell
+    agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
+      const { agentId, title, body, priority, taskId, requirementId } = evt as {
+        agentId: string; title: string; body: string; priority?: string;
+        taskId?: string; requirementId?: string;
+      };
+      try {
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const agent = agentManager.getAgent(agentId);
+        const formattedMsg = `**${title}**\n\n${body}`;
+        const msg = storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', formattedMsg, 0, {},
+        );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
+          isMainSession: true,
+        });
+        const hasTask = !!taskId;
+        hitlService.notify({
+          targetUserId: 'default',
+          type: 'agent_report',
+          title, body, priority,
+          actionType: hasTask ? 'navigate' : 'open_chat',
+          actionTarget: hasTask
+            ? JSON.stringify({ path: `/work?openTask=${taskId}` })
+            : JSON.stringify({ agentId, sessionId: mainSession.id }),
+          metadata: { agentId, agentName: agent.config.name, taskId, requirementId, sessionId: mainSession.id },
+        });
+      } catch (e) {
+        log.warn('Failed to handle notify-user event', { agentId, error: String(e) });
+      }
+    });
+
+    // escalation: persist as regular chat message + WS broadcast + notification + audit
+    agentManager.getEventBus().on('agent:escalation', async (evt: unknown) => {
+      const { agentId, reason } = evt as { agentId: string; reason: string };
+      try {
+        const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId);
+        const agent = agentManager.getAgent(agentId);
+        const formattedMsg = `**I need help**\n\n${reason}`;
+        const msg = storage.chatSessionRepo.appendMessage(
+          mainSession.id, agentId, 'assistant', formattedMsg, 0, {},
+        );
+        storage.chatSessionRepo.updateLastMessage(mainSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
+          isMainSession: true,
+        });
+        hitlService.notify({
+          targetUserId: 'default',
+          type: 'system',
+          title: 'Agent needs help',
+          body: reason,
+          priority: 'high',
+          actionType: 'open_chat',
+          actionTarget: JSON.stringify({ agentId, sessionId: mainSession.id }),
+          metadata: { agentId, sessionId: mainSession.id },
+        });
+        auditService.record({
+          orgId: 'default', agentId, type: 'error', action: 'escalation', detail: reason, success: false,
+        });
+      } catch (e) {
+        log.warn('Failed to handle escalation event', { agentId, error: String(e) });
+      }
+    });
+
     // Also create main session for newly created agents
     agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
@@ -670,33 +735,10 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
 
+  // Escalation callback kept for agent-internal state management; actual notification/DB/WS/audit
+  // logic is handled by the 'agent:escalation' event handler registered above.
   agentManager.setEscalationHandler((agentId, reason) => {
     log.warn('Agent escalation', { agentId, reason });
-    let mainSessionId: string | undefined;
-    if (storage?.chatSessionRepo) {
-      try {
-        const ms = storage.chatSessionRepo.getOrCreateMainSession(agentId);
-        if (ms && typeof ms === 'object' && 'id' in ms) mainSessionId = (ms as { id: string }).id;
-      } catch { /* skip */ }
-    }
-    hitlService.notify({
-      targetUserId: 'default',
-      type: 'system',
-      title: 'Agent needs help',
-      body: reason,
-      priority: 'high',
-      actionType: 'open_chat',
-      actionTarget: JSON.stringify({ agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) }),
-      metadata: { agentId, ...(mainSessionId ? { sessionId: mainSessionId } : {}) },
-    });
-    auditService.record({
-      orgId: 'default',
-      agentId,
-      type: 'error',
-      action: 'escalation',
-      detail: reason,
-      success: false,
-    });
   });
 
   agentManager.setApprovalHandler(async (agentId, request) => {
@@ -832,6 +874,21 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
         } catch (err) {
           log.warn('Failed to persist activity end', { activityId, error: String(err) });
         }
+      },
+    });
+
+    // Wire recall_activity tool to query execution history from SQLite
+    agentManager.setRecallCallbacks({
+      listActivities: (agentId, opts) => {
+        const results = actRepo.queryActivities(agentId, {
+          type: opts.type,
+          limit: opts.limit,
+        });
+        if (opts.taskId) return results.filter(a => a.taskId === opts.taskId);
+        return results;
+      },
+      getActivityLogs: (activityId) => {
+        return actRepo.getActivityLogs(activityId);
       },
     });
   }

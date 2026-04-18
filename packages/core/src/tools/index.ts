@@ -16,3 +16,4 @@ export { createMemoryTools, type AgentMemoryContext } from './memory.js';
 export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type SubagentContext, type SubagentProgressCallback } from './subagent.js';
 export { createSettingsTools, type SettingsToolsContext } from './settings.js';
 export { createHubTools, type HubToolsContext } from './hub-tools.js';
+export { createRecallTool, type RecallContext, type RecallCallbacks } from './recall.js';

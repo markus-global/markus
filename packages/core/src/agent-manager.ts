@@ -28,6 +28,7 @@ import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.
 import { createProjectTools, type ProjectServiceBridge, type KnowledgeServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createSettingsTools } from './tools/settings.js';
+import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
@@ -329,6 +330,7 @@ export class AgentManager {
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
+  private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private templateRegistry?: TemplateRegistry;
@@ -858,6 +860,11 @@ export class AgentManager {
       semanticSearch: this.semanticSearch,
     })) {
       agent.registerTool(tool);
+    }
+
+    // Recall tool — agents can query their own execution history
+    if (this.recallCallbacks) {
+      agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
 
     // Settings tools — agents can list providers and switch models via chat
@@ -1494,6 +1501,10 @@ export class AgentManager {
       agent.registerTool(tool);
     }
 
+    if (this.recallCallbacks) {
+      agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
+    }
+
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch { /* best effort */ } },
@@ -2005,6 +2016,13 @@ export class AgentManager {
     this.activityCallbacks = cbs;
     for (const [, agent] of this.agents) {
       agent.setActivityCallbacks(cbs);
+    }
+  }
+
+  setRecallCallbacks(cbs: RecallCallbacks): void {
+    this.recallCallbacks = cbs;
+    for (const [id, agent] of this.agents) {
+      agent.registerTool(createRecallTool({ agentId: id, ...cbs }));
     }
   }
 

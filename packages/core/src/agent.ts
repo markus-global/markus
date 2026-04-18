@@ -4014,7 +4014,7 @@ export class Agent {
       return await this.handleDiscoverTools(toolCall.arguments);
     }
 
-    // Handle notify_user: one-way notification to the user
+    // Handle notify_user: proactive message to the user (appears in chat + notification bell)
     if (toolCall.name === 'notify_user') {
       const title = (toolCall.arguments.title as string) ?? '';
       const body = (toolCall.arguments.body as string) ?? '';
@@ -4026,28 +4026,31 @@ export class Agent {
         const explicitTaskId = toolCall.arguments.related_task_id as string | undefined;
         const taskId = explicitTaskId ?? this.getCurrentTaskId();
         const requirementId = this.getCurrentRequirementId();
-        const actionType = taskId ? 'navigate' : 'none';
-        const actionTarget = taskId ? JSON.stringify({ path: `/work?openTask=${taskId}` }) : undefined;
-        const meta: Record<string, unknown> = { agentId: this.id, agentName: this.config.name };
-        if (taskId) meta.taskId = taskId;
-        if (requirementId) meta.requirementId = requirementId;
-        if (this.userNotifier) {
-          this.userNotifier({
-            type: 'agent_report',
-            title,
-            body,
-            priority,
-            actionType,
-            actionTarget,
-            metadata: meta,
+
+        // Write full message into in-memory session (as regular message, not activityLog)
+        const formattedMsg = `**${title}**\n\n${body}`;
+        if (this.currentSessionId) {
+          this.memory.appendMessage(this.currentSessionId, {
+            role: 'assistant',
+            content: formattedMsg,
           });
         }
-        // Also post to main session so it appears in the chat timeline
-        this.injectActivityToMainSession({
-          type: 'notify_user',
-          summary: title,
-          outcome: body,
+        this.recentActivityRing.push(`[notify_user] ${title}`);
+        if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+          this.recentActivityRing.shift();
+        }
+
+        // Emit event — start.ts handler does DB persist + WS broadcast + notification
+        this.eventBus.emit('agent:notify-user', {
+          agentId: this.id,
+          sessionId: this.currentSessionId,
+          title,
+          body,
+          priority,
+          taskId,
+          requirementId,
         });
+
         log.info('User notification sent', { agentId: this.id, title });
         return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });
       } catch (err) {
@@ -4237,10 +4240,29 @@ export class Agent {
         agentId: this.id,
         failures: this.consecutiveFailures,
       });
-      this.escalationCallback?.(
-        this.id,
-        `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`
-      );
+      const escalationReason = `Agent ${this.config.name} needs help: ${reason} (${this.consecutiveFailures} consecutive failures)`;
+      this.escalationCallback?.(this.id, escalationReason);
+
+      // Write escalation message into in-memory session so agent is aware
+      const formattedMsg = `**I need help**\n\n${escalationReason}`;
+      if (this.currentSessionId) {
+        this.memory.appendMessage(this.currentSessionId, {
+          role: 'assistant',
+          content: formattedMsg,
+        });
+      }
+      this.recentActivityRing.push(`[escalation] ${escalationReason}`);
+      if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
+        this.recentActivityRing.shift();
+      }
+
+      // Emit event — start.ts handler does DB persist + WS broadcast + notification + audit
+      this.eventBus.emit('agent:escalation', {
+        agentId: this.id,
+        sessionId: this.currentSessionId,
+        reason: escalationReason,
+      });
+
       this.consecutiveFailures = 0;
     }
   }
@@ -4466,8 +4488,9 @@ export class Agent {
       '',
       '## What You CAN Do (lightweight actions)',
       '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Notify user**: `notify_user` — send pure FYI status updates, reports, alerts (no response expected)',
-      '- **Request user approval**: `request_user_approval` — when you need a user decision, approval, or input (blocks until user responds)',
+      '- **Notify user**: `notify_user` — message appears in chat + notification bell',
+      '- **Request user approval**: `request_user_approval` — blocks until user responds',
+      '- **Recall history**: `recall_activity` — review your past execution logs',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
@@ -4503,7 +4526,7 @@ export class Agent {
       'file_read', 'file_edit', 'agent_send_message',
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update_longterm',
-      'discover_tools', 'notify_user', 'request_user_approval',
+      'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
     ];
     if (isManager) {
       baseTools.push(
