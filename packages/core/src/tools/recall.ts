@@ -20,12 +20,26 @@ export interface RecallCallbacks {
     totalTokens: number;
     totalTools: number;
     success: boolean;
+    summary?: string;
   }>;
   getActivityLogs: (activityId: string) => Array<{
     seq: number;
     type: string;
     content: string;
     createdAt: string;
+  }>;
+  searchActivities?: (agentId: string, query: string, opts?: { limit?: number }) => Array<{
+    id: string;
+    type: string;
+    label: string;
+    taskId?: string | null;
+    startedAt: string;
+    endedAt?: string | null;
+    totalTokens: number;
+    totalTools: number;
+    success: boolean;
+    summary?: string;
+    keywords?: string;
   }>;
 }
 
@@ -38,18 +52,22 @@ export function createRecallTool(ctx: RecallContext): AgentToolHandler {
     name: 'recall_activity',
     description:
       'Query your own execution history. Use "list" to see recent activities, ' +
-      'or "get" with an activity_id to see detailed tool call logs for a specific activity.',
+      '"get" with an activity_id for detailed logs, or "search" to find activities by keywords.',
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['list', 'get'],
-          description: 'list = recent activity summaries, get = detailed logs for one activity',
+          enum: ['list', 'get', 'search'],
+          description: 'list = recent activities, get = detailed logs for one activity, search = keyword search across activity summaries',
         },
         activity_id: {
           type: 'string',
           description: 'Required for "get" operation. The activity ID to retrieve logs for.',
+        },
+        query: {
+          type: 'string',
+          description: 'Required for "search" operation. Keywords to search for in activity summaries (e.g. "auth error", "file_edit deployment").',
         },
         task_id: {
           type: 'string',
@@ -61,7 +79,7 @@ export function createRecallTool(ctx: RecallContext): AgentToolHandler {
         },
         limit: {
           type: 'number',
-          description: 'Max results for "list" (default 5, max 20).',
+          description: 'Max results for "list" and "search" (default 5, max 20).',
         },
       },
       required: ['operation'],
@@ -91,10 +109,45 @@ export function createRecallTool(ctx: RecallContext): AgentToolHandler {
               endedAt: a.endedAt ?? undefined,
               totalTools: a.totalTools,
               success: a.success,
+              summary: a.summary ?? undefined,
             })),
           });
         } catch (err) {
           log.error('recall_activity list failed', { error: String(err) });
+          return JSON.stringify({ status: 'error', message: String(err) });
+        }
+      }
+
+      if (operation === 'search') {
+        const query = args.query as string;
+        if (!query) {
+          return JSON.stringify({ status: 'error', message: 'query is required for "search" operation' });
+        }
+        if (!ctx.searchActivities) {
+          return JSON.stringify({ status: 'error', message: 'Search is not available — activity indexing not configured.' });
+        }
+        try {
+          const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
+          const results = ctx.searchActivities(ctx.agentId, query, { limit });
+          if (results.length === 0) {
+            return JSON.stringify({ status: 'ok', activities: [], message: `No activities matching "${query}".` });
+          }
+          return JSON.stringify({
+            status: 'ok',
+            activities: results.map(a => ({
+              id: a.id,
+              type: a.type,
+              label: a.label,
+              taskId: a.taskId ?? undefined,
+              startedAt: a.startedAt,
+              endedAt: a.endedAt ?? undefined,
+              success: a.success,
+              summary: a.summary ?? undefined,
+              keywords: a.keywords ?? undefined,
+            })),
+          });
+        } catch (err) {
+          log.error('recall_activity search failed', { error: String(err) });
           return JSON.stringify({ status: 'error', message: String(err) });
         }
       }
@@ -126,7 +179,7 @@ export function createRecallTool(ctx: RecallContext): AgentToolHandler {
         }
       }
 
-      return JSON.stringify({ status: 'error', message: `Unknown operation: ${operation}. Use "list" or "get".` });
+      return JSON.stringify({ status: 'error', message: `Unknown operation: ${operation}. Use "list", "get", or "search".` });
     },
   };
 }

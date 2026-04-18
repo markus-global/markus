@@ -12,8 +12,8 @@
   - What went well? (first-pass approvals, smooth coordination, clean delegation)
   - What management patterns worked? (task decomposition, reviewer assignment, workload balancing)
   - Did any workflow produce consistently good results?
-  - Save best practices via `memory_save` with `tags: ["lesson", "best-practice", "management"]` and `[BEST-PRACTICE]` format.
-  - If you found a repeatable management workflow (e.g., "how to onboard a new agent", "how to handle cross-team blockers"), promote it to an SOP via `memory_update_longterm({ section: "sops", ... })`.
-  - When 3+ related best practices accumulate, consider updating your ROLE.md with the new guideline.
-- **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable lessons via `memory_save` with key `evolution:lessons`. Format: `[YYYY-MM-DD] lesson`. Skip if nothing meaningful happened.
+  - Save insights via `memory_save` with `tags: ["insight", "management"]` and `[INSIGHT]` format.
+  - If you found a repeatable management workflow (e.g., "how to onboard a new agent", "how to handle cross-team blockers"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
+- **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Skip if nothing meaningful happened.
 - If nothing changed since last summary, respond HEARTBEAT_OK.

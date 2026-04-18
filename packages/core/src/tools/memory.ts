@@ -17,11 +17,11 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_save',
       description:
-        'Save a piece of information to your memory intake buffer (memories.json). ' +
-        'Use this for individual observations: lessons, tool preferences, task outcomes, facts. ' +
-        'Entries here are automatically surfaced when relevant. ' +
-        'Recurring patterns will be promoted to MEMORY.md during dream cycles. ' +
-        'For established, multi-step procedures, use memory_update_longterm instead.',
+        'Save an observation to your memory buffer (memories.json). ' +
+        'Use for individual insights, tool tips, task outcomes, facts. ' +
+        'Tag with "insight" for learned principles. ' +
+        'Recurring patterns (3+) are promoted to MEMORY.md during dream cycles. ' +
+        'For validated knowledge, use memory_update_longterm instead.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -31,8 +31,8 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           },
           type: {
             type: 'string',
-            enum: ['fact', 'note', 'task_result'],
-            description: 'Type of memory: "fact" for learned information, "note" for observations/decisions, "task_result" for task outcomes.',
+            enum: ['fact', 'note', 'insight'],
+            description: 'Type: "fact" for learned information, "note" for observations/decisions, "insight" for learned principles and patterns.',
           },
           tags: {
             type: 'string',
@@ -179,19 +179,17 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_update_longterm',
       description:
-        'Update a section of your curated long-term knowledge (MEMORY.md). ' +
-        'This is your permanent knowledge base — always injected into your system prompt. ' +
-        'Use for validated, multi-step SOPs and consolidated knowledge (not raw observations — use memory_save for those). ' +
-        'Standard sections: "lessons-learned" (max 20), "tool-preferences" (max 15), ' +
-        '"sops" (max 10 procedures), "role-evolution-log" (max 20). ' +
-        'Custom sections OK: "project-conventions", "team-preferences", etc. ' +
+        'Update a section of your curated knowledge (MEMORY.md). ' +
+        'This is your permanent knowledge base — always in your system prompt as "## Your Knowledge". ' +
+        'You organize your own sections — create whatever structure makes sense for your work. ' +
+        'Common sections: "procedures", "conventions", "preferences", "domain-knowledge", "evolution-log". ' +
         'In "patch" mode, append to the existing section instead of replacing it.',
       inputSchema: {
         type: 'object',
         properties: {
           section: {
             type: 'string',
-            description: 'Section name/key (e.g., "lessons-learned", "tool-preferences", "sops", "role-evolution-log", "project-conventions")',
+            description: 'Section name/key — you choose (e.g., "procedures", "conventions", "preferences", "domain-knowledge")',
           },
           content: {
             type: 'string',

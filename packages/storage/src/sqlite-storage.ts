@@ -434,6 +434,8 @@ CREATE TABLE IF NOT EXISTS agent_activities (
   total_tokens INTEGER DEFAULT 0,
   total_tools INTEGER DEFAULT 0,
   success INTEGER DEFAULT 1,
+  summary TEXT DEFAULT '',
+  keywords TEXT DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_activities_agent ON agent_activities(agent_id, started_at DESC);
@@ -569,6 +571,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'task_comments', column: 'activity_id', sql: "ALTER TABLE task_comments ADD COLUMN activity_id TEXT" },
     { table: 'requirement_comments', column: 'activity_id', sql: "ALTER TABLE requirement_comments ADD COLUMN activity_id TEXT" },
     { table: 'agent_activities', column: 'mailbox_item_id', sql: "ALTER TABLE agent_activities ADD COLUMN mailbox_item_id TEXT" },
+    { table: 'agent_activities', column: 'summary', sql: "ALTER TABLE agent_activities ADD COLUMN summary TEXT DEFAULT ''" },
+    { table: 'agent_activities', column: 'keywords', sql: "ALTER TABLE agent_activities ADD COLUMN keywords TEXT DEFAULT ''" },
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
   ];
@@ -3054,6 +3058,8 @@ export interface ActivityRecord {
   totalTokens: number;
   totalTools: number;
   success: boolean;
+  summary: string;
+  keywords: string;
   createdAt: string;
 }
 
@@ -3088,7 +3094,7 @@ export class SqliteActivityRepo {
 
   updateActivity(
     activityId: string,
-    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean }
+    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean; summary?: string; keywords?: string }
   ): void {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -3096,6 +3102,8 @@ export class SqliteActivityRepo {
     if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
     if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
     if (update.success !== undefined) { sets.push('success = ?'); vals.push(update.success ? 1 : 0); }
+    if (update.summary !== undefined) { sets.push('summary = ?'); vals.push(update.summary); }
+    if (update.keywords !== undefined) { sets.push('keywords = ?'); vals.push(update.keywords); }
     if (sets.length === 0) return;
     vals.push(activityId);
     this.db.prepare(`UPDATE agent_activities SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -3167,6 +3175,32 @@ export class SqliteActivityRepo {
     return r ? this.mapActivity(r) : null;
   }
 
+  searchActivities(
+    agentId: string,
+    query: string,
+    opts?: { limit?: number }
+  ): ActivityRecord[] {
+    const limit = opts?.limit ?? 10;
+    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+    if (terms.length === 0) return [];
+
+    const conditions = ['agent_id = ?'];
+    const params: SqlParams = [agentId];
+
+    const searchClauses = terms.map(() =>
+      "(LOWER(summary) LIKE '%' || ? || '%' OR LOWER(keywords) LIKE '%' || ? || '%' OR LOWER(label) LIKE '%' || ? || '%')"
+    );
+    conditions.push(`(${searchClauses.join(' AND ')})`);
+    for (const t of terms) {
+      params.push(t, t, t);
+    }
+
+    params.push(limit);
+    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    return rows.map(r => this.mapActivity(r));
+  }
+
   private mapActivity(r: Record<string, unknown>): ActivityRecord {
     return {
       id: r['id'] as string,
@@ -3180,6 +3214,8 @@ export class SqliteActivityRepo {
       totalTokens: (r['total_tokens'] as number) ?? 0,
       totalTools: (r['total_tools'] as number) ?? 0,
       success: (r['success'] as number) !== 0,
+      summary: (r['summary'] as string) ?? '',
+      keywords: (r['keywords'] as string) ?? '',
       createdAt: r['created_at'] as string,
     };
   }

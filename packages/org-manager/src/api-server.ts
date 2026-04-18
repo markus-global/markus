@@ -243,6 +243,21 @@ export class APIServer {
           },
           timestamp: new Date().toISOString(),
         });
+        // Deliver to peer agent mailboxes so they see the message
+        const chat = this.customGroupChats.find(c => c.id === channelKey);
+        if (chat) {
+          for (const memberId of chat.memberIds) {
+            if (memberId === senderId) continue;
+            try {
+              const memberAgent = am.getAgent(memberId);
+              memberAgent.enqueueToMailbox('a2a_message', {
+                summary: `Group chat message from ${senderName}`,
+                content: `[Group chat: ${chat.name}] ${senderName}: ${cleanText}`,
+                extra: { senderId, senderName, channelKey },
+              });
+            } catch { /* agent may not exist */ }
+          }
+        }
         return 'Message sent to group chat';
       },
       createGroupChat: async (

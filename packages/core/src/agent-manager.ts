@@ -149,6 +149,9 @@ export interface TaskServiceBridge {
     createdBy?: string;
     creatorRole?: string;
     taskType?: string;
+    notes?: string;
+    acceptanceCriteria?: string;
+    deadline?: string;
     scheduleConfig?: {
       cron?: string;
       every?: string;
@@ -508,6 +511,9 @@ export class AgentManager {
           reviewerAgentId: envelope.from,
           createdBy: envelope.from,
           creatorRole: 'manager',
+          notes: delegation.context,
+          acceptanceCriteria: delegation.expectedOutput,
+          deadline: delegation.deadline,
         });
         log.info('Delegation created real task', {
           taskId: task.id,
@@ -1488,6 +1494,14 @@ export class AgentManager {
       },
       delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
+      ...(this.groupChatHandlers
+        ? {
+            sendGroupMessage: this.groupChatHandlers.sendGroupMessage,
+            createGroupChat: (name: string, memberIds: string[]) =>
+              this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
+            listGroupChats: this.groupChatHandlers.listGroupChats,
+          }
+        : {}),
     };
     for (const tool of createA2ATools(a2aCtx)) agent.registerTool(tool);
     for (const tool of createStructuredA2ATools(a2aCtx)) agent.registerTool(tool);
@@ -1969,9 +1983,13 @@ export class AgentManager {
       state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
     ) => void
   ): void {
-    this.stateChangeHandler = handler;
+    // Wrap handler to also sync AgentCard status in DelegationManager
+    this.stateChangeHandler = (agentId, state) => {
+      handler(agentId, state);
+      this.delegationManager.updateAgentStatus(agentId, state.status);
+    };
     for (const [, agent] of this.agents) {
-      agent.setStateChangeCallback(handler);
+      agent.setStateChangeCallback(this.stateChangeHandler);
     }
   }
 
@@ -2011,7 +2029,7 @@ export class AgentManager {
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
     onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
-    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
+    onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.activityCallbacks = cbs;
     for (const [, agent] of this.agents) {

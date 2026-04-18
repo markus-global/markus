@@ -5,16 +5,12 @@ import {
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
+  type PreparedCognitiveContext,
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_TASK_DESC_CHARS,
-  SYSTEM_SOPS_CHARS,
-  SYSTEM_LONGTERM_MEMORY_CHARS,
-  SYSTEM_LESSON_ENTRIES_MAX,
-  SYSTEM_BEST_PRACTICE_ENTRIES_MAX,
+  SYSTEM_KNOWLEDGE_CHARS,
   SYSTEM_DELIVERABLES_CHARS,
-  SYSTEM_DAILY_LOG_CHARS,
-  SYSTEM_DAILY_LOG_DAYS,
   SYSTEM_USER_PROFILE_CHARS,
   SYSTEM_PROJECT_DESC_CHARS,
   SYSTEM_DELIVERABLE_PREVIEW_CHARS,
@@ -171,6 +167,7 @@ export class ContextEngine {
       recentDecisions?: Array<{ type: string; reasoning: string }>;
       mergedContent?: string;
     };
+    cognitiveContext?: PreparedCognitiveContext;
   }): Promise<string> {
     const parts: string[] = [];
 
@@ -327,59 +324,16 @@ export class ContextEngine {
       }
     }
 
-    // SOPs get their own dedicated section — always fully loaded, not truncated by the
-    // general MEMORY.md cap, so agents reliably see their accumulated procedures.
-    const sops = opts.memory.getLongTermSection('sops');
-    if (sops) {
-      parts.push('\n## Your SOPs (Standard Operating Procedures)');
-      parts.push('These are your proven, repeatable workflows. Follow them when the trigger matches.');
-      parts.push(sops.slice(0, SYSTEM_SOPS_CHARS));
-    }
-
-    // Exclude sections already loaded separately (SOPs) to avoid duplication
-    const longTermMem = opts.memory.getLongTermMemoryExcluding(['sops']);
+    // Unified knowledge section — MEMORY.md loaded as a single block.
+    // Agent-organized: no rigid SOP/lesson/best-practice taxonomy.
+    const longTermMem = opts.memory.getLongTermMemory();
     if (longTermMem) {
-      parts.push('\n## Long-term Knowledge');
-      parts.push(longTermMem.slice(0, SYSTEM_LONGTERM_MEMORY_CHARS));
+      parts.push('\n## Your Knowledge');
+      parts.push(longTermMem.slice(0, SYSTEM_KNOWLEDGE_CHARS));
     }
 
-    const lessons = opts.memory.getEntriesByTag('lesson', SYSTEM_LESSON_ENTRIES_MAX);
-    if (lessons.length > 0) {
-      parts.push('\n## Lessons from Past Experience');
-      for (const lesson of lessons) {
-        const ts = lesson.timestamp ? new Date(lesson.timestamp).toLocaleDateString() : '';
-        parts.push(`- [${ts}] ${lesson.content}`);
-      }
-    }
-
-    const bestPractices = opts.memory.getEntriesByTag('best-practice', SYSTEM_BEST_PRACTICE_ENTRIES_MAX);
-    if (bestPractices.length > 0) {
-      parts.push('\n## Best Practices');
-      parts.push('Proven approaches from your completed tasks. Apply when relevant.');
-      for (const bp of bestPractices) {
-        const ts = bp.timestamp ? new Date(bp.timestamp).toLocaleDateString() : '';
-        parts.push(`- [${ts}] ${bp.content}`);
-      }
-    }
-
-    // Collect IDs already shown in Lessons / Best Practices to avoid duplication in Relevant Memories
-    const alreadyShownIds = new Set<string>([
-      ...lessons.map(e => e.id),
-      ...bestPractices.map(e => e.id),
-    ]);
-
-    // During task execution, actively surface lessons/best-practices matching the task
-    if (opts.scenario === 'task_execution' && opts.currentQuery) {
-      const taskLessons = this.matchLessonsForTask(opts.memory, opts.currentQuery, alreadyShownIds);
-      if (taskLessons.length > 0) {
-        parts.push('\n## Applicable Lessons for This Task');
-        parts.push('These lessons from past experience are relevant to the current task. Apply them proactively.');
-        for (const lesson of taskLessons) {
-          parts.push(`- ${lesson.content}`);
-          alreadyShownIds.add(lesson.id);
-        }
-      }
-    }
+    // Track IDs of insight entries shown in knowledge to avoid duplication in Relevant Memories
+    const alreadyShownIds = new Set<string>();
 
     const isDream = opts.scenario === 'memory_consolidation';
 
@@ -388,7 +342,23 @@ export class ContextEngine {
       parts.push((opts.deliverableContext ?? opts.knowledgeContext ?? '').slice(0, SYSTEM_DELIVERABLES_CHARS));
     }
 
-    if (!isDream) {
+    // When CPP is active, cognitive sections replace mechanical retrieval
+    const cpp = opts.cognitiveContext;
+    if (cpp && !cpp.isEmpty) {
+      if (cpp.cognitiveContext) {
+        parts.push('\n## Cognitive Context');
+        parts.push(cpp.cognitiveContext);
+      }
+      if (cpp.retrievedContext) {
+        parts.push('\n## Retrieved Context');
+        parts.push(cpp.retrievedContext);
+      }
+      if (cpp.reflection) {
+        parts.push('\n## Reflection');
+        parts.push(cpp.reflection);
+      }
+    } else if (!isDream) {
+      // Fallback: mechanical retrieval when CPP is off or D0
       const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
         parts.push('\n## Relevant Memories');
@@ -396,14 +366,6 @@ export class ContextEngine {
           const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
           parts.push(`- [${ts}] ${mem.content}`);
         }
-      }
-    }
-
-    if (!isDream) {
-      const dailyLog = opts.memory.getRecentDailyLogs(SYSTEM_DAILY_LOG_DAYS);
-      if (dailyLog) {
-        parts.push('\n## Recent Activity Summary');
-        parts.push(dailyLog.slice(0, SYSTEM_DAILY_LOG_CHARS));
       }
     }
 
@@ -771,8 +733,9 @@ export class ContextEngine {
         lines.push(teamName ? `\n### Your Team — ${teamName}` : '\n### Your Team');
         for (const c of opts.identity.colleagues) {
           const statusTag = c.status ? ` [${c.status}]` : '';
+          const idTag = c.id ? ` id:${c.id}` : '';
           lines.push(
-            `- ${c.name} (${c.role})${statusTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
+            `- ${c.name} (${c.role})${statusTag}${idTag}${c.skills?.length ? ` — skills: ${c.skills.join(', ')}` : ''}`
           );
         }
       }
@@ -999,7 +962,7 @@ export class ContextEngine {
     sessionId: string,
     messages: LLMMessage[],
     keepLast: number,
-    agentId?: string,
+    _agentId?: string,
   ): Promise<LLMMessage[]> {
     if (messages.length <= keepLast) return messages;
 
@@ -1015,10 +978,32 @@ export class ContextEngine {
       return [...protectedPrefix, ...compactableMessages];
     }
 
-    if (this.llmSummarizer) {
+    // Score messages by information density — high-priority messages are retained longer
+    const scored = compactableMessages.map((msg, idx) => ({
+      msg,
+      idx,
+      priority: this.scoreMessageDensity(msg),
+    }));
+
+    // Partition: messages that should be compacted first (low priority) vs retained
+    // Keep the most recent `keepLast` messages + any high-priority older messages
+    const recentBoundary = compactableMessages.length - keepLast;
+    const olderScored = scored.slice(0, recentBoundary);
+    olderScored.sort((a, b) => a.priority - b.priority);
+
+    // Low-priority messages get compacted first, high-priority stay in retained
+    const highPriorityThreshold = 3;
+    const promotedToRetain = olderScored.filter(s => s.priority >= highPriorityThreshold);
+    const toCompact = olderScored.filter(s => s.priority < highPriorityThreshold);
+
+    // Rebuild: compact low-priority old messages, keep high-priority + recent
+    const older = toCompact.map(s => s.msg);
+    const promoted = promotedToRetain.map(s => s.msg);
+    const recent = compactableMessages.slice(-keepLast);
+    const retained = [...promoted, ...recent];
+
+    if (this.llmSummarizer && older.length > 0) {
       try {
-        const older = compactableMessages.slice(0, -keepLast);
-        const retained = compactableMessages.slice(-keepLast);
         const summary = await this.llmSummarizer(older);
         if (summary && summary.length > 0) {
           log.info('LLM-powered summarization succeeded', {
@@ -1031,7 +1016,7 @@ export class ContextEngine {
             role: 'user',
             content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
           };
-          memory.writeDailyLog(agentId ?? sessionId, summary);
+          // No side-effects: prepareMessages must be pure (no writeDailyLog here)
           return [...protectedPrefix, summaryMessage, ...retained];
         }
       } catch (err) {
@@ -1039,23 +1024,51 @@ export class ContextEngine {
       }
     }
 
-    // Heuristic fallback: build a simple summary from older messages
-    const older = compactableMessages.slice(0, -keepLast);
-    const retained = compactableMessages.slice(-keepLast);
-    const heuristicSummary = this.buildHeuristicSummary(older);
+    // Heuristic fallback: use the same density-scored older/retained
+    const heuristicOlder = older.length > 0 ? older : compactableMessages.slice(0, -keepLast);
+    const heuristicRetained = older.length > 0 ? retained : compactableMessages.slice(-keepLast);
+    const heuristicSummary = this.buildHeuristicSummary(heuristicOlder);
     if (heuristicSummary) {
       const summaryMessage: LLMMessage = {
         role: 'user',
-        content: `[Conversation history summary — ${older.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
+        content: `[Conversation history summary — ${heuristicOlder.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
       };
-      return [...protectedPrefix, summaryMessage, ...retained];
+      return [...protectedPrefix, summaryMessage, ...heuristicRetained];
     }
 
     // Last resort: try memory store's summarizeAndTruncate (may not preserve task prompt)
     if (!isTaskPrompt) {
       return memory.summarizeAndTruncate(sessionId, keepLast);
     }
-    return [...protectedPrefix, ...retained];
+    return [...protectedPrefix, ...heuristicRetained];
+  }
+
+  /** Score a message's information density (0=low priority, 5=highest) */
+  private scoreMessageDensity(msg: LLMMessage): number {
+    const text = getTextContent(msg.content);
+
+    // User messages are always high priority
+    if (msg.role === 'user') return 4;
+
+    // Error messages are critical
+    if (text.includes('Error') || text.includes('error') || text.includes('FAILED')) return 5;
+
+    // Messages with decision/conclusion markers
+    if (text.includes('DECISION:') || text.includes('CONCLUSION:') || text.includes('IMPORTANT:')) return 4;
+
+    // Tool results: short successful ones are low priority
+    if (msg.role === 'tool') {
+      if (text.length < 200) return 1;
+      if (text.length > 5000) return 1;
+      return 2;
+    }
+
+    // Activity log injections
+    if (text.includes('[heartbeat]') || text.includes('[HEARTBEAT')) return 0;
+    if (text.includes('activityLog')) return 1;
+
+    // Default: medium priority
+    return 2;
   }
 
   /**
@@ -1537,18 +1550,26 @@ export class ContextEngine {
   }
 
   /**
-   * Match lesson/best-practice entries against the current task description
+   * Match insight entries against the current task description
    * using keyword overlap. Returns entries whose content shares significant
    * words with the task, ranked by overlap score.
    */
-  private matchLessonsForTask(
+  private matchInsightsForTask(
     memory: IMemoryStore,
     taskDescription: string,
     excludeIds: Set<string>,
   ): MemoryEntry[] {
-    const lessons = memory.getEntriesByTag('lesson');
-    const bestPractices = memory.getEntriesByTag('best-practice');
-    const candidates = [...lessons, ...bestPractices].filter(e => !excludeIds.has(e.id));
+    const insights = memory.getEntriesByTag('insight');
+    // Also include legacy lesson/best-practice tags for backward compat
+    const legacyLessons = memory.getEntriesByTag('lesson');
+    const legacyBP = memory.getEntriesByTag('best-practice');
+    const allIds = new Set<string>();
+    const candidates = [...insights, ...legacyLessons, ...legacyBP]
+      .filter(e => {
+        if (allIds.has(e.id) || excludeIds.has(e.id)) return false;
+        allIds.add(e.id);
+        return true;
+      });
     if (candidates.length === 0) return [];
 
     const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',

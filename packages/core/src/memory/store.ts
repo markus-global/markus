@@ -278,7 +278,7 @@ export class MemoryStore implements IMemoryStore {
 
     const summary = this.buildHeuristicSummary(older);
 
-    this.writeDailyLog(session.agentId, summary);
+    // No writeDailyLog here — compaction must be side-effect-free
 
     const facts = older
       .filter((m) => m.role === 'assistant' && getTextContent(m.content).length > 50)
@@ -338,16 +338,12 @@ export class MemoryStore implements IMemoryStore {
   // --- Disk persistence ---
 
   private checkAndCompact(session: ConversationSession): void {
-    // Only shrink tool results in-place when the session is very large.
-    // The context-engine already handles per-message compression when preparing
-    // LLM calls, so aggressive early mutation here permanently destroys data
-    // the agent may still need (e.g. research results from web_search / browser).
-    // Threshold raised: only compact tool results when we're about to summarize
-    // the session anyway (> 80 messages), and keep more content (2000 chars).
-    if (session.messages.length <= 80) return;
+    // Single storage-time compaction policy: trigger at 60 messages, keep 30.
+    // Context-engine handles per-LLM-call compression separately.
+    if (session.messages.length <= 60) return;
 
     let shrunk = 0;
-    const recentBoundary = session.messages.length - 40;
+    const recentBoundary = session.messages.length - 30;
     for (let i = 0; i < recentBoundary; i++) {
       const m = session.messages[i]!;
       const text = getTextContent(m.content);
@@ -365,7 +361,7 @@ export class MemoryStore implements IMemoryStore {
     log.info('Auto-compacting session by count', {
       sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
     });
-    this.compactSession(session.id, 40);
+    this.compactSession(session.id, 30);
   }
 
   private loadFromDisk(): void {

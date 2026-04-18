@@ -890,6 +890,9 @@ async function startServer(config: ReturnType<typeof loadConfig>, values: Record
       getActivityLogs: (activityId) => {
         return actRepo.getActivityLogs(activityId);
       },
+      searchActivities: (agentId, query, opts) => {
+        return actRepo.searchActivities(agentId, query, opts);
+      },
     });
   }
 

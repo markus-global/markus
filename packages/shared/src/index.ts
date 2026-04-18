@@ -9,6 +9,7 @@ export * from './types/project.js';
 export * from './types/requirement.js';
 export * from './types/connector.js';
 export * from './types/mailbox.js';
+export * from './types/cognitive.js';
 export * from './utils/config.js';
 export * from './utils/logger.js';
 export * from './utils/id.js';

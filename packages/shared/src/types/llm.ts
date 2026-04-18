@@ -92,6 +92,7 @@ export interface LLMRequest {
     agentId?: string;
     taskId?: string;
     sessionId?: string;
+    purpose?: string;
   };
   /** Enable Anthropic server-side context compaction (beta) */
   compaction?: boolean;

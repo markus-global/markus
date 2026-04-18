@@ -86,6 +86,9 @@ export interface CreateTaskRequest {
   planReportId?: string;
   taskType?: TaskType;
   scheduleConfig?: ScheduleConfig;
+  notes?: string;
+  acceptanceCriteria?: string;
+  deadline?: string;
 }
 
 export type TaskEventType =
@@ -1545,12 +1548,17 @@ export class TaskService {
       ? { ...request.scheduleConfig, currentRuns: 0, nextRunAt: computeInitialNextRun(request.scheduleConfig) }
       : undefined;
 
+    const approvalTier = this.determineApprovalTier(
+      request,
+      (request.creatorRole as 'worker' | 'manager') ?? 'worker',
+    );
+
     const task: Task = {
       id: taskId(),
       orgId: request.orgId,
       title: request.title,
       description: request.description,
-      status: 'pending',
+      status: approvalTier === 'auto' ? 'in_progress' : 'pending',
       priority: request.priority ?? 'medium',
       assignedAgentId: request.assignedAgentId,
       reviewerAgentId: request.reviewerAgentId,
@@ -2381,9 +2389,11 @@ export class TaskService {
 
   private areBlockersSatisfied(task: Task): boolean {
     if (!task.blockedBy?.length) return true;
+    // Only 'completed' unblocks — cancelled tasks should NOT satisfy blockers.
+    // cascadeCancelDependents handles cancelled propagation separately.
     return task.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
-      return blocker && (blocker.status === 'completed' || blocker.status === 'cancelled');
+      return blocker && blocker.status === 'completed';
     });
   }
 
