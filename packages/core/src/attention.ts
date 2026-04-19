@@ -136,6 +136,7 @@ export class AttentionController {
   private currentFocus: MailboxItem | undefined;
   private interruptSignal = false;
   private pendingInterruptItem: MailboxItem | undefined;
+  private criticalInterruptResolve?: () => void;
   private running = false;
   private loopPromise: Promise<void> | undefined;
   private readonly agentId: string;
@@ -388,6 +389,7 @@ export class AttentionController {
     this.currentFocus = item;
     this.interruptSignal = false;
     this.pendingInterruptItem = undefined;
+    this.criticalInterruptResolve = undefined;
     this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
@@ -466,6 +468,8 @@ export class AttentionController {
   /**
    * Called when new mail arrives. If idle, the loop handles it via dequeueAsync.
    * If focused, registers an interrupt signal for the next yield point.
+   * For critical user messages, also fires the critical-interrupt promise so that
+   * long-running tool execution can be aborted early.
    */
   private onNewMail(): void {
     if (this.state === 'idle') {
@@ -477,8 +481,35 @@ export class AttentionController {
       const peeked = this.mailbox.peek();
       if (peeked) {
         this.pendingInterruptItem = peeked;
+
+        const wouldPreempt = this.currentFocus
+          ? this.heuristicDecision(this.currentFocus, peeked) === 'preempt'
+          : false;
+        if (wouldPreempt && this.criticalInterruptResolve) {
+          this.criticalInterruptResolve();
+          this.criticalInterruptResolve = undefined;
+        }
       }
     }
+  }
+
+  /**
+   * Returns a promise that resolves when a preemption-worthy interrupt arrives.
+   * Used by the agent to race long-running tool calls against critical interrupts.
+   * The promise is single-use; call again to get a fresh one.
+   */
+  waitForPreemptionSignal(): Promise<void> {
+    return new Promise<void>(resolve => {
+      this.criticalInterruptResolve = resolve;
+    });
+  }
+
+  /**
+   * Discard the current critical-interrupt promise (e.g. when a tool finishes
+   * normally before any interrupt arrived).
+   */
+  clearPreemptionSignal(): void {
+    this.criticalInterruptResolve = undefined;
   }
 
   /**

@@ -2471,6 +2471,16 @@ export class Agent {
               break;
             }
           }
+
+          // Early preemption check after parallel tools complete — skip next
+          // LLM call and reach the yield point faster when an interrupt arrived
+          // during tool execution.
+          if (isPreemptable && this.attentionController.hasInterruptPending()) {
+            log.info('Interrupt arrived during parallel tool execution, breaking early', {
+              agentId: this.id, scenario,
+            });
+            break;
+          }
         }
 
         // Attention yield point — preemptable scenarios (heartbeat, memory
@@ -3290,13 +3300,46 @@ export class Agent {
             toolCalls: response.toolCalls,
           });
 
+          let interruptedDuringTools = false;
           for (const tc of response.toolCalls!) {
             if (cancelToken?.cancelled) break;
+            if (this.attentionController.hasInterruptPending()) {
+              log.info('Attention interrupt pending — skipping remaining tools', {
+                agentId: this.id, taskId, skippedTool: tc.name,
+              });
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              interruptedDuringTools = true;
+              continue;
+            }
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
-              let result = await this.executeTool(tc, undefined, sessionId);
-              result = this.offloadLargeResult(tc.name, result);
+              const preemptionRace = this.attentionController.waitForPreemptionSignal();
+              const toolResult = this.executeTool(tc, undefined, sessionId);
+              const raceResult = await Promise.race([
+                toolResult.then(r => ({ source: 'tool' as const, value: r })),
+                preemptionRace.then(() => ({ source: 'preempt' as const, value: undefined })),
+              ]);
+              this.attentionController.clearPreemptionSignal();
+
+              let result: string;
+              if (raceResult.source === 'preempt') {
+                log.info('Tool execution preempted by critical interrupt', {
+                  agentId: this.id, taskId, tool: tc.name,
+                  elapsedMs: Date.now() - toolStart,
+                });
+                result = await toolResult;
+                result = this.offloadLargeResult(tc.name, result);
+                interruptedDuringTools = true;
+              } else {
+                result = raceResult.value as string;
+                result = this.offloadLargeResult(tc.name, result);
+              }
+
               const isErr = isErrorResult(result);
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, {
@@ -3311,7 +3354,9 @@ export class Agent {
                 content: result,
                 toolCallId: tc.id,
               });
+              if (interruptedDuringTools) break;
             } catch (toolErr) {
+              this.attentionController.clearPreemptionSignal();
               const durationMs = Date.now() - toolStart;
               emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
               this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
@@ -3320,6 +3365,20 @@ export class Agent {
                 content: `Error: ${String(toolErr)}`,
                 toolCallId: tc.id,
               });
+            }
+          }
+
+          if (interruptedDuringTools) {
+            for (const tc of response.toolCalls!) {
+              const hasResult = this.memory.getRecentMessages(sessionId, 100)
+                .some(m => m.role === 'tool' && m.toolCallId === tc.id);
+              if (!hasResult) {
+                this.memory.appendMessage(sessionId, {
+                  role: 'tool',
+                  content: '[Tool skipped — preempted by higher-priority item]',
+                  toolCallId: tc.id,
+                });
+              }
             }
           }
         }
@@ -3511,6 +3570,14 @@ export class Agent {
           });
           for (const tc of response.toolCalls) {
             if (cancelToken?.cancelled) break;
+            if (this.attentionController.hasInterruptPending()) {
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              continue;
+            }
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
@@ -3726,6 +3793,14 @@ export class Agent {
           });
 
           for (const tc of response.toolCalls!) {
+            if (this.attentionController.hasInterruptPending()) {
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: '[Tool skipped — preempted by higher-priority item]',
+                toolCallId: tc.id,
+              });
+              continue;
+            }
             emit('tool_start', tc.name, { arguments: tc.arguments });
             const toolStart = Date.now();
             try {
